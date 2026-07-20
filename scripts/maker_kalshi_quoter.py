@@ -81,6 +81,17 @@ SERIES_ALLOW = [s for s in os.environ.get("KALSHI_SERIES_ALLOW", "").split(",") 
 INV_SOFT_CT = _envf("KALSHI_INV_SOFT_CT", 30.0)
 INV_HARD_CT = _envf("KALSHI_INV_HARD_CT", 80.0)
 TICK = 0.01
+# --- taker de-risk BACKSTOP (the ONLY place the bot pays a taker fee) ---
+# Passive maker-unwind (above) is PRIMARY. This last-resort crosses the spread ONLY to
+# GUARANTEE flat when passive can't: near settlement (carry no delta into resolution) or a
+# hard inventory breach (passive not keeping up in a one-way drift). Tunable to OFF.
+INV_TOLERANCE = _envf("KALSHI_INV_TOLERANCE", 3.0)          # < this many ct == "flat"
+SETTLE_UNWIND_MIN = _envi("KALSHI_SETTLE_UNWIND_MIN", 30)   # taker-flatten if settlement within N min
+TAKER_FLATTEN = os.environ.get("KALSHI_TAKER_FLATTEN", "1") == "1"   # last-resort enabled (set 0 = never)
+TAKER_MAX_MKTS = _envi("KALSHI_TAKER_MAX_MKTS", 8)         # cap taker-flattens per cycle (rate/cost guard)
+# --- selection: prefer BALANCED books (maker-unwind fills) over one-sided drift traps ---
+MAX_SPREAD_TICKS = _envi("KALSHI_MAX_SPREAD_TICKS", 8)      # skip wide/illiquid books
+MIN_DEPTH_SYM = _envf("KALSHI_MIN_DEPTH_SYM", 0.25)         # min(depth)/max(depth) both sides
 REQ_SPACING_S = 0.55
 READ_BUDGET_PER_CYCLE = 200
 
@@ -205,6 +216,16 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, stats=None)
     ext_n = max(0.0, sum(s for _, s in nl) - float(own.get("no", 0)))
     target = m["target"]
     void = ext_y < target or ext_n < target
+    # SELECTION GATE (only when ~flat — if we hold inventory we must keep quoting to unwind):
+    # skip WIDE or ONE-SIDED books. A balanced two-sided book is where the maker-unwind
+    # reliably fills; a one-directional/wide book is the gas-ladder trap that adverse-selects
+    # us and then won't let the passive exit fill. This is the primary defense of "flatten as
+    # a maker". ACTIVATE (void) markets are intentionally thin -> exempt (handled elsewhere).
+    if not void and abs(inv) < INV_SOFT_CT:
+        spread_ticks = (1.0 - best_n - best_y) / TICK
+        sym = min(ext_y, ext_n) / max(ext_y, ext_n, 1e-9)
+        if spread_ticks > MAX_SPREAD_TICKS or sym < MIN_DEPTH_SYM:
+            return []                               # one-sided / wide -> unwind-unreliable, skip
     if JOIN_ALWAYS:
         # drill/testing switch: tiny join on both sides of any priceable market,
         # ignoring void/activate economics — exercises place/diff/cancel machinery.
@@ -234,13 +255,22 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, stats=None)
         # no-bid reduces (a filled no-bid shorts yes). long no(-): mirror.
         if abs(inv) > INV_SOFT_CT:
             over = min(1.0, (abs(inv) - INV_SOFT_CT) / max(1.0, INV_HARD_CT - INV_SOFT_CT))
-            if inv > 0:                             # long yes -> throttle YES (accumulating)
+            # GROW the reducing side toward |inv| (capped by the per-side $ budget) so the
+            # position flattens PASSIVELY as a MAKER — rest the offsetting bid, get hit, earn
+            # spread + $0 fee + reward. This is the primary flatten; taker is a separate
+            # last-resort backstop (settlement pass / hard breach), never here.
+            def _unwind_cnt(base, price):
+                room = int((MAX_MARKET_CAPITAL / 2.0) / price) if price > 0 else base
+                return max(base, min(int(abs(inv)), room))
+            if inv > 0:                             # long yes -> throttle YES, grow NO (reduces)
+                n_cnt = _unwind_cnt(n_cnt, best_n)
                 if abs(inv) > INV_HARD_CT:
                     y_cnt = 0                       # pull the accumulating side entirely
                 else:
                     y_price = round(best_y - TICK, 4)   # 1 tick inside: half score, fewer fills
                     y_cnt = max(1, int(y_cnt * (1 - over)))
-            else:                                   # long no -> throttle NO (accumulating)
+            else:                                   # long no -> throttle NO, grow YES (reduces)
+                y_cnt = _unwind_cnt(y_cnt, best_y)
                 if abs(inv) > INV_HARD_CT:
                     n_cnt = 0
                 else:
@@ -424,9 +454,36 @@ def run_once():
                 print(f"WARNING could not read positions ({e!r}); skipping cycle (delta unknown)")
                 return 0
 
+        # --- DE-RISK PASS (taker last-resort): guarantee flat. Runs over ALL held positions
+        # (decoupled from the footprint — a market dropped from selection is exactly when its
+        # inventory must be flattened), BEFORE quoting. Triggers: settlement imminent (carry no
+        # delta into resolution) or hard inventory breach (passive maker-unwind not keeping up).
+        flattened = set()
+        taker_flattens = 0
+        if client.mode != "dry_run" and TAKER_FLATTEN and held_by:
+            oids_by_t = {t: [o["order_id"] for o in ol] for t, ol in standing.items()}
+            for t, pos in list(held_by.items()):
+                if abs(pos) < INV_TOLERANCE or taker_flattens >= TAKER_MAX_MKTS:
+                    continue
+                near_settle = False
+                try:
+                    close = public_get(f"/trade-api/v2/markets/{t}").get("market", {}).get("close_time")
+                    near_settle = bool(close) and parse_iso(close) < now + timedelta(minutes=SETTLE_UNWIND_MIN)
+                except Exception:
+                    pass
+                if near_settle or abs(pos) > INV_HARD_CT:
+                    ok, nc = flatten_to_zero(client, t, oids_by_t.get(t))
+                    taker_flattens += 1
+                    flattened.add(t)
+                    standing.pop(t, None)               # its resting orders were cancelled
+                    held_by.pop(t, None)
+        plan["taker_flattens"] = taker_flattens
+
         desired = {}
         for m in footprint:
             t = m["ticker"]
+            if t in flattened:
+                continue                                # just de-risked; leave it alone this cycle
             try:
                 ob = public_get(f"/trade-api/v2/markets/{t}/orderbook").get("orderbook_fp") or {}
             except RuntimeError:
@@ -550,21 +607,85 @@ def run_once():
     return 0
 
 
+def _touch(ob):
+    """(best_yes_bid, best_yes_ask) from an orderbook_fp payload; None if absent.
+    yes_ask == 1 - best_no_bid."""
+    yl, _ = _levels(ob.get("yes_dollars") or [])
+    nl, _ = _levels(ob.get("no_dollars") or [])
+    yb = max((p for p, _ in yl), default=None)
+    nb = max((p for p, _ in nl), default=None)
+    return yb, (round(1.0 - nb, 4) if nb is not None else None)
+
+
+def flatten_to_zero(client, ticker, standing_oids=None, tries=3):
+    """LAST-RESORT taker de-risk of ONE ticker to flat — the sole taker path. Cancels our
+    resting orders on the ticker first (avoid a self-trade cross), then crosses the residual
+    with marketable IOC orders, re-reading the signed position each pass (fail CLOSED — never
+    cross on a blind/stale position). Returns (flat_bool, n_crossed)."""
+    for oid in (standing_oids or []):
+        try:
+            client.cancel_order(oid)
+        except Exception:
+            pass
+    crossed = 0
+    for _ in range(tries):
+        try:
+            pos = _held_cost(client)[1].get(ticker, 0.0)   # FRESH signed position
+        except Exception:
+            return False, crossed                          # blind -> stop (fail closed)
+        if abs(pos) < INV_TOLERANCE:
+            return True, crossed
+        try:
+            ob = public_get(f"/trade-api/v2/markets/{ticker}/orderbook").get("orderbook_fp") or {}
+        except Exception:
+            return False, crossed
+        yb, ya = _touch(ob)
+        cnt = int(round(abs(pos)))
+        if pos > 0:                                        # long yes -> SELL yes (ask @ bid)
+            price, side = yb, "ask"
+        else:                                              # long no -> BUY yes (bid @ ask)
+            price, side = ya, "bid"
+        if price is None or not (0.01 <= price <= 0.99) or cnt < 1:
+            return False, crossed
+        try:
+            client.create_order_v2(ticker, side, cnt, price,
+                                   time_in_force="immediate_or_cancel", post_only=False)
+            crossed += 1
+        except Exception:
+            pass                                           # IOC no-fill etc.; loop re-reads pos
+    try:
+        return abs(_held_cost(client)[1].get(ticker, 999)) < INV_TOLERANCE, crossed
+    except Exception:
+        return False, crossed
+
+
 def _flatten_all(client):
-    """Cancel EVERY resting order (best-effort, per-order isolated). Shared by the
-    STOP handler and the standalone kill switch — an emergency stop must de-risk."""
+    """FULL de-risk: cancel every resting order AND taker-flatten every held position.
+    Shared by the STOP handler and the standalone kill switch — an emergency stop must
+    remove market risk, not merely stop quoting (the old cancel-only version left inventory
+    fully exposed)."""
     try:
         orders = client.get_orders("resting").get("orders") or []
     except Exception as e:
         print(f"flatten: could NOT read resting orders ({e!r}) — run flatten_kalshi.py manually")
-        return
+        orders = []
+    oids_by_t = defaultdict(list)
     n = 0
     for o in orders:
+        oids_by_t[o.get("ticker")].append(o.get("order_id"))
         try:
             client.cancel_order(o["order_id"]); n += 1
         except Exception:
             pass
     print(f"flatten: cancelled {n}/{len(orders)} resting orders")
+    try:
+        held = {t: p for t, p in _held_cost(client)[1].items() if abs(p) >= INV_TOLERANCE}
+    except Exception as e:
+        print(f"flatten: could NOT read positions ({e!r}) — inventory MAY remain, check manually")
+        return
+    for t in list(held):
+        ok, c = flatten_to_zero(client, t, oids_by_t.get(t))
+        print(f"flatten: {t} taker-flattened -> {'FLAT' if ok else 'RESIDUAL (check manually)'} ({c} crosses)")
 
 
 def _held_cost(client):

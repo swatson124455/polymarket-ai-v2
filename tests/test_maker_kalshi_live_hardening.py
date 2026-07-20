@@ -24,6 +24,7 @@ class MockClient:
         self._get_positions_raises = get_positions_raises
         self.created = []
         self.cancelled = []
+        self.crosses = []
     def get_orders(self, status="resting"):
         if self._get_orders_raises:
             raise RuntimeError("read timeout")
@@ -45,6 +46,20 @@ class MockClient:
             raise RuntimeError("create rejected")
         self.created.append({"ticker": ticker, "side": side, "price": price, "count": count})
         return {"order": {"order_id": client_order_id}}
+    def create_order_v2(self, ticker, book_side, count, price_dollars,
+                        time_in_force="good_till_canceled", self_trade_prevention_type="taker_at_cross",
+                        post_only=True, client_order_id=None):
+        # simulate an IOC taker flatten reducing the position toward zero:
+        # 'ask' sells yes (reduces long-yes>0); 'bid' buys yes (reduces long-no<0).
+        self.crosses.append({"ticker": ticker, "side": book_side, "count": count, "post_only": post_only})
+        for p in self._positions:
+            if p["ticker"] == ticker:
+                cur = float(p["position_fp"])
+                if book_side == "ask" and cur > 0:
+                    p["position_fp"] = str(max(0.0, cur - count))
+                elif book_side == "bid" and cur < 0:
+                    p["position_fp"] = str(min(0.0, cur + count))
+        return {"order": {"order_id": client_order_id, "fill_count": str(count)}}
 
 
 def _order(oid, ticker, outcome, price, cnt):
@@ -106,6 +121,57 @@ def test_series_allowlist_filters_to_temp(monkeypatch):
     assert len(picked2) == 2
 
 
+# ---- taker de-risk backstop (flatten_to_zero, _flatten_all, de-risk pass) ----
+_BOOK = {"orderbook_fp": {"yes_dollars": [["0.60", "500"]], "no_dollars": [["0.38", "500"]]}}
+
+def test_flatten_to_zero_sells_long_yes(monkeypatch):
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "public_get", lambda p: _BOOK)
+    c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "20.00"}])
+    flat, n = q.flatten_to_zero(c, "T1", standing_oids=["o1"])
+    assert flat and n >= 1
+    assert "o1" in c.cancelled                          # cancels our resting first (self-trade guard)
+    assert all(x["side"] == "ask" and not x["post_only"] for x in c.crosses)  # sell yes, taker
+
+def test_flatten_to_zero_buys_long_no(monkeypatch):
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "public_get", lambda p: _BOOK)
+    c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "-15.00"}])
+    flat, n = q.flatten_to_zero(c, "T1")
+    assert flat and all(x["side"] == "bid" for x in c.crosses)   # buy yes to cover short
+
+def test_flatten_to_zero_fail_closed_on_blind_position():
+    c = MockClient(mode="live", get_positions_raises=True)
+    flat, n = q.flatten_to_zero(c, "T1")
+    assert not flat and n == 0 and not c.crosses         # never cross blind
+
+def test_flatten_all_flattens_held_not_just_cancels(monkeypatch):
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "public_get", lambda p: _BOOK)
+    c = MockClient(mode="live",
+                   resting=[_order("o1", "T1", "yes", 0.6, 10)],
+                   positions=[{"ticker": "T1", "position_fp": "20.00"}])
+    q._flatten_all(c)
+    assert "o1" in c.cancelled                           # cancelled resting
+    assert c.crosses                                     # AND taker-flattened the position
+    assert abs(float(c._positions[0]["position_fp"])) < 1.0
+
+def test_derisk_pass_fires_on_hard_breach(monkeypatch, tmp_path):
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "TAKER_FLATTEN", True)
+    # market fetch returns a far-off close (not near settle) so ONLY hard-breach triggers
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        if p.endswith("/orderbook"): return _BOOK
+        return {"market": {"close_time": "2099-01-01T00:00:00Z"}}
+    monkeypatch.setattr(q, "public_get", pg)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "150.00"}])  # > hard cap
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("taker_flattens", 0) >= 1
+    assert c.crosses and abs(float(c._positions[0]["position_fp"])) < 1.0
+
+
 # ---- inventory-aware delta-neutral shaping (the P0 redesign core) ----
 def _mkt(target=1000): return {"target": target, "end": "2099-01-01T00:00:00Z"}
 _YL = [["0.50", "9999"]]      # deep external book, both sides >> target -> JOIN branch
@@ -123,8 +189,9 @@ def test_long_yes_throttles_yes_keeps_no_at_ref(monkeypatch):
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
     qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)}
     assert qs["yes"]["price_dollars"] == 0.49          # 1 tick inside (0.50 - 0.01)
-    assert qs["no"]["price_dollars"] == 0.49           # reducing side unchanged at ref
-    assert qs["yes"]["count"] < qs["no"]["count"]      # accumulating side shrunk
+    assert qs["no"]["price_dollars"] == 0.49           # reducing side stays at ref (maker unwind)
+    assert qs["yes"]["count"] < qs["no"]["count"]      # accumulating shrunk, reducing grown
+    assert qs["no"]["count"] >= 50                     # reducing side grown toward |inv|=50 to flatten
 
 def test_long_yes_beyond_hard_pulls_yes_entirely(monkeypatch):
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
