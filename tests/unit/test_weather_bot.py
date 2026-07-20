@@ -151,6 +151,131 @@ class TestStationRegistry:
                 )
                 seen[alias] = key
 
+    # ── S233 registry-additions defect tests ──────────────────────────────
+    # Guard the 7 static rows added S233 (busan/cape_town/guangzhou/jeddah/
+    # manila/panama_city/qingdao) that replaced lowercase dynamic pseudo-stations.
+    # The prior wrong-station defect class (S231) shipped city-centroid coords
+    # against the wrong ICAO; these tests pin the exact (ICAO, airport coord,
+    # unit) so a future typo or coord-revert cannot silently mis-price a city.
+
+    # Verified S233 against live Polymarket market descriptions + live AWC METAR.
+    _S233_ADDITIONS = {
+        # key:          (ICAO,   lat,      lon,      hemisphere-sign checks via exact value)
+        "busan":        ("RKPK",  35.179,  128.938),
+        "cape_town":    ("FACT", -33.965,   18.602),
+        "guangzhou":    ("ZGGG",  23.392,  113.307),
+        "jeddah":       ("OEJN",  21.685,   39.166),
+        "manila":       ("RPLL",  14.507,  121.004),
+        "panama_city":  ("MPMG",   8.967,  -79.555),
+        "qingdao":      ("ZSQD",  36.362,  120.087),
+    }
+
+    def test_s233_additions_exact_station_and_coords(self):
+        """Each S233 city pins the exact ICAO + AIRPORT coordinates.
+
+        Range-only coordinate checks (test_station_has_valid_coordinates) would
+        pass a hemisphere flip (e.g. cape_town +33.965 instead of -33.965) or a
+        coord reverted to the city centroid. This asserts exact values.
+        """
+        for key, (icao, lat, lon) in self._S233_ADDITIONS.items():
+            assert key in STATION_REGISTRY, f"S233 city missing: {key}"
+            s = STATION_REGISTRY[key]
+            assert s.station_id == icao, f"{key}: station_id {s.station_id} != {icao}"
+            assert s.latitude == pytest.approx(lat, abs=1e-3), (
+                f"{key}: latitude {s.latitude} != {lat} (airport coord / hemisphere guard)"
+            )
+            assert s.longitude == pytest.approx(lon, abs=1e-3), (
+                f"{key}: longitude {s.longitude} != {lon} (airport coord guard)"
+            )
+
+    def test_s233_additions_use_celsius(self):
+        """All 7 S233 cities are non-US and resolve in Celsius (per market text).
+
+        test_all_us_stations_fahrenheit is tautological (both sides derive from
+        the same temp_unit=='F' predicate), so a wrong unit would pass there.
+        This asserts 'C' explicitly — the S229 'unit soup' bug is the reason.
+        """
+        for key in self._S233_ADDITIONS:
+            assert STATION_REGISTRY[key].temp_unit == "C", f"{key} should be Celsius"
+
+    def test_s233_additions_station_ids_are_icao_shape(self):
+        """New station_ids are 4-char uppercase ICAO and unique in the registry.
+
+        _get_station_reliability_factor keys calibration by station_id; a
+        duplicate/malformed id would silently share or mis-key a bucket.
+        """
+        all_ids = [s.station_id for s in STATION_REGISTRY.values()]
+        for key, (icao, _lat, _lon) in self._S233_ADDITIONS.items():
+            assert len(icao) == 4 and icao.isupper() and icao.isalnum(), (
+                f"{key}: {icao} is not a 4-char uppercase ICAO"
+            )
+            assert all_ids.count(icao) == 1, f"{key}: station_id {icao} not unique"
+
+    def test_s233_additions_resolve_from_market_city_text(self):
+        """lookup_station on the exact city string in each live market title
+        returns the new static station (not None, not the old centroid row)."""
+        cases = {
+            "Busan": "RKPK", "Cape Town": "FACT", "Guangzhou": "ZGGG",
+            "Jeddah": "OEJN", "Manila": "RPLL", "Panama City": "MPMG",
+            "Qingdao": "ZSQD",
+        }
+        for text, icao in cases.items():
+            s = lookup_station(text)
+            assert s is not None and s.station_id == icao, (
+                f"lookup_station({text!r}) -> {s.station_id if s else None}, want {icao}"
+            )
+        # full-question phrasing (matcher runs on the extracted substring)
+        s = lookup_station("highest temperature in Panama City on July 21")
+        assert s is not None and s.station_id == "MPMG"
+
+    def test_s233_static_shadows_dynamic_pseudo_station(self):
+        """A static row must WIN over a same-key dynamic pseudo-station.
+
+        These cities existed as lowercase dynamic auto-discovered rows (empty
+        ICAO, city-centroid coords). lookup_station tries static before dynamic,
+        but only if the static row's aliases actually match the market text — so
+        this catches a static row added WITHOUT the matching city alias (which
+        would fall through to the dynamic centroid row and re-introduce the
+        wrong-station defect the additions exist to fix).
+        """
+        from bots.weather.engine.base_engine.weather.station_registry import (
+            register_dynamic_station,
+            _DYNAMIC_REGISTRY,
+        )
+
+        snapshot = dict(_DYNAMIC_REGISTRY)
+        try:
+            # Re-create the pre-S233 dynamic pseudo-stations (centroid coords,
+            # lowercase station_id == key), as city_autodiscovery would.
+            register_dynamic_station(
+                "manila", "Manila", 14.6042, 120.9822,
+                "Asia/Manila", "C", ["manila"],
+            )
+            register_dynamic_station(
+                "panama_city", "Panama City", 8.9936, -79.51973,
+                "America/Panama", "C", ["panama_city"],
+            )
+            register_dynamic_station(
+                "cape_town", "Cape Town", -33.92584, 18.42322,
+                "Africa/Johannesburg", "C", ["cape_town"],
+            )
+            assert lookup_station("Manila").station_id == "RPLL"
+            assert lookup_station("Panama City").station_id == "MPMG"
+            assert lookup_station("Cape Town").station_id == "FACT"
+        finally:
+            _DYNAMIC_REGISTRY.clear()
+            _DYNAMIC_REGISTRY.update(snapshot)
+
+    def test_karachi_not_added_wrong_station_guard(self):
+        """Karachi must NOT be a static row: it resolves at OPMR (no METARs),
+        and adding OPKC would recreate the S231 wrong-station defect. Guard the
+        deliberate exclusion so a future well-meaning 'completeness' edit fails
+        the suite instead of shipping silently."""
+        if "karachi" in STATION_REGISTRY:
+            assert STATION_REGISTRY["karachi"].station_id != "OPKC", (
+                "Karachi resolves at OPMR (no METARs); OPKC is the S231 wrong-station trap"
+            )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Market Mapper

@@ -1416,6 +1416,102 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         aliases=("moscow",),
         resolution_source="Weather Underground / UUWW (Sheremetyevo)",
     ),
+
+    # ── S233: static rows replacing lowercase dynamic pseudo-stations ──────
+    # These 7 cities previously resolved via city-centroid auto-discovery rows
+    # (empty ICAO, geocoded centroid coords 5-42 km from the resolution airport
+    # — an active wrong-station defect of the same class as the S231 audit).
+    # Station IDs + AIRPORT coordinates verified against BOTH the live Polymarket
+    # market descriptions AND live AWC METAR (S233, 2026-07-20). temp_unit "C"
+    # per the market text ("...in degrees Celsius"). ghcnd_id="" (no GHCND lookup
+    # — matches the seoul/taipei/istanbul/milan precedent). Karachi is
+    # deliberately NOT added: it resolves at OPMR (Masroor), which publishes NO
+    # METARs — adding OPKC would recreate the S231 wrong-station defect
+    # (see docs/WB_NOWCAST_CAPTURE_SPEC.md "S232 REGISTRY-ADDITIONS EVIDENCE").
+    "busan": WeatherStation(
+        city_name="Busan",
+        station_id="RKPK",
+        ghcnd_id="",
+        latitude=35.179,
+        longitude=128.938,
+        elevation_m=3.0,
+        timezone="Asia/Seoul",
+        temp_unit="C",
+        aliases=("busan",),
+        resolution_source="Weather Underground / RKPK (Gimhae Intl — per Polymarket market description)",
+    ),
+    "cape_town": WeatherStation(
+        city_name="Cape Town",
+        station_id="FACT",
+        ghcnd_id="",
+        latitude=-33.965,
+        longitude=18.602,
+        elevation_m=48.0,
+        timezone="Africa/Johannesburg",
+        temp_unit="C",
+        aliases=("cape town",),
+        resolution_source="Weather Underground / FACT (Cape Town Intl — per Polymarket market description)",
+    ),
+    "guangzhou": WeatherStation(
+        city_name="Guangzhou",
+        station_id="ZGGG",
+        ghcnd_id="",
+        latitude=23.392,
+        longitude=113.307,
+        elevation_m=11.0,
+        timezone="Asia/Shanghai",
+        temp_unit="C",
+        aliases=("guangzhou",),
+        resolution_source="Weather Underground / ZGGG (Baiyun Intl — per Polymarket market description)",
+    ),
+    "jeddah": WeatherStation(
+        city_name="Jeddah",
+        station_id="OEJN",
+        ghcnd_id="",
+        latitude=21.685,
+        longitude=39.166,
+        elevation_m=8.0,
+        timezone="Asia/Riyadh",
+        temp_unit="C",
+        aliases=("jeddah",),
+        resolution_source="Weather Underground / OEJN (King Abdulaziz Intl — per Polymarket market description)",
+    ),
+    "manila": WeatherStation(
+        city_name="Manila",
+        station_id="RPLL",
+        ghcnd_id="",
+        latitude=14.507,
+        longitude=121.004,
+        elevation_m=15.0,
+        timezone="Asia/Manila",
+        temp_unit="C",
+        aliases=("manila",),
+        resolution_source="Weather Underground / RPLL (Ninoy Aquino Intl — per Polymarket market description)",
+    ),
+    "panama_city": WeatherStation(
+        city_name="Panama City",
+        station_id="MPMG",
+        ghcnd_id="",
+        latitude=8.967,
+        longitude=-79.555,
+        elevation_m=6.0,
+        timezone="America/Panama",
+        temp_unit="C",
+        aliases=("panama city",),
+        resolution_source="Weather Underground / MPMG (Marcos A. Gelabert Intl — NOT Tocumen MPTO — per Polymarket market description)",
+    ),
+    "qingdao": WeatherStation(
+        city_name="Qingdao",
+        station_id="ZSQD",
+        ghcnd_id="",
+        latitude=36.362,
+        longitude=120.087,
+        elevation_m=2.0,
+        timezone="Asia/Shanghai",
+        temp_unit="C",
+        aliases=("qingdao",),
+        resolution_source="Weather Underground / ZSQD (Jiaodong Intl — per Polymarket market description)",
+    ),
 }
 
 # Build alias → station lookup (pre-computed at import time)
