@@ -14,16 +14,17 @@ Stages (run in order, each idempotent):
   scoring   min-size post-only order far from touch -> get_open_orders sees
             it -> is_order_scoring says True -> cancel -> verify gone.
             (Order rests at a NEVER-CROSS price: fill risk ~0.)
-  fill      ONE tiny marketable FAK buy (~$1-2) -> get_trades shows the
-            maker/taker fill -> settlement tx hash recorded. This is the
-            #338 settlement-revert day-1 monitored metric: a revert here
-            is a hard stop.
   receipts  (run the NEXT day, after 00:00Z) get_earnings_for_user_for_day
             for yesterday vs the engine's model accrual (paper-twin alarm).
 
+NO TAKER STAGE. A maker never crosses the spread. Settlement is confirmed by
+the FIRST REAL MAKER FILL in the tiny-footprint live step (same on-chain
+settlement path), watched closely — not by a marketable order that pays the
+spread to force a fill. The removed 'fill' stage was the last taker code in
+the live path (cut 2026-07-20, operator directive: a maker never takes).
+
 Usage: MAKER_PK=... venv/bin/python maker_preflight.py --stage sanity
        ... --stage scoring [--token <token_id>]
-       ... --stage fill    [--token <token_id>] [--max-usd 2]
        ... --stage receipts [--model-accrual <engine acc_day $>]
 """
 import argparse
@@ -150,41 +151,6 @@ def stage_scoring(args):
     print("scoring stage complete — reward eligibility CONFIRMED for this account")
 
 
-def stage_fill(args):
-    print("STAGE fill (ONE tiny marketable FAK — the #338 settlement metric)")
-    from py_clob_client_v2.clob_types import OrderArgs, OrderType, TradeParams, \
-        PartialCreateOrderOptions
-    from py_clob_client_v2.order_builder.constants import BUY
-    c = client_or_die()
-    tok, qname = pick_token(args)
-    print("  market:", qname)
-    tick = float(c.get_tick_size(tok))
-    neg = bool(c.get_neg_risk(tok))
-    book = get(CLOB_HOST + "/book?token_id=" + tok)
-    ba = min((float(x["price"]) for x in book.get("asks") or []), default=None)
-    say("book", ba is not None, "best ask %.4f" % (ba or -1))
-    size = max(5.0, round(args.max_usd / ba, 2))
-    if size * ba > max(args.max_usd, 3.0) + 1.0:
-        say("size", False, "computed spend $%.2f exceeds --max-usd" % (size * ba))
-    signed = c.create_order(
-        OrderArgs(token_id=tok, price=ba, size=size, side=BUY),
-        PartialCreateOrderOptions(tick_size=str(tick), neg_risk=neg))
-    resp = c.post_order(signed, OrderType.FAK)
-    print("  submit resp:", str(resp)[:200])
-    time.sleep(5)
-    trades = c.get_trades(TradeParams(maker_address=c.get_address())) or []
-    mine = [t for t in trades if isinstance(t, dict)
-            and str(t.get("asset_id") or "") == tok][:3]
-    say("fill", bool(mine), "trades seen: %s" % str(mine)[:200])
-    tx = None
-    for t in mine:
-        tx = t.get("transaction_hash") or t.get("tx_hash") or tx
-        status = t.get("status")
-        print("  trade status=%s tx=%s" % (status, tx))
-    print("fill stage complete — RECORD THE TX HASH above; verify it did not "
-          "revert (Polygonscan). A revert = #338 class = hard stop + operator flag.")
-
-
 def stage_receipts(args):
     print("STAGE receipts (run AFTER the first 00:00Z following quoting)")
     c = client_or_die()
@@ -213,13 +179,12 @@ def stage_receipts(args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", required=True,
-                    choices=["sanity", "scoring", "fill", "receipts"])
+                    choices=["sanity", "scoring", "receipts"])
     ap.add_argument("--token", default=None)
-    ap.add_argument("--max-usd", type=float, default=2.0)
     ap.add_argument("--model-accrual", type=float, default=None)
     args = ap.parse_args()
     {"sanity": stage_sanity, "scoring": stage_scoring,
-     "fill": stage_fill, "receipts": stage_receipts}[args.stage](args)
+     "receipts": stage_receipts}[args.stage](args)
 
 
 if __name__ == "__main__":
