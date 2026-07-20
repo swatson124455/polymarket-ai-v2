@@ -38,6 +38,7 @@ from bots.weather.engine.base_engine.base_engine import BaseEngine
 from bots.weather.engine.base_engine.monitoring.alerting import AlertSeverity
 from bots.weather.engine.base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
 from bots.weather.engine.base_engine.weather.metar_client import MetarClient
+from bots.weather.engine.base_engine.weather.hko_client import HKOClient
 from bots.weather.engine.base_engine.weather.market_mapper import (
     PrecipitationMarketGroup,
     TemperatureBucket,
@@ -788,6 +789,10 @@ class WeatherBot(BaseBot):
         if getattr(settings, "ASOS_1MIN_ENABLED", False):
             from bots.weather.engine.base_engine.weather.asos_onemin_client import AsosOneMinClient
             self._metar_client.set_asos_client(AsosOneMinClient())
+        # S233: HKO client for cities whose resolution source is not a METAR
+        # station (Hong Kong resolves on the HKO urban HQ). Used only by stations
+        # with truth_provider="hko"; inert for every other city.
+        self._hko_client = HKOClient()
         self._prob_engine = WeatherProbabilityEngine()
         self._precip_engine = PrecipitationProbabilityEngine()
         self._market_mapper = WeatherMarketMapper()
@@ -3275,11 +3280,23 @@ class WeatherBot(BaseBot):
         groups are never renormalized (S224 — renorming one bucket can only
         emit a manufactured 1.0).
         """
-        running_max = await self._metar_client.get_running_daily_max(
-            group.station.station_id,
-            group.target_date,
-            group.station.temp_unit,
-        )
+        # S233: dispatch grounding by resolution source. HK resolves on the HKO
+        # urban HQ (no METAR), so its running max comes from HKOClient; every
+        # other city (truth_provider is None) keeps the identical MetarClient
+        # path. Both return (running_max: float|None) in the station's unit, so
+        # the downstream override math below is untouched.
+        if group.station.truth_provider == "hko":
+            running_max = await self._hko_client.get_running_daily_max(
+                group.target_date,
+                group.station.temp_unit,
+                cache=getattr(self.base_engine, "cache", None),
+            )
+        else:
+            running_max = await self._metar_client.get_running_daily_max(
+                group.station.station_id,
+                group.target_date,
+                group.station.temp_unit,
+            )
         if running_max is None:
             return model_probs
 
@@ -6275,6 +6292,17 @@ class WeatherBot(BaseBot):
         Parses the daily high from the "Max" row in the history table.
         Returns temperature in station's native unit (F or C), or None on failure.
         """
+        # S233: HK resolves on the HKO HQ, not the VHHH airport WU page — the WU
+        # scrape below would grab the WRONG station's daily high for HK. Use the
+        # HKO resolved daily max instead (stored running-max primary, CLMMAXT
+        # authoritative fallback). Every other city keeps the WU scrape unchanged.
+        if getattr(station, "truth_provider", None) == "hko":
+            return await self._hko_client.get_resolved_daily_max(
+                target_date,
+                station.temp_unit,
+                cache=getattr(self.base_engine, "cache", None),
+            )
+
         import re
 
         icao = station.station_id
@@ -7544,4 +7572,5 @@ class WeatherBot(BaseBot):
         """Clean up resources."""
         await self._forecast_client.close()
         await self._metar_client.close()
+        await self._hko_client.close()
         await super().stop()

@@ -114,46 +114,59 @@ class HKOClient:
         returns it. Interface + (value, unit) contract match
         MetarClient.get_running_daily_max so a dispatch can swap them 1:1.
 
-        cache: any object with async get(key)->value|None and
-               set(key, value, ttl) (e.g. the bot's RedisCache). If None, the
-               call degrades to the single current reading (no persistence) — a
-               mid-day restart would then lose the earlier peak, so production
-               MUST pass a cache.
-        Returns the max in the requested unit, or None if unavailable.
+        FAIL-CLOSED contract: the accumulation REQUIRES a working, persistent
+        cache. A single instantaneous rhrread reading is NOT a daily max, and
+        feeding one to the resolution-day override's aggressive branches would
+        manufacture a near-certain YES/NO on wrong information in the highest-
+        leverage window. So when a working cache is unavailable — `cache` is
+        None, its Redis handle is down (`cache.redis` falsy), or a Redis op
+        errors — this returns None (the caller then leaves probabilities
+        unchanged). This mirrors the codebase `cache and cache.redis` idiom
+        (base_engine.py) and the c1 fail-closed lesson (RedisCache swallows
+        errors to None, so a downed Redis is indistinguishable from a miss unless
+        we check the handle + pass raise_on_error).
+
+        cache: the bot's RedisCache — must expose async get/set with the shared
+               `raise_on_error` kwarg. `getattr(self.base_engine, "cache", None)`.
+        Returns the accumulated max in the requested unit, or None.
         """
-        current = await self.get_current_hq_temp()
-        if current is None:
-            # No fresh reading — surface whatever is already stored, if any.
-            if cache is not None:
-                stored = await self._read_stored_max(cache, target_date)
-                return _c_to_unit(stored, temp_unit)
+        if cache is None or not getattr(cache, "redis", None):
+            return None   # no working cache → cannot accumulate → fail CLOSED
+        key = self._runmax_key(target_date)
+        try:
+            raw = await cache.get(key, raise_on_error=True)
+            stored = float(raw) if raw is not None else None
+
+            candidate = None
+            current = await self.get_current_hq_temp()
+            if current is not None:
+                temp_c, record_time = current
+                if self._is_target_day(record_time, target_date):
+                    candidate = temp_c
+
+            new_max = max([v for v in (stored, candidate) if v is not None], default=None)
+            if new_max is not None and new_max != stored:
+                # 30h TTL always covers the resolution day (simpler than
+                # seconds-to-midnight) so a late reconciliation still sees it.
+                await cache.set(key, new_max, 30 * 3600, raise_on_error=True)
+            return _c_to_unit(new_max, temp_unit)
+        except (ValueError, TypeError):
+            return None   # corrupt stored value → treat as no data
+        except Exception as exc:
+            # Redis error mid-accumulation → the max cannot be trusted → fail CLOSED.
+            logger.warning("hko_runmax_failed_closed", error=str(exc))
             return None
-        temp_c, record_time = current
 
-        # Only fold the current reading in if it belongs to target_date (HK local).
-        same_day = True
-        if record_time:
-            try:
-                rt = datetime.fromisoformat(record_time).astimezone(_HK_TZ).date()
-                same_day = rt == target_date
-            except (ValueError, TypeError):
-                same_day = True   # unparseable time — do not silently drop the obs
-
-        if cache is None:
-            return _c_to_unit(temp_c if same_day else None, temp_unit)
-
-        stored = await self._read_stored_max(cache, target_date)
-        candidate = temp_c if same_day else None
-        new_max = max([v for v in (stored, candidate) if v is not None], default=None)
-        if new_max is not None and new_max != stored:
-            # TTL: to end of the HK day + 6h slack so a late reconciliation still
-            # sees it; a fixed 30h is simpler than computing seconds-to-midnight
-            # and always covers the resolution day.
-            try:
-                await cache.set(self._runmax_key(target_date), new_max, 30 * 3600)
-            except Exception as exc:
-                logger.debug("hko_runmax_store_failed", error=str(exc))
-        return _c_to_unit(new_max, temp_unit)
+    @staticmethod
+    def _is_target_day(record_time: Optional[str], target_date: date) -> bool:
+        """Whether an rhrread recordTime falls on target_date in HK local time.
+        Unparseable/missing time → True (do not silently drop the observation)."""
+        if not record_time:
+            return True
+        try:
+            return datetime.fromisoformat(record_time).astimezone(_HK_TZ).date() == target_date
+        except (ValueError, TypeError):
+            return True
 
     @staticmethod
     def _runmax_key(target_date: date) -> str:
@@ -197,6 +210,30 @@ class HKOClient:
             out.append((date(y, m, d), val))
         out.sort()
         return out
+
+    async def get_resolved_daily_max(
+        self,
+        target_date: date,
+        temp_unit: str = "C",
+        cache=None,
+    ) -> Optional[float]:
+        """RESOLVED daily max for a PAST target_date, for calibration backfill.
+
+        Primary source = the rhrread running-max we accumulated on that day
+        (stored in `cache` by get_running_daily_max) — available the next day.
+        Fallback = CLMMAXT authoritative daily-max (lags ~3 weeks, so it only
+        covers dates older than ~3 weeks). Returns None if neither has it.
+        Mirrors the (value, unit) contract of a WU/METAR daily-high fetch so the
+        calibration path can swap 1:1.
+        """
+        if cache is not None:
+            stored = await self._read_stored_max(cache, target_date)
+            if stored is not None:
+                return _c_to_unit(stored, temp_unit)
+        for d, val in await self.get_daily_max_history(target_date.year):
+            if d == target_date:
+                return _c_to_unit(val, temp_unit)
+        return None
 
     async def close(self) -> None:
         """Close the underlying HTTP session."""

@@ -34,6 +34,7 @@ class WeatherStation:
     resolution_source: str = ""
     has_asos_1min: bool = False  # True for US ASOS stations (K-prefix ICAO)
     local_model: Optional[str] = None  # Open-Meteo local hi-res model slug (e.g. "meteofrance_seamless")
+    truth_provider: Optional[str] = None  # non-METAR resolution source, e.g. "hko" (HK Observatory HQ). None = METAR/WU grounding (all other cities).
 
 
 # ── Registry ─────────────────────────────────────────────────────────────
@@ -1074,13 +1075,18 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         city_name="Hong Kong",
         station_id="VHHH",
         ghcnd_id="GHCND:HK000045005",
-        latitude=22.3089,
-        longitude=113.9150,
-        elevation_m=9.0,
+        # S233: coords are the HK OBSERVATORY HQ (Tsim Sha Tsui), NOT VHHH airport
+        # (22.3089,113.9150) — HK temp markets resolve on the HKO urban HQ, so the
+        # forecast must sample there too. Grounding is redirected to HKOClient by
+        # truth_provider="hko" (station_id stays VHHH as the stable calibration key).
+        latitude=22.3019,
+        longitude=114.1742,
+        elevation_m=32.0,
         timezone="Asia/Hong_Kong",
         temp_unit="C",
         aliases=("hong kong",),
-        resolution_source="Weather Underground / VHHH",
+        resolution_source="HK Observatory HQ (open data) — per Polymarket market description",
+        truth_provider="hko",
     ),
     "bangkok": WeatherStation(
         city_name="Bangkok",

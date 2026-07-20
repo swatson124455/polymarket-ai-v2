@@ -2314,6 +2314,78 @@ class TestMetarClientAPI:
         assert result is None
 
 
+class TestHkoDispatch:
+    """S233: grounding dispatch by station.truth_provider. HK (truth_provider
+    'hko') must route to HKOClient; EVERY other city (truth_provider None) must
+    keep the identical MetarClient / WU-scrape path. A wrong dispatch here would
+    break grounding for all 30+ cities, so these are the load-bearing tests."""
+
+    def _group_for(self, station_key: str, td: date = date(2026, 7, 21)):
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
+        station = STATION_REGISTRY[station_key]
+        buckets = [TemperatureBucket(
+            market_id="m1", bucket_type="range", low_bound=30.0, high_bound=32.0,
+            yes_price=0.3, token_id="t1", no_token_id="n1", temp_unit=station.temp_unit,
+        )]
+        return WeatherMarketGroup(
+            city=station.city_name, station=station, target_date=td, buckets=buckets,
+        )
+
+    @pytest.mark.asyncio
+    async def test_override_non_hko_routes_to_metar(self, weather_bot):
+        group = self._group_for("new_york_city")   # truth_provider None
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=None)
+        weather_bot._hko_client.get_running_daily_max = AsyncMock(return_value=None)
+        await weather_bot._apply_metar_resolution_day_override(group, {"m1": 0.3}, 1.0)
+        weather_bot._metar_client.get_running_daily_max.assert_awaited_once()
+        weather_bot._hko_client.get_running_daily_max.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_override_hko_routes_to_hko(self, weather_bot):
+        group = self._group_for("hong_kong")       # truth_provider "hko"
+        assert group.station.truth_provider == "hko"   # guard the row itself
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=None)
+        weather_bot._hko_client.get_running_daily_max = AsyncMock(return_value=None)
+        await weather_bot._apply_metar_resolution_day_override(group, {"m1": 0.3}, 1.0)
+        weather_bot._hko_client.get_running_daily_max.assert_awaited_once()
+        weather_bot._metar_client.get_running_daily_max.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_calibration_hko_routes_to_hko(self, weather_bot):
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
+        weather_bot._hko_client.get_resolved_daily_max = AsyncMock(return_value=31.5)
+        got = await weather_bot._fetch_wu_daily_high(STATION_REGISTRY["hong_kong"], date(2026, 7, 1))
+        assert got == 31.5
+        weather_bot._hko_client.get_resolved_daily_max.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_calibration_non_hko_never_calls_hko(self, weather_bot):
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
+        weather_bot._hko_client.get_resolved_daily_max = AsyncMock(return_value=99.0)
+        # Make the WU scrape fail fast so the method returns without a real fetch.
+        weather_bot._forecast_client.get_session = AsyncMock(side_effect=RuntimeError("no net"))
+        got = await weather_bot._fetch_wu_daily_high(STATION_REGISTRY["new_york_city"], date(2026, 7, 1))
+        assert got is None                                  # WU path handled the error
+        weather_bot._hko_client.get_resolved_daily_max.assert_not_awaited()
+
+    def test_hong_kong_row_grounds_on_hko_hq_not_airport(self):
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
+        hk = STATION_REGISTRY["hong_kong"]
+        assert hk.truth_provider == "hko"
+        # coords moved to the HKO HQ (Tsim Sha Tsui ~22.30,114.17), not VHHH
+        # airport (22.31,113.92) — the forecast must sample the resolution site.
+        assert hk.latitude == pytest.approx(22.3019, abs=1e-3)
+        assert hk.longitude == pytest.approx(114.1742, abs=1e-3)
+        assert hk.longitude > 114.0    # unambiguously east of the airport (113.92)
+
+    def test_all_other_cities_have_no_truth_provider(self):
+        # Regression guard: HK is the ONLY station with a truth_provider — a stray
+        # one elsewhere would silently reroute that city's grounding.
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
+        with_tp = [k for k, s in STATION_REGISTRY.items() if s.truth_provider is not None]
+        assert with_tp == ["hong_kong"], f"unexpected truth_provider stations: {with_tp}"
+
+
 class TestMetarResolutionDayOverride:
     """Tests for _apply_metar_resolution_day_override logic in WeatherBot."""
 

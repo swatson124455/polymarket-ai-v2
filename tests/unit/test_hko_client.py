@@ -43,14 +43,21 @@ class _FakeSession:
 
 
 class _FakeCache:
-    """Duck-typed RedisCache: async get/set backed by a dict."""
-    def __init__(self):
+    """Duck-typed RedisCache: async get/set backed by a dict, with a `.redis`
+    handle (truthy when up) and the shared `raise_on_error` kwarg."""
+    def __init__(self, redis_up=True, error=False):
         self.store = {}
+        self.redis = object() if redis_up else None   # falsy => Redis down
+        self._error = error
 
-    async def get(self, key):
+    async def get(self, key, raise_on_error=False):
+        if self._error and raise_on_error:
+            raise RuntimeError("redis down")
         return self.store.get(key)
 
-    async def set(self, key, value, ttl=None):
+    async def set(self, key, value, ttl=None, raise_on_error=False):
+        if self._error and raise_on_error:
+            raise RuntimeError("redis down")
         self.store[key] = value
 
 
@@ -133,10 +140,25 @@ class TestRunningDailyMax:
         assert await c.get_running_daily_max(self._TD, cache=cache) is None
         assert HKOClient._runmax_key(self._TD) not in cache.store   # nothing stored
 
-    async def test_no_cache_degrades_to_current(self):
+    async def test_no_cache_fails_closed(self):
+        # A single instantaneous reading is NOT a daily max — with no cache the
+        # override must be skipped (None), not fed a bogus value.
         c = HKOClient()
         c.get_current_hq_temp = AsyncMock(return_value=(29.0, "2026-07-21T05:00:00+08:00"))
-        assert await c.get_running_daily_max(self._TD, cache=None) == 29.0
+        assert await c.get_running_daily_max(self._TD, cache=None) is None
+
+    async def test_cache_down_fails_closed(self):
+        # RedisCache object present but its .redis handle is down → fail CLOSED.
+        c = HKOClient()
+        c.get_current_hq_temp = AsyncMock(return_value=(29.0, "2026-07-21T05:00:00+08:00"))
+        assert await c.get_running_daily_max(self._TD, cache=_FakeCache(redis_up=False)) is None
+
+    async def test_cache_error_fails_closed(self):
+        # A raised Redis error mid-accumulation → fail CLOSED (never return a
+        # bare reading as if it were the day max).
+        c = HKOClient()
+        c.get_current_hq_temp = AsyncMock(return_value=(29.0, "2026-07-21T05:00:00+08:00"))
+        assert await c.get_running_daily_max(self._TD, cache=_FakeCache(error=True)) is None
 
     async def test_no_reading_returns_stored(self):
         c = HKOClient()
