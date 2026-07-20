@@ -221,9 +221,9 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, stats=None)
     # reliably fills; a one-directional/wide book is the gas-ladder trap that adverse-selects
     # us and then won't let the passive exit fill. This is the primary defense of "flatten as
     # a maker". ACTIVATE (void) markets are intentionally thin -> exempt (handled elsewhere).
-    if not void and abs(inv) < INV_SOFT_CT:
-        spread_ticks = (1.0 - best_n - best_y) / TICK
-        sym = min(ext_y, ext_n) / max(ext_y, ext_n, 1e-9)
+    if not void and abs(inv) < INV_TOLERANCE:       # ONLY when truly FLAT (not just below SOFT):
+        spread_ticks = (1.0 - best_n - best_y) / TICK   # any inventory in [TOL,SOFT) must keep
+        sym = min(ext_y, ext_n) / max(ext_y, ext_n, 1e-9)   # quoting the reducing side to unwind
         if spread_ticks > MAX_SPREAD_TICKS or sym < MIN_DEPTH_SYM:
             return []                               # one-sided / wide -> unwind-unreliable, skip
     if JOIN_ALWAYS:
@@ -592,7 +592,8 @@ def run_once():
     cr = plan.get("creates", 0) or 0
     sysfail = (plan.get("quote_fail", 0) > max(3, 0.5 * fp) or
                (cr and plan.get("create_fail", 0) >= cr) or
-               (fp and plan.get("quoted_markets", 0) == 0 and not plan.get("fetch_failed")))
+               (fp and plan.get("quoted_markets", 0) == 0 and not plan.get("fetch_failed")
+                and not plan.get("taker_flattens")))     # de-risk-only cycle != failure
     status = "cycle ok" if not sysfail else "WARNING systematic failure"
     print(f"{status} mode={plan['mode']} footprint={plan.get('footprint','?')} "
           f"quoted={plan.get('quoted_markets','?')} ops={plan.get('order_ops','?')} "
@@ -617,46 +618,57 @@ def _touch(ob):
     return yb, (round(1.0 - nb, 4) if nb is not None else None)
 
 
-def flatten_to_zero(client, ticker, standing_oids=None, tries=3):
+def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
     """LAST-RESORT taker de-risk of ONE ticker to flat — the sole taker path. Cancels our
     resting orders on the ticker first (avoid a self-trade cross), then crosses the residual
-    with marketable IOC orders, re-reading the signed position each pass (fail CLOSED — never
-    cross on a blind/stale position). Returns (flat_bool, n_crossed)."""
+    with marketable IOC orders.
+
+    OVERSHOOT-SAFE: reads the starting signed position ONCE and HARD-CAPS cumulative crossing
+    at |pos0|, decrementing by the venue's CONFIRMED fill_count each pass (never by a possibly-
+    lagging positions re-read — an eventually-consistent read could otherwise re-cross full
+    size and flip a long into a short). The get_positions re-poll is a SECONDARY check only.
+    Returns (flat_bool, n_crossed)."""
     for oid in (standing_oids or []):
         try:
             client.cancel_order(oid)
         except Exception:
             pass
+    try:
+        pos0 = _held_cost(client)[1].get(ticker, 0.0)      # STARTING signed position, read ONCE
+    except Exception:
+        return False, 0                                    # blind -> stop (fail closed)
+    if abs(pos0) < INV_TOLERANCE:
+        return True, 0
+    long_yes = pos0 > 0
+    remaining = int(round(abs(pos0)))                      # hard cap on cumulative crossing
     crossed = 0
     for _ in range(tries):
-        try:
-            pos = _held_cost(client)[1].get(ticker, 0.0)   # FRESH signed position
-        except Exception:
-            return False, crossed                          # blind -> stop (fail closed)
-        if abs(pos) < INV_TOLERANCE:
-            return True, crossed
+        if remaining < max(1, int(INV_TOLERANCE)):
+            break
         try:
             ob = public_get(f"/trade-api/v2/markets/{ticker}/orderbook").get("orderbook_fp") or {}
         except Exception:
-            return False, crossed
+            break
         yb, ya = _touch(ob)
-        cnt = int(round(abs(pos)))
-        if pos > 0:                                        # long yes -> SELL yes (ask @ bid)
-            price, side = yb, "ask"
-        else:                                              # long no -> BUY yes (bid @ ask)
-            price, side = ya, "bid"
-        if price is None or not (0.01 <= price <= 0.99) or cnt < 1:
-            return False, crossed
+        price, side = (yb, "ask") if long_yes else (ya, "bid")   # long yes->sell yes; long no->buy yes
+        if price is None or not (0.01 <= price <= 0.99):
+            break
         try:
-            client.create_order_v2(ticker, side, cnt, price,
-                                   time_in_force="immediate_or_cancel", post_only=False)
+            resp = client.create_order_v2(ticker, side, remaining, price,
+                                          time_in_force="immediate_or_cancel", post_only=False)
+            o = resp.get("order") if isinstance(resp.get("order"), dict) else resp
+            fill = float((o or {}).get("fill_count") or 0)   # CONFIRMED fill (venue-authoritative)
+            remaining -= int(round(fill))
             crossed += 1
+            if fill <= 0:
+                break                                        # nothing at the touch; don't spin
         except Exception:
-            pass                                           # IOC no-fill etc.; loop re-reads pos
+            break
+    # SECONDARY consistency check (never the driver); fall back to our own confirmed count.
     try:
-        return abs(_held_cost(client)[1].get(ticker, 999)) < INV_TOLERANCE, crossed
+        return abs(_held_cost(client)[1].get(ticker, 0.0)) < INV_TOLERANCE, crossed
     except Exception:
-        return False, crossed
+        return remaining < max(1, int(INV_TOLERANCE)), crossed
 
 
 def _flatten_all(client):

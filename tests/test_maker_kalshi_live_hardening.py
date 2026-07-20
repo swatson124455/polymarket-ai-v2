@@ -32,6 +32,10 @@ class MockClient:
     def get_positions(self):
         if self._get_positions_raises:
             raise RuntimeError("positions read 500")
+        # frozen = simulate an eventually-consistent read that LAGS fills (returns the
+        # snapshot at construction, ignoring subsequent create_order_v2 reductions).
+        if getattr(self, "_frozen_positions", None) is not None:
+            return {"market_positions": list(self._frozen_positions)}
         return {"market_positions": list(self._positions)}
     def get_balance(self):
         return {"balance_dollars": "100.0000"}
@@ -52,7 +56,7 @@ class MockClient:
         # simulate an IOC taker flatten reducing the position toward zero:
         # 'ask' sells yes (reduces long-yes>0); 'bid' buys yes (reduces long-no<0).
         self.crosses.append({"ticker": ticker, "side": book_side, "count": count, "post_only": post_only})
-        for p in self._positions:
+        for p in self._positions:                        # _positions = the TRUE (post-fill) state
             if p["ticker"] == ticker:
                 cur = float(p["position_fp"])
                 if book_side == "ask" and cur > 0:
@@ -60,6 +64,8 @@ class MockClient:
                 elif book_side == "bid" and cur < 0:
                     p["position_fp"] = str(min(0.0, cur + count))
         return {"order": {"order_id": client_order_id, "fill_count": str(count)}}
+    def total_crossed(self):
+        return sum(x["count"] for x in self.crosses)
 
 
 def _order(oid, ticker, outcome, price, cnt):
@@ -139,6 +145,18 @@ def test_flatten_to_zero_buys_long_no(monkeypatch):
     c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "-15.00"}])
     flat, n = q.flatten_to_zero(c, "T1")
     assert flat and all(x["side"] == "bid" for x in c.crosses)   # buy yes to cover short
+
+def test_flatten_to_zero_no_overshoot_on_lagging_read(monkeypatch):
+    # THE review blocker: an eventually-consistent positions read that LAGS the fill must
+    # NOT cause re-crossing full size (which would flip long->short). The fix caps cumulative
+    # crossing at |pos0| via the venue's confirmed fill_count, not the stale re-read.
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "public_get", lambda p: _BOOK)
+    c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "20.00"}])
+    c._frozen_positions = [{"ticker": "T1", "position_fp": "20.00"}]   # read NEVER updates
+    flat, n = q.flatten_to_zero(c, "T1")
+    assert c.total_crossed() <= 20                       # never cross MORE than the initial position
+    assert float(c._positions[0]["position_fp"]) >= 0.0  # TRUE position never flipped to short
 
 def test_flatten_to_zero_fail_closed_on_blind_position():
     c = MockClient(mode="live", get_positions_raises=True)
