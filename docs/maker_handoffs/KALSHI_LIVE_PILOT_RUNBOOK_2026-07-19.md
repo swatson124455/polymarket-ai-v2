@@ -20,12 +20,25 @@ Every $/config number here is a recommended DEFAULT — the operator sets final 
 4. Decide final pilot capital (recommended: a few hundred $ total, not $5K cold).
 
 ## Phase 2 — Pre-live verification (session, on DEMO/prod micro — NO scale capital)
-1. **`post_only` cross-block probe (the one open pre-live residual).** Demo accepted `post_only`
-   but did not echo it in read-back. Before resting real farm quotes, place a deliberately
-   *crossing* order (post_only=True) and confirm it is **rejected, not filled** — either against
-   a live prod book at min-size, or a self-cross of two own orders on demo. This is a small,
-   focused, verdict-producing task → build it with a test + adversarial check (ship discipline).
-   Extends `scripts/verify_kalshi_demo.py` stage 4 (currently SKIP).
+1. **`post_only` cross-block probe — BUILT 2026-07-19, RUN STILL PENDING.**
+   `scripts/verify_kalshi_postonly.py` (+ 12 offline tests in
+   `tests/test_maker_kalshi_postonly.py`). Two-arm experiment:
+   **ARM A control** = a deeply non-marketable post_only order must REST (proves the plumbing
+   is testable; without it a rejection in ARM B proves nothing); **ARM B test** = a deliberately
+   crossing post_only order must be REJECTED and must NOT fill. Only "A rests AND B rejected,
+   no fill" is a PASS; a fill is FAIL-CRITICAL. Prefers crossing EXTERNAL liquidity (isolates
+   post_only); falls back to a self-cross, which tests post_only+STP jointly and is reported as
+   the weaker result.
+   ```
+   KALSHI_TRADING_MODE=demo KALSHI_API_KEY_ID=<id> KALSHI_RSA_PRIVATE_KEY_PATH=<pem> \
+     python scripts/verify_kalshi_postonly.py
+   ```
+   ⚠ **First run 2026-07-19 came back INCONCLUSIVE — the demo exchange was CLOSED**
+   (`GET /exchange/status` → `exchange_active:false, trading_active:false`; every write 503
+   `service_unavailable`). Confirmed external, not a probe defect: the previously-passing
+   `verify_kalshi_demo.py` failed at the identical point with the same 503. Reads were fine.
+   **RERUN when the demo exchange is open** (check `/exchange/status` FIRST — the probe is only
+   meaningful while `trading_active:true`). The residual stays OPEN until it returns PASS.
 2. Re-run `scripts/verify_kalshi_demo.py` against demo → expect 6 PASS / 0 FAIL (auth, discovery,
    two-sided lifecycle, cancel, maker_fees=0).
 3. Confirm current per-market tick sizes dynamically (`market['price_ranges']`) for the pilot
