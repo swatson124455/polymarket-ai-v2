@@ -5,8 +5,15 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-20 (S233 — verification/watch + Tier-3 registry
-additions + a shared signal fix, TWO deploys. **Now live: release
+**Last updated:** 2026-07-20 (S233 — big session under operator "permission on all
+go": verification/watch + Tier-3 registry additions + shared signal fix (TWO
+deploys) + national-feed mesh collector BUILT & STAGING + a cleanup. Beyond the
+two deploys below: **`nat_mesh.py` national-feed debias collector** (Item 2, commit
+`39435b7`) — 4 feeds/6 cities (DWD/JMA/SG/BOM) pinned+validated live, running a
+10-min STAGING cron on the VPS (zero live impact; go-live = operator-gated
+`NAT_MESH_LIVE=1` after ~1-day validation); spec §"S233 NATIONAL-FEED MESH
+COLLECTOR". Peakpass (Phase-2 signal 2) scoped but DEFERRED as premature (0 graded
+rows + dead gate). Orphaned `city_icao_mapping.yaml` deleted. **Now live: release
 `20260720_115735`** (deploy 2 = shared `_publish_signal` market_id guard,
 `754555a`, restart 15:58:06Z; deploy 1 = registry additions `20260720_113011`,
 restart 15:31:08Z; rollback chain 115735→113011→`20260719_195417`). The signal

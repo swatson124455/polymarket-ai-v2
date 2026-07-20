@@ -1306,3 +1306,62 @@ new ICAO keys (corrective; pooled-global fallback until fresh pairs accrue). The
 `_publish_signal` handling a `federal_register` signal (shared base_engine/signals
 code, data-dependent, non-fatal — bot stayed active). ZERO coupling to this
 registry change. Flagged for the signals owner; NOT fixed (out of WB scope).
+
+## S233 NATIONAL-FEED MESH COLLECTOR — BUILT + STAGING (Item 2, commit 39435b7)
+
+Queue item "wire the verified national feeds as debias anchors" (spec §REAL-TIME
+SOURCE LEDGER :643-679) executed. `scripts/wb_research/nat_mesh.py` — a research
+cron that ingests official national met-service obs as debias ANCHORS into the
+nowcast mesh, alongside the WU PWS mesh.
+
+**Feeds pinned + parser-validated LIVE from the VPS 2026-07-20** (a 5-agent
+parallel probe fan-out returned wire-ready adapter specs; DWD Munich + SMN were
+re-probed directly because concurrent SSH from 5 agents tripped VPS fail2ban):
+```
+feed  city        sid   station      live °F (16:5xZ)   season check
+dwd   Berlin      EDDB  00427        64.94             summer eve ✓
+dwd   Munich      EDDM  01262        72.14             summer eve ✓
+jma   Tokyo       RJTT  44166        83.30             summer night ✓
+sg    Singapore   WSSS  (nearest)    82.58             tropical ✓
+bom   Sydney      YSSY  94767        51.08             WINTER night ✓
+bom   Melbourne   YMML  94866        44.96             winter night ✓
+```
+All 6 fetchers proven end-to-end against live endpoints. SMN Argentina (Buenos
+Aires SAEZ) **DEFERRED** — ws.smn.gob.ar/map_items every station's `updated`
+field == 1658869200 (July 2022); no trustworthy obs timestamp = unsafe to epoch,
+and it is the lowest-value feed (hourly = no lead over the METAR print).
+
+**The C→F risk (the one HIGH-severity surface):** all national feeds report
+Celsius; the mesh schema is °F; a C-as-F row silently corrupts the debias table
+the flag-on nowcast reads. `c_to_f()` is a named, unit-tested function; the live
+°F above are the proof (Sydney 51°F sane; C-as-F would be an absurd 10.6°F).
+
+**Integration contract (verified by reading the consumers):** rows are
+BYTE-COMPATIBLE with pws_mesh.py — `{sid: registry ICAO, pws: "nat:<feed>:<sid>",
+km:0, epoch:int, obs_utc, temp_f:°F, qc:1, lat, lon, fetched_at, src:"nat"}`.
+`mesh_debias.load_mesh_window` filters `qc==1` + keys by `sid` (nat rows satisfy
+both), so it builds an offset row per nat source with ZERO code change. Local-hour
+gate 9-22, per-source epoch cursor, fail-soft per feed — all mirror pws_mesh.
+
+**STAGING BY DEFAULT — this is the safety design.** nat_mesh writes
+`~/wb_research/nat_mesh_YYYYMMDD.jsonl`, which NOTHING consumes → ZERO effect on
+the live signal. Deployed to the VPS `~/wb_research/` + a 10-min STAGING cron
+(`4-54/10 * * * *`, `NAT_MESH_LIVE` unset). A manual staging run wrote 2 correct
+Berlin/Munich rows; `grep -c nat: pws_mesh_*.jsonl` = 0 in BOTH the research and
+feed dirs (isolation verified). Tests: `tests/unit/test_nat_mesh.py` (17) — c_to_f
+incl −40 fixed point + 4 live values, row schema, each parser vs its captured raw
+sample, FEEDS sids ∈ registry, default=staging. Full suite 4037 green.
+
+**GO-LIVE = operator-gated `NAT_MESH_LIVE=1`** (in the cron env). That flip makes
+nat_mesh ALSO append rows into the `pws_mesh_*.jsonl` files mesh_debias (research)
+and nowcast_mesh (bot) read — i.e. it injects national-feed anchors into a
+FLAG-ON paper-trading data plane. VALIDATION BEFORE THE FLIP: after ~1 day of
+staging accrual, dry-run mesh_debias over a merged (pws+staged-nat) file and
+confirm each nat source gets a sane offset vs its METAR print + tight residual_sd
+(the drop rule is sd>1.5F). Only then flip. Rollback: unset NAT_MESH_LIVE (or
+remove the cron line).
+
+**Deliberately NOT wired:** HKO (belongs to Item 1 — wiring it here would debias
+it against the wrong VHHH resolution frame); busan/guangzhou/qingdao/jeddah/
+manila/cape_town get no redundancy from this cut (KMA needs an operator signup;
+China/Saudi/PH/SA have no verified real-time source — spec :671-673).

@@ -127,6 +127,13 @@ signal specifically being rare — NOT a broken pipeline. Do not "fix" it.
    lines + grader rows under `weather_nowcast_peak`; window-cap + overshoot
    behavior.
 5. Cold-start midpoint (~07-24): 7 corrected stations re-learning EMOS.
+7. **NEW — nat_mesh STAGING accrual:** the national-feed collector runs 10-min on
+   the VPS in STAGING (`~/wb_research/nat_mesh_YYYYMMDD.jsonl`, nothing consumes
+   it). Check `tail ~/wb_research/nat_mesh_err.log` (expect `feeds=6 new_obs=N
+   feed_fails=0 live=0` ticks) and that the staged file grows across cities' local
+   days (Europe midday = Asia/AU night and vice versa, so a single tick only
+   writes the in-window cities). After ~1 day, run the validation before the
+   operator-gated `NAT_MESH_LIVE=1` go-live (see QUEUE item 2).
 6. **NEW — the 7 S233 registry cities calibration cold-start:** busan/cape_town/
    guangzhou/jeddah/manila/panama_city/qingdao switched from lowercase dynamic
    keys to their ICAO keys on the 07-20 deploy, so their bias/EMOS history reset
@@ -156,19 +163,35 @@ merge + deploy, NOT done from WB. Tracked in memory
 this bug): whether federal_register macro signals should be market-MATCHED by
 category (like intl_elections) rather than dropped.
 
-## QUEUE (all need operator go where noted — NOT started in S233 per operator)
+## QUEUE (S233 executed several under operator "permission on all go")
 
-1. **Registry ADDITIONS (Tier-3, operator sign-off):** evidence complete in
-   spec §"S232 REGISTRY-ADDITIONS EVIDENCE" — add RKPK/FACT/ZGGG/OEJN/RPLL/
-   MPMG/ZSQD. **Karachi = OPMR has NO METARs** (WU-only class, like HK) — do
-   NOT add OPKC. Build station rows + defect tests → present for sign-off →
-   release cut.
-2. **HKO integration** for Hong Kong (truth = HK Observatory open data) — pairs
-   with the Karachi non-METAR class as one work package.
-3. Wire the 6 verified national feeds (DWD/JMA/SG/HKO/BOM/SMN-AR) as debias
-   anchors.
-4. Phase-2 second signal `weather_nowcast_peakpass` (design in spec; separate
-   build).
+1. **Registry ADDITIONS — DONE S233** (built + DEPLOYED, release `20260720_113011`).
+2. **National-feed debias anchors (Item 2) — BUILT + STAGING S233** (commit
+   `39435b7`, `scripts/wb_research/nat_mesh.py`). 4 feeds / 6 cities pinned +
+   validated live (DWD Berlin/Munich, JMA Tokyo, SG Singapore, BOM Sydney/
+   Melbourne; SMN Argentina deferred — stale timestamp). Running as a 10-min
+   STAGING cron on the VPS (`4-54/10`, `NAT_MESH_LIVE` unset → writes only
+   `~/wb_research/nat_mesh_*.jsonl`, nothing consumes it). Spec §"S233
+   NATIONAL-FEED MESH COLLECTOR". **← NEXT ACTION (operator-gated):** after ~1
+   day of staging accrual, VALIDATE (dry-run mesh_debias over merged pws+nat,
+   confirm each nat source gets a sane offset vs its METAR print + residual_sd
+   <1.5F), then flip **GO-LIVE**: `crontab -e` → add `NAT_MESH_LIVE=1` to the
+   nat_mesh line's env (or prepend `NAT_MESH_LIVE=1 ` to the command). That
+   injects national anchors into the FLAG-ON nowcast data plane. Rollback: unset
+   the var / remove the cron line.
+3. **HKO integration (Item 1)** for Hong Kong (truth = HK Observatory open data,
+   keyless/verified) — SCOPED S233 (large; Tier-3 live-traded-city grounding
+   change behind a `truth_provider=None`-default selector, S231-style defect
+   tests, both byte-identical registry copies, adversarial review, operator-gated
+   splinter deploy). Karachi stays deferred (no open OPMR/PMD source; OPKC = the
+   forbidden S231 trap). This is the next real BUILD.
+4. **Phase-2 second signal `weather_nowcast_peakpass` — DO NOT BUILD YET** (Item
+   3). Scoped S233: PREMATURE on two independent grounds — (a) signal 1
+   (`weather_nowcast_peak`) has fired 0 times so the shared data plane has zero
+   live-graded validation, and (b) peakpass's pre-registered gate (Study B, spec
+   :339-382) came back DEAD (~9.3% false-lock vs 1% bar) and the replacement
+   deep-inside-lock rule was never run. Next action is OFFLINE research (a
+   pre-registered peakpass backtest + the un-run lock rule), NOT bot code.
 5. Cleanups: stale `data/city_icao_mapping.yaml` DELETED S233 (orphaned generated
    artifact, 0 code refs). `has_asos_1min` dead flag DELIBERATELY LEFT — it is
    dead (0 `.has_asos_1min` reads) but is SET on ~90 station rows, so removing it
