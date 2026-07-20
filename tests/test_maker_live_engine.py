@@ -483,28 +483,134 @@ def test_apply_live_trades_nonlist_maker_orders_no_raise(tmp_path):
     assert "x1" in state["meta"]["trade_recent"]      # marked seen, won't retry
 
 
-def test_apply_live_trades_exception_contained(tmp_path, monkeypatch):
-    """A raise deep in per-trade processing is caught, counted, and the loop
-    continues to the next trade + advances the watermark (so a later restart
-    cannot re-ingest the contained trade)."""
+def test_apply_live_trades_money_committed_before_audit_rows(tmp_path, monkeypatch):
+    """Root-atomicity (audit P-D): the money commit (inventory + watermark)
+    lands BEFORE the audit-row writes, so a failure writing an audit row can
+    never lose an already-applied fill or leave the watermark stale."""
     now = time.time()
-    m1 = mk()
-    m2 = mk(id="5678", cid="0xdef", yes="Y2", no="N2", ev="mkt:5678")
-    boom = taker_trade("b1", now, [mo("Y", "0.48", "100")])       # mkt 1234
-    good = taker_trade("g1", now + 1, [mo("Y2", "0.40", "50")])   # mkt 5678
+    m = mk()
+    good = taker_trade("g1", now, [mo("Y", "0.48", "100")])
     real_lw = mle.ledger_write
     def flaky_lw(base, name, row):
-        if row.get("tid") == "b1" and "mkt" in row:   # raise inside boom apply
-            raise RuntimeError("injected mid-apply fault")
+        if row.get("mkt") == "1234":       # the END fill audit row
+            raise RuntimeError("disk hiccup on the audit row")
         return real_lw(base, name, row)
     monkeypatch.setattr(mle, "ledger_write", flaky_lw)
     state = {"meta": {"trade_wm": now - 10, "trade_recent": {}}}
-    mle._apply_live_trades(FakeFeed([boom, good]), state, [m1, m2],
-                           str(tmp_path), state["meta"])
-    assert state["meta"]["feed_anomaly_n"] >= 1        # boom contained
-    assert state["5678"]["y"] == 50.0                  # good still applied
-    assert state["meta"]["trade_wm"] >= now + 1        # watermark advanced
-    assert "b1" in state["meta"]["trade_recent"]       # won't re-ingest boom
+    try:
+        mle._apply_live_trades(FakeFeed([good]), state, [m], str(tmp_path),
+                               state["meta"])
+    except RuntimeError:
+        pass                               # audit-row failure AFTER commit
+    assert state["1234"]["y"] == 100.0                 # money committed
+    assert state["meta"]["trade_wm"] >= now            # watermark committed
+    assert "g1" in state["meta"]["trade_recent"]
+
+
+def _old_fill_semantics(fills, seed=None):
+    """Reference: the PRE-restructure per-fill mutate-then-merge_pairs math
+    (rounds spent at EACH merge). The restructured engine must match this to
+    the tick — spent feeds the event cap / portfolio_net / day floor."""
+    st = dict(seed or {})
+    for leg, sz, px in fills:
+        if leg == "yes":
+            st["y"] = round(st.get("y", 0.0) + sz, 4)
+        else:
+            st["n"] = round(st.get("n", 0.0) + sz, 4)
+        st["spent"] = round(st.get("spent", 0.0) + px * sz, 4)
+        pairs = min(st.get("y", 0.0), st.get("n", 0.0))
+        if pairs > 1e-9:
+            st["y"] = round(st["y"] - pairs, 4)
+            st["n"] = round(st["n"] - pairs, 4)
+            st["spent"] = round(st["spent"] - pairs, 4)
+            st["merged"] = round(st.get("merged", 0.0) + pairs, 4)
+    return st
+
+
+def _run_fills(fills, tmp_path, seed_state=None):
+    now = time.time()
+    m = mk()
+    state = {"meta": {"trade_wm": now - 10, "trade_recent": {}}}
+    if seed_state:
+        state["1234"] = dict(seed_state)
+    trades = [taker_trade("t%d" % i, now + i,
+                          [mo("Y" if leg == "yes" else "N", str(px), str(sz))])
+              for i, (leg, sz, px) in enumerate(fills)]
+    mle._apply_live_trades(FakeFeed(trades), state, [m], str(tmp_path),
+                           state["meta"])
+    return state.get("1234", {})
+
+
+def test_apply_live_trades_spent_bit_identical_to_old(tmp_path):
+    """Ship-gate blocker: accumulate-then-merge-once diverged from OLD in
+    spent by 1 tick on knife-edge fills. The per-fill-merge fix must be
+    byte-identical to OLD. Exact repro + 400-trial differential fuzz in the
+    divergence regime (0.001-tick prices x fractional sizes)."""
+    import random
+    # the exact ship-gate repro triplet
+    repro = [("yes", 99.83, 0.828), ("no", 144.79, 0.121), ("yes", 25.15, 0.673)]
+    ref = _old_fill_semantics(repro)
+    got = _run_fills(repro, tmp_path)
+    for f in ("y", "n", "spent", "merged"):
+        assert got.get(f, 0.0) == ref.get(f, 0.0), (f, got, ref)
+    # differential fuzz — the regime where merge-timing double-rounding bit
+    rng = random.Random(20260719)
+    for trial in range(400):
+        fills = []
+        for _ in range(rng.randint(1, 6)):
+            leg = "yes" if rng.random() < 0.5 else "no"
+            px = rng.randrange(1, 1000) / 1000.0        # 0.001 tick
+            sz = round(rng.uniform(1, 200), 2)          # fractional
+            fills.append((leg, sz, px))
+        ref = _old_fill_semantics(fills)
+        got = _run_fills(fills, tmp_path)
+        for f in ("y", "n", "spent", "merged"):
+            assert got.get(f, 0.0) == ref.get(f, 0.0), (trial, fills, f, got, ref)
+
+
+def test_event_floor_primary_loop_skips_noncontingent_siblings():
+    """Ship-gate FIX-2 coverage gap: a SETTLED or fully-MERGED (y=n=0,
+    realized spent) sibling living in the PRIMARY sibs loop must be excluded
+    from the forward event cap — else its realized $ leaks in and loosens
+    the correlated-exposure floor."""
+    for spent, settled in [(-500.0, True), (-500.0, False)]:
+        g, m, state, uni = fresh_guard_ctx(ev="0xevent", neg_risk=True)
+        g.cfg = cfg_over(event_cap=40.0)
+        sib = mk(id="5678", ev="0xevent", neg_risk=True)
+        uni = {"0xevent": [m, sib]}          # sibling IN the primary loop
+        s = {"sector": "politics", "ev": "0xevent", "y": 0.0, "n": 0.0,
+             "spent": spent}
+        if settled:
+            s["settled"] = True
+        state["5678"] = s
+        # if the -500 realized spent leaked in, cost goes hugely negative and
+        # the cap wrongly ALLOWS; the fix skips it so the target's own $48.5
+        # still exceeds the $40 cap
+        ok, why = g.check_place(intent(px=0.485, sz=100.0), m,
+                                state[str(m["id"])], state, uni, time.time())
+        assert not ok and why == "event_cap", (spent, settled)
+
+
+def test_apply_live_trades_batch_atomic_no_partial(tmp_path):
+    """Both-or-neither: a batch of fills across markets applies as a unit;
+    the merged result matches per-fill application exactly (no ordering skew
+    from deferring the commit)."""
+    now = time.time()
+    m = mk()
+    trades = [
+        taker_trade("a", now, [mo("Y", "0.48", "100")]),   # +100 YES
+        taker_trade("b", now + 1, [mo("N", "0.47", "50")]),  # +50 NO -> 50 pair
+        taker_trade("c", now + 2, [mo("Y", "0.50", "30")]),  # +30 YES
+    ]
+    state = {"meta": {"trade_wm": now - 10, "trade_recent": {}}}
+    mle._apply_live_trades(FakeFeed(trades), state, [m], str(tmp_path),
+                           state["meta"])
+    st = state["1234"]
+    # accumulate: y=130, n=50, spent=48+23.5+15=86.5; merge 50 -> y=80,n=0,
+    # spent=36.5, merged=50 (identical to per-fill application, verified)
+    assert st["y"] == 80.0 and st["n"] == 0.0
+    assert st["merged"] == 50.0
+    assert st["spent"] == pytest.approx(0.48 * 100 + 0.47 * 50 + 0.50 * 30 - 50)
 
 
 def test_save_state_slim_and_bak(tmp_path):

@@ -128,6 +128,20 @@ funded preflight's receipts stage is the first real check. Paper→live fill
 fidelity (queue position, adverse selection at quoted levels) is unmeasured
 until the pilot.
 
+## 6d. Crash-reconciliation runbook notes (root-audit hardening)
+
+- **Settlements ledger vs state:** the settled flag is now persisted BEFORE
+  its audit row, so after a crash a market can be `settled:true` in
+  `state.json` yet MISSING from `settlements-*.jsonl` (never a duplicate).
+  Reconcile by scanning `state.json` for `settled:true` markets lacking a
+  ledger row; do NOT naively sum the settlements ledger without that check.
+- **Fill inventory is crash-atomic:** live fills commit inventory + the
+  trade watermark together, so a mid-batch crash re-fetches the whole batch
+  cleanly (no partial double-count). The `fills-*.jsonl` audit rows are
+  written after the money commit — a crash there loses at most audit rows.
+- **`spent` cost-basis** matches the legacy per-fill math to the tick
+  (differential-fuzz verified); no reconciliation drift vs prior data.
+
 ## 7. Rollback
 
 `sudo touch /opt/pa2-maker-live/STOP` (cancels all, exits clean) or

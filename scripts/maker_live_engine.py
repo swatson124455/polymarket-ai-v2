@@ -655,8 +655,16 @@ class Guards:
                     else:
                         n2 += sibling["sz"]
                     cost += sibling["px"] * sibling["sz"]
-            if y2 or n2 or st2.get("spent"):
-                covered += 1
+            # CONTINGENT-only inclusion, same predicate as the departed loop
+            # below (root-audit P-B, Protocol-16: the settled-exclusion fix
+            # applied to ONE of the two accumulation sites; a fully-MERGED live
+            # sibling — merge_pairs zeroes y/n but leaves realized $ in spent —
+            # or a settled entry would else leak realized P&L into the forward
+            # contingent event cap here). The target always holds intent tokens
+            # so it is always contingent; its intent cost is added above.
+            if st2.get("settled") or not (y2 or n2):
+                continue
+            covered += 1
             poss.append(y2 - n2)
             sum_n += n2
             cost += st2.get("spent", 0.0)
@@ -884,8 +892,15 @@ class ExecCore:
             return []
         try:
             from py_clob_client_v2.clob_types import TradeParams
-            return self.client.get_trades(
-                TradeParams(maker_address=self.address)) or []
+            res = self.client.get_trades(
+                TradeParams(maker_address=self.address))
+            # None on EVERY non-list outcome, not just a raise: a truthy
+            # non-list (paginated envelope dict, error payload) would else
+            # pass `or []` -> the isinstance(list) loop iterates 0 times ->
+            # looks like "no fills" and RESETS feed_fail_n -> silent blind
+            # quoting, the exact hole the None-signal exists to close
+            # (root-audit P-A). [] stays [] (a genuine empty response).
+            return res if isinstance(res, list) else None
         except Exception:
             return None
 
@@ -1134,15 +1149,20 @@ def resolution_sweep(state, base, now):
         settled += 1
         meta["settle_realized_day"] = round(
             meta.get("settle_realized_day", 0.0) + (val - pre_mark), 4)
+        # DURABLE-GUARD-BEFORE-SIDE-EFFECT (root-audit P-C): persist the
+        # settled flag + netted spent FIRST, THEN write the audit row. The
+        # settled flag is the row's only dedup guard; writing the row first
+        # (per-settle save merely NARROWED the window) meant a crash in the
+        # gap replayed as a DUPLICATE row. With this ordering a crash in the
+        # gap loses at most a MISSING row (settled-in-state, absent-in-ledger
+        # — reconcilable), never a corrupting duplicate. State/floor/inventory
+        # are already crash-safe (idempotent recompute on replay).
+        _save_state(base, os.path.join(base, "state.json"), state)
         ledger_write(base, "settlements",
                      {"t": round(now), "mkt": k, "payout": round(val, 4),
                       "realized": round(val - pre_spent, 4),      # lifetime
                       "day_jump": round(val - pre_mark, 4),       # today only
                       "uma": uma[:20]})
-        # persist per-settle: a crash between two settles in one sweep would
-        # otherwise leave the settled flag unpersisted while its ledger row
-        # is on disk -> re-settle -> duplicate ledger row (review finding 3)
-        _save_state(base, os.path.join(base, "state.json"), state)
     meta["res_pending"] = len(cands) - settled
     if settled:
         print(f"resolution sweep: settled {settled}/{len(batch)} looked-up "
@@ -1978,14 +1998,23 @@ def _apply_live_trades(execc, state, universe, base, meta):
         tok2mkt[m["yes"]] = (str(m["id"]), "yes")
         tok2mkt[m["no"]] = (str(m["id"]), "no")
     max_ts = wm
+    # ROOT-ATOMICITY (root-audit P-D): fills are ACCUMULATED into `applied`
+    # during the loop and committed to `state` together with the watermark in
+    # a single pure-assignment block at the end. Per-fill mutation-then-late-
+    # watermark meant any mid-loop raise (+ atexit save) persisted inventory
+    # ahead of the watermark -> restart double-count. Now a raise ANYWHERE in
+    # the loop leaves `state` untouched (deltas are local) -> the whole batch
+    # re-fetches cleanly. All arithmetic runs on local copies BEFORE the
+    # commit, so the commit itself cannot raise = true both-or-neither.
+    applied = []          # (key, leg, sz, px) in feed order
+    fill_rows = []        # audit rows, written AFTER the money commit
     for tr in trades if isinstance(trades, list) else []:
         if not isinstance(tr, dict):
             continue
         tid = str(tr.get("id") or tr.get("trade_id") or "")
         ts = _trade_ts(tr)
         if not tid:
-            # id-less record: loud, never applied (2nd-pass NEW-7 — the
-            # silent drop contradicted the everything-loud contract)
+            # id-less record: loud, never applied (2nd-pass NEW-7)
             meta["feed_anomaly_n"] = meta.get("feed_anomaly_n", 0) + 1
             ledger_write(base, "fills", {"t": round(time.time()),
                                          "no_id": str(tr)[:250]})
@@ -1993,10 +2022,8 @@ def _apply_live_trades(execc, state, universe, base, meta):
         if tid in recent:
             continue
         if ts <= 0.0:
-            # ts-unparseable: QUARANTINE, never apply. Applying with a
-            # wall-clock recent-stamp let the id time-evict and the same
-            # historical record re-apply every LAP forever (2nd-pass
-            # NEW-1). Pin the id far-future so it never evicts.
+            # ts-unparseable: QUARANTINE, never apply; pin far-future so the
+            # same record can't TTL-evict and re-apply every LAP (2nd-pass NEW-1)
             recent[tid] = 4e12
             meta["feed_anomaly_n"] = meta.get("feed_anomaly_n", 0) + 1
             ledger_write(base, "fills", {"t": round(time.time()), "tid": tid,
@@ -2006,13 +2033,6 @@ def _apply_live_trades(execc, state, universe, base, meta):
             continue                        # decisively pre-watermark
         recent[tid] = ts
         max_ts = max(max_ts, ts)
-        # per-trade processing is wrapped so NO exception can escape mid-loop:
-        # if one did, atexit's _final_cleanup would persist state with
-        # inventory advanced for fills 1..k but the watermark/recent map
-        # (committed only after the loop) stale -> restart re-applies fills
-        # 1..k and double-counts y/n/spent (triple-blind UNCERTAIN finding).
-        # The tid is already in `recent`, so a contained failure LOSES this
-        # one malformed trade (loud) rather than crashing or double-counting.
         try:
             legs = []                       # (asset, side, px, sz, role)
             mos = tr.get("maker_orders")
@@ -2042,9 +2062,8 @@ def _apply_live_trades(execc, state, universe, base, meta):
                 try:
                     px, sz = float(px_raw), float(sz_raw)
                 except (TypeError, ValueError):
-                    # OUR-address leg we cannot apply = possible schema drift:
-                    # inventory silently stops tracking real money (2nd-pass
-                    # M2) — counted, heartbeat-surfaced, kill-thresholded
+                    # OUR-address leg we cannot apply = possible schema drift
+                    # (2nd-pass M2) — counted, heartbeat-surfaced, kill-thresholded
                     meta["unmatched_fills_n"] = meta.get("unmatched_fills_n", 0) + 1
                     ledger_write(base, "fills", {"t": round(time.time()),
                                                  "tid": tid, "unparsed":
@@ -2059,30 +2078,60 @@ def _apply_live_trades(execc, state, universe, base, meta):
                                   str((asset[:20], side, px_raw, sz_raw, role))[:200]})
                     continue
                 key, leg = hit
-                st = state.setdefault(key, {})
-                if st.get("settled"):
-                    # late-arriving fill after settlement: the new tokens are
-                    # unrealized again — clear the flag so the next sweep
-                    # re-settles idempotently (settlement-review finding 3)
-                    st["settled"] = False
-                if leg == "yes":
-                    st["y"] = round(st.get("y", 0.0) + sz, 4)
-                else:
-                    st["n"] = round(st.get("n", 0.0) + sz, 4)
-                st["spent"] = round(st.get("spent", 0.0) + px * sz, 4)
-                merge_pairs(st)
-                ledger_write(base, "fills", {"t": round(time.time()), "tid": tid,
-                                             "mkt": key, "leg": leg, "px": px,
-                                             "sz": sz, "role": role})
+                applied.append((key, leg, sz, px))
+                fill_rows.append({"t": round(time.time()), "tid": tid,
+                                  "mkt": key, "leg": leg, "px": px, "sz": sz,
+                                  "role": role})
         except Exception as e:
             meta["feed_anomaly_n"] = meta.get("feed_anomaly_n", 0) + 1
             ledger_write(base, "fills", {"t": round(time.time()), "tid": tid,
                                          "trade_exc": f"{type(e).__name__}: "
                                          f"{str(e)[:120]}"})
             continue
+    # ── compute the batch result on LOCAL copies (all arithmetic HERE) ──────
+    nv = {}
+    for key, leg, sz, px in applied:
+        d = nv.get(key)
+        if d is None:
+            cur = state.get(key) or {}
+            d = nv[key] = {"y": cur.get("y", 0.0), "n": cur.get("n", 0.0),
+                           "spent": cur.get("spent", 0.0),
+                           "merged": cur.get("merged", 0.0),
+                           "clr": bool(cur.get("settled"))}
+        if leg == "yes":
+            d["y"] = round(d["y"] + sz, 4)
+        else:
+            d["n"] = round(d["n"] + sz, 4)
+        d["spent"] = round(d["spent"] + px * sz, 4)
+        # merge PER-FILL on the local copy — byte-identical to OLD's
+        # merge_pairs-after-every-fill (round `spent` at EACH merge). Merging
+        # once after accumulation diverged from OLD by one tick in `spent`
+        # under IEEE-754 double-rounding on knife-edge fills (ship-gate fuzz:
+        # default 0.001-tick markets x fractional sizes, ~2% of batches).
+        # `spent` is the cost-basis input to the event cap / portfolio_net /
+        # day-loss floor, so it must match OLD to the tick. Atomicity is
+        # unaffected: still all-local, the COMMIT below is still pure-assign.
+        pairs = min(d["y"], d["n"])
+        if pairs > 1e-9:
+            d["y"] = round(d["y"] - pairs, 4)
+            d["n"] = round(d["n"] - pairs, 4)
+            d["spent"] = round(d["spent"] - pairs, 4)
+            d["merged"] = round(d["merged"] + pairs, 4)
+    new_recent = {i: t for i, t in recent.items() if t >= max_ts - TRADE_LAP_S}
+    # ── COMMIT: pure dict writes, no arithmetic -> cannot raise -> inventory
+    # and the watermark land in one indivisible step vs any atexit save ──────
+    for key, d in nv.items():
+        st = state.setdefault(key, {})
+        st["y"], st["n"], st["spent"], st["merged"] = \
+            d["y"], d["n"], d["spent"], d["merged"]
+        if d["clr"]:
+            st["settled"] = False           # late fill re-opens for re-settle
     meta["trade_wm"] = max_ts
-    meta["trade_recent"] = {i: t for i, t in recent.items()
-                            if t >= max_ts - TRADE_LAP_S}
+    meta["trade_recent"] = new_recent
+    # audit rows LAST: a failure here loses at most audit rows (money + wm
+    # already consistent), never a double-count
+    for row in fill_rows:
+        ledger_write(base, "fills", row)
 
 
 def recover_state(state_path):
