@@ -103,7 +103,10 @@
   "WB_S233_KICKOFF_PROMPT.md",
   "WB_S234_KICKOFF_PROMPT.md",
   "scripts/wb_research/nat_mesh.py",
-  "tests/unit/test_nat_mesh.py"
+  "tests/unit/test_nat_mesh.py",
+  "base_engine/weather/hko_client.py",
+  "bots/weather/engine/base_engine/weather/hko_client.py",
+  "tests/unit/test_hko_client.py"
  ],
  "fingerprints": [
   {

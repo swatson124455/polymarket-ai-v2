@@ -1365,3 +1365,42 @@ remove the cron line).
 it against the wrong VHHH resolution frame); busan/guangzhou/qingdao/jeddah/
 manila/cape_town get no redundancy from this cut (KMA needs an operator signup;
 China/Saudi/PH/SA have no verified real-time source — spec :671-673).
+
+## S233 HKO CLIENT — Item 1 FOUNDATION BUILT (commit b75b9a9, NOT wired)
+
+`base_engine/weather/hko_client.py` (+ byte-identical bots/ mirror) — the
+self-contained, tested, live-verified data client for Hong Kong's true
+resolution source. HK markets resolve on the HKO urban HQ station, not the VHHH
+airport METAR the bot grounds every other city on → HK is knowingly mis-grounded
+today. API pinned live 2026-07-20: rhrread `temperature.data[]` HQ reading
+(`place=="Hong Kong Observatory"`, hourly, °C) + CLMMAXT daily-max history (°C,
+lags ~3 weeks → reconciliation only).
+
+**Client interface (mirrors MetarClient for a 1:1 dispatch drop-in):**
+`get_current_hq_temp()`, `get_running_daily_max(target_date, temp_unit, cache)`
+(rhrread is current-hour-only, so the day max ACCUMULATES across polls via a
+duck-typed RedisCache; same-day-gated on the HK-local recordTime; 30h TTL;
+degrades to the current reading with no cache), `get_daily_max_history(year)`.
+Live-verified: current HQ 28.0C, cache accumulation, 181 CLMMAXT rows. 13 tests;
+suite 4051. **ZERO live-bot impact — nothing imports it yet.**
+
+**REMAINING Item 1 = the DEPLOY-GATED wiring (Tier-3, live-traded city):**
+1. Add `truth_provider: Optional[str] = None` to the frozen WeatherStation
+   dataclass (BOTH station_registry.py copies) — default None = byte-identical
+   for all 30+ existing stations.
+2. Instantiate HKOClient in the bot (beside MetarClient, ~weather_bot.py:787) and
+   pass the bot's RedisCache for running-max persistence.
+3. Dispatch the grounding call sites — `_apply_metar_resolution_day_override`
+   (weather_bot.py:3278) and the calibration backfill (`_maybe_update_calibration
+   _actuals`:6190 / `_fetch_wu_daily_high`:6268): when `station.truth_provider
+   =='hko'`, call HKOClient instead of MetarClient, preserving the identical
+   (running_max, unit) contract so the downstream override math is untouched.
+4. Fix the hong_kong registry row: `truth_provider='hko'` + coords -> HKO HQ
+   (~22.302,114.174) instead of VHHH airport (22.309,113.915) so Open-Meteo also
+   samples the resolution location; update resolution_source.
+5. S231-style defect tests (hko station routes to HKOClient; truth_provider=None
+   still routes to MetarClient = regression guard for all other cities), full
+   pytest, adversarial review of the dispatch (a wrong dispatch could break the
+   shared METAR override path used by EVERY city — the HIGH risk), operator-gated
+   splinter release cut. **Karachi stays deferred** (no open OPMR/PMD source;
+   OPKC = the forbidden S231 trap).

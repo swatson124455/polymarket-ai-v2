@@ -179,12 +179,17 @@ category (like intl_elections) rather than dropped.
    nat_mesh line's env (or prepend `NAT_MESH_LIVE=1 ` to the command). That
    injects national anchors into the FLAG-ON nowcast data plane. Rollback: unset
    the var / remove the cron line.
-3. **HKO integration (Item 1)** for Hong Kong (truth = HK Observatory open data,
-   keyless/verified) — SCOPED S233 (large; Tier-3 live-traded-city grounding
-   change behind a `truth_provider=None`-default selector, S231-style defect
-   tests, both byte-identical registry copies, adversarial review, operator-gated
-   splinter deploy). Karachi stays deferred (no open OPMR/PMD source; OPKC = the
-   forbidden S231 trap). This is the next real BUILD.
+3. **HKO integration (Item 1) — FOUNDATION BUILT S233, wiring is the next BUILD.**
+   `hko_client.py` (commit `b75b9a9`, both copies) is done + tested (13) +
+   live-verified + wired into NOTHING (zero live impact). **← NEXT:** the
+   DEPLOY-GATED Tier-3 wiring (spec §"S233 HKO CLIENT" step list): add
+   `truth_provider` to the WeatherStation dataclass (both copies), instantiate
+   HKOClient in the bot + pass RedisCache, dispatch the grounding sites
+   (weather_bot.py:3278/:6190/:6268) to HKOClient when `truth_provider=='hko'`,
+   fix the hong_kong row (truth_provider + HKO HQ coords vs VHHH), S231-style
+   defect tests, adversarial review (a wrong dispatch breaks EVERY city's METAR
+   grounding = the HIGH risk), operator-gated splinter deploy. Karachi deferred
+   (no open OPMR/PMD source; OPKC = the forbidden S231 trap).
 4. **Phase-2 second signal `weather_nowcast_peakpass` — DO NOT BUILD YET** (Item
    3). Scoped S233: PREMATURE on two independent grounds — (a) signal 1
    (`weather_nowcast_peak`) has fired 0 times so the shared data plane has zero
