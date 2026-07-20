@@ -28,6 +28,7 @@ Rules for future sessions:
 | 07-20 | Hierarchy model v1 adversarially reviewed → **UNSOUND** (silent tape loss; censoring; unfloored ranking; settle conflation); v1 full run KILLED mid-flight, output discarded | review earned its cost | reviewer agent, 3 criticals + 1 |
 | 07-20 | v2 rewritten (all criticals + moderates) → fix-verification: **SOUND-WITH-CAVEATS**; C1/C2/C3 CLOSED, C4/M10 partial (disclosure-grade) | reading rules: trust NETin/cap/d + fill/h; NETset indicative unless set%≈100; excluded>0 in a decision series ⇒ rerun | fix-verifier pass |
 | 07-20 | ALL-SECTOR hierarchy v2 full run (2,729 mkts, 0 fetch fails / 0 exclusions) | weather_temp #1 at 14.65 NET/cap/d, ~30x next sector; mentions NETset trap exposed | §C + SECTOR_HIERARCHY_2026-07-20.txt |
+| 07-20 | **post_only cross-block probe PASS** (demo reopened): control rested, crossing order REJECTED at HTTP 400 `post only cross` vs EXTERNAL liquidity; post-run verify 0 resting / balance flat $100.0000 | residual **CLOSED** (demo) | verify_kalshi_postonly.py run |
 
 ## B. CANONICAL NUMBERS (latest-good; supersede by appending, with date)
 
@@ -106,8 +107,8 @@ pilot-worthy at current pool sizes.**
 
 ## E. OPEN ITEMS
 
-- post_only cross-block probe: rerun when demo `/exchange/status` shows trading_active
-  (probe + 12 tests on branch, `1521a15`).
+- ~~post_only cross-block probe~~ **CLOSED 07-20**: PASS on demo vs EXTERNAL liquidity
+  (HTTP 400 `post only cross`). Day-1 live: sanity-confirm once on the prod book at min size.
 - Operator-only live wall: account + KYC + funding + prod keys + KALSHI_LIVE_ARMED.
 - Sep-1 LIP sunset: operator ruling = assume renewal; census = tripwire.
 - Maker-fee exception list: enumerate per-series at pilot build.
