@@ -101,6 +101,20 @@ def load_cohorts(roster: dict) -> list[tuple[str, list[str], float]]:
     if probe:
         groups.append(("probe", probe,
                        _parse_epoch("probe", probe_blob, strict=True)))
+    # BENCHED (2026-07-20): a trader pulled from a cohort into a TIME-OUT —
+    # never pooled into any cohort verdict, own line, own FRESH epoch (the
+    # bench start) so the line measures FORWARD re-evaluation only, not the
+    # dragged history that got them benched. The pre-registered verdict that
+    # INCLUDED them is already computed + locked in the durable log; benching
+    # changes forward grouping, never that record. Reversible: when the
+    # forward line clears the re-admission bar (operator-gated), the address
+    # moves benched -> a new cohort. Structurally identical to probe (own
+    # epoch, never pooled, counted in the ledger union) — mirror it exactly.
+    bench_blob = roster.get("benched") or {}
+    bench = [str(a).lower() for a in bench_blob.get("addresses", [])]
+    if bench:
+        groups.append(("benched", bench,
+                       _parse_epoch("benched", bench_blob, strict=True)))
     for name, addrs, _ in groups:
         # intra-group duplicate (adversarial review 2026-07-19, finding #1):
         # a dup passes the cross-group set() checks but inflates the label
@@ -119,9 +133,10 @@ def load_cohorts(roster: dict) -> list[tuple[str, list[str], float]]:
     clean = {str(a).lower() for a in roster.get("clean", [])}
     if clean != union:
         raise ValueError(f"roster clean ({len(clean)}) != the union of "
-                         f"cohort1_original + cohort<N> + probe ({len(union)}) "
-                         f"— a roster change was made without extending the "
-                         f"ledger; fix chain_audit.json before reading out")
+                         f"cohort1_original + cohort<N> + probe + benched "
+                         f"({len(union)}) — a roster change was made without "
+                         f"extending the ledger; fix chain_audit.json before "
+                         f"reading out")
     return groups
 
 
@@ -235,10 +250,17 @@ def concentration(res: dict) -> tuple[Optional[str], float]:
     return top, sum(by[top].values()) / tot
 
 
+_DIAG_POSTHOC = ("post-hoc cut — the pre-registered verdict is the cohort line "
+                 "only; this cut can never 'survive'")
+_DIAG_BENCH = ("benched trader in TIME-OUT — a forward re-evaluation, never a "
+               "cohort verdict; re-admission is operator-gated")
+
+
 def fmt_line(label: str, res: dict, min_markets: int,
-             diagnostic: bool = False) -> str:
-    """One readout line. `diagnostic=True` marks a POST-HOC cut (leave-one-out,
-    per-trader arm).
+             diagnostic: bool = False, diag_reason: str = _DIAG_POSTHOC) -> str:
+    """One readout line. `diagnostic=True` marks a line that must NEVER print
+    the pre-registered verdict vocabulary — a POST-HOC cut (leave-one-out,
+    per-trader arm) or a benched observation line. `diag_reason` names why.
 
     A post-hoc cut must NEVER print the pre-registered verdict vocabulary.
     `az.analyze` mints "SURVIVES (pre-registered bars met)" for ANY cut that
@@ -264,8 +286,7 @@ def fmt_line(label: str, res: dict, min_markets: int,
     if "shadow_edge" in res:
         s += (f" | resolved={res['resolved_mkts']}/{min_markets} "
               f"edge={res['shadow_edge']:+.4f} P(>0)={res['shadow_edge_p']:.3f}")
-        s += (" :: NO VERDICT (post-hoc cut — the pre-registered verdict is the "
-              "cohort line only; this cut can never 'survive')"
+        s += (f" :: NO VERDICT ({diag_reason})"
               if diagnostic else f" :: {res['edge_verdict']}")
     return s
 
@@ -301,10 +322,12 @@ async def run(args) -> int:
     tokens = sorted({str(r["token_id"]) for r in recs if r.get("token_id")})
     outcomes = await fresh_outcomes(tokens)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-    probe_n = next((len(a) for n, a, _ in cohorts if n == "probe"), 0)
-    counts = "+".join(str(len(a)) for n, a, _ in cohorts if n != "probe")
-    if probe_n:
-        counts += f"+{probe_n}probe"
+    OBS = ("probe", "benched")  # observation-only groups: never a cohort count
+    counts = "+".join(str(len(a)) for n, a, _ in cohorts if n not in OBS)
+    for obs in OBS:
+        obs_n = next((len(a) for n, a, _ in cohorts if n == obs), 0)
+        if obs_n:
+            counts += f"+{obs_n}{obs}"
     lines = [f"===== shadow readout {stamp}  (fresh DB labels: "
              f"{len(outcomes) // 2} resolved markets among {len(tokens)} shadow "
              f"tokens; cohorts from {os.path.basename(args.roster)}: "
@@ -313,8 +336,17 @@ async def run(args) -> int:
     for name, members, trust in cohorts:
         label = f"{name}({len(members)})"
         res = cohort_readout(recs, outcomes, trust, ",".join(members), args)
-        lines.append(fmt_line(label, res, args.min_markets))
-        all_alerts += alerts_for(label, res, args.min_markets)
+        # benched is an OBSERVATION line — a timed-out trader's FORWARD
+        # re-evaluation. It is never a cohort verdict, so it prints diagnostic
+        # (never "SURVIVES") and never fires a cohort POWERED/negative alert.
+        is_bench = (name == "benched")
+        if is_bench:
+            lines.append(fmt_line(f"{name}({len(members)}) TIME-OUT", res,
+                                  args.min_markets, diagnostic=True,
+                                  diag_reason=_DIAG_BENCH))
+        else:
+            lines.append(fmt_line(label, res, args.min_markets))
+            all_alerts += alerts_for(label, res, args.min_markets)
         # standing rule: when one trader dominates the sample, ALSO show the
         # cohort WITHOUT them — the pooled number alone is misleading
         top, share = concentration(res)
@@ -429,6 +461,38 @@ def _self_test() -> int:
             and g["cohort3"][1] > g["cohort2"][1])
     print(f"  [cohorts] cohort3 wave: ordered, own epoch, not pooled : {ok5c}")
     ok &= ok5c
+    # BENCHED group (2026-07-20): trader in time-out — own FRESH epoch, never
+    # pooled, disjoint, counted in the ledger union. Realistic bench-only shape:
+    # a cohort1 member (0xb) pulled out to benched, cohort1_original shrinks.
+    benched_ledger = {"clean": ["0xA", "0xB", "0xC", "0xE"],
+                      "cohort1_original": ["0xa"],  # 0xb removed -> benched
+                      "cohort2": {"addresses": ["0xC"],
+                                  "admitted_utc": "2026-07-15T19:16:00+00:00"},
+                      "probe": {"addresses": ["0xE"],
+                                "admitted_utc": "2026-07-16T17:00:00+00:00"},
+                      "benched": {"addresses": ["0xB"],
+                                  "admitted_utc": "2026-07-20T15:00:00+00:00"}}
+    order = [n for n, _, _ in load_cohorts(benched_ledger)]
+    g = as_map(benched_ledger)
+    ok5d = (order == ["cohort1", "cohort2", "probe", "benched"]
+            and g["benched"][0] == ["0xb"]
+            and g["benched"][1] > g["cohort2"][1]  # fresh epoch, after cohort2
+            and "0xb" not in g["cohort1"][0]        # not double-counted
+            and "0xb" not in g["cohort2"][0])
+    print(f"  [cohorts] benched: fresh epoch, disjoint, in union : {ok5d}")
+    ok &= ok5d
+    # benched line prints diagnostic (never SURVIVES) with its own reason.
+    # Fixture is a would-be-passing result: proves the pass verdict is refused.
+    _wonb = {"first_buys": 40, "ok_rate": 1.0, "tax_p50": 0.01, "lag_p50": 1.0,
+             "by_trader": {"0xb": {"OK": 40}}, "shadow_edge": 0.21,
+             "shadow_edge_p": 0.999, "resolved_mkts": 40,
+             "edge_verdict": "SURVIVES (pre-registered bars met)"}
+    bl = fmt_line("benched(1) TIME-OUT", _wonb, 30, diagnostic=True,
+                  diag_reason=_DIAG_BENCH)
+    ok5e = ("SURVIVES" not in bl and "TIME-OUT" in bl and "operator-gated" in bl
+            and "NO VERDICT" in bl)
+    print(f"  [cohorts] benched line: diagnostic, no verdict : {ok5e}")
+    ok &= ok5e
     for bad in ({"clean": ["0xA"], "cohort1_original": [], "cohort2": {}},
                 {"clean": ["0xA", "0xB", "0xC", "0xD"],  # admit w/o ledger
                  "cohort1_original": ["0xa", "0xb"],
@@ -461,7 +525,24 @@ def _self_test() -> int:
                  "cohort1_original": ["0xa", "0xb"],
                  "cohort2": {"addresses": ["0xC"],
                              "admitted_utc": "2026-07-15T19:16:00+00:00"},
-                 "probe": {"addresses": ["0xD"], "admitted_utc": "garbage"}}):
+                 "probe": {"addresses": ["0xD"], "admitted_utc": "garbage"}},
+                {"clean": ["0xA", "0xB", "0xC", "0xD"],  # BENCHED w/ BAD epoch
+                 "cohort1_original": ["0xa", "0xb"],
+                 "cohort2": {"addresses": ["0xC"],
+                             "admitted_utc": "2026-07-15T19:16:00+00:00"},
+                 "benched": {"addresses": ["0xD"], "admitted_utc": "garbage"}},
+                {"clean": ["0xA", "0xB", "0xC"],  # OVERLAP: benched addr also
+                 "cohort1_original": ["0xa", "0xb"],  # in cohort1 -> double count
+                 "cohort2": {"addresses": ["0xC"],
+                             "admitted_utc": "2026-07-15T19:16:00+00:00"},
+                 "benched": {"addresses": ["0xA"],
+                             "admitted_utc": "2026-07-20T15:00:00+00:00"}},
+                {"clean": ["0xA", "0xB", "0xC", "0xD"],  # benched NOT in clean
+                 "cohort1_original": ["0xa", "0xb"],     # -> clean != union
+                 "cohort2": {"addresses": ["0xC"],
+                             "admitted_utc": "2026-07-15T19:16:00+00:00"},
+                 "benched": {"addresses": ["0xZ"],
+                             "admitted_utc": "2026-07-20T15:00:00+00:00"}}):
         try:
             load_cohorts(bad)
             ok6 = False
