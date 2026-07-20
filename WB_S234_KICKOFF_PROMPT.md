@@ -169,7 +169,12 @@ category (like intl_elections) rather than dropped.
    anchors.
 4. Phase-2 second signal `weather_nowcast_peakpass` (design in spec; separate
    build).
-5. Cleanups: `has_asos_1min` dead flag; stale `data/city_icao_mapping.yaml`.
+5. Cleanups: stale `data/city_icao_mapping.yaml` DELETED S233 (orphaned generated
+   artifact, 0 code refs). `has_asos_1min` dead flag DELIBERATELY LEFT — it is
+   dead (0 `.has_asos_1min` reads) but is SET on ~90 station rows, so removing it
+   is a ~180-line churn across both shared registry copies for zero functional
+   gain (surgical discipline: not worth the blast radius). Leave it, or bundle
+   its removal into a future registry change that already touches every row.
 
 ## CROSS-BOT FLAGS TO RELAY (WB did NOT touch other bots — SCOPE + RULE ONE-A)
 
