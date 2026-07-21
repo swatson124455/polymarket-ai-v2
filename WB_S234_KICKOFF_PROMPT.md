@@ -1,9 +1,27 @@
-# WB S234 KICKOFF PROMPT (written at S233 close, 2026-07-20 ~00:4xZ)
+# WB S234 KICKOFF PROMPT (S233 work 2026-07-20; handoff finalized 07-21 ~20Z)
+
+> TIMING NOTE: S233 spanned ~a day of wall-clock. The 3 deploys landed 07-20
+> (15:31/15:58/19:01Z); this handoff was finalized 07-21 ~20:04Z. Consequences a
+> new session should exploit: **nat_mesh has ~1 day of STAGING accrual already**
+> (the validation-before-go-live is READY to run, QUEUE 2), and the **day-4
+> mesh-lead grade (`--lead 20260719`) is likely un-gated now** (IEM 1-min backfill
+> ~2-day lag → 07-19 covered by ~07-21; probe per-station coverage first, WATCH 2).
 
 Paste this into the next WB session. WB-scoped; standing rules bind (NEVER
 quote P&L; no cross-bot vendor/secret/nag bleed; one fix per commit; calibrator
-HANDS OFF until ~08-07; WB-ALWAYS-GLOBAL is a hard operator directive — no
+HANDS OFF until ~08-07 — EXCEPT the S233 HKO calibration change, operator-
+authorized as a defect fix; WB-ALWAYS-GLOBAL is a hard operator directive — no
 US-only filters, ever).
+
+**S233 in one line:** a big "permission on all go" arc — §0 verified clean; day-3
+mesh-lead PASS (3rd); THREE deploys (registry additions + busan jma_seamless;
+shared `_publish_signal` guard; HKO grounding for Hong Kong); nat_mesh
+national-feed collector BUILT + STAGING (go-live gated); peakpass DEFERRED
+(viability); yaml cleanup. Current release `20260720_150112`. Nothing is
+half-finished — every built thing is either deployed+verified or staged behind
+an operator flag. Two open operator decisions: nat_mesh `NAT_MESH_LIVE=1`
+go-live (QUEUE 2) and the top-level `_publish_signal` peer master deploy
+(SHARED SIGNAL FIX section).
 
 ## Tree / branch (READ FIRST — a real landmine hit S232 and still applies)
 
@@ -41,16 +59,20 @@ grounding for Hong Kong (restart 19:01:55Z). Rollback chain: 150112 → 115735 �
      MainPID --value polymarket-weather)/environ | tr '\0' '\n' | grep WEATHER_`):
      `WEATHER_NOWCAST_ENTRY_ENABLED=true`, `WEATHER_PRIORITY_WAKE_ENABLED=true`,
      `WEATHER_VARIANCE_INFLATION_FACTOR=1.8`.
-   - `crontab -l | grep -cE "wb_research|mesh_debias"` → **5** (NOTE: the S233
-     kickoff said "4 + mesh_debias"; the mesh_debias line lives under the
-     `~/wb_research/` path so it matches both greps. 5 total is CORRECT.)
+   - `crontab -l | grep -cE "wb_research|mesh_debias|nat_mesh"` → **6** (S233
+     ADDED the `nat_mesh.py` 10-min STAGING cron `4-54/10`. The 5 prior: nightly,
+     shadow_book, trade_prints, pws_mesh, mesh_debias. All 6 live under
+     `~/wb_research/`. 6 total is CORRECT for S234.)
    - `tail -3 ~/wb_research/pws_mesh_err.log` → 5-min ticks, `wu_fails` low,
      `cities=49`. `wc -l /opt/pa2-weather-feeds/pws_mesh_$(date -u +%Y%m%d).jsonl`
      growing (it is a 5-MIN cron — a flat recount inside 20s is NOT a stall).
+   - `tail -3 ~/wb_research/nat_mesh_err.log` → `feeds=6 new_obs=N feed_fails=0
+     live=0` ticks (STAGING — see WATCH item 7). `nat_mesh_$(date -u +%Y%m%d).jsonl`
+     grows across cities' local days.
    - `mesh_debias.json` in `/opt/pa2-weather-feeds/` fresh (cron 09:15Z daily).
-     ⚠ At S233 close it was written 07-19 13:25Z with the next fire due
-     07-20 09:15Z — **confirm it actually rotated on 07-20**; if the mtime is
-     still 07-19, the daily cron did NOT fire and that IS a real finding.
+     S233 CONFIRMED it rotated 07-20 09:18Z (`cities=31`); next fire 07-21 09:15Z.
+     If the mtime is older than the last 09:15Z, the daily cron did NOT fire = a
+     real finding.
    - calibration_check does NOT crash: `cd /opt/polymarket-ai-v2-weather &&
      set -a && . /opt/pa2-shared/.env; set +a; PYTHONPATH=$PWD
      venv/bin/python scripts/calibration_check.py WeatherBot --since
@@ -113,9 +135,11 @@ service is unaffected) and it is MB-owned shared infra — DO NOT touch it.
 
 **⚠ STILL 0 nowcast rows** — `weather_nowcast_peak` count in `prediction_log`
 = 0 all-time; 0 `weatherbot_nowcast_crossing`/`_shadow` journal lines. The bot
-IS alive and predicting (82 `prediction_log` rows in the first ~20 min after
-the 23:54:45Z restart, all `weather_temperature`), so this is the nowcast
-signal specifically being rare — NOT a broken pipeline. Do not "fix" it.
+IS alive and predicting normally (each restart resumes scanning ~49 cities and
+writing `weather_temperature` prediction_log rows within ~1-2 min), so this is
+the nowcast signal specifically being rare — NOT a broken pipeline. Do not
+"fix" it. NB: S233 restarted the service 3× (deploys at 15:31, 15:58, 19:01Z);
+current release `20260720_150112`.
 
 ## SCHEDULED / WATCH (consume as they land)
 
@@ -135,13 +159,6 @@ signal specifically being rare — NOT a broken pipeline. Do not "fix" it.
    lines + grader rows under `weather_nowcast_peak`; window-cap + overshoot
    behavior.
 5. Cold-start midpoint (~07-24): 7 corrected stations re-learning EMOS.
-7. **NEW — nat_mesh STAGING accrual:** the national-feed collector runs 10-min on
-   the VPS in STAGING (`~/wb_research/nat_mesh_YYYYMMDD.jsonl`, nothing consumes
-   it). Check `tail ~/wb_research/nat_mesh_err.log` (expect `feeds=6 new_obs=N
-   feed_fails=0 live=0` ticks) and that the staged file grows across cities' local
-   days (Europe midday = Asia/AU night and vice versa, so a single tick only
-   writes the in-window cities). After ~1 day, run the validation before the
-   operator-gated `NAT_MESH_LIVE=1` go-live (see QUEUE item 2).
 6. **NEW — the 7 S233 registry cities calibration cold-start:** busan/cape_town/
    guangzhou/jeddah/manila/panama_city/qingdao switched from lowercase dynamic
    keys to their ICAO keys on the 07-20 deploy, so their bias/EMOS history reset
@@ -151,6 +168,18 @@ signal specifically being rare — NOT a broken pipeline. Do not "fix" it.
    Verify the forecast now queries the airport: the running-venv import/lookup
    proved the stations resolve, but they only surface in journal `city=` lines
    when they generate a trade signal — absence of a per-city line ≠ not processed.
+7. **NEW — nat_mesh STAGING accrual:** the national-feed collector runs 10-min on
+   the VPS in STAGING (`~/wb_research/nat_mesh_YYYYMMDD.jsonl`, nothing consumes
+   it). Check `tail ~/wb_research/nat_mesh_err.log` (expect `feeds=6 new_obs=N
+   feed_fails=0 live=0` ticks) and that the staged file grows across cities' local
+   days (Europe midday = Asia/AU night and vice versa, so a single tick only
+   writes the in-window cities). After ~1 day, run the validation before the
+   operator-gated `NAT_MESH_LIVE=1` go-live (see QUEUE item 2).
+8. **NEW — HK's first HKO-grounded resolution-day override:** fires only when an
+   HK market is <6h to resolution (`weatherbot_metar_resolution_override
+   station=VHHH` with the HKO running max, or `hko_runmax_failed_closed` if Redis
+   hiccups). Also watch HK's calibration transition (VHHH-keyed rows mixing
+   old-airport + new-HKO grounding until aged out — self-correcting).
 
 ## SHARED SIGNAL FIX — `_publish_signal` market_id guard (FIXED + WB-DEPLOYED)
 
