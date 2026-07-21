@@ -1,0 +1,520 @@
+"""Tests for the LIVE-path capital-safety hardening (NO_GO must-fixes).
+Run: python -m pytest test_live_hardening.py -q  (from the probe dir)."""
+import importlib.util, os, sys, tempfile, json
+
+def _load(n):
+    s = importlib.util.spec_from_file_location(n, f"{n}.py")
+    m = importlib.util.module_from_spec(s); sys.modules[n] = m; s.loader.exec_module(m); return m
+
+q = _load("maker_kalshi_quoter")
+
+
+class MockClient:
+    def __init__(self, mode="live", resting=None, positions=None,
+                 cancel_fail_ids=(), create_raises=False, get_orders_raises=False,
+                 get_positions_raises=False):
+        self.mode = mode
+        self._resting = resting or []
+        self._positions = positions or []
+        self._cancel_fail = set(cancel_fail_ids)
+        self._create_raises = create_raises
+        self._get_orders_raises = get_orders_raises
+        self._get_positions_raises = get_positions_raises
+        self.created = []
+        self.cancelled = []
+        self.crosses = []
+    def get_orders(self, status="resting"):
+        if self._get_orders_raises:
+            raise RuntimeError("read timeout")
+        return {"orders": list(self._resting)}
+    def get_positions(self):
+        if self._get_positions_raises:
+            raise RuntimeError("positions read 500")
+        # frozen = simulate an eventually-consistent read that LAGS fills (returns the
+        # snapshot at construction, ignoring subsequent create_order_v2 reductions).
+        if getattr(self, "_frozen_positions", None) is not None:
+            return {"market_positions": list(self._frozen_positions)}
+        return {"market_positions": list(self._positions)}
+    def get_balance(self):
+        return {"balance_dollars": "100.0000"}
+    def cancel_order(self, oid):
+        if oid in self._cancel_fail:
+            raise RuntimeError("cancel 429")
+        self.cancelled.append(oid)
+        self._resting = [o for o in self._resting if o.get("order_id") != oid]
+        return {"ok": True}
+    def create_quote(self, ticker, side, price, count, post_only=True, client_order_id=None):
+        if self._create_raises:
+            raise RuntimeError("create rejected")
+        self.created.append({"ticker": ticker, "side": side, "price": price, "count": count})
+        return {"order": {"order_id": client_order_id}}
+    def create_order_v2(self, ticker, book_side, count, price_dollars,
+                        time_in_force="good_till_canceled", self_trade_prevention_type="taker_at_cross",
+                        post_only=True, client_order_id=None):
+        # simulate an IOC taker flatten reducing the position toward zero:
+        # 'ask' sells yes (reduces long-yes>0); 'bid' buys yes (reduces long-no<0).
+        self.crosses.append({"ticker": ticker, "side": book_side, "count": count, "post_only": post_only})
+        for p in self._positions:                        # _positions = the TRUE (post-fill) state
+            if p["ticker"] == ticker:
+                cur = float(p["position_fp"])
+                if book_side == "ask" and cur > 0:
+                    p["position_fp"] = str(max(0.0, cur - count))
+                elif book_side == "bid" and cur < 0:
+                    p["position_fp"] = str(min(0.0, cur + count))
+        return {"order": {"order_id": client_order_id, "fill_count": str(count)}}
+    def total_crossed(self):
+        return sum(x["count"] for x in self.crosses)
+
+
+def _order(oid, ticker, outcome, price, cnt):
+    return {"order_id": oid, "ticker": ticker, "outcome_side": outcome,
+            f"{outcome}_price_dollars": f"{price:.4f}", "remaining_count_fp": f"{cnt:.2f}"}
+
+
+def _run(monkeymod, client, tmpdir, footprint_env=None):
+    """Drive run_once with a mock client + a temp data dir. Returns the plan row."""
+    q.DATA_DIR = tmpdir; q.STOP_FILE = os.path.join(tmpdir, "STOP")
+    q.STATE_FILE = os.path.join(tmpdir, "quoter_state.json")
+    orig = q.KalshiOrderClient
+    q.KalshiOrderClient = lambda *a, **k: client
+    try:
+        q.run_once()
+    finally:
+        q.KalshiOrderClient = orig
+    rows = []
+    for p in os.listdir(tmpdir):
+        if p.startswith("plans-"):
+            for line in open(os.path.join(tmpdir, p)):
+                rows.append(json.loads(line))
+    return rows[-1] if rows else {}
+
+
+# ---- _live_standing: (dict,count) + crash-proof ----
+def test_live_standing_returns_dict_and_count():
+    c = MockClient(resting=[_order("a", "T1", "yes", 0.60, 10),
+                            _order("b", "T1", "no", 0.30, 5)])
+    st, n = q._live_standing(c)
+    assert n == 2
+    assert st["T1"] == [{"side": "yes", "price_dollars": 0.60, "count": 10, "order_id": "a"},
+                        {"side": "no", "price_dollars": 0.30, "count": 5, "order_id": "b"}]
+
+def test_live_standing_isolates_one_malformed_record():
+    good = _order("a", "T1", "yes", 0.60, 10)
+    bad = {"order_id": "b", "ticker": "T2", "outcome_side": "yes"}  # missing price
+    worse = {"order_id": "c"}                                        # missing everything
+    st, n = q._live_standing(MockClient(resting=[good, bad, worse]))
+    assert n == 3 and "T1" in st and "T2" not in st  # bad rows skipped, good survives
+
+
+# ---- series allowlist (pilot scoped to weather/temp) ----
+def test_series_allowlist_filters_to_temp(monkeypatch):
+    progs = [
+        {"market_ticker": "KXTEMPNYCH-26JUL2014-T81.99", "incentive_type": "liquidity",
+         "target_size_fp": 1000, "discount_factor_bps": 5000, "period_reward": 1000000,
+         "start_date": "2026-07-20T17:00:00Z", "end_date": "2099-01-01T00:00:00Z"},
+        {"market_ticker": "KXDXYDUD-26JUL20-T100", "incentive_type": "liquidity",
+         "target_size_fp": 1000, "discount_factor_bps": 5000, "period_reward": 9000000,
+         "start_date": "2026-07-20T17:00:00Z", "end_date": "2099-01-01T00:00:00Z"},
+    ]
+    monkeypatch.setattr(q, "SERIES_ALLOW", ["KXTEMPNYCH", "KXTEMPDCH"])
+    picked = q.select_footprint(progs, q.utcnow())
+    assert [m["ticker"] for m in picked] == ["KXTEMPNYCH-26JUL2014-T81.99"]  # DXY excluded
+    # empty allowlist = no filter (legacy behavior)
+    monkeypatch.setattr(q, "SERIES_ALLOW", [])
+    picked2 = q.select_footprint(progs, q.utcnow())
+    assert len(picked2) == 2
+
+
+# ---- taker de-risk backstop (flatten_to_zero, _flatten_all, de-risk pass) ----
+_BOOK = {"orderbook_fp": {"yes_dollars": [["0.60", "500"]], "no_dollars": [["0.38", "500"]]}}
+
+def test_flatten_to_zero_sells_long_yes(monkeypatch):
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "public_get", lambda p: _BOOK)
+    c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "20.00"}])
+    flat, n = q.flatten_to_zero(c, "T1", standing_oids=["o1"])
+    assert flat and n >= 1
+    assert "o1" in c.cancelled                          # cancels our resting first (self-trade guard)
+    assert all(x["side"] == "ask" and not x["post_only"] for x in c.crosses)  # sell yes, taker
+
+def test_flatten_to_zero_buys_long_no(monkeypatch):
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "public_get", lambda p: _BOOK)
+    c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "-15.00"}])
+    flat, n = q.flatten_to_zero(c, "T1")
+    assert flat and all(x["side"] == "bid" for x in c.crosses)   # buy yes to cover short
+
+def test_flatten_to_zero_no_overshoot_on_lagging_read(monkeypatch):
+    # THE review blocker: an eventually-consistent positions read that LAGS the fill must
+    # NOT cause re-crossing full size (which would flip long->short). The fix caps cumulative
+    # crossing at |pos0| via the venue's confirmed fill_count, not the stale re-read.
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "public_get", lambda p: _BOOK)
+    c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "20.00"}])
+    c._frozen_positions = [{"ticker": "T1", "position_fp": "20.00"}]   # read NEVER updates
+    flat, n = q.flatten_to_zero(c, "T1")
+    assert c.total_crossed() <= 20                       # never cross MORE than the initial position
+    assert float(c._positions[0]["position_fp"]) >= 0.0  # TRUE position never flipped to short
+
+def test_flatten_to_zero_fail_closed_on_blind_position():
+    c = MockClient(mode="live", get_positions_raises=True)
+    flat, n = q.flatten_to_zero(c, "T1")
+    assert not flat and n == 0 and not c.crosses         # never cross blind
+
+def test_flatten_all_maker_first_no_taker_below_threshold(monkeypatch):
+    # STOP is MAKER-FIRST: cancel quotes, rest a passive offset. With the residual below the
+    # taker threshold, escalation must NOT fire — no spread is crossed (no fire-sale).
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "STOP_ESCALATE_S", 0)         # no real sleep in tests
+    monkeypatch.setattr(q, "STOP_TAKER_MIN_CT", 25.0)    # pos 20 < 25 -> below materiality
+    monkeypatch.setattr(q, "public_get", lambda p: _BOOK)
+    c = MockClient(mode="live",
+                   resting=[_order("o1", "T1", "yes", 0.6, 10)],
+                   positions=[{"ticker": "T1", "position_fp": "20.00"}])   # long yes
+    q._flatten_all(c)
+    assert "o1" in c.cancelled                           # cancelled the resting quote
+    assert not c.crosses                                 # maker only — nothing crossed
+    offs = [o for o in c.created if o["ticker"] == "T1"]
+    assert len(offs) == 1 and offs[0]["side"] == "no"    # long yes -> maker NO offset rested
+    assert offs[0]["count"] <= 20                        # capped at |pos|, no overshoot
+
+def test_flatten_all_escalates_unfilled_material_residual(monkeypatch):
+    # AUDIT HIGH-1: pure-maker STOP leaves you hanging if offsets never fill. After the bounded
+    # wait, a STILL-material residual MUST be taker-crossed (sized to the residual only).
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "STOP_ESCALATE_S", 0)         # bounded wait, zeroed for tests
+    monkeypatch.setattr(q, "STOP_TAKER_MIN_CT", 5.0)     # pos 20 >= 5 -> material
+    monkeypatch.setattr(q, "TAKER_FLATTEN", True)
+    monkeypatch.setattr(q, "public_get", lambda p: _BOOK)
+    c = MockClient(mode="live", resting=[],
+                   positions=[{"ticker": "T1", "position_fp": "20.00"}])   # offset won't fill (mock)
+    q._flatten_all(c)
+    assert c.crosses                                     # escalated: residual taken
+    assert c.total_crossed() <= 20                       # sized to the residual, never more
+    assert abs(float(c._positions[0]["position_fp"])) < 1.0   # actually flat after escalation
+
+def test_derisk_pass_does_not_taker_on_hard_breach(monkeypatch, tmp_path):
+    # NEW MODEL: a hard inventory breach alone must NOT taker (that reflex was the fire-sale).
+    # Far-off close + big position -> the maker skew handles it, ZERO crosses.
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "TAKER_FLATTEN", True)
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        if p.endswith("/orderbook"): return _BOOK
+        return {"market": {"close_time": "2099-01-01T00:00:00Z"}}   # far off -> not near settle
+    monkeypatch.setattr(q, "public_get", pg)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "150.00"}])  # > hard cap
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("taker_flattens", 0) == 0             # hard breach no longer takes
+    assert not c.crosses
+
+def test_derisk_pass_takers_only_near_settlement(monkeypatch, tmp_path):
+    # The ONE genuine last resort: a material position on a market about to settle (can't
+    # maker-unwind what's about to close) DOES taker-flatten.
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0); monkeypatch.setattr(q, "TAKER_FLATTEN", True)
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        if p.endswith("/orderbook"): return _BOOK
+        return {"market": {"close_time": "2000-01-01T00:00:00Z"}}   # already at/past close -> settling
+    monkeypatch.setattr(q, "public_get", pg)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "20.00"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("taker_flattens", 0) >= 1             # near settlement = genuine last resort
+    assert c.crosses
+
+
+# ---- inventory-aware delta-neutral shaping (the P0 redesign core) ----
+def _mkt(target=1000): return {"target": target, "end": "2099-01-01T00:00:00Z"}
+_YL = [["0.50", "9999"]]      # deep external book, both sides >> target -> JOIN branch
+_NL = [["0.49", "9999"]]
+
+def test_flat_quotes_both_sides_at_reference(monkeypatch):
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    qs = q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=0.0)
+    sides = {x["side"]: x for x in qs}
+    assert sides["yes"]["price_dollars"] == 0.50 and sides["no"]["price_dollars"] == 0.49  # at ref
+
+def test_long_yes_throttles_yes_keeps_no_at_ref(monkeypatch):
+    # long yes above SOFT on THIS ticker -> YES (its own accumulating side) skewed 1 tick inside
+    # + shrunk; NO (reducing) grows at reference as the passive unwind. Direction is per-ticker,
+    # so this holds even with event_delta defaulting to 0.
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)}
+    assert qs["yes"]["price_dollars"] == 0.49          # 1 tick inside (0.50 - 0.01)
+    assert qs["yes"]["reason"] == "join"
+    assert qs["no"]["price_dollars"] == 0.49           # reducing side stays at ref (maker unwind)
+    assert qs["no"]["reason"] == "unwind"
+    assert qs["yes"]["count"] < qs["no"]["count"]      # accumulating shrunk, reducing grown
+    assert qs["no"]["count"] >= 50                     # reducing side grown toward |inv|=50 to flatten
+
+def test_long_yes_between_soft_and_hard_keeps_yes_live(monkeypatch):
+    # Below HARD a side is never pulled to zero (quotes are the paycheck): the accumulating YES
+    # shrinks toward the MIN_QUOTE floor + steps 1 tick inside, but stays LIVE.
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)}
+    assert "yes" in qs and qs["yes"]["count"] >= 2     # live at/above the floor
+    assert qs["yes"]["price_dollars"] == 0.49          # stepped 1 tick inside so it fills last
+    assert "no" in qs and qs["no"]["reason"] == "unwind"
+
+def test_long_yes_at_hard_pulls_accumulating_side(monkeypatch):
+    # AUDIT MED-3 (risk envelope): AT/ABOVE HARD the MIN_QUOTE floor would keep leaking fills on
+    # a one-way market, so the accumulating side IS pulled — HARD is the hard position envelope.
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=100.0)}
+    assert "yes" not in qs                             # envelope capped: leak stopped
+    assert "no" in qs and qs["no"]["reason"] == "unwind"   # de-risk side still resting
+
+def test_settlement_ramp_shrinks_join_not_unwind(monkeypatch):
+    # AUDIT HIGH-2: be SMALL at settlement. Inside RAMP_MIN join sizes scale down with time
+    # left; the unwind (reducing) quote is NOT ramped — de-risk capacity is preserved.
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "RAMP_MIN", 180); monkeypatch.setattr(q, "WIND_DOWN_MIN", 45)
+    monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
+    from datetime import timedelta as _td
+    m_near = {"target": 1000, "end": (q.utcnow() + _td(minutes=60)).isoformat()}  # inside ramp
+    m_far = {"target": 1000, "end": "2099-01-01T00:00:00Z"}                       # outside ramp
+    far = {x["side"]: x for x in q.desired_quotes(m_far, _YL, _NL, q.utcnow(), inv=0.0)}
+    near = {x["side"]: x for x in q.desired_quotes(m_near, _YL, _NL, q.utcnow(), inv=0.0)}
+    assert near["yes"]["count"] < far["yes"]["count"]      # ramped down vs far market
+    assert near["yes"]["count"] >= 2 and near["no"]["count"] >= 2   # both still LIVE
+    # unwind side not ramped: with a position, the reducing quote still sizes toward |inv|
+    nearu = {x["side"]: x for x in q.desired_quotes(m_near, _YL, _NL, q.utcnow(), inv=20.0)}
+    assert nearu["no"]["reason"] == "unwind" and nearu["no"]["count"] == 20
+
+def test_long_no_mirror(monkeypatch):
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=-50.0)}
+    assert qs["no"]["price_dollars"] == 0.48           # NO (this ticker's accumulating) -> 1 tick inside
+    assert qs["yes"]["price_dollars"] == 0.50          # YES reducing -> at ref
+    assert qs["yes"]["reason"] == "unwind" and qs["no"]["reason"] == "join"
+    assert qs["no"]["count"] < qs["yes"]["count"]
+
+def test_event_delta_throttles_when_ticker_below_soft(monkeypatch):
+    # THE ACCUMULATION FIX: this ticker is under SOFT (inv=20) so per-ticker alone would NOT
+    # throttle — but the EVENT aggregate is over SOFT, which must still throttle the accumulating
+    # side (correlated 'above X' strikes each small, additive to a large directional short/long).
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=20.0, event_delta=55.0)}
+    assert qs["yes"]["price_dollars"] == 0.49          # event pushed us over SOFT -> throttle YES
+    assert qs["no"]["reason"] == "unwind"              # our +20 still unwinds via NO
+    # flat ticker in a directional event: throttle the event-accumulating side, no unwind created
+    qs2 = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=0.0, event_delta=-55.0)}
+    assert qs2["no"]["price_dollars"] == 0.48          # event short -> throttle NO (accumulating)
+    assert all(x["reason"] != "unwind" for x in qs2.values())   # nothing to unwind (flat)
+
+def test_activate_market_rests_reducing_side_when_carrying_inventory(monkeypatch):
+    # thin book (both sides < target) -> ACTIVATE branch; carrying inventory -> DO NOT blanket-pull;
+    # rest ONLY the reducing side as a passive maker unwind (fix D).
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0)
+    thin_y = [["0.50", "10"]]; thin_n = [["0.49", "10"]]   # depth 10 << target 1000 -> void/activate
+    out = q.desired_quotes(_mkt(1000), thin_y, thin_n, q.utcnow(), inv=50.0)  # long yes
+    assert len(out) == 1 and out[0]["side"] == "no" and out[0]["reason"] == "unwind"
+    # event directional but flat inventory -> don't ADD via activate
+    assert q.desired_quotes(_mkt(1000), thin_y, thin_n, q.utcnow(), inv=0.0, event_delta=55.0) == []
+    # flat + neutral -> activates normally (if affordable)
+    monkeypatch.setattr(q, "MAX_ACTIVATE_CAPITAL", 100000.0)
+    assert q.desired_quotes(_mkt(1000), thin_y, thin_n, q.utcnow(), inv=0.0)  # non-empty
+
+
+# ---- crossed-book gate ----
+def test_desired_quotes_gates_crossed_book():
+    m = {"target": 1, "end": "2099-01-01T00:00:00Z"}
+    # best_y 0.60 + best_n 0.60 = 1.20 >= 1 -> crossed -> gated
+    assert q.desired_quotes(m, [["0.60", "9999"]], [["0.60", "9999"]], q.utcnow()) == []
+    # healthy book best_y 0.55 + best_n 0.40 = 0.95 < 1 -> quotes
+    assert q.desired_quotes(m, [["0.55", "9999"]], [["0.40", "9999"]], q.utcnow())
+
+
+# ---- committed pre-check + failed-cancel deferral (via run_once) ----
+def _cfg(monkeypatch, join=20, mktcap=15, totcap=40):
+    monkeypatch.setattr(q, "JOIN_SIZE", join)
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", float(mktcap))
+    monkeypatch.setattr(q, "MAX_TOTAL_CAPITAL", float(totcap))
+    monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [], "next_cursor": ""}
+                        if "incentive" in p else
+                        {"orderbook_fp": {"yes_dollars": [["0.50", "9999"]], "no_dollars": [["0.49", "9999"]]}})
+
+def test_committed_precheck_creates_when_room(monkeypatch, tmp_path):
+    _cfg(monkeypatch)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    c = MockClient(mode="live", resting=[], positions=[])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("mode") == "live"
+    assert len(c.created) == 2                        # both sides placed
+    assert 0 < row.get("committed_usd", 0) <= 40.0
+
+def test_held_cost_reads_prod_position_fp():
+    # PROD payload shape (verified 2026-07-20): position_fp string, no 'position' key
+    c = MockClient(mode="live", positions=[
+        {"ticker": "T1", "position_fp": "18.71"},
+        {"ticker": "T2", "position_fp": "-6.12"},
+        {"ticker": "T3", "position_fp": "0.00"},
+    ])
+    total, by = q._held_cost(c)
+    assert abs(total - 24.83) < 1e-9          # |18.71| + |-6.12|, $1/contract
+    assert by == {"T1": 18.71, "T2": -6.12}
+
+
+def test_committed_precheck_skips_over_cap(monkeypatch, tmp_path):
+    _cfg(monkeypatch, totcap=40)
+    # standing survivor that CANNOT be cancelled (cancel 429) worth ~$38 -> only ~$2
+    # of headroom left, so the fresh ~$20 desired book must be SKIPPED, not stacked.
+    survivor = _order("S", "TOLD", "yes", 0.95, 40)   # 0.95*40 = $38 committed, uncancellable
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    c = MockClient(mode="live", resting=[survivor], cancel_fail_ids=["S"])
+    row = _run(monkeypatch, c, str(tmp_path))
+    # T1 is a different ticker (not deferred by failed-cancel), but committed starts
+    # at ~$38 (survivor) so the ~$20 T1 book breaches $40 and is skipped.
+    assert row.get("create_skipped", 0) >= 1
+    assert row.get("committed_usd", 0) <= 40.0
+    assert len(c.created) == 0                         # nothing stacked on top of survivor
+
+def test_positions_read_failure_defers_all_creates(monkeypatch, tmp_path):
+    # FAIL CLOSED: if held inventory can't be read, committed is unknown -> defer
+    # every create rather than admit orders at held_cost=0 (the fix4 regression).
+    _cfg(monkeypatch)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    c = MockClient(mode="live", resting=[], positions=[], get_positions_raises=True)
+    row = _run(monkeypatch, c, str(tmp_path))
+    # new behavior: the signed-inventory read is AHEAD of the quote loop and fails CLOSED —
+    # the whole cycle halts (delta unknown => never shape/create blind), not just creates.
+    assert "positions_read_failed" in row
+    assert len(c.created) == 0 and len(c.cancelled) == 0
+
+def test_failed_cancel_defers_same_ticker(monkeypatch, tmp_path):
+    _cfg(monkeypatch, totcap=200)                     # cap not the binding constraint here
+    # standing on T1 (old price) that fails to cancel; desired re-quotes T1 (new price).
+    old = _order("O", "T1", "yes", 0.40, 5)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    c = MockClient(mode="live", resting=[old], cancel_fail_ids=["O"])
+    row = _run(monkeypatch, c, str(tmp_path))
+    # cancel of O fails -> T1 is a failed-cancel ticker -> its fresh creates deferred
+    assert row.get("cancel_fail", 0) == 1
+    assert row.get("create_skipped", 0) >= 1
+    assert all(cr["ticker"] != "T1" for cr in c.created)
+
+
+def test_reconcile_guard_halts(monkeypatch, tmp_path):
+    # get_orders returns rows but they are all unparseable -> raw>0 parsed==0 -> halt
+    bad = [{"order_id": "x", "ticker": "T", "outcome_side": "yes"}]  # missing price
+    c = MockClient(mode="live", resting=bad)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [], "next_cursor": ""})
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("reconcile_fail") == 1
+    assert not c.created and not c.cancelled            # halted: no order ops
+
+
+def test_standing_read_failure_skips_cycle(monkeypatch, tmp_path):
+    c = MockClient(mode="live", get_orders_raises=True)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [], "next_cursor": ""})
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert "standing_read_failed" in row
+    assert not c.created and not c.cancelled            # acted on nothing
+
+
+def test_stop_sentinel_flattens(monkeypatch, tmp_path):
+    c = MockClient(mode="live", resting=[_order("a", "T1", "yes", 0.6, 10),
+                                         _order("b", "T2", "no", 0.3, 5)])
+    d = str(tmp_path); open(os.path.join(d, "STOP"), "w").close()
+    q.DATA_DIR = d; q.STOP_FILE = os.path.join(d, "STOP"); q.STATE_FILE = os.path.join(d, "s.json")
+    orig = q.KalshiOrderClient; q.KalshiOrderClient = lambda *a, **k: c
+    try:
+        q.run_once()
+    finally:
+        q.KalshiOrderClient = orig
+    assert set(c.cancelled) == {"a", "b"}               # STOP cancelled everything
+
+
+# ---- per-event aggregate delta (fix B) ----
+def test_unwind_size_never_overshoots_inventory(monkeypatch):
+    # A1 REGRESSION: unwinding a SMALL position must not rest MORE than |inv| — resting a full
+    # capped-join floor (e.g. 80) to unwind +5 would, on full fill, flip +5 -> -75.
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 250.0)
+    assert q._unwind_size(80, 0.50, 5) == 5            # capped at |inv|, NOT floored at base=80
+    assert q._unwind_size(80, 0.50, 3.4) == 3          # fractional inv rounds, still <= |inv|
+    assert q._unwind_size(80, 0.50, 50) == 50          # normal case: rest exactly the position
+    assert q._unwind_size(80, 0.99, 200) <= int((250/2)/0.99) + 1   # bounded by per-side room
+    # end-to-end: a +5 long-yes ticker rests a NO unwind of exactly 5 (no overshoot)
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=5.0)}
+    assert qs["no"]["count"] == 5 and qs["no"]["reason"] == "unwind"
+
+def test_event_deltas_aggregates_correlated_strikes():
+    # SERIES-EVENT-STRIKE: the first two dash-fields identify the event; strikes aggregate.
+    held = {"KXTEMPNYCH-26JUL2014-T81": 12.0, "KXTEMPNYCH-26JUL2014-T83": 18.0,
+            "KXTEMPNYCH-26JUL2014-T85": 20.0, "KXAAAGASD-26JUL20-T3": -40.0}
+    ed = q.event_deltas(held)
+    assert ed["KXTEMPNYCH-26JUL2014"] == 50.0            # 12+18+20 aggregate (each under SOFT)
+    assert ed["KXAAAGASD-26JUL20"] == -40.0
+    assert q._event_key("KXTEMPNYCH-26JUL2014-T81") == "KXTEMPNYCH-26JUL2014"
+
+
+# ---- polarity-aware capital gates (fix A) ----
+def test_cap_desired_keeps_unwind_market_over_cap(monkeypatch):
+    monkeypatch.setattr(q, "MAX_TOTAL_CAPITAL", 10.0)
+    desired = {
+        "ACC": [{"side": "yes", "price_dollars": 0.5, "count": 40, "reason": "join"}],   # $20 accum
+        "RED": [{"side": "no", "price_dollars": 0.5, "count": 40, "reason": "unwind"}],   # $20 reduce
+    }
+    kept, dropped = q.cap_desired(desired, {"ACC": 100.0, "RED": 1.0})
+    assert "RED" in kept                                 # reducing kept despite breaching cap
+    assert "ACC" not in kept and dropped == 1            # accumulating tail cut
+
+def test_bound_creates_prioritizes_unwind(monkeypatch):
+    monkeypatch.setattr(q, "WRITE_BUDGET_PER_CYCLE", 1)
+    creates = [{"ticker": "ACC", "side": "yes", "price_dollars": 0.5, "count": 1, "reason": "join"},
+               {"ticker": "RED", "side": "no", "price_dollars": 0.5, "count": 1, "reason": "unwind"}]
+    kept, dropped = q.bound_creates(creates, [], {"ACC": 100.0, "RED": 1.0})
+    assert [c["ticker"] for c in kept] == ["RED"]        # unwind kept, higher-usd_day accum dropped
+    assert dropped == 1
+
+def test_unwind_create_exempt_from_committed_cap(monkeypatch, tmp_path):
+    # THE STUCK-BOT FIX: held inventory ALONE exceeds MAX_TOTAL_CAPITAL. The accumulating
+    # (join) side is correctly gated, but the REDUCING (unwind) side must STILL be placed —
+    # otherwise the bot can never flatten (cap blocks the only de-risking order).
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=10)     # cap $10, held will be ~$50
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    c = MockClient(mode="live", resting=[], positions=[{"ticker": "T1", "position_fp": "50"}])  # long yes
+    row = _run(monkeypatch, c, str(tmp_path))
+    reds = [o for o in c.created if o["side"] == "no"]
+    accs = [o for o in c.created if o["side"] == "yes"]
+    assert len(reds) == 1                                 # reducing NO placed despite committed>cap
+    assert len(accs) == 0                                 # accumulating YES gated by the cap
+    assert row.get("create_skipped", 0) >= 1
+
+def test_read_blackout_cancels_last_known_quotes(monkeypatch, tmp_path):
+    # AUDIT MED-4: fail-closed alone leaves resting quotes LIVE and fillable while the bot is
+    # blind. After BLACKOUT_CANCEL_AFTER consecutive failed read cycles, the last-known order
+    # ids (persisted from the last good read) are best-effort cancelled.
+    monkeypatch.setattr(q, "BLACKOUT_CANCEL_AFTER", 2)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [], "next_cursor": ""})
+    # seed state: one prior blind cycle + last-known oids from the last good cycle
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
+        json.dump({"read_fail_streak": 1, "last_oids": ["a", "b"]}, f)
+    c = MockClient(mode="live", get_orders_raises=True)   # reads fail again this cycle
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert "standing_read_failed" in row
+    assert row.get("read_fail_streak") == 2
+    assert set(c.cancelled) == {"a", "b"}                # blind quotes cancelled best-effort
+
+def test_strand_inventory_gets_maker_unwind(monkeypatch, tmp_path):
+    # fix E: inventory on a ticker NOT in this cycle's footprint (dropped from selection) must
+    # still get a passive maker unwind — not sit unmanaged until the taker backstop fires.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])   # empty footprint
+    c = MockClient(mode="live", resting=[], positions=[{"ticker": "STRAND", "position_fp": "40"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    unwinds = [o for o in c.created if o["ticker"] == "STRAND" and o["side"] == "no"]
+    assert len(unwinds) == 1                              # long-yes strand -> reducing NO bid rested
