@@ -18,6 +18,32 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> **2026-07-21 20:07Z — BATCH-BOUNDARY LEDGER MUTATION EXECUTED (operator-
+> authorized "fold into and proceed" + "proceed"). ROSTER DELTA (protocol-
+> logged):** run-4 finished CLEAN 07-20 23:52Z ([28/28], 6 ADMIT / 9 REJECT /
+> 13 INSUFFICIENT; final ADMIT set ≡ the queued 6, JSON-verified). ONE ledger
+> edit + readout-clone refresh (`21ad7ba`) + ONE fenced watcher restart:
+> **(a) COHORT-3 PROMOTED** — 6 ADMITs (0xf705fa04 graduates from probe,
+> 0x7c3db723, 0xe542afd3, 0x216509be, 0x2ee04b8b, 0xa6a856a8), own epoch
+> 2026-07-21T20:05:30Z, probe emptied; **(b) BUM BENCHED** — 0x44886115 moved
+> cohort1_original→`benched` (from_cohort=cohort1, TIME-OUT; reason: chain-
+> verified drag edge −0.1051 P=0.107 on 22 resolved, 46% conc; re-admit bar
+> pre-registered: forward-since-bench edge≥+0.02 AND P≥0.90 on ≥20 resolved,
+> operator go). clean=30 == c1(15)+c2(8)+c3(6)+benched(1); backup
+> `chain_audit.json.pre-cohort3-20260721`. Verified: `roster=30` in watcher
+> log, 0 alarms, VPS load_cohorts OK. cohort1 now prints REDUCED/NO-VERDICT
+> (its pre-registered verdict stays the LOCKED pre-bench line: POWERED at
+> 12:30Z 07-20, NOT DEMONSTRATED). **Fill-cache PROOF GATE (i): PASS**
+> (bounded A/B, 3 addrs, fill-multisets IDENTICAL, pinned [90439826,
+> 90639826]). **Gate (ii) RUNNING** (amended, disclosed: flag-off vs flag-on
+> FRESH dives of 0x7744bfd7 — inactive 32d → head-drift-immune; the
+> pre-registered compare-vs-07-17-JSON is impossible after 4d label drift);
+> verdict marker `/tmp/proof_gate_ii_VERDICT.txt`. **NEXT AUTO-STEP:** on gate
+> verdict → launch `/tmp/launch_c1vet.sh` (cohort-1 7-active vetting,
+> gate-conditional cache flag; expected ~2A/2R/3I at run-4 base rates). Then
+> deepen wave (freeze set: 13 run-4 INSUFFICIENTs ⊇ the 9 confounded) →
+> 0x70d94a solo. Watch next 12:30Z: header must read 15+8+6+1benched.
+
 > **➡ NEXT SESSION: start from `MB_DEEP_DIVE_NEXT_PROMPT.md` (fresh, self-
 > contained, 2026-07-19) — it has the current state, armed queues, procedures,
 > and this session's landmines. The dated blocks below (9–14 newest first) are
