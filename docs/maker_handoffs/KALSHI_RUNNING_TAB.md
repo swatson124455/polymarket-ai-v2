@@ -40,6 +40,7 @@ Rules for future sessions:
 | 07-20 | **FIRST LIVE ORDER on Kalshi PROD, from the VPS (operator-authorized: real money + Ireland compliance accepted)** — 1ct non-marketable post_only bid @ $0.05 on KXSILVERH; HTTP 201 accepted, cancelled HTTP 200, `status=canceled`; independent US read-only check: **account FLAT $100.00 / 0 positions / 0 resting** | **WRITE PATH WORKS FROM IRELAND** (Kalshi does not geo-block order placement from the eu-west-1 IP) | vps_trade_test.py run + flat-check |
 | 07-20 | Geo-block test (bogus-auth from VPS) + valid-auth balance read from VPS | endpoints auth-gated not geo-gated; authed read HTTP 200 | ssh probes |
 | 07-20 | **post_only cross-block probe PASS** (demo reopened): control rested, crossing order REJECTED at HTTP 400 `post only cross` vs EXTERNAL liquidity; post-run verify 0 resting / balance flat $100.0000 | residual **CLOSED** (demo) | verify_kalshi_postonly.py run |
+| 07-21 | **CODE AUDIT + FULL ADVERSARIAL REVIEW of build `ea28fa38` → NO-DEPLOY** (§I). Audit: code matches handoff §2 on all 7 claims; live per-cycle classification ✓; units ✓; suite 35/35 + smoke reproduced. Review (85 agents, 6 lenses, 2 refuters/finding): **36 CONFIRMED findings** (4 HIGH incl. unpaginated get_positions/get_orders → delta-blind; IOC partial-fill status='canceled' raises → taker backstop aborts; blackout guard structurally ineffective ×3), 1 SPLIT, 2 REFUTED. Config findings: SETTLE(30)>WIND_DOWN(20) inversion; RAMP 180 min swallows hourly temp (2–4 ct quotes); usd_day ranking crowds gas out of footprint. Balance $74.70 (status script): +$18.6 vs handoff unexplained by settlements (~$0.72 dust receipts) — plausibly first LIP rewards credit, NOT API-verifiable (no ledger endpoint), operator to confirm in web UI. NOTE: canonical md5 `ea28fa38` = CRLF form; LF/git-blob form = `10d92941` (VPS client is LF) — pick the right one at deploy md5-verify. | bot stays STOPPED; fix HIGHs + config before any go | KALSHI_ADVERSARIAL_REVIEW_2026-07-21.md; wf 85-agent run |
 
 ## B. CANONICAL NUMBERS (latest-good; supersede by appending, with date)
 
@@ -211,3 +212,36 @@ Census of ACTIVE LIP 2026-07-21 (2001 programs, 151 series):
   series) without extending the correlation model first — the event-aggregate throttle assumes
   additive "above X" correlation (review finding B2). A candidate/range series would sum
   anti-correlated strikes as if additive → mis-fire. Per-series correlation check required.
+
+## I. ADVERSARIAL REVIEW — 2026-07-21 (build `ea28fa38`, handoff §4.1+§4.2 delivered)
+
+**Verdict: NO-DEPLOY.** Full findings: `KALSHI_ADVERSARIAL_REVIEW_2026-07-21.md` (36 confirmed /
+1 split / 2 refuted / 0 unverified; every finding independently double-refuter-verified, several
+with live repros of the pure functions and public-venue probes).
+
+**Deploy blockers (fix + re-review before any go):**
+1. **C4 pagination (HIGH/HIGH+HIGH):** `get_positions`/`get_orders` are single unpaginated GETs
+   (default limit=100, settled rows retained in positions) → within ~a day of 5-city hourly temp
+   churn, real inventory falls off page 1: no skew, no unwind, no settle-taker, cap over-admits.
+   Fix: `count_filter=position` + cursor-follow both reads.
+2. **C1 IOC partial fill (HIGH/MED+MED):** venue status for a partially-filled IOC is `canceled`
+   → client raises → `flatten_to_zero` aborts with fill discarded. The taker backstop fails
+   exactly on thin books. Fix: treat `canceled`-with-`fill_count>0` as a fill for IOC orders.
+3. **C2/C3/C15 blackout guard (HIGH+MED):** streak reset before the positions read makes a
+   positions-only blackout never escalate; `last_oids` never includes the venue ids of the cycle's
+   own creates (response id discarded) and is wiped even when every cancel failed. As shipped,
+   MED-4 protection is largely unreachable in its target scenarios.
+4. **Config coherence (C8/C13/C19, MED):** deployed env inverts the taker/wind-down order
+   (SETTLE 30 > WIND_DOWN 20 → taker becomes the routine hourly exit); RAMP_MIN default 180
+   swallows the whole ~58-min temp life (2–4 ct quotes → ~0.3% of pot, throttle inert at the
+   floor); usd_day ranking fills all 40 slots with hourly temp and starves gas. The deployed
+   pilot economics are upside-down even with correct code.
+
+**Also confirmed (fix or accept explicitly):** unwind stacking through failed cancels (sign-flip
+through flat), STOP coid reuse turning repeated STOP cycles into taker escalation, STOP offsets
+capped at ~15 ct vs a 60-ct envelope, unbounded cancels starving the write budget on hourly
+rollover (drops unwind creates), per-ticker $-cap never applied to held inventory (~$57 possible
+on one ticker), event-delta blind spots (counter-sign unwind, single-cycle multi-strike sweep,
+cross-event correlation), fail-open close_time fetch, partial-parse ghost orders, no run lock.
+Positive results: core venue sign/price mappings verified correct; per-ticker overshoot cap,
+HARD pull, unwind cap-exemption, fail-closed reads all confirmed working as designed.
