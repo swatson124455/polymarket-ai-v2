@@ -164,11 +164,19 @@ class KalshiOrderClient:
         if client_order_id:
             body["client_order_id"] = client_order_id
         resp = self._write("POST", f"{API_ROOT}/portfolio/events/orders", body)
-        # a 200 can still carry a rejected order — surface it, don't count it placed
+        # a 200 can still carry a rejected order — surface it, don't count it placed.
+        # BUT an IOC that (partially) fills terminates as status 'canceled' WITH a real fill_count
+        # — that is SUCCESS, not a rejection (the remainder is auto-canceled by design). Raising on
+        # it discarded the confirmed fill and aborted flatten_to_zero's retry ladder on the first
+        # partial fill, exactly on thin books where the taker backstop matters most (review C1).
+        # So: only a resting (GTC/post_only) order that fails to REST is a fatal non-fill; for an
+        # IOC we never raise on status — the caller inspects fill_count and breaks on zero itself.
         if isinstance(resp, dict) and not resp.get("dry_run"):
             o = resp.get("order") if isinstance(resp.get("order"), dict) else resp
             status = (o or {}).get("status")
-            if status in ("rejected", "canceled", "cancelled"):
+            ioc = time_in_force == "immediate_or_cancel"
+            fatal = set() if ioc else {"rejected", "canceled", "cancelled"}
+            if status in fatal:
                 raise RuntimeError(f"order not resting: status={status} resp={resp}")
         return resp
 
@@ -213,17 +221,42 @@ class KalshiOrderClient:
 
     # ---------------- portfolio reads ----------------
 
+    def _get_paginated(self, base_path, item_key, params=None):
+        """GET a cursor-paginated portfolio endpoint, following `cursor` until exhausted, and
+        return {item_key: [ALL rows], "cursor": ""}. Kalshi paginates positions/orders at
+        default limit=100 (probe-verified 2026-07-21: response carries a `cursor`, empty = done);
+        a single un-cursored GET silently truncates to page 1, so real inventory/orders fall off
+        as settled rows accumulate and the bot goes delta-blind with NO error (review C4). The
+        50-page bound (50k rows) is a runaway guard, far above any real book."""
+        params = dict(params or {})
+        params.setdefault("limit", 1000)
+        items, cursor = [], ""
+        for _ in range(50):
+            p = dict(params)
+            if cursor:
+                p["cursor"] = cursor
+            qs = "&".join(f"{k}={v}" for k, v in p.items())
+            d = self._request("GET", f"{base_path}?{qs}")
+            items.extend(d.get(item_key) or [])
+            cursor = d.get("cursor") or ""
+            if not cursor:
+                break
+        return {item_key: items, "cursor": cursor}
+
     def get_balance(self):
         return self._request("GET", f"{API_ROOT}/portfolio/balance")
 
     def get_orders(self, status="resting"):
-        return self._request("GET", f"{API_ROOT}/portfolio/orders?status={status}")
+        return self._get_paginated(f"{API_ROOT}/portfolio/orders", "orders", {"status": status})
 
     def get_fills(self, limit=200):
         return self._request("GET", f"{API_ROOT}/portfolio/fills?limit={limit}")
 
     def get_positions(self):
-        return self._request("GET", f"{API_ROOT}/portfolio/positions")
+        # count_filter=position drops settled/zero rows (probe-verified: 1 stale row -> 0) so real
+        # inventory can never be pushed off a page by settled noise; cursor-follow gets the rest.
+        return self._get_paginated(f"{API_ROOT}/portfolio/positions", "market_positions",
+                                   {"count_filter": "position"})
 
     # ---------------- public reads (no auth) ----------------
 

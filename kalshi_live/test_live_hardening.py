@@ -1,6 +1,7 @@
 """Tests for the LIVE-path capital-safety hardening (NO_GO must-fixes).
 Run: python -m pytest test_live_hardening.py -q  (from the probe dir)."""
 import importlib.util, os, sys, tempfile, json
+import pytest
 
 def _load(n):
     s = importlib.util.spec_from_file_location(n, f"{n}.py")
@@ -443,7 +444,10 @@ def test_unwind_size_never_overshoots_inventory(monkeypatch):
     assert q._unwind_size(80, 0.50, 5) == 5            # capped at |inv|, NOT floored at base=80
     assert q._unwind_size(80, 0.50, 3.4) == 3          # fractional inv rounds, still <= |inv|
     assert q._unwind_size(80, 0.50, 50) == 50          # normal case: rest exactly the position
-    assert q._unwind_size(80, 0.99, 200) <= int((250/2)/0.99) + 1   # bounded by per-side room
+    # room bound = FULL MAX_MARKET_CAPITAL now (review C6/C10: reducing side has no paired side to
+    # share the per-market budget). inv beyond room is clamped to room; |inv| below it still binds.
+    assert q._unwind_size(80, 0.99, 400) <= int(250/0.99) + 1       # room-bounded when |inv|>room
+    assert q._unwind_size(80, 0.50, 200) == 200        # |inv| within room -> exactly the position
     # end-to-end: a +5 long-yes ticker rests a NO unwind of exactly 5 (no overshoot)
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
     qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=5.0)}
@@ -518,3 +522,200 @@ def test_strand_inventory_gets_maker_unwind(monkeypatch, tmp_path):
     row = _run(monkeypatch, c, str(tmp_path))
     unwinds = [o for o in c.created if o["ticker"] == "STRAND" and o["side"] == "no"]
     assert len(unwinds) == 1                              # long-yes strand -> reducing NO bid rested
+
+
+# ================= 2026-07-21 review fixes (C1..C18) — each fails on build ea28fa38 ==============
+from maker_kalshi_client import KalshiOrderClient
+
+
+# ---- C1: IOC partial fill (status 'canceled' + fill_count) must NOT be treated as a rejection ----
+def _live_client_with_write(write_fn):
+    c = KalshiOrderClient(mode="dry_run")   # constructs without creds
+    c.mode = "live"                          # flip so the create-order status guard runs
+    c._write = write_fn                      # no network; guard sees this response
+    return c
+
+def test_ioc_partial_fill_not_treated_as_rejection():
+    c = _live_client_with_write(
+        lambda m, p, b: {"order": {"order_id": "x", "status": "canceled", "fill_count": "15"}})
+    # IOC 'canceled' WITH a fill is a partial fill (success) -> must NOT raise (review C1)
+    r = c.create_order_v2("T1", "ask", 40, 0.60,
+                          time_in_force="immediate_or_cancel", post_only=False)
+    assert r["order"]["fill_count"] == "15"
+
+def test_gtc_canceled_still_raises():
+    # a resting (GTC/post_only) quote that fails to REST is still a fatal non-fill -> raise
+    c = _live_client_with_write(lambda m, p, b: {"order": {"order_id": "x", "status": "canceled"}})
+    with pytest.raises(RuntimeError):
+        c.create_order_v2("T1", "bid", 10, 0.50)      # default TIF = good_till_canceled
+
+def test_ioc_rejected_zero_fill_returns_for_caller_to_break():
+    # a rejected IOC carries zero fill; it must return (not raise) so flatten's fill<=0 break runs
+    c = _live_client_with_write(
+        lambda m, p, b: {"order": {"order_id": "x", "status": "rejected"}})
+    r = c.create_order_v2("T1", "ask", 5, 0.60, time_in_force="immediate_or_cancel", post_only=False)
+    assert (r.get("order") or {}).get("status") == "rejected"
+
+
+# ---- C4: get_positions/get_orders paginate (follow cursor) + count_filter ----
+def test_get_positions_paginates_and_filters():
+    pages = [
+        {"market_positions": [{"ticker": "A", "position_fp": "5"}], "cursor": "c1"},
+        {"market_positions": [{"ticker": "B", "position_fp": "-3"}], "cursor": ""},
+    ]
+    calls = []
+    c = KalshiOrderClient(mode="dry_run")
+    def fake(method, path, body=None, authed=True):
+        calls.append(path); return pages[len(calls) - 1]
+    c._request = fake
+    out = c.get_positions()
+    assert [p["ticker"] for p in out["market_positions"]] == ["A", "B"]  # BOTH pages aggregated
+    assert "count_filter=position" in calls[0]                           # settled/zero rows dropped
+    assert "cursor=c1" in calls[1]                                       # followed the cursor
+
+def test_get_orders_paginates():
+    pages = [{"orders": [{"order_id": "o1"}], "cursor": "n"},
+             {"orders": [{"order_id": "o2"}], "cursor": ""}]
+    calls = []
+    c = KalshiOrderClient(mode="dry_run")
+    def fake(method, path, body=None, authed=True):
+        calls.append(path); return pages[len(calls) - 1]
+    c._request = fake
+    out = c.get_orders("resting")
+    assert [o["order_id"] for o in out["orders"]] == ["o1", "o2"]
+    assert "status=resting" in calls[0] and "cursor=n" in calls[1]
+
+
+# ---- C2: a positions-ONLY blackout must accumulate the streak and eventually cancel ----
+def test_positions_only_blackout_escalates(monkeypatch, tmp_path):
+    monkeypatch.setattr(q, "BLACKOUT_CANCEL_AFTER", 2)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [], "next_cursor": ""})
+    resting = [_order("a", "T1", "yes", 0.6, 10), _order("b", "T1", "no", 0.3, 5)]
+    c = MockClient(mode="live", resting=resting, get_positions_raises=True)  # standing OK, positions 500
+    row1 = _run(monkeypatch, c, str(tmp_path))
+    assert row1.get("read_fail_streak") == 1 and not c.cancelled        # cycle 1: no cancel yet
+    row2 = _run(monkeypatch, c, str(tmp_path))
+    assert row2.get("read_fail_streak") == 2                            # streak ACCUMULATED (was pinned at 1)
+    assert set(c.cancelled) == {"a", "b"}                              # blind quotes cancelled
+
+
+# ---- C3: last_oids must include THIS cycle's created venue ids ----
+def test_last_oids_includes_this_cycle_creates(monkeypatch, tmp_path):
+    _cfg(monkeypatch)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    c = MockClient(mode="live", resting=[], positions=[])
+    _run(monkeypatch, c, str(tmp_path))
+    st = json.load(open(os.path.join(str(tmp_path), "quoter_state.json")))
+    assert len(c.created) == 2
+    assert len(st.get("last_oids", [])) == 2                            # fresh creates now tracked
+    assert all(not str(o).startswith("sim-") for o in st["last_oids"])  # real venue ids, not sim
+
+
+# ---- C15: blackout guard keeps ids whose cancel FAILED (does not wipe) ----
+def test_blackout_keeps_failed_cancel_ids(monkeypatch, tmp_path):
+    monkeypatch.setattr(q, "BLACKOUT_CANCEL_AFTER", 2)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [], "next_cursor": ""})
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
+        json.dump({"read_fail_streak": 1, "last_oids": ["a", "b"]}, f)
+    c = MockClient(mode="live", get_orders_raises=True, cancel_fail_ids=["a", "b"])  # all cancels fail
+    _run(monkeypatch, c, str(tmp_path))
+    st = json.load(open(os.path.join(str(tmp_path), "quoter_state.json")))
+    assert set(st.get("last_oids", [])) == {"a", "b"}                   # kept for retry, NOT wiped
+
+
+# ---- C7: a same-side unwind is NOT stacked on a failed-cancel stale reducing order ----
+def test_unwind_not_stacked_on_failed_same_side_cancel(monkeypatch, tmp_path):
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    stale_no = _order("N", "T1", "no", 0.40, 15)          # stale NO unwind at an old price
+    c = MockClient(mode="live", resting=[stale_no],
+                   positions=[{"ticker": "T1", "position_fp": "15"}],  # long yes -> wants NO unwind
+                   cancel_fail_ids=["N"])                 # cancel of the stale NO fails (429)
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("cancel_fail", 0) == 1
+    assert all(cr["side"] != "no" for cr in c.created)    # fresh NO unwind DEFERRED (would stack)
+    assert row.get("create_skipped", 0) >= 1
+
+
+# ---- C13: ramp window is per-market lifetime-relative, not a flat 180 ----
+def test_ramp_min_is_lifetime_relative(monkeypatch):
+    monkeypatch.setattr(q, "RAMP_MIN", 180); monkeypatch.setattr(q, "RAMP_LIFE_FRAC", 0.5)
+    monkeypatch.setattr(q, "WIND_DOWN_MIN", 20)
+    from datetime import timedelta as _td
+    now = q.utcnow()
+    def prog(tk, end):
+        return {"market_ticker": tk, "incentive_type": "liquidity", "target_size_fp": 1000,
+                "discount_factor_bps": 5000, "period_reward": 800000,
+                "start_date": now.isoformat(), "end_date": end}
+    hourly = q.select_footprint([prog("KXTEMPNYCH-26JUL21-T80", (now + _td(minutes=60)).isoformat())], now)
+    assert len(hourly) == 1 and abs(hourly[0]["ramp_min"] - 30.0) < 1.0   # min(180, 0.5*60)=30
+    daily = q.select_footprint([prog("KXAAAGASD-26JUL22-4.1", (now + _td(days=2)).isoformat())], now)
+    assert abs(daily[0]["ramp_min"] - 180.0) < 1.0                        # long market keeps full 180
+
+
+# ---- C18: footprint round-robins across series so gas is not starved by high-pot temp ----
+def test_footprint_round_robin_covers_all_series(monkeypatch):
+    monkeypatch.setattr(q, "FOOTPRINT_TOP", 4); monkeypatch.setattr(q, "PER_SERIES_CAP", 10)
+    monkeypatch.setattr(q, "SERIES_ALLOW", [])
+    from datetime import timedelta as _td
+    now = q.utcnow(); start = now.isoformat(); end = (now + _td(days=1)).isoformat()
+    def prog(tk, rew):
+        return {"market_ticker": tk, "incentive_type": "liquidity", "target_size_fp": 1000,
+                "discount_factor_bps": 5000, "period_reward": rew, "start_date": start, "end_date": end}
+    progs = [prog(f"KXTEMPNYCH-26JUL21-T{i}", 9000000) for i in range(5)]   # 5 high-pot temp
+    progs.append(prog("KXAAAGASD-26JUL22-4.1", 100000))                     # 1 low-pot gas
+    picked = {m["ticker"].split("-")[0] for m in q.select_footprint(progs, now)}
+    assert "KXAAAGASD" in picked and "KXTEMPNYCH" in picked                 # gas no longer crowded out
+
+
+# ---- C12: per-market HELD-$ cap pulls the accumulating side before the contract HARD ----
+def test_held_dollar_cap_pulls_accumulating_below_contract_hard(monkeypatch):
+    monkeypatch.setattr(q, "INV_SOFT_CT", 15.0); monkeypatch.setattr(q, "INV_HARD_CT", 60.0)
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 15.0); monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
+    m = {"target": 1, "end": "2099-01-01T00:00:00Z"}
+    yl = [["0.90", "9999"]]; nl = [["0.09", "9999"]]     # high yes price
+    # inv=+20: held $ = 20*0.90 = $18 >= $15 cap, but 20 < contract HARD 60 -> $ cap must pull YES
+    qs = {x["side"]: x for x in q.desired_quotes(m, yl, nl, q.utcnow(), inv=20.0)}
+    assert "yes" not in qs                                # accumulating YES pulled by held-$ cap
+    assert "no" in qs and qs["no"]["reason"] == "unwind"
+
+
+# ---- C16: settle-taker close_time read failure is COUNTED (was silently swallowed) ----
+def test_settle_check_failure_is_counted(monkeypatch, tmp_path):
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0); monkeypatch.setattr(q, "TAKER_FLATTEN", True)
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        if p.endswith("/orderbook"): return _BOOK
+        raise RuntimeError("market endpoint 502")         # close_time fetch fails
+    monkeypatch.setattr(q, "public_get", pg)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    c = MockClient(mode="live", positions=[{"ticker": "T1", "position_fp": "20.00"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("settle_check_failed", 0) >= 1         # blind spot surfaced, not swallowed
+    assert row.get("taker_flattens", 0) == 0 and not c.crosses  # did NOT taker on an unknown clock
+
+
+# ---- C8: settle-taker window clamped to <= wind-down (maker-first ordering) ----
+def test_clamp_settle_window():
+    assert q._clamp_settle_window(30, 20) == 20           # inverted -> clamped to wind-down
+    assert q._clamp_settle_window(15, 45) == 15           # already coherent -> unchanged
+
+
+# ---- C17: run lock skips a second concurrent run instead of double-placing the book ----
+def test_run_lock_skips_when_held(monkeypatch, tmp_path):
+    monkeypatch.setattr(q, "_acquire_lock", lambda: False)  # simulate another instance holding it
+    d = str(tmp_path)
+    q.DATA_DIR = d; q.STOP_FILE = os.path.join(d, "STOP"); q.STATE_FILE = os.path.join(d, "s.json")
+    c = MockClient(mode="live", resting=[_order("a", "T1", "yes", 0.6, 10)])
+    orig = q.KalshiOrderClient; q.KalshiOrderClient = lambda *a, **k: c
+    try:
+        rc = q.run_once()
+    finally:
+        q.KalshiOrderClient = orig
+    assert rc == 0 and not c.cancelled and not c.created   # did nothing while the lock was held

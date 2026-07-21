@@ -42,6 +42,34 @@ from maker_kalshi_client import KalshiOrderClient, API_ROOT, PROD_BASE  # noqa: 
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(DATA_DIR, "STOP")
 STATE_FILE = os.path.join(DATA_DIR, "quoter_state.json")
+LOCK_FILE = os.path.join(DATA_DIR, "quoter.lock")
+
+
+def _acquire_lock():
+    """Single-instance guard (review C17): stops a manual run from overlapping the timer cycle and
+    double-placing the book past the capital cap (two processes each pass the process-local cap
+    check on the same standing snapshot). Linux flock; returns None (no-op) where fcntl is absent
+    (Windows/test host) — systemd already serializes the timer unit, so the lock only needs to
+    catch an operator's concurrent manual run on the VPS. Returns the held fd, None, or False."""
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    fd = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fd.close()
+        return False
+    return fd
+
+
+def _release_lock(fd):
+    if fd:
+        try:
+            fd.close()                              # closing the fd releases the flock
+        except Exception:
+            pass
 
 # ---- config (calibration dials — readouts tune these; env-overridable) ----
 def _envi(name, default):
@@ -101,6 +129,21 @@ TICK = 0.01
 # hard inventory breach (passive not keeping up in a one-way drift). Tunable to OFF.
 INV_TOLERANCE = _envf("KALSHI_INV_TOLERANCE", 3.0)          # < this many ct == "flat"
 SETTLE_UNWIND_MIN = _envi("KALSHI_SETTLE_UNWIND_MIN", 30)   # taker-flatten if settlement within N min
+
+
+def _clamp_settle_window(settle, wind):
+    """COHERENCE (review C8): the settlement taker is the backstop for AFTER passive wind-down has
+    pulled the two-sided quotes. If SETTLE_UNWIND_MIN > WIND_DOWN_MIN the taker window opens BEFORE
+    wind-down begins, so a held position is taker-crossed while the market is still fully
+    two-sided-quoting -> quote->fill->taker churn every cycle (the fire-sale pattern maker-first
+    exists to avoid). Clamp so the taker can never fire before wind-down starts."""
+    return min(settle, wind)
+
+
+if SETTLE_UNWIND_MIN > WIND_DOWN_MIN:
+    print(f"WARNING SETTLE_UNWIND_MIN({SETTLE_UNWIND_MIN}) > WIND_DOWN_MIN({WIND_DOWN_MIN}); "
+          f"clamping settle-taker to {WIND_DOWN_MIN}min to preserve maker-first ordering")
+    SETTLE_UNWIND_MIN = _clamp_settle_window(SETTLE_UNWIND_MIN, WIND_DOWN_MIN)
 TAKER_FLATTEN = os.environ.get("KALSHI_TAKER_FLATTEN", "1") == "1"   # last-resort enabled (set 0 = never)
 TAKER_MAX_MKTS = _envi("KALSHI_TAKER_MAX_MKTS", 8)         # cap taker-flattens per cycle (rate/cost guard)
 # --- SETTLEMENT RAMP (audit HIGH-2): the settlement taker fires into the WORST liquidity, so
@@ -108,6 +151,12 @@ TAKER_MAX_MKTS = _envi("KALSHI_TAKER_MAX_MKTS", 8)         # cap taker-flattens 
 # RAMP_MIN of market end the ACCUMULATING quote sizes scale down linearly toward MIN_QUOTE_CT
 # (reducing/unwind quotes are NOT ramped — de-risking gets easier, adding gets harder).
 RAMP_MIN = _envi("KALSHI_RAMP_MIN", 180)                    # start shrinking N min before end
+# The ABSOLUTE RAMP_MIN over-covers SHORT markets: a ~58-min hourly temp market is younger than
+# 180 min for its whole life, so it would rest at the ramp floor (2-4 ct) from birth — near-zero
+# reward on the flagship temp lane (review C13). Cap the effective ramp per-market at a FRACTION
+# of THAT market's own program lifetime (computed in select_footprint) so the ramp only bites in
+# the final stretch of short markets while long gas markets still get the full 180-min taper.
+RAMP_LIFE_FRAC = _envf("KALSHI_RAMP_LIFE_FRAC", 0.5)
 # --- STOP ESCALATION (audit HIGH-1): pure-maker STOP can leave you hanging (offsets may never
 # fill); pure-taker STOP is a fire-sale. STOP = maker-first with BOUNDED escalation: rest the
 # offsets, wait, re-check, and taker-cross ONLY what is still material after the wait.
@@ -170,17 +219,33 @@ def select_footprint(progs, now):
         days = max((end - start).total_seconds() / 86400, 1 / 24)
         # period_reward may be present-but-null (pending programs) -> `or 0`, not .get default
         rows.append({"ticker": t, "usd_day": ((p.get("period_reward") or 0) / 10000) / days,
-                     "target": float(p["target_size_fp"]), "end": end.isoformat()})
+                     "target": float(p["target_size_fp"]), "end": end.isoformat(),
+                     # per-market ramp window = min(global RAMP_MIN, a fraction of THIS market's own
+                     # program lifetime) so short markets only ramp in their final stretch (C13).
+                     "ramp_min": min(RAMP_MIN, RAMP_LIFE_FRAC * days * 1440.0)})
     rows.sort(key=lambda r: (-r["usd_day"], r["ticker"]))
-    picked, per_series = [], defaultdict(int)
+    # ROUND-ROBIN across series (review C18): a single high-pot series (50 concurrent hourly temp
+    # strikes ~ $1,920/day each) would otherwise fill the whole FOOTPRINT_TOP by usd_day and starve
+    # every other allowlisted series — the fee-free gas lane got ZERO slots. Take one market per
+    # series per round, in series-best-usd_day order, until the footprint is full; PER_SERIES_CAP
+    # still binds. (A single-series universe collapses to the old highest-usd_day-first order.)
+    by_series = defaultdict(list)
     for r in rows:
-        s = r["ticker"].split("-")[0]
-        if per_series[s] >= PER_SERIES_CAP:
-            continue
-        picked.append(r)
-        per_series[s] += 1
-        if len(picked) >= FOOTPRINT_TOP:
-            break
+        by_series[r["ticker"].split("-")[0]].append(r)
+    series_order = sorted(by_series, key=lambda s: (-by_series[s][0]["usd_day"], s))
+    picked, per_series = [], defaultdict(int)
+    progressed = True
+    while len(picked) < FOOTPRINT_TOP and progressed:
+        progressed = False
+        for s in series_order:
+            i = per_series[s]
+            if i >= PER_SERIES_CAP or i >= len(by_series[s]):
+                continue
+            picked.append(by_series[s][i])
+            per_series[s] += 1
+            progressed = True
+            if len(picked) >= FOOTPRINT_TOP:
+                break
     return picked
 
 
@@ -212,10 +277,15 @@ def _capped_join(best, other_price):
 def _unwind_size(base, price, inv):
     """Contracts to rest on the reducing side to unwind toward flat. Capped at |inv| — NEVER
     more — because resting > |inv| would, on a full fill, cross THROUGH flat and open the
-    OPPOSITE position (a de-risk that flips the sign is not a de-risk). Also bounded by the
-    per-side $ budget (room). Floored at 1 (a valid order). `base` is retained for call-site
-    compatibility but is deliberately NOT a floor: a floor above |inv| IS the overshoot bug."""
-    room = int((MAX_MARKET_CAPITAL / 2.0) / price) if price > 0 else int(round(abs(inv)))
+    OPPOSITE position (a de-risk that flips the sign is not a de-risk). Also bounded by a per-side
+    $ budget (room). Floored at 1 (a valid order). `base` is retained for call-site compatibility
+    but is deliberately NOT a floor: a floor above |inv| IS the overshoot bug.
+
+    room = the FULL MAX_MARKET_CAPITAL (not half): a reducing order is the ONLY order resting on
+    its side (no paired accumulating side to share the per-market budget with), and its fill FREES
+    collateral. Halving it (review C6/C10) throttled the de-risk drain to ~1/4 of the HARD
+    envelope, so a HARD-sized position could not passively flatten before the settle-taker fired."""
+    room = int(MAX_MARKET_CAPITAL / price) if price > 0 else int(round(abs(inv)))
     return max(1, min(int(round(abs(inv))), room))
 
 
@@ -321,8 +391,9 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # scale down linearly with time-to-end (floor MIN_QUOTE_CT); unwind quotes are never
         # ramped (set below) — de-risking gets easier as the end nears, adding gets harder.
         mins_left = (end - now).total_seconds() / 60.0
-        if mins_left < RAMP_MIN:
-            scale = max(0.0, (mins_left - WIND_DOWN_MIN) / max(1.0, RAMP_MIN - WIND_DOWN_MIN))
+        ramp_min = m.get("ramp_min") or RAMP_MIN     # per-market (C13); fallback to global default
+        if mins_left < ramp_min:
+            scale = max(0.0, (mins_left - WIND_DOWN_MIN) / max(1.0, ramp_min - WIND_DOWN_MIN))
             y_cnt = max(MIN_QUOTE_CT, int(y_cnt * scale))
             n_cnt = max(MIN_QUOTE_CT, int(n_cnt * scale))
         if abs(inv) >= INV_TOLERANCE:
@@ -332,21 +403,27 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         else:
             acc = 0
         mag = max(abs(inv), abs(ev))
-        if acc != 0 and mag > INV_SOFT_CT:
+        # per-market HELD-$ envelope (review C12): INV_HARD_CT bounds CONTRACTS, but at high prices
+        # HARD contracts are many multiples of the MAX_MARKET_CAPITAL dollar intent (60 ct @0.96 =
+        # ~$57 on one ticker). Pull the accumulating side once held $ on THIS ticker reaches the
+        # per-market $ cap, not only at the contract HARD — whichever binds first. held-$ uses this
+        # ticker's own signed inventory (0 when flat/event-driven -> the contract HARD governs).
+        held_usd = abs(inv) * (best_y if inv > 0 else best_n)
+        hard = mag >= INV_HARD_CT or held_usd >= MAX_MARKET_CAPITAL
+        if acc != 0 and (mag > INV_SOFT_CT or hard):
             # shrink the accumulating side toward MIN_QUOTE_CT and step it 1 tick inside so it
-            # fills last. AT/ABOVE HARD the accumulating side IS pulled to zero (audit MED-3):
-            # the MIN_QUOTE floor would keep leaking fills on a one-way market, so HARD is the
-            # hard position envelope — max one-way position ~= INV_HARD_CT + one fill. Above
-            # HARD, bounded risk beats that one side's reward. (Floor applies only BELOW hard.)
+            # fills last. AT/ABOVE HARD (contract OR $) the accumulating side IS pulled to zero
+            # (audit MED-3): the MIN_QUOTE floor would keep leaking fills on a one-way market, so
+            # HARD is the hard position envelope. Above it, bounded risk beats that side's reward.
             over = min(1.0, (mag - INV_SOFT_CT) / max(1.0, INV_HARD_CT - INV_SOFT_CT))
             if acc > 0:                             # accumulating YES -> throttle YES
-                if mag >= INV_HARD_CT:
+                if hard:
                     y_cnt = 0                       # HARD STOP: cap the envelope, stop the leak
                 else:
                     y_price = round(best_y - TICK, 4)
                     y_cnt = max(MIN_QUOTE_CT, int(y_cnt * (1 - over)))
             else:                                   # accumulating NO -> throttle NO
-                if mag >= INV_HARD_CT:
+                if hard:
                     n_cnt = 0
                 else:
                     n_price = round(best_n - TICK, 4)
@@ -496,20 +573,27 @@ def _blackout_guard(client, st, plan):
     if not oids:
         print("WARNING blackout persists but no last-known order ids — nothing to cancel")
         return
-    ok = 0
+    ok, remaining = 0, []
     for oid in oids:
         try:
             client.cancel_order(oid); ok += 1
         except Exception:
-            pass                                    # id may already be filled/cancelled — fine
+            remaining.append(oid)                   # cancel FAILED (network/429) -> KEEP for retry.
+            # do NOT drop it (review C15): wiping ids we never cancelled disarms the guard exactly
+            # in a network partition (the scenario it exists for). A benign 404 (already gone) also
+            # lands here and is harmlessly retried next blackout cycle.
     plan["blackout_cancelled"] = ok
-    st["last_oids"] = []                            # don't re-cancel the same ids every cycle
+    st["last_oids"] = remaining                     # keep only the ones we could NOT cancel
     print(f"WARNING read blackout x{st['read_fail_streak']} — best-effort cancelled "
-          f"{ok}/{len(oids)} last-known quotes (blind fills stopped)")
+          f"{ok}/{len(oids)} last-known quotes ({len(remaining)} left to retry)")
 
 
 def run_once():
     os.chdir(DATA_DIR)
+    _lock = _acquire_lock()
+    if _lock is False:
+        print("WARNING another quoter instance holds the run lock; skipping this run (no order ops)")
+        return 0
     now = utcnow()
     client = KalshiOrderClient()          # dry_run unless operator-configured
     if os.path.exists(STOP_FILE):
@@ -517,6 +601,7 @@ def run_once():
         print("STOP sentinel present; maker-flattening (cancel quotes + rest offsets) + exiting")
         if client.mode != "dry_run":
             _flatten_all(client)
+        _release_lock(_lock)
         return 0
     _reads[0] = 0
     cyc = int(now.timestamp())            # per-cycle nonce for unique order ids
@@ -571,9 +656,12 @@ def run_once():
                 print(f"WARNING reconcile FAIL: {raw_rows} resting rows parsed to 0 — halting (no order ops)")
                 return 0
             own = own_resting(standing)
-            # blackout bookkeeping: a good standing read RESETS the streak and refreshes the
-            # last-known order ids the blackout guard would cancel.
-            st["read_fail_streak"] = 0
+            # last_oids: seed from the standing read NOW so the blackout guard always has real
+            # resting ids to cancel even if the positions read below fails. Do NOT reset the fail
+            # streak yet (review C2): a good standing read alone is NOT a complete cycle, so a
+            # sustained positions-ONLY blackout must still accumulate the streak and eventually
+            # trigger the cancel — resetting here pinned the streak at 1 forever and the guard
+            # never fired.
             st["last_oids"] = [o["order_id"] for ol in standing.values() for o in ol]
             # DELTA: read signed inventory ONCE, AHEAD of the quote loop, so shaping acts on
             # THIS cycle's position (not one cycle stale). Fail CLOSED (defer) if unreadable —
@@ -585,6 +673,8 @@ def run_once():
                 _blackout_guard(client, st, plan)
                 print(f"WARNING could not read positions ({e!r}); skipping cycle (delta unknown)")
                 return 0
+            # BOTH reads succeeded -> a complete cycle; only NOW clear the blackout streak.
+            st["read_fail_streak"] = 0
 
         # --- DE-RISK PASS (TAKER = GENUINE LAST RESORT ONLY). Normal position control is the
         # maker SKEW in desired_quotes (grow the reducing side, keep BOTH quotes live). The taker
@@ -605,7 +695,10 @@ def run_once():
                     close = public_get(f"/trade-api/v2/markets/{t}").get("market", {}).get("close_time")
                     near_settle = bool(close) and parse_iso(close) < now + timedelta(minutes=SETTLE_UNWIND_MIN)
                 except Exception:
-                    pass
+                    # the settle-taker's ONLY arming signal failed to read (was silently swallowed,
+                    # review C16). Leave near_settle False (don't taker on an unknown clock), but
+                    # COUNT it so a persistent blind spot in the settlement backstop is visible.
+                    plan["settle_check_failed"] = plan.get("settle_check_failed", 0) + 1
                 if near_settle:                         # ONLY genuine last resort: settling soon
                     ok, nc = flatten_to_zero(client, t, oids_by_t.get(t))
                     taker_flattens += 1
@@ -692,6 +785,16 @@ def run_once():
         # tickers whose cancel FAILED -> defer their creates a cycle (never stack
         # stale+new on the same ticker); a failed-cancel oid maps to its ticker.
         failed_cancel_tickers = {oid_ticker.get(oid) for oid in cancels if oid not in cancelled_ok}
+        # ...and the SIDES of the still-resting failed-cancel orders (review C7): a new 'unwind'
+        # create is normally exempt from the failed-cancel deferral, but if the SAME-SIDE stale
+        # reducing order still rests, a second unwind stacks to ~2x|inv| and a full fill crosses
+        # THROUGH flat into the opposite position — the exact sign-flip the overshoot cap prevents
+        # per-order but not per-book. So a same-side unwind is deferred too.
+        failed_cancel_sides = defaultdict(set)
+        for _t, _ol in standing.items():
+            for _o in _ol:
+                if _o["order_id"] in cancels and _o["order_id"] not in cancelled_ok:
+                    failed_cancel_sides[_t].add(_o["side"])
         # REAL committed capital = surviving standing (not-cancelled) + held inventory.
         # This is the guard the $ cap actually needs (cap_desired only bounds the
         # freshly-computed desired book, blind to survivors + fills).
@@ -708,16 +811,27 @@ def run_once():
         for i, c in enumerate(creates):
             cost = c["price_dollars"] * c["count"]
             reducing = c.get("reason") == "unwind"
-            if c["ticker"] in failed_cancel_tickers and not reducing:
-                create_skipped += 1                 # paired cancel failed; defer (not an unwind)
-                continue
+            if c["ticker"] in failed_cancel_tickers:
+                # accumulating creates always deferred on a failed-cancel ticker; a reducing
+                # (unwind) create is exempt UNLESS a same-side stale reducing order still rests
+                # (would stack -> overshoot through flat, review C7).
+                if not reducing or c["side"] in failed_cancel_sides.get(c["ticker"], ()):
+                    create_skipped += 1
+                    continue
             if not reducing and committed + cost > MAX_TOTAL_CAPITAL:
                 create_skipped += 1                 # cap gates ACCUMULATING orders only
                 continue
             try:
-                client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
+                resp = client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
                                     post_only=True, client_order_id=order_id_for(cyc, i, c["side"]))
-                created_ok.append((c, f"sim-{cyc}-{i}")); committed += cost
+                # capture the VENUE order id (live) so the blackout guard can cancel THIS cycle's
+                # own creates (review C3); dry_run carries none -> keep the deterministic sim id
+                # the simulated_standing rebuild below relies on.
+                oid = f"sim-{cyc}-{i}"
+                if isinstance(resp, dict) and not resp.get("dry_run"):
+                    ro = resp.get("order") if isinstance(resp.get("order"), dict) else resp
+                    oid = (ro or {}).get("order_id") or oid
+                created_ok.append((c, oid)); committed += cost
             except Exception:
                 create_fail += 1
 
@@ -731,6 +845,15 @@ def run_once():
                     {"side": c["side"], "price_dollars": c["price_dollars"],
                      "count": c["count"], "order_id": oid})
             st["simulated_standing"] = {t: v for t, v in ns.items() if v}
+        else:
+            # refresh last_oids to the ACTUAL post-cycle resting book: survivors (standing not
+            # cancelled) + this cycle's freshly created VENUE ids. A subsequent read blackout can
+            # then cancel EVERYTHING currently live, including quotes placed this cycle — the guard
+            # previously saw only the pre-cycle snapshot and missed all fresh creates (review C3).
+            survivors = [o["order_id"] for ol in standing.values() for o in ol
+                         if o["order_id"] not in cancelled_ok]
+            new_ids = [oid for (_c, oid) in created_ok if not str(oid).startswith("sim-")]
+            st["last_oids"] = survivors + new_ids
 
         plan.update({
             "footprint": len(footprint), "quoted_markets": len(desired),
@@ -758,6 +881,7 @@ def run_once():
         # bookkeeping ALWAYS runs, even if the cycle body raised
         append_plan(plan)
         save_state(st)
+        _release_lock(_lock)
     # escalate to WARNING on a SYSTEMATIC failure (not per-item noise): most quotes
     # failing to compute, most creates rejected, or the whole footprint gated out.
     fp = plan.get("footprint", 0) or 0
@@ -881,6 +1005,11 @@ def _flatten_all(client):
         print("flatten: no material inventory — book is flat")
         return
     # --- pass 1: MAKER offsets on the reducing side ---
+    # per-invocation nonce so a REPEATED STOP run (timer still firing while STOP sentinel present)
+    # never reuses a client_order_id — Kalshi dedups on it, so a reused id would reject the fresh
+    # offset and force the taker escalation, turning maker-first STOP into a metronomic taker
+    # fire-sale on every cycle after the first (review C5).
+    _nonce = int(time.time())
     offset_oids = {}                                   # ticker -> our offset order id
     for i, (t, pos) in enumerate(held.items()):
         try:
@@ -901,7 +1030,7 @@ def _flatten_all(client):
         cnt = _unwind_size(_capped_join(price, other), price, pos)   # <= |pos|, never overshoot
         try:
             r = client.create_quote(t, side, price, cnt, post_only=True,
-                                    client_order_id=f"mk-stopflat-{i}-{side}")
+                                    client_order_id=f"mk-stopflat-{_nonce}-{i}-{side}")
             o = r.get("order") if isinstance(r, dict) and isinstance(r.get("order"), dict) else {}
             if o.get("order_id"):
                 offset_oids[t] = o["order_id"]
