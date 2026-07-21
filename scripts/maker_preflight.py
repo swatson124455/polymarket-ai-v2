@@ -12,7 +12,9 @@ prints PASS/FAIL and stops on the first failure.
 Stages (run in order, each idempotent):
   sanity    V2 SDK + auth + balance/allowance + server reachability
   scoring   min-size post-only order far from touch -> get_open_orders sees
-            it -> is_order_scoring says True -> cancel -> verify gone.
+            it -> is_order_scoring says True -> cancel -> verify gone ->
+            raw cancel response run through the ENGINE'S _cancel_shortfall
+            (proves the live kill parser accepts the real venue shape).
             (Order rests at a NEVER-CROSS price: fill risk ~0.)
   receipts  (run the NEXT day, after 00:00Z) get_earnings_for_user_for_day
             for yesterday vs the engine's model accrual (paper-twin alarm).
@@ -22,6 +24,11 @@ the FIRST REAL MAKER FILL in the tiny-footprint live step (same on-chain
 settlement path), watched closely — not by a marketable order that pays the
 spread to force a fill. The removed 'fill' stage was the last taker code in
 the live path (cut 2026-07-20, operator directive: a maker never takes).
+
+RUN FROM THE DEPLOYED RELEASE DIRECTORY (/opt/pa2-maker-live): the scoring
+stage's cancel-shape probe loads _cancel_shortfall from the SIBLING
+maker_live_engine.py — run from a repo checkout it would validate whatever
+copy sits there, not the engine that actually performs the live kill.
 
 Usage: MAKER_PK=... venv/bin/python maker_preflight.py --stage sanity
        ... --stage scoring [--token <token_id>]
@@ -51,6 +58,21 @@ def say(tag, ok, detail):
     if not ok:
         print("PREFLIGHT STOPPED at %s" % tag, flush=True)
         sys.exit(1)
+
+
+def engine_cancel_shortfall():
+    """Load the ENGINE'S OWN cancel-response parser from the sibling file —
+    never a copy (a hand copy could drift from what the live kill actually
+    runs). The scoring stage feeds it the real venue cancel response, so an
+    unanticipated-but-benign shape surfaces HERE, not at the first live kill
+    (the exact promise made in _cancel_shortfall's docstring)."""
+    import importlib.util
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "maker_live_engine.py")
+    spec = importlib.util.spec_from_file_location("maker_live_engine_pf", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod._cancel_shortfall
 
 
 def client_or_die():
@@ -142,12 +164,25 @@ def stage_scoring(args):
     scoring = bool(getattr(sc, "scoring", None) or
                    (isinstance(sc, dict) and sc.get("scoring")))
     say("scoring", scoring, "is_order_scoring: %s" % str(sc)[:80])
-    c.cancel_orders([oid])
+    cresp = c.cancel_orders([oid])
     time.sleep(2)
     open2 = c.get_open_orders()
     gone = not any((o.get("id") or o.get("orderID")) == oid
                    for o in open2 if isinstance(o, dict))
     say("cancel", gone, "order gone after cancel_orders")
+    # cancel-SHAPE probe: run the real venue response through the engine's
+    # own kill parser. Checked AFTER the gone-verify so a shape FAIL exits
+    # with the order already confirmed off the book. A FAIL here means the
+    # engine's first live kill would fail loud on this same response —
+    # extend _cancel_shortfall (with this captured shape as the evidence)
+    # before any live footprint.
+    print("  cancel raw response: %s" % str(cresp)[:300])
+    shortfall = engine_cancel_shortfall()(cresp, [oid])
+    say("cxshape", not shortfall,
+        "engine _cancel_shortfall proves this cancel response"
+        if not shortfall else
+        "engine kill parser would NOT prove this cancel: %s"
+        % "; ".join(shortfall))
     print("scoring stage complete — reward eligibility CONFIRMED for this account")
 
 
