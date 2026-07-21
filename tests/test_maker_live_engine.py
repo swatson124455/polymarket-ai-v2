@@ -1419,3 +1419,116 @@ def test_collect_owned_assets_ignores_meta_and_non_dicts(tmp_path):
     state = {"meta": {"tok_y": "SHOULD_NOT_APPEAR"}, "bad": "string",
              "m": {"tok_y": "Y", "tok_n": "N"}}
     assert set(mle.collect_owned_assets(state, str(tmp_path))) == {"Y", "N"}
+
+
+# ── sector allowlist (pilot pinning — Kalshi wrong-markets lesson) ──────────
+def test_config_sector_allowlist_default_off_and_parse():
+    assert mle.load_config(env={})["sector_allowlist"] == set()
+    c = mle.load_config(env={"MAKER_SECTOR_ALLOWLIST": " Weather, politics ,"})
+    assert c["sector_allowlist"] == {"weather", "politics"}
+
+
+def test_config_sector_allowlist_overlap_with_excluded_fails_loud():
+    with pytest.raises(ValueError):
+        mle.load_config(env={"MAKER_SECTOR_ALLOWLIST": "weather,esports"})
+    # explicit excluded list overlapping the allowlist is just as contradictory
+    with pytest.raises(ValueError):
+        mle.load_config(env={"MAKER_SECTOR_ALLOWLIST": "weather",
+                             "MAKER_EXCLUDED_SECTORS": "weather"})
+
+
+def _gamma_market(mid, category):
+    return {"id": mid, "conditionId": "0x" + mid, "category": category,
+            "question": "q-" + mid, "slug": "s-" + mid,
+            "clobRewards": [{"rewardsDailyRate": "10"}],
+            "clobTokenIds": json.dumps(["Y" + mid, "N" + mid]),
+            "rewardsMaxSpread": 3, "rewardsMinSize": 100,
+            "orderPriceMinTickSize": 0.001, "negRisk": False,
+            "endDate": "2099-01-01T00:00:00Z"}
+
+
+def test_discover_allowlist_filters_before_ranking(tmp_path, monkeypatch):
+    """With the allowlist set, a tiny max_markets can never admit an off-list
+    market — the off-list one is dropped BEFORE the pool-rank truncation,
+    even when it has the bigger pool."""
+    page = [_gamma_market("w1", "weather"), _gamma_market("p1", "politics")]
+    page[1]["clobRewards"] = [{"rewardsDailyRate": "9999"}]  # politics out-ranks
+    monkeypatch.setattr(mle, "get", lambda url, timeout=15: page)
+    cfg = cfg_over(sector_allowlist={"weather"}, max_markets=1)
+    picked = mle.discover(str(tmp_path), cfg)
+    assert [m["sector"] for m in picked] == ["weather"]
+    uni = json.loads((tmp_path / "universe.json").read_text())
+    assert uni["dropped_allowlist"] == 1
+    assert uni["sector_allowlist"] == ["weather"]
+
+
+def test_discover_empty_allowlist_is_unchanged_behavior(tmp_path, monkeypatch):
+    page = [_gamma_market("w1", "weather"), _gamma_market("p1", "politics")]
+    monkeypatch.setattr(mle, "get", lambda url, timeout=15: page)
+    picked = mle.discover(str(tmp_path), cfg_over())
+    assert {m["sector"] for m in picked} == {"weather", "politics"}
+    uni = json.loads((tmp_path / "universe.json").read_text())
+    assert uni["dropped_allowlist"] == 0 and uni["sector_allowlist"] == []
+
+
+def test_discover_allowlist_missing_key_is_off(tmp_path, monkeypatch):
+    """A hand-built cfg dict without the new key (older tests, tools) must
+    behave exactly as before — the filter reads via .get()."""
+    page = [_gamma_market("w1", "weather")]
+    monkeypatch.setattr(mle, "get", lambda url, timeout=15: page)
+    cfg = cfg_over()
+    del cfg["sector_allowlist"]
+    assert [m["sector"] for m in mle.discover(str(tmp_path), cfg)] == ["weather"]
+
+
+def test_sector_of_team_heat_is_not_weather():
+    """Regression: 'heat-' matched miami-heat NBA slugs (caught live 07-21 by
+    the allowlist cross-check); real heat-wave/temperature markets still map
+    to weather."""
+    lebron = {"category": "", "question": "Will LeBron James play for the Miami Heat in 2026-27?",
+              "slug": "will-lebron-james-play-for-the-miami-heat-in-2026-27"}
+    assert mle.sector_of(lebron) != "weather"
+    for slug in ("highest-temperature-in-nyc-on-july-22",
+                 "lowest-temp-in-shanghai-july-22",
+                 "heat-wave-in-chicago-this-week",
+                 "will-a-heatwave-hit-london",
+                 "rainfall-in-seattle-july"):
+        assert mle.sector_of({"category": "", "question": "", "slug": slug}) == "weather", slug
+
+
+def test_discovery_suspect_allowlisted_small_universe_refreshes():
+    """Adversarial review 07-21 finding 1: the 40-market floor froze any
+    allowlisted (by-design-small) universe after first adoption — every
+    refresh read as PARTIAL, daily-churn weather slice went stale in a day."""
+    # full-universe config: floor semantics unchanged
+    assert mle.discovery_suspect(8, 140, False)       # partial read -> keep old
+    assert mle.discovery_suspect(39, 60, False)       # below floor -> keep old
+    assert not mle.discovery_suspect(100, 140, False)
+    # allowlisted slice: small is the design point — refreshes must adopt
+    assert not mle.discovery_suspect(8, 8, True)      # THE pilot-freeze fix
+    assert not mle.discovery_suspect(5, 8, True)      # daily churn within half
+    assert mle.discovery_suspect(3, 8, True)          # half-shrink still guards
+    # boot (no old universe): always adopt
+    assert not mle.discovery_suspect(8, 0, True)
+    assert not mle.discovery_suspect(8, 0, False)
+
+
+def test_sector_of_heat_phenomena_slugs_still_weather():
+    """Review finding 2: the miami-heat fix must not orphan real heat events."""
+    for slug in ("heat-dome-over-midwest-this-week",
+                 "excessive-heat-warning-los-angeles",
+                 "red-heat-warning-issued-in-uk",
+                 "heat-emergency-declared-in-nyc",
+                 "record-heat-in-phoenix-july"):
+        assert mle.sector_of({"category": "", "question": "", "slug": slug}) == "weather", slug
+    assert mle.sector_of({"category": "", "question": "",
+                          "slug": "will-lebron-james-play-for-the-miami-heat-in-2026-27"}) != "weather"
+
+
+def test_discover_allowlist_zero_match_logs_loudly(tmp_path, monkeypatch, capsys):
+    """Review finding 3: a typo'd allowlist drops everything AND skips the
+    universe.json write — the journal line is the only evidence."""
+    page = [_gamma_market("p1", "politics")]
+    monkeypatch.setattr(mle, "get", lambda url, timeout=15: page)
+    assert mle.discover(str(tmp_path), cfg_over(sector_allowlist={"wether"})) == []
+    assert "matched ZERO" in capsys.readouterr().out

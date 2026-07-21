@@ -130,6 +130,18 @@ def load_config(env=None):
     excluded = set(s.strip().lower() for s in
                    (env.get("MAKER_EXCLUDED_SECTORS") or "esports,finance").split(",")
                    if s.strip())
+    # Pilot allowlist: when non-empty, ONLY these sectors are quotable —
+    # a shrunk MAKER_MAX_MARKETS then cannot pull in whatever ranks next by
+    # pool (the wrong-markets failure the Kalshi lane hit live). Empty =
+    # off = unchanged full-universe behavior. Note "unknown"-sector markets
+    # are excluded by any non-empty allowlist (fail-closed for the pilot).
+    allowlist = set(s.strip().lower() for s in
+                    (env.get("MAKER_SECTOR_ALLOWLIST") or "").split(",")
+                    if s.strip())
+    if allowlist & excluded:
+        raise ValueError(
+            "MAKER_SECTOR_ALLOWLIST and MAKER_EXCLUDED_SECTORS overlap: "
+            f"{sorted(allowlist & excluded)}")
     sector_caps = {}
     raw = env.get("MAKER_SECTOR_CAPS_USD")
     if raw:
@@ -148,6 +160,7 @@ def load_config(env=None):
         "max_markets": int(f("MAKER_MAX_MARKETS", 140)),
         "max_per_sector": int(f("MAKER_MAX_PER_SECTOR", 25)),
         "excluded_sectors": excluded,
+        "sector_allowlist": allowlist,   # empty set = allowlist off
         "inv_cap_mult": f("MAKER_INV_CAP_MULT", 3.0),
         "market_gross_cap": f("MAKER_MARKET_GROSS_CAP_USD", 150.0),
         "event_cap": f("MAKER_EVENT_CAP_USD", 200.0),
@@ -204,7 +217,13 @@ KW = [
     (r"lol-|league-of-legends|cs2|csgo|counter-strike|dota|valorant|esports|lck|lpl|lec|ewc", "esports"),
     (r"bitcoin|btc|ethereum|eth-|solana|xrp|doge|crypto", "crypto"),
     (r"trump|election|president|senate|congress|mayor|governor|primary|nominee|supreme-court|minister|parliament", "politics"),
-    (r"temperature|highest-temp|rainfall|hurricane|snow|heat-|weather", "weather"),
+    # 'heat-' alone matched "miami-heat" slugs (NBA) — caught live 2026-07-21
+    # by the allowlist first-output cross-check. Engine-only fix: the family
+    # arms keep the old pattern mid-era (measurement attribution only, no
+    # money path); sync is a separate propose-only item.
+    (r"temperature|highest-temp|lowest-temp|rainfall|hurricane|snow"
+     r"|heat-wave|heatwave|heat-index|heat-advisory|heat-warning|heat-dome"
+     r"|heat-emergency|excessive-heat|extreme-heat|record-heat|weather", "weather"),
     (r"fed-|interest-rate|cpi|inflation|gdp|recession|s-p-500|spx|nasdaq|spy|wti|crude|tariff|treasury", "finance"),
     (r"israel|gaza|ukraine|russia|iran|nato|ceasefire|hormuz|houthi|war-", "geopolitical"),
     (r"oscar|grammy|emmy|box-office|album|movie|netflix|spotify", "entertainment"),
@@ -300,6 +319,8 @@ def discover(base, cfg):
     them), event id for the per-event floor, tick size for price rounding."""
     rows, seen = [], set()
     dropped_excl = 0
+    dropped_allow = 0
+    allow = cfg.get("sector_allowlist") or set()
     for page in range(21):
         q = urllib.parse.urlencode({"active": "true", "closed": "false", "limit": 100,
                                     "offset": page * 100, "order": "volume24hr",
@@ -333,6 +354,11 @@ def discover(base, cfg):
             if sec in cfg["excluded_sectors"]:
                 dropped_excl += 1
                 continue
+            # allowlist filter sits BEFORE ranking/truncation: with it set,
+            # no value of max_markets can ever admit an off-list market
+            if allow and sec not in allow:
+                dropped_allow += 1
+                continue
             try:
                 tick = float(m.get("orderPriceMinTickSize") or 0) or 0.001
             except (TypeError, ValueError):
@@ -357,11 +383,34 @@ def discover(base, cfg):
         picked.extend(ms[:cfg["max_per_sector"]])
     picked.sort(key=lambda x: -x["pool"])
     picked = picked[:cfg["max_markets"]]
+    if allow and not picked and dropped_allow:
+        # universe.json is only written when picked is non-empty, so this log
+        # line is the ONLY evidence when a typo'd allowlist drops everything
+        print("discovery: sector allowlist %s matched ZERO of %d rewarded "
+              "markets — check MAKER_SECTOR_ALLOWLIST for typos"
+              % (sorted(allow), dropped_allow + dropped_excl), flush=True)
     if picked:
         with open(os.path.join(base, "universe.json"), "w") as f:
             json.dump({"t": time.time(), "markets": picked,
-                       "dropped_excluded": dropped_excl}, f)
+                       "dropped_excluded": dropped_excl,
+                       "dropped_allowlist": dropped_allow,
+                       "sector_allowlist": sorted(allow)}, f)
     return picked
+
+
+def discovery_suspect(new_n, old_n, allowlisted):
+    """True when a discovery result is suspiciously small vs the running
+    universe (likely a partial gamma read) and must be discarded rather than
+    adopted (wiping the universe on a bad read would cancel healthy quotes).
+
+    The absolute 40-market floor is calibrated to the full-universe config.
+    An ALLOWLISTED universe is small BY DESIGN (the pilot slice), so only the
+    relative half-shrink test applies there — with the floor, every refresh
+    of a sub-40 slice is discarded as "PARTIAL" and the daily-churn weather
+    markets go permanently stale (adversarial review 2026-07-21, finding 1).
+    Extracted from run() so this interaction is testable."""
+    floor = 0 if allowlisted else 40
+    return bool(old_n) and new_n < max(floor, old_n // 2)
 
 
 # ── WebSocket book maintenance (v5/v3 verbatim, incl. batched fix) ──────────
@@ -1487,6 +1536,7 @@ def run(base, cfg):
     print(f"ENGINE START mode={cfg['mode'].upper()} policy={cfg['policy']} "
           f"style={cfg['style']} max_mkts={cfg['max_markets']} "
           f"excluded={sorted(cfg['excluded_sectors'])} "
+          f"allowlist={sorted(cfg['sector_allowlist']) or 'off'} "
           f"floor=${cfg['day_loss_floor']:.0f} halted={meta.get('halted', False)}",
           flush=True)
     if execc.live:
@@ -1650,7 +1700,8 @@ def run(base, cfg):
         # ── discovery + WS lifecycle + pool-vanished auto-unquote ───────────
         if now - last_discovery > (DISCOVERY_EVERY_S if universe else DISCOVERY_RETRY_S):
             u = discover(base, cfg)
-            if u and universe and len(u) < max(40, len(universe) // 2):
+            if u and discovery_suspect(len(u), len(universe),
+                                       bool(cfg.get("sector_allowlist"))):
                 print(f"discovery PARTIAL ({len(u)} vs {len(universe)}) — keeping",
                       flush=True)
                 u = None
