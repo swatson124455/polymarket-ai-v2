@@ -5,7 +5,31 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-20 (S233 — big session under operator "permission on all
+**Last updated:** 2026-07-21 (S234 — read-only verification/watch session, ZERO
+code changes, ZERO deploys. Headlines: **§0 all clean** (only the known worktree
+FAIL + doc-only deploy-parity WARN; release `20260720_150112` live, 3 nowcast
+flags in-process, 6 wb crons, pws_mesh + nat_mesh + mesh_debias all fresh,
+calibration_check crash-free, leak SQL 0, zero new cal_fit_failed).
+**DAY-4 MESH-LEAD GRADE PASSED — gates hold a 4TH time** (10 stations incl KSFO+
+KLAX back in set, 99 events, 77% mesh-led / 63.0 min pooled median / 15.2%
+false-crossings; **the S233 declining-median-lead caveat RESOLVES BENIGN** —
+49.0→63.0 bounce; day-5 (0720) IEM-gated ~07-22/23; spec §"S234 DAY-4 LEAD
+VERDICT"). **NAT_MESH VALIDATION DRY-RUN PASS** (isolated /tmp merged-file run of
+production mesh_debias: sane offsets max |0.9F|, JMA/BOM ~0.0; nat-only cities
+EDDB/YSSY/YMML residual_sd 0.48-0.54 << 1.5F = 3 NEW debias cities on go-live;
+merged cities all IMPROVE; live table untouched; spec §"S234 NAT_MESH
+VALIDATION") — **go-live `NAT_MESH_LIVE=1` READY, operator-gated**. **First-ever
+nowcast evidence**: 91 `weatherbot_nowcast_shadow` lines (KLAX 70/KDAL 20/KORD 1,
+all reason=repriced) + 40 `weather_nowcast_peak` prediction_log rows (was 0
+all-time); 0 entry crossings yet. **HK's first HKO-grounded resolution-day
+override chain fired** (07-21 07:30-09:40Z, running max 28→29 C accumulating,
+zero fail-closed lines). **NEW DEFECT (report-only, calibrator hands-off):** ERA5
+bootstrap INSERT binds target_date as str (weather_bot.py:1500) → asyncpg
+DataError, S227 class missed by 92740f3; bootstrap_gfs rows frozen at 314 (none
+since 06-12); new-city cold-starts slower than designed but accruing real pairs
+under ICAO keys. WATCH: KBKF persistently unhealthy (74/24h, all-KBKF). Maker
+tilt readout NOT landed. Spec §"S234 WATCH LANDINGS". Prior header (S233) below.)
+Prior header (S233 — big session under operator "permission on all
 go": verification/watch + Tier-3 registry additions + shared signal fix (TWO
 deploys) + national-feed mesh collector BUILT & STAGING + a cleanup. Beyond the
 two deploys below: **`nat_mesh.py` national-feed debias collector** (Item 2, commit
@@ -107,7 +131,19 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 ## OPEN DECISIONS  ← always at the top, always the first thing a resume reads
 
 0. **PHASE-2 NOWCAST — FLAG IS ON (flipped 2026-07-19 ~13:3xZ, paper).**
-   **DAY-3 GRADED S233 (2026-07-20): PASS — gates hold a THIRD time.** 8
+   **DAY-4 GRADED S234 (2026-07-21): PASS — gates hold a FOURTH time.** 10
+   stations (KSFO + KLAX back in the set), 99 events, **77% mesh-led / 63.0 min
+   pooled median / 15.2% false-crossings** (spec §"S234 DAY-4 LEAD VERDICT").
+   Four-day trend 60%/74.8/10.8 → 62%/61.0/11.2 → 72%/49.0/5.7 → 77%/63.0/15.2.
+   **S233 caveat (a) — declining median lead — RESOLVES BENIGN** (49.0→63.0
+   bounce on the fullest set yet = day-to-day noise, not drift); caveat (b)
+   priced in honestly: day-4 INCLUDES the KSFO hotspot (3 FCs) and still
+   passes — 15.2% is the truer FC number, inside the gate. Day-5 (0720) grade
+   is IEM-backfill-gated ~07-22/23. First LIVE nowcast evidence has landed:
+   91 shadow lines all reason=repriced + 40 `weather_nowcast_peak`
+   prediction_log rows, 0 entries — the 07-24 remeasure's shadow scorecard has
+   data. (S233 day-3 record below.)
+   **(day-3 record)** **DAY-3 GRADED S233 (2026-07-20): PASS — gates hold a THIRD time.** 8
    gradeable stations, 87 events, **72% mesh-led / 49.0 min pooled median /
    5.7% false-crossings** (spec §"S233 DAY-3 LEAD VERDICT"). Three-day trend
    60%/74.8/10.8 → 62%/61.0/11.2 → 72%/49.0/5.7. **Two caveats, do not

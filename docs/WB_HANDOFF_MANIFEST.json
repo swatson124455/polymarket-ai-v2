@@ -1,6 +1,6 @@
 {
  "_comment": "WeatherBot session-handoff manifest \u2014 consumed by scripts/wb_resume_check.sh. RULE: any commit that changes a fingerprinted file's markers, adds a headline fix, or moves the session branch MUST update this manifest in the SAME commit. That is what keeps the resume check self-deriving instead of stale.",
- "session": "S233",
+ "session": "S234",
  "repo": "swatson124455/polymarket-ai-v2",
  "branch": "claude/new-whiteboard-session-9b23tq",
  "headline_commits": {
@@ -106,7 +106,8 @@
   "tests/unit/test_nat_mesh.py",
   "base_engine/weather/hko_client.py",
   "bots/weather/engine/base_engine/weather/hko_client.py",
-  "tests/unit/test_hko_client.py"
+  "tests/unit/test_hko_client.py",
+  "WB_S235_KICKOFF_PROMPT.md"
  ],
  "fingerprints": [
   {

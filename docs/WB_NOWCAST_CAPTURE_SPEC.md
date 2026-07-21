@@ -1432,3 +1432,120 @@ stays deferred (no open OPMR/PMD source; OPKC = the forbidden S231 trap).
    shared METAR override path used by EVERY city — the HIGH risk), operator-gated
    splinter release cut. **Karachi stays deferred** (no open OPMR/PMD source;
    OPKC = the forbidden S231 trap).
+
+## S234 DAY-4 LEAD VERDICT (2026-07-21 ~20:2xZ) — **PASS, gates hold a FOURTH time; the declining-lead caveat BREAKS**
+
+Coverage probe first (per-station vs its OWN 07-16 baseline, asos1min.py):
+day-4 (0719) covered at 87-206% for all 10 non-structural stations — KSFO 90%
+and KLAX 202% are BACK in the set (both absent day-3), KBKF 0 (structural).
+**Day-5 (0720) NOT covered — 0-9% everywhere — IEM backfill not landed; grade
+it ~07-22/23.**
+
+`mesh_validation.py --lead 20260719` (VPS, run S234):
+```
+sid  | events | mesh-led | med lead min | false-cross | 1min missed
+KATL |  12 |  8 |  21.0 | 0 | 4        KLGA |  9 |  3 | 136.0 | 0 | 2
+KAUS |  14 | 13 |  96.8 | 4 | 0        KMIA |  5 |  3 |  98.5 | 1 | 2
+KDAL |  14 | 10 |  38.9 | 0 | 1        KORD |  6 |  6 | 136.0 | 2 | 0
+KHOU |  12 | 10 | 124.4 | 4 | 2        KSEA | 16 | 15 |  63.0 | 0 | 0
+KLAX |   5 |  5 |  56.9 | 1 | 0        KSFO |  6 |  3 | 120.2 | 3 | 4
+TOTAL 99 events, 76 mesh-led (77% >=50% GATE PASS), pooled median lead
+63.0 min (>=15 PASS), false-crossings 15 = 15.2% (<20% PASS)
+```
+
+**Four-day trend: 60%/74.8/10.8 -> 62%/61.0/11.2 -> 72%/49.0/5.7 -> 77%/63.0/15.2.**
+- **Caveat 1 (S233) RESOLVES BENIGN:** median lead bounced back UP (49.0 ->
+  63.0) with the fullest station set yet — the day-1..3 monotonic decline was
+  day-to-day noise, not systematic drift. Keep an eye on day-5 but stop
+  treating the decline as a live concern.
+- **Caveat 2 (composition) HONESTLY PRICED IN:** day-4 INCLUDES KSFO (the day-2
+  false-crossing hotspot, 3 FCs here) and KLAX — and still passes all gates.
+  The 15.2% FC rate vs day-3's 5.7% is exactly the composition effect S233
+  predicted (5.7% was measured with the hotspot absent); 15.2% on the full set
+  is the truer number and it is inside the gate.
+- Concentration (P14, checked before presenting): max station share 16/99 =
+  16% of events (KSEA), 15/76 = 20% of led events. No dominator.
+
+## S234 NAT_MESH VALIDATION — DRY-RUN PASS (go-live ready, operator-gated)
+
+The QUEUE-2 validation ran S234 over ~1 day of staging accrual (nat files:
+0720 partial + 0721 with 27/27/78/78/24/24 obs for EDDB/EDDM/RJTT/WSSS/YMML/
+YSSY). Method: merged pws+nat day-files into /tmp/natval/mesh, imported
+mesh_debias in the release venv with MESH_DIR/FEED_DIR/OUT_LIVE repointed at
+/tmp/natval (EXACT production logic, zero live-table risk; live mesh_debias.json
+mtime verified untouched 09:18:51Z).
+
+Per-source offsets vs each source's own METAR print (5-day trail window):
+```
+nat:dwd:EDDB  n=28 scalar -0.54F  blocks morning -0.81 / afternoon -0.54 / evening -0.36
+nat:dwd:EDDM  n=34 scalar -0.90F  city_sd 1.83 (live pws-only 1.94 — IMPROVED, still dropped)
+nat:jma:RJTT  n=26 scalar  0.00F  city_sd 2.63 (live 2.81 — improved, still dropped)
+nat:sg:WSSS   n=30 scalar -0.90F  city_sd 1.90 (live 1.96 — improved, still dropped)
+nat:bom:YSSY  n=27 scalar  0.00F  city_sd 0.48
+nat:bom:YMML  n=26 scalar  0.00F  city_sd 0.50
+```
+
+**Verdict: PASS on both stated gates.**
+- Sane offsets: max |scalar| = 0.9F; JMA/BOM essentially 0.0 (official stations
+  at/near the airport — exactly what a correct C->F + correct station pin looks
+  like). No C-as-F absurdity anywhere.
+- residual_sd < 1.5F where nat is the only source: EDDB 0.54 / YSSY 0.48 /
+  YMML 0.50 — all comfortably under. These are 3 NEW city rows the live
+  (pws-only) table doesn't have at all: Berlin, Sydney, Melbourne gain debias
+  coverage on go-live.
+- Where nat merges with noisy PWS (EDDM/RJTT/WSSS): city-level residual_sd
+  IMPROVES in all 3 cases but stays >1.5F -> the city stays dropped, same as
+  live. Go-live cannot degrade any currently-published city.
+- Design note for a later session (NOT a blocker): the drop rule pools nat with
+  PWS at city level, so a tight nat anchor inside a noisy PWS city is dropped
+  with it. If nat proves itself live, a per-source (not per-city) drop rule is
+  the natural evolution — needs its own review; do not bolt on now.
+
+**GO-LIVE remains operator-gated: `NAT_MESH_LIVE=1` on the cron line** (QUEUE 2
+procedure in the S234 kickoff). Rollback: unset the var / remove the cron line.
+
+## S234 WATCH LANDINGS + NEW FINDINGS (read-only session, ZERO code changes)
+
+1. **First-ever nowcast shadow lines + prediction_log rows.** 91
+   `weatherbot_nowcast_shadow` journal lines since deploy-3 (KLAX 70, KDAL 20,
+   KORD 1 — all `reason=repriced`), 0 `weatherbot_nowcast_crossing` entry
+   lines, and **40 `weather_nowcast_peak` rows now in prediction_log** (was 0
+   all-time at the S233 handoff; first lines 07-20 19:20Z). The pipeline is
+   proven live end-to-end: mesh crossing detected -> market checked -> found
+   already repriced -> shadow-logged. All shadows are repriced-blocks, which is
+   the S230 "hole open at the print" question now accruing LIVE evidence — the
+   07-24 remeasure's shadow scorecard has data to grade.
+2. **HK's first HKO-grounded resolution-day override chain FIRED** — 07-21
+   07:30Z..09:40Z, `weatherbot_metar_resolution_override station=VHHH unit=C`,
+   running max accumulating 28.0 -> 29.0 across the morning (the cross-poll
+   Redis accumulation working), **zero `hko_runmax_failed_closed` lines**
+   (fail-closed path never tripped). WATCH item 8 delivered.
+3. **NEW DEFECT (report-only — calibrator HANDS-OFF until ~08-07):** the ERA5
+   bootstrap INSERT into weather_calibration binds target_date as a **str**
+   (`"td": target_date_str`, weather_bot.py:1500) -> asyncpg DataError on every
+   row — the SAME S227 str-vs-date class 92740f3 fixed for gt_cutoff, at a
+   call site that fix missed (adjacent-shape miss). Evidence: bootstrap_gfs
+   rows in weather_calibration = 314, ALL created 2026-05-31..06-12, ZERO
+   since; weatherbot_bootstrap_row_failed firing since (first seen 07-14
+   03:58Z) with suppressed-duplicate counts up to 224/line; failing stations
+   include 4 of the 7 new registry cities (FACT/ZSQD/MPMG/ZGGG) + LTFM.
+   IMPACT (bounded): new/renamed stations never get their instant ERA5
+   historical seed (~75-225 rows) and cold-start purely on live accrual +
+   pooled-global fallback — slower than designed, not broken. The 7 new ICAO
+   keys ARE accruing real pairs (RKPK 5, OEJN 4, FACT/RPLL/ZSQD 3, MPMG/ZGGG 2
+   as of 07-21). FIX (1 line, when authorized): bind a datetime.date (parse
+   target_date_str) — mirror 92740f3. DO NOT touch without operator go.
+4. **KBKF persistently unhealthy (data-source watch, not code):** all 74
+   `weatherbot_station_unhealthy` lines in the last 24h are station=KBKF
+   (~3x the 3-day baseline rate, which was mixed-station). Denver is scanning
+   with degraded METAR grounding. KBKF also has no 1-min ASOS (structural) so
+   it is invisible to the mesh grades. Watch; no action.
+5. Other warning signatures at/below 3-day baseline (local_model_fetch_failed
+   ~224/day flat, losing_streak flat, open_meteo_ensemble_error flat,
+   hard_stop_order_failed ~7-11/day similar). reentry_check_failed +
+   group_error ~2x baseline, both CancelledError-with-empty-error during group
+   processing; scans complete normally every ~5 min (49 cities) — noted, no
+   action.
+6. Maker tilt-vs-control readout: NOT on the coordination list yet (checked
+   repo-root AGENT_HANDOFF_* 07-20/21 — only a Kalshi lane-state file, separate
+   lane). Still pending Maker's c13 audit/purge first.
