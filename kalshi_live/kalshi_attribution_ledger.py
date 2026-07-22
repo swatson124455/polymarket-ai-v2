@@ -286,7 +286,16 @@ def report(days=14):
         total_h += dt
         eq_a = _f(a.get("balance")) + _f(a.get("position_exposure"))
         eq_b = _f(b.get("balance")) + _f(b.get("position_exposure"))
-        if int(b.get("new_fills") or 0) == 0 and int(b.get("new_settlements") or 0) == 0:
+        # resting orders RESERVE collateral out of balance_dollars (probe-verified 07-22:
+        # balance $42.93 -> $24.79 on placing 8 quotes). So an interval is only clean if the
+        # resting book ALSO held still — otherwise place/cancel churn moves balance and would
+        # be misread as rewards. (Our running tab's old note "resting orders do NOT deduct
+        # from balance_dollars" is WRONG; this filter is why that matters.)
+        pa = sum((a.get("presence_usd_by_series") or {}).values())
+        pb = sum((b.get("presence_usd_by_series") or {}).values())
+        quiet_book = abs(pb - pa) < 0.005 and a.get("resting_orders") == b.get("resting_orders")
+        if (int(b.get("new_fills") or 0) == 0 and int(b.get("new_settlements") or 0) == 0
+                and quiet_book):
             clean_rw += eq_b - eq_a
             clean_h += dt
         else:

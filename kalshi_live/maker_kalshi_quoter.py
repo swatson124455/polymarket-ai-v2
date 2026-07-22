@@ -426,6 +426,20 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     ext_n = max(0.0, sum(s for _, s in nl) - float(own.get("no", 0)))
     target = m["target"]
     void = ext_y < target or ext_n < target
+    # REWARD-QUALIFICATION GATE (CFTC Feb-2026 LIP amendment, verified 07-22): "Snapshots will
+    # be excluded if there is not two-sided liquidity (i.e. resting orders sufficient to meet
+    # the Target Size on each side)". If a side's book cannot reach Target Size, NOBODY scores
+    # that snapshot — quoting there earns exactly $0 while still taking fill risk. Live probe:
+    # 5 of 8 of our own allowlisted programs had one side at ZERO depth against target=1000.
+    # We can only bridge a gap we can actually fund, so qualification is judged against the
+    # most size our per-market activate budget could add. Inventory still unwinds (de-risk is
+    # never gated on reward) — this only stops us OPENING in markets that cannot pay.
+    _addable = (MAX_ACTIVATE_CAPITAL / max(best_y, best_n, 0.01))
+    _qualifiable = (ext_y + _addable >= target) and (ext_n + _addable >= target)
+    if not _qualifiable and abs(inv) < INV_TOLERANCE:
+        if stats is not None:
+            stats["unqualifiable"] = stats.get("unqualifiable", 0) + 1
+        return []                                   # cannot reach two-sided Target Size -> $0 reward
     # SELECTION GATE (only when ~flat — if we hold inventory we must keep quoting to unwind):
     # skip WIDE or ONE-SIDED books. A balanced two-sided book is where the maker-unwind
     # reliably fills; a one-directional/wide book is the gas-ladder trap that adverse-selects
@@ -1142,6 +1156,7 @@ def run_once():
             "first_create_err": first_create_err,
             "empty_books": qstats.get("empty_books", 0),
             "dropped_book_rows": qstats["dropped_book_rows"],
+            "unqualifiable": qstats.get("unqualifiable", 0),
             "activate_markets": sum(1 for qs in desired.values()
                                     if qs and qs[0].get("reason") == "activate"),
             "est_capital_usd": round(sum(_mkt_capital(qs) for qs in desired.values()), 2),

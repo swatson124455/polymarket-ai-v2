@@ -1183,3 +1183,22 @@ def test_ladder_cross_is_capital_gated_not_unwind_exempt(monkeypatch, tmp_path):
     assert row.get("create_skipped", 0) >= 1
     parked = [o for o in c.created if o["ticker"].endswith("4.050") and o["side"] == "no"]
     assert len(parked) == 1                                # the true reducing unwind still exempt
+
+
+def test_reward_qualification_gate(monkeypatch):
+    # CFTC Feb-2026 LIP amendment (verified 07-22): a snapshot is EXCLUDED unless BOTH sides
+    # can meet Target Size — so quoting a one-sided book earns $0 while still taking fill risk.
+    # Live probe found 5 of 8 of our own allowlisted programs with one side at ZERO depth.
+    monkeypatch.setattr(q, "MAX_ACTIVATE_CAPITAL", 15.0)   # deployed: can add ~30 ct, not 1000
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    m = {"target": 1000, "end": "2099-01-01T00:00:00Z"}
+    deep_y = [["0.50", "6000"]]; thin_n = [["0.49", "5"]]       # 5 ct + ~30 addable << 1000
+    st = {}
+    assert q.desired_quotes(m, deep_y, thin_n, q.utcnow(), inv=0.0, stats=st) == []
+    assert st.get("unqualifiable") == 1
+    # both sides deep enough -> quotes normally
+    deep_n = [["0.49", "6000"]]
+    assert q.desired_quotes(m, deep_y, deep_n, q.utcnow(), inv=0.0)
+    # HELD inventory still unwinds even in an unqualifiable market (de-risk is never reward-gated)
+    out = q.desired_quotes(m, deep_y, thin_n, q.utcnow(), inv=20.0)
+    assert out and all(x["reason"] == "unwind" for x in out)
