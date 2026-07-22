@@ -5,13 +5,13 @@ quote P&L; no cross-bot vendor/secret/nag bleed; one fix per commit; calibrator
 HANDS OFF until ~08-07 — the only exception taken remains the S233 HKO change;
 WB-ALWAYS-GLOBAL is a hard operator directive — no US-only filters, ever).
 
-**S234 in one line:** read-only verification/watch session, ZERO code changes,
-ZERO deploys — §0 all clean; day-4 mesh-lead **PASS (4th)** and the S233
-declining-lead caveat RESOLVES BENIGN; nat_mesh validation **DRY-RUN PASS**
-(go-live ready, operator-gated); first-ever nowcast shadow lines + 40
-`weather_nowcast_peak` rows; HK's first HKO-grounded override chain fired clean;
-one NEW defect found and reported (ERA5 bootstrap str-date, report-only under
-calibrator hands-off).
+**S234 in one line:** started read-only, ended with FOUR deploy-class actions on
+operator direction — day-4 mesh-lead **PASS (4th)** with the declining-lead
+caveat RESOLVED BENIGN; **nat_mesh GO-LIVE**; **ERA5 bootstrap str-date fix
+found, fixed and DEPLOYED** (WB release `20260721_230638`); **3 shared fixes
+landed on master and MASTER DEPLOYED** (`20260721_232241`, first since 06-22);
+c13 proven a NO-OP; first-ever nowcast shadow evidence; HK's first HKO override
+chain clean. Cross-bot prompts written and awaiting delivery.
 
 ## Tree / branch (READ FIRST — landmine still applies)
 
@@ -69,17 +69,19 @@ then `export PGPASSWORD="$PW"; psql -h 127.0.0.1 -U polymarket -d polymarket`.
 ## §0 — VERIFY THE S234 HANDOFF (before ANY other work)
 
 1. `bash scripts/wb_resume_check.sh` — expected: ALL PASS except (a) the known
-   "agent WORKTREE" location FAIL, (b) at most a deploy-parity WARN (HEAD ahead
-   of `20260720_150112` by S234's doc-only commits — no undeployed CODE). Any
+   "agent WORKTREE" location FAIL, (b) a deploy-parity WARN (HEAD ahead of
+   `20260721_230638` by S234's trailing doc commits — no undeployed CODE). Any
    OTHER FAIL → STOP and report.
 2. VPS spot-checks (read-only): `readlink /opt/polymarket-ai-v2-weather` →
-   `20260720_150112`; service active; the 3 WEATHER_ flags in the running
+   **`20260721_230638`**; service active; the 3 WEATHER_ flags in the running
    process env (`WEATHER_NOWCAST_ENTRY_ENABLED=true`,
    `WEATHER_PRIORITY_WAKE_ENABLED=true`, `WEATHER_VARIANCE_INFLATION_FACTOR=1.8`);
    `crontab -l | grep -cE "wb_research|mesh_debias|nat_mesh"` → 6; pws_mesh
-   5-min ticks `cities=49 wu_fails` low; nat_mesh ticks `feeds=6 feed_fails=0`
-   (live=0 unless the operator flipped go-live — see QUEUE 1); mesh_debias.json
+   5-min ticks `cities=49 wu_fails` low; nat_mesh ticks now **`live=1`** with
+   `feeds=6 feed_fails=0`, and `grep -c "nat:"` on
+   `/opt/pa2-weather-feeds/pws_mesh_$(date -u +%Y%m%d).jsonl` > 0; mesh_debias.json
    mtime after the last 09:15Z; calibration_check `grep -c ValueError` → 0.
+   Also expect `readlink /opt/polymarket-ai-v2` → **`20260721_232241`** (master).
 3. Health greps: leak SQL (`predicted_prob >= 0.9995 OR <= 0.0005` since 07-11)
    → 0. `cal_fit_failed|calibration_reload_failed` — the historical 07-11
    00:00-00:46Z cluster is EXPECTED/cleared (NB: `--since "2026-07-11 00:46"`
@@ -109,13 +111,16 @@ then `export PGPASSWORD="$PW"; psql -h 127.0.0.1 -U polymarket -d polymarket`.
   resolution-day override chain fired (07-21 07:30-09:40Z, running max 28→29 C,
   0 fail-closed lines). 7 new registry cities all in the 49-city universe and
   accruing ICAO-keyed calibration pairs (2-5 rows each as of 07-21).
-- **NEW DEFECT — REPORTED, NOT FIXED (calibrator hands-off):** ERA5 bootstrap
-  INSERT binds target_date as str → asyncpg DataError on every row
-  (weather_bot.py:1500, `"td": target_date_str`) — same S227 class as 92740f3,
-  missed call site. bootstrap_gfs rows frozen at 314 (2026-05-31..06-12, zero
-  since); first observed failure 07-14. Impact bounded: cold-starts lose the
-  instant ERA5 seed, learn from live pairs + pooled fallback only. Fix is a
-  1-line date-parse mirroring 92740f3 — NEEDS OPERATOR GO (calibration infra).
+- **ERA5 bootstrap str-date defect — FOUND, FIXED, DEPLOYED (`72d4753`,
+  release `20260721_230638`).** The insert bound target_date as a str →
+  asyncpg DataError on every row (weather_bot.py, `"td": target_date_str`) —
+  same S227 class as 92740f3, at a call site that fix missed. bootstrap_gfs rows
+  were frozen at 314 (2026-05-31..06-12, zero since); first observed failure
+  07-14. Fixed by parsing to `date` at the DB bind (isinstance-guarded; producer
+  contract untouched). ⚠ **STILL UNPROVEN IN PRODUCTION** — no cold-start has run
+  since the restart, so bootstrap_gfs is still 314. First real proof is a
+  `weatherbot_cold_start_bootstrap` → `bootstrap_complete` pair with zero
+  `bootstrap_row_failed`. WATCH FOR IT.
 - **KBKF watch:** all 74 station_unhealthy lines in 24h are KBKF (~3x mixed
   baseline) — Denver METAR grounding degraded. Data-source issue, no action.
 
@@ -144,18 +149,16 @@ then `export PGPASSWORD="$PW"; psql -h 127.0.0.1 -U polymarket -d polymarket`.
 
 ## QUEUE (operator-gated actions, in rough priority)
 
-1. **nat_mesh GO-LIVE — VALIDATED, awaiting operator go.** Flip: `crontab -e`
-   → prepend `NAT_MESH_LIVE=1 ` to the nat_mesh line. That injects national
-   anchors into the FLAG-ON nowcast data plane (adds Berlin/Sydney/Melbourne
-   debias rows; improves Munich/Tokyo/Singapore). Rollback: unset the var.
-   After go-live: verify `live=1` in nat_mesh_err ticks + `grep -c "nat:"
-   /opt/pa2-weather-feeds/pws_mesh_$(date -u +%Y%m%d).jsonl` > 0 + next 09:15Z
-   mesh_debias rotation carries `nat:` sources.
-2. **ERA5 bootstrap str-date fix** — 1-line + defect test, blocked on operator
-   go (calibrator hands-off). When authorized: parse `target_date_str` to
-   `datetime.date` at weather_bot.py:1500 (mirror 92740f3), grep for OTHER
-   str-date binds in the same file (adjacent-shape completeness, P16), defect
-   test fail→pass, full suite, deploy with sign-off.
+1. **nat_mesh GO-LIVE — DONE 2026-07-22.** `NAT_MESH_LIVE=1` is on the cron;
+   first live tick 03:04:03Z injected 3 `nat:` rows into both consumed files.
+   **REMAINING VERIFICATION (the last unchecked step): the 09:15Z `mesh_debias`
+   run is the first to see nat anchors — confirm EDDB/YSSY/YMML appear as table
+   rows and that NO existing city regressed.** Rollback: drop the cron prefix.
+2. **ERA5 bootstrap str-date fix — DONE + DEPLOYED** (`72d4753`, release
+   `20260721_230638`). ⚠ **NOT YET PROVEN IN PRODUCTION** — no cold-start has
+   run since the restart, so `bootstrap_gfs` is still 314 rows. Watch for
+   `weatherbot_cold_start_bootstrap` → `bootstrap_complete` with zero
+   `bootstrap_row_failed`; that is the outstanding proof.
 3. **Peakpass (Phase-2 signal 2) — STILL DO NOT BUILD** (viability fail:
    supply vanishes after certainty; ~9% false-lock RETRACTED, do not re-cite).
    Next action if revisited = OFFLINE supply research, not bot code.
