@@ -1051,7 +1051,11 @@ def run_once():
     sysfail = (plan.get("quote_fail", 0) > max(3, 0.5 * fp) or
                (cr and plan.get("create_fail", 0) >= cr) or
                (fp and plan.get("quoted_markets", 0) == 0 and not plan.get("fetch_failed")
-                and not plan.get("taker_flattens")))     # de-risk-only cycle != failure
+                and not plan.get("taker_flattens")       # de-risk-only cycle != failure
+                and not plan.get("breaker_reduce_only")))  # nor a reduce-only cycle with a flat
+    # footprint: quoting NOTHING is the CORRECT breaker outcome when we hold no position in any
+    # footprint market. Flagging it "systematic failure" cries wolf on a working guard, and
+    # alarm fatigue on WARNING lines is what let the 07-22 loss run behind healthy telemetry.
     status = "cycle ok" if not sysfail else "WARNING systematic failure"
     print(f"{status} mode={plan['mode']} footprint={plan.get('footprint','?')} "
           f"quoted={plan.get('quoted_markets','?')} ops={plan.get('order_ops','?')} "

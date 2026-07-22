@@ -978,3 +978,29 @@ def test_retained_reducing_survives_tight_capital_cap(monkeypatch, tmp_path):
         {"ticker": "BIGUNWIND", "position_fp": "40", "market_exposure_dollars": "18.00"}])
     _run(monkeypatch, c, str(tmp_path))
     assert "keepme" not in c.cancelled       # live reducing order NOT cancelled under tight cap
+
+
+def test_breaker_cycle_is_not_systematic_failure(monkeypatch, tmp_path, capsys):
+    # Observed live 07-22 03:35Z: a reduce-only cycle with a flat footprint quoted 0 markets and
+    # printed "WARNING systematic failure" — crying wolf on a working guard. A breaker cycle must
+    # report as 'cycle ok' (the breaker's own WARNING already says what happened).
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=20)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 20.0)             # held below trips level breaker
+    monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "FLAT1", "usd_day": 10.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    # held position sits on an ALREADY-CLOSED market (the live 07-22 03:35Z shape): its book is
+    # unfetchable, so the strand path rests nothing and the cycle legitimately quotes 0.
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        if "CLOSED" in p: raise ValueError("market closed")
+        return {"orderbook_fp": {"yes_dollars": [["0.50", "9999"]], "no_dollars": [["0.49", "9999"]]}}
+    monkeypatch.setattr(q, "public_get", pg)
+    c = MockClient(mode="live", resting=[], positions=[
+        {"ticker": "CLOSED-MKT", "position_fp": "60", "market_exposure_dollars": "29.31"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("breaker_reduce_only") == 1 and row.get("quoted_markets") == 0
+    out = capsys.readouterr().out
+    assert "systematic failure" not in out                   # no false alarm
+    assert "cycle ok" in out and "REDUCE-ONLY" in out        # honest: ok + the breaker's warning
