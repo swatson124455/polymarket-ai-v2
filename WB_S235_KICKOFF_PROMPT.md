@@ -35,9 +35,9 @@ without operator sign-off.
 tick 03:04:03Z injecting 3 `nat:` rows into both consumed pws_mesh files).
 Rollback: `crontab -e`, drop the `NAT_MESH_LIVE=1 ` prefix. §0 should now expect
 `live=1` in nat_mesh ticks and non-zero `grep -c "nat:"` on
-`/opt/pa2-weather-feeds/pws_mesh_$(date -u +%Y%m%d).jsonl`. **NEW WATCH:** the
-09:15Z `mesh_debias` run is the first to see nat anchors — confirm Berlin/Sydney/
-Melbourne (EDDB/YSSY/YMML) appear as table rows and that no city regressed.
+`/opt/pa2-weather-feeds/pws_mesh_$(date -u +%Y%m%d).jsonl`. The first
+nat-anchored `mesh_debias` (07-22 09:15Z) is GRADED — Sydney + Melbourne are new
+published cities; see QUEUE 1 for the two anomalies and the open EDDB prediction.
 
 **MASTER WAS DEPLOYED — release `20260721_232241`** (operator "proceed"; spec
 §"S234 ARC 4"). The two fixable blockers were fixed first and pushed to master:
