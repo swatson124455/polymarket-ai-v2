@@ -94,14 +94,23 @@ def series_of(ticker):
 def fill_cashflow(f):
     """Signed CASH flow of one fill from OUR account's perspective (negative = cash out).
     Kalshi fill: action buy/sell, side yes/no, count, yes_price. Buying any side costs that
-    side's price x count; selling receives it. NO-side price = 1 - yes_price."""
+    side's price x count; selling receives it. NO-side price = 1 - yes_price.
+
+    FEES ARE SUBTRACTED (external review 2026-07-22, accepted): the live fill payload carries
+    `fee_cost` (probe-verified 07-22 18:05Z). Omitting it pushed every fee into the
+    rewards_residual bucket, i.e. a taker-fee leak would have been reported as REWARDS —
+    corrupting the one number the whole strategy is judged on. Maker fills are fee-free
+    (receipt-verified), so today's impact is ~0; a taker fill would not have been."""
     cnt = _f(f.get("count_fp") or f.get("count"))
     yp = _f(f.get("yes_price_dollars") or f.get("yes_price"))
     if yp > 1.0:                      # some payloads carry cents — normalize
         yp = yp / 100.0
     price = yp if (f.get("side") == "yes") else (1.0 - yp)
     cash = -price * cnt if f.get("action") == "buy" else price * cnt
-    return cash
+    fee = _f(f.get("fee_cost"))
+    if fee > 1000:                    # cents-scale guard (fee_cost lacks a _dollars suffix)
+        fee = fee / 100.0
+    return cash - abs(fee)
 
 
 def settlement_revenue(s):
