@@ -114,8 +114,26 @@ def fill_cashflow(f):
 
 
 def settlement_revenue(s):
-    """Settlement payout in dollars. `revenue` observed in CENTS on prod (07-21 probe:
-    12/29/31 matched $0.12/$0.29/$0.31 of dust)."""
+    """Settlement payout in dollars from the `revenue` field (cents on prod).
+
+    2026-07-22 INVESTIGATION — read before "fixing" this again. A day showed rewards_residual
+    +$57.82 (~89% daily return on a $65 account: impossible). Two hypotheses were tested and
+    BOTH were wrong; the residual gap is NOT here:
+      H1 "revenue under-reports payouts": rows showed revenue=0 alongside yes_count_fp=20 /
+         no_count_fp=20. REFUTED — yes_count_fp/no_count_fp are GROSS traded counts, not the
+         settled position. Reconstructing the position from the fill tape showed we held +40 YES
+         into a result=no settlement, i.e. the contracts genuinely expired worthless and
+         revenue=0 is CORRECT. Substituting winning-side-count x $1 produced $274.50 of
+         "payouts" on a $65 account — a worse number that merely looked authoritative.
+      H2 "matched pairs net and return $1/pair at trade time, unmodelled": REFUTED — replaying
+         the tape found 0.00 contracts netted against opposite inventory that day.
+    REMAINING SUSPECT (unverified, do NOT code on faith): fill_cashflow's sell-side convention.
+    Kalshi has no naked short, so an OPENING "sell no" is economically a BUY of yes and costs
+    yes_price x count, while this function books it as RECEIVING no_price x count. That
+    asymmetry would create exactly this shape of unexplained inflow. Proving it needs
+    position-aware (opening vs closing) cash modelling per fill.
+    UNTIL THEN: rewards_residual is NOT a trustworthy rewards figure. Ground truth for rewards
+    is the Kalshi web UI (the only receipt-grade number to date: ~$18.60, operator-confirmed)."""
     return _f(s.get("revenue")) / 100.0
 
 
