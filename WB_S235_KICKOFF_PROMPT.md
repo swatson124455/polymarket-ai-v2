@@ -56,6 +56,12 @@ flags survived, nat_mesh still `live=1`.
 Rollback: `deploy/rollback.sh`, or flip `/opt/polymarket-ai-v2` back to
 `/opt/pa2-releases/20260622_225148` + restart the 4 services.
 
+**CROSS-BOT PROMPTS ARE WRITTEN AND WAITING** — `docs/WB_S234_CROSSBOT_PROMPTS.md`
+(committed) holds ready-to-paste notifications for MB, Maker, EB and SB. If the
+operator has not yet delivered them, that is the top outstanding action: MB and
+Maker are the two that matter (MB runs the master tree and took all 41 commits;
+Maker must NOT purge its feed on the stale c13 relay).
+
 **DB credential gotcha:** no usable `DB_PASSWORD` in the shared env — extract:
 `PW=$(grep -oP "postgresql[^ ]*://polymarket:\K[^@]+" /opt/pa2-shared/.env | head -1)`
 then `export PGPASSWORD="$PW"; psql -h 127.0.0.1 -U polymarket -d polymarket`.
