@@ -653,6 +653,11 @@ def run_once():
                 # reconcile guard: the exchange HAS resting orders we failed to parse.
                 # Do NOT create the book on top of them (that stacks collateral). Halt.
                 plan["reconcile_fail"] = raw_rows
+                # A total parse failure means we hold resting orders we cannot interpret — we are
+                # functionally BLIND to our own book even though the read succeeded, and those
+                # quotes keep filling while we halt. So it must drive the blackout streak too:
+                # sustained, it escalates to cancel-by-last-known-id (which needs no parse).
+                _blackout_guard(client, st, plan)
                 print(f"WARNING reconcile FAIL: {raw_rows} resting rows parsed to 0 — halting (no order ops)")
                 return 0
             own = own_resting(standing)

@@ -445,8 +445,9 @@ def test_unwind_size_never_overshoots_inventory(monkeypatch):
     assert q._unwind_size(80, 0.50, 3.4) == 3          # fractional inv rounds, still <= |inv|
     assert q._unwind_size(80, 0.50, 50) == 50          # normal case: rest exactly the position
     # room bound = FULL MAX_MARKET_CAPITAL now (review C6/C10: reducing side has no paired side to
-    # share the per-market budget). inv beyond room is clamped to room; |inv| below it still binds.
-    assert q._unwind_size(80, 0.99, 400) <= int(250/0.99) + 1       # room-bounded when |inv|>room
+    # share the per-market budget). Pinned with == (not <=): the old /2 room returned 126 here, so
+    # a <= assertion would pass on BOTH builds and pin nothing.
+    assert q._unwind_size(80, 0.99, 400) == int(250 / 0.99)         # 252 post-fix; 126 pre-fix
     assert q._unwind_size(80, 0.50, 200) == 200        # |inv| within room -> exactly the position
     # end-to-end: a +5 long-yes ticker rests a NO unwind of exactly 5 (no overshoot)
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
@@ -524,7 +525,11 @@ def test_strand_inventory_gets_maker_unwind(monkeypatch, tmp_path):
     assert len(unwinds) == 1                              # long-yes strand -> reducing NO bid rested
 
 
-# ================= 2026-07-21 review fixes (C1..C18) — each fails on build ea28fa38 ==============
+# ================= 2026-07-21 review fixes (C1..C18) ==============================================
+# EMPIRICALLY MEASURED against the pre-fix build (ea28fa38): 15 of these 16 tests FAIL on it and so
+# genuinely pin their fix. The exception is test_gtc_canceled_still_raises, which passes on BOTH
+# builds by design — it is a REGRESSION GUARD proving the new IOC exemption did not leak into the
+# GTC/post_only resting-quote path, not a fix-pin. Do not "fix" it to fail on pre-fix.
 from maker_kalshi_client import KalshiOrderClient
 
 
@@ -719,3 +724,20 @@ def test_run_lock_skips_when_held(monkeypatch, tmp_path):
     finally:
         q.KalshiOrderClient = orig
     assert rc == 0 and not c.cancelled and not c.created   # did nothing while the lock was held
+
+
+# ---- blind-review follow-up: a total parse failure must ALSO drive the blackout streak ----
+def test_reconcile_fail_escalates_blackout(monkeypatch, tmp_path):
+    # raw resting rows exist but ALL fail to parse -> we hold orders we cannot interpret (blind to
+    # our own book) while they keep filling. Sustained, that must escalate to cancel-by-known-id.
+    monkeypatch.setattr(q, "BLACKOUT_CANCEL_AFTER", 2)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [], "next_cursor": ""})
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
+        json.dump({"read_fail_streak": 1, "last_oids": ["a", "b"]}, f)
+    bad = [{"order_id": "x", "ticker": "T", "outcome_side": "yes"}]   # raw>0 but parses to 0
+    c = MockClient(mode="live", resting=bad)
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("reconcile_fail") == 1
+    assert row.get("read_fail_streak") == 2            # parse failure now drives the streak
+    assert set(c.cancelled) == {"a", "b"}              # sustained -> last-known quotes cancelled
