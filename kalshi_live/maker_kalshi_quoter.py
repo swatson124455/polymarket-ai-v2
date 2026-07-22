@@ -242,22 +242,35 @@ def parse_iso(s):
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
+# DROP REASONS from the last select_footprint call. A footprint that silently empties (clock
+# skew, API date-format change, a series renamed out of the allowlist) otherwise prints
+# 'cycle ok footprint=0' forever while the bot is functionally dead (masking audit 07-22).
+# Module-level rather than a parameter so the 2-arg signature every caller/test uses is intact.
+FP_DROPS = {}
+
+
 def select_footprint(progs, now):
+    FP_DROPS.clear()
+    drops = FP_DROPS
     rows = []
     for p in progs:
         if (p.get("incentive_type") or "liquidity") != "liquidity":
+            drops["drop_not_liquidity"] = drops.get("drop_not_liquidity", 0) + 1
             continue
         if p.get("target_size_fp") is None or p.get("discount_factor_bps") is None:
+            drops["drop_null_fields"] = drops.get("drop_null_fields", 0) + 1
             continue
         t = p.get("market_ticker")
         if not t:
             continue
         if SERIES_ALLOW and t.split("-")[0] not in SERIES_ALLOW:
+            drops["drop_allowlist"] = drops.get("drop_allowlist", 0) + 1
             continue                       # series allowlist (pilot = weather/temp only)
         try:
             end = parse_iso(p["end_date"])
             start = parse_iso(p["start_date"])
         except Exception:
+            drops["drop_date_parse"] = drops.get("drop_date_parse", 0) + 1
             continue
         life_min = max((end - start).total_seconds() / 60.0, 1.0)
         # LATE-LIFE ENTRY GATE (2026-07-22): no entry past LATE_LIFE_FRAC of THIS market's own
@@ -265,6 +278,7 @@ def select_footprint(progs, now):
         # via the strand path. Always at least the wind-down cutoff.
         cutoff_min = min(MAX_ENTRY_CUTOFF_MIN, max(WIND_DOWN_MIN, LATE_LIFE_FRAC * life_min))
         if end < now + timedelta(minutes=cutoff_min):
+            drops["drop_late_life"] = drops.get("drop_late_life", 0) + 1
             continue
         days = max((end - start).total_seconds() / 86400, 1 / 24)
         # period_reward may be present-but-null (pending programs) -> `or 0`, not .get default
@@ -691,6 +705,7 @@ def run_once():
     fetch_failed = 0
     quote_fail = 0                        # desired_quotes raised (our-logic error, surfaced)
     first_quote_err = None
+    first_create_err = None
     qstats = {"dropped_book_rows": 0}     # malformed book rows skipped by _levels
     try:
         progs = []
@@ -703,6 +718,8 @@ def run_once():
             if not cursor:
                 break
         footprint = select_footprint(progs, now)
+        plan.update(FP_DROPS)                 # drop reasons (empty when a test patches selection)
+        plan["programs_seen"] = len(progs)
         usd_day = {m["ticker"]: m["usd_day"] for m in footprint}
 
         # standing FIRST so activate can size against external (non-own) depth.
@@ -774,6 +791,14 @@ def run_once():
                 _equity = float(client.get_balance().get("balance_dollars") or 0) + held_cost
             except Exception as e:
                 plan["balance_read_failed"] = repr(e)[:120]
+                st["balance_fail_streak"] = int(st.get("balance_fail_streak", 0)) + 1
+                plan["balance_fail_streak"] = st["balance_fail_streak"]
+                # the daily-loss kill is DISARMED while this persists — every other guard read
+                # fails closed with a WARNING; this one used to fail open silently.
+                print(f"WARNING balance read failed x{st['balance_fail_streak']} ({e!r}) — "
+                      f"DAILY LOSS KILL DISARMED this cycle")
+            else:
+                st["balance_fail_streak"] = 0
             if _equity is not None:
                 _day = now.strftime("%Y%m%d")
                 if st.get("equity_day") != _day:
@@ -810,6 +835,7 @@ def run_once():
         naked_by = ladder_pairing(held_by)
         flattened = set()
         taker_flattens = 0
+        taker_failed = 0
         if client.mode != "dry_run" and TAKER_FLATTEN and held_by:
             oids_by_t = {t: [o["order_id"] for o in ol] for t, ol in standing.items()}
             for t, pos in list(naked_by.items()):
@@ -829,12 +855,25 @@ def run_once():
                     # fresh read), which can include a paired leg — bounded pennies, rare, and
                     # never a flip (capped at |pos0|). The TRIGGER is naked-only by design.
                     ok, nc = flatten_to_zero(client, t, oids_by_t.get(t))
-                    taker_flattens += 1
-                    flattened.add(t)
-                    standing.pop(t, None)               # its resting orders were cancelled
-                    held_by.pop(t, None)
-                    naked_by.pop(t, None)
+                    # HONEST OUTCOME (masking audit 07-22): flatten_to_zero cancels the ticker's
+                    # resting orders FIRST, so a FAILED flatten (book unreadable / every IOC
+                    # rejected / zero liquidity) leaves the position naked with NO reducing quote.
+                    # Treating that as success (popping the ticker + counting a flatten) skipped
+                    # the passive unwind AND suppressed the sysfail alarm — telemetry claimed the
+                    # backstop ran while the position rode into settlement. Only a CONFIRMED flat
+                    # retires the ticker; a failure falls through to normal maker unwind handling.
+                    standing.pop(t, None)               # its resting orders WERE cancelled either way
+                    if ok:
+                        taker_flattens += 1
+                        flattened.add(t)
+                        held_by.pop(t, None)
+                        naked_by.pop(t, None)
+                    else:
+                        taker_failed += 1
+                        print(f"WARNING taker flatten FAILED on {t} (pos={pos:+.2f}, {nc} crosses) "
+                              f"— position kept for maker unwind this cycle")
         plan["taker_flattens"] = taker_flattens
+        plan["taker_failed"] = taker_failed
 
         # per-EVENT aggregate signed delta (post de-risk) — drives the throttle direction so
         # correlated nested strikes can't accumulate unbounded directional exposure.
@@ -848,6 +887,10 @@ def run_once():
                 continue                                # just de-risked; leave it alone this cycle
             try:
                 ob = public_get(f"/trade-api/v2/markets/{t}/orderbook").get("orderbook_fp") or {}
+                if not (ob.get("yes_dollars") or ob.get("no_dollars")):
+                    # ENVELOPE-level emptiness (API field rename / genuinely empty book) is
+                    # invisible to the row-level malformed counter — count it (masking audit).
+                    qstats["empty_books"] = qstats.get("empty_books", 0) + 1
             except RuntimeError:
                 break                     # budget exhausted — stop fetching
             except Exception:
@@ -1052,8 +1095,10 @@ def run_once():
                     ro = resp.get("order") if isinstance(resp.get("order"), dict) else resp
                     oid = (ro or {}).get("order_id") or oid
                 created_ok.append((c, oid)); committed += cost
-            except Exception:
+            except Exception as e:
                 create_fail += 1
+                if first_create_err is None:        # anonymous create_fail hid WHAT was rejected
+                    first_create_err = f"{c['ticker']}/{c['side']}/{c.get('reason')}: {e!r}"[:160]
 
         # next dry-run standing = prior standing - cancels + created (reflects truncation)
         if client.mode == "dry_run":
@@ -1088,6 +1133,8 @@ def run_once():
             "cancel_fail": cancel_fail, "create_fail": create_fail,
             "create_skipped": create_skipped,
             "quote_fail": quote_fail, "first_quote_err": first_quote_err,
+            "first_create_err": first_create_err,
+            "empty_books": qstats.get("empty_books", 0),
             "dropped_book_rows": qstats["dropped_book_rows"],
             "activate_markets": sum(1 for qs in desired.values()
                                     if qs and qs[0].get("reason") == "activate"),
@@ -1106,8 +1153,13 @@ def run_once():
     # failing to compute, most creates rejected, or the whole footprint gated out.
     fp = plan.get("footprint", 0) or 0
     cr = plan.get("creates", 0) or 0
+    ca = plan.get("cancels", 0) or 0
     sysfail = (plan.get("quote_fail", 0) > max(3, 0.5 * fp) or
                (cr and plan.get("create_fail", 0) >= cr) or
+               (ca and plan.get("cancel_fail", 0) >= ca) or      # total cancel-path failure
+               (fp and plan.get("fetch_failed", 0) >= fp) or     # total book-fetch failure
+               plan.get("taker_failed", 0) > 0 or                # a backstop that did NOT work
+               (plan.get("programs_seen", 0) > 0 and fp == 0) or  # dead selection (was invisible)
                (fp and plan.get("quoted_markets", 0) == 0 and not plan.get("fetch_failed")
                 and not plan.get("taker_flattens")       # de-risk-only cycle != failure
                 and not plan.get("breaker_reduce_only")))  # nor a reduce-only cycle with a flat

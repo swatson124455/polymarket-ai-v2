@@ -1083,3 +1083,57 @@ def test_ladder_escape_hatch_splits_parked_unwind(monkeypatch, tmp_path):
         {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "2.00"}])
     row2 = _run(monkeypatch, c2, str(tmp_path))
     assert row2.get("ladder_cross") is None
+
+
+# ============ 07-22 MASKING AUDIT fixes (honest failure reporting) ============
+def test_failed_taker_not_counted_as_success(monkeypatch, tmp_path):
+    # HIGH (masking audit): flatten_to_zero's result was discarded — a FAILED flatten (book
+    # unreadable / IOCs rejected) still counted a flatten, popped the ticker (so NO passive
+    # unwind rested) and suppressed sysfail. Now: failure keeps the position for maker unwind,
+    # counts taker_failed, and raises the alarm.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0); monkeypatch.setattr(q, "TAKER_FLATTEN", True)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        if p.endswith("/orderbook"): raise ValueError("book unreadable")   # flatten CANNOT work
+        return {"market": {"close_time": "2000-01-01T00:00:00Z"}}          # near settle -> try
+    monkeypatch.setattr(q, "public_get", pg)
+    c = MockClient(mode="live", resting=[], positions=[
+        {"ticker": "T1", "position_fp": "20.00", "market_exposure_dollars": "12.00"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("taker_flattens", 0) == 0        # NOT counted as a successful flatten
+    assert row.get("taker_failed", 0) == 1          # counted honestly as a failure
+    assert not c.crosses                            # nothing crossed (book unreadable)
+
+
+def test_empty_footprint_is_flagged(monkeypatch, tmp_path, capsys):
+    # HIGH (masking audit): programs existed but ALL were dropped -> footprint=0 printed
+    # 'cycle ok' forever while the bot was functionally dead. Now: sysfail + drop reasons.
+    _cfg(monkeypatch)
+    monkeypatch.setattr(q, "SERIES_ALLOW", ["KXONLYTHIS"])
+    prog = {"market_ticker": "KXOTHER-26JUL22-T1", "incentive_type": "liquidity",
+            "target_size_fp": 1000, "discount_factor_bps": 5000, "period_reward": 100000,
+            "start_date": "2026-07-22T00:00:00Z", "end_date": "2099-01-01T00:00:00Z"}
+    monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [prog], "next_cursor": ""}
+                        if "incentive" in p else {"orderbook_fp": {}})
+    c = MockClient(mode="live", resting=[], positions=[])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("footprint") == 0 and row.get("programs_seen") == 1
+    assert row.get("drop_allowlist") == 1                    # WHY it emptied is recorded
+    assert "systematic failure" in capsys.readouterr().out   # dead selection now alarms
+
+
+def test_balance_read_failure_is_loud(monkeypatch, tmp_path, capsys):
+    # HIGH (masking audit): the balance read was the only fail-OPEN guard input — failure
+    # silently disarmed the daily-loss kill with no print. Now it warns + tracks a streak.
+    _cfg(monkeypatch)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [], "next_cursor": ""})
+    class NoBalance(MockClient):
+        def get_balance(self): raise RuntimeError("balance 503")
+    c = NoBalance(mode="live", resting=[], positions=[])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert "balance_read_failed" in row and row.get("balance_fail_streak") == 1
+    assert "DAILY LOSS KILL DISARMED" in capsys.readouterr().out
