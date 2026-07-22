@@ -28,7 +28,17 @@ bootstrap INSERT binds target_date as str (weather_bot.py:1500) → asyncpg
 DataError, S227 class missed by 92740f3; bootstrap_gfs rows frozen at 314 (none
 since 06-12); new-city cold-starts slower than designed but accruing real pairs
 under ICAO keys. WATCH: KBKF persistently unhealthy (74/24h, all-KBKF). Maker
-tilt readout NOT landed. Spec §"S234 WATCH LANDINGS". Prior header (S233) below.)
+tilt readout NOT landed. Spec §"S234 WATCH LANDINGS". **LATE S234 — CROSS-BOT
+RELAYS EXECUTED ON OPERATOR DIRECTION** (was relay-only; RULE ONE-A concern
+raised and reaffirmed): shared RedisCache `raise_on_error` + top-level
+`_publish_signal` guard + c12 shared-calibrator nowcast exclusion all landed on
+**master** (`ca97b4d`->`3ca2270`, branch `claude/shared-fixes-s234`); c12 is new
+work (8 pooled sites x both copies, defect tests fail->pass, suite 3991 pass /
+1 pre-existing unrelated fail). **c13 is a verified NO-OP — nothing to purge**
+(first nowcast row 07-20 19:20:31Z, over a day AFTER c5 shipped 07-19; zero
+0.42-0.46 feed lines pre-c5). ⚠ **NOTHING DEPLOYED — the next `deploy.sh` ships
+all three and restarts mirror/esports/ingestion.** Spec §"S234 CROSS-BOT RELAY
+EXECUTION". Prior header (S233) below.)
 Prior header (S233 — big session under operator "permission on all
 go": verification/watch + Tier-3 registry additions + shared signal fix (TWO
 deploys) + national-feed mesh collector BUILT & STAGING + a cleanup. Beyond the

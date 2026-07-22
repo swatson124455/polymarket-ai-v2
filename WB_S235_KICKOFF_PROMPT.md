@@ -130,19 +130,41 @@ then `export PGPASSWORD="$PW"; psql -h 127.0.0.1 -U polymarket -d polymarket`.
    validation (spec §"S234 NAT_MESH VALIDATION"); needs its own review; only
    worth it if nat proves itself live.
 
-## CROSS-BOT FLAGS TO RELAY (WB does NOT act — peer rules + RULE ONE-A)
+## CROSS-BOT RELAYS — EXECUTED S234 ON OPERATOR DIRECTION (was: relay-only)
 
-- **Shared RedisCache raise_on_error root fix** (memory
-  `project_shared_redis_get_root_fix.md`): top-level copy still needs a peer
-  master merge + deploy; EB/Maker/SB apply per branch. Backward-compatible.
-- **Top-level `_publish_signal` market_id guard** (memory
-  `project_shared_signal_market_id_fix.md`): WB vendored copy DEPLOYED
-  (`754555a`); top-level `base_engine/signals/signal_ingestion.py` PENDING a
-  peer master merge + deploy for mirror/esports/ingestion.
-- **c13 (Maker):** pre-c5 mislabeled ~0.44 lines in `wb_forecasts.jsonl` —
-  Maker to audit/purge BEFORE the tilt readout is trustworthy.
-- **c12 (MB):** shared prediction_log calibrators unfiltered by
-  bot_name/model_name — MB to filter.
+The operator directed this WB session to EXECUTE all four relays ("1 2 3 4 do
+it", reaffirmed after the RULE ONE-A scope concern was raised). Landed on
+`master` via `claude/shared-fixes-s234`, fast-forward `ca97b4d` -> `3ca2270`.
+Full detail + evidence in spec §"S234 CROSS-BOT RELAY EXECUTION".
+
+**⚠ THE ONE THING TO KNOW: these are on master but NOT deployed.** The next
+`deploy.sh` restarts mirror/esports/ingestion and will ship all three code
+commits. That deploy was deliberately NOT run from WB and stays operator/peer-
+gated. If you are about to deploy for an unrelated reason, know you are also
+shipping c12.
+
+1. **RedisCache `raise_on_error`** — LANDED (`0e26f70`). Master had 0
+   occurrences before. Default `False` = byte-identical legacy behaviour.
+2. **Top-level `_publish_signal` market_id guard** — LANDED (`1950501`).
+   Defect confirmed live on master (bare `signal["market_id"]`); guard now an
+   early return. ⚠ The cherry-pick CONFLICTS in
+   `tests/unit/test_batch_e_infrastructure.py` and "keep incoming" silently
+   imports the WB-only S223 watchdog test block for code master lacks — see the
+   spec section before ever redoing this.
+3. **c13 (Maker feed purge)** — **NO-OP, nothing to purge, do NOT purge.**
+   The first `weather_nowcast_peak` row is 2026-07-20 19:20:31, over a day
+   AFTER c5 shipped (07-19) — the pre-c5 window contained no nowcast rows, and
+   the feed has ZERO lines in the 0.42-0.46 band on 07-17/18/19. The single
+   0.4438 line (Jeddah, 07-20T05:00Z) predates the first nowcast row and is a
+   genuine main-model forecast; deleting it would corrupt Maker's tilt study.
+4. **c12 (shared calibrator nowcast exclusion)** — LANDED (`3ca2270`), 8 pooled
+   sites x both module copies, defect tests fail->pass, suite 3991 pass / 1
+   pre-existing unrelated failure. Real but small today (40 resolved nowcast
+   rows vs 795,642 mirror rows in the 90d pool); the protection that matters is
+   the recent-N readers (n=20/50/100). **MB should be told** — this changes what
+   MirrorBot's calibrator fits on, and MB's live scan output was NOT inspected
+   from this WB session (RULE ONE-A); that verification belongs to an MB session
+   after the deploy.
 
 ## STANDING OPERATOR REMINDERS (echo EVERY handoff until confirmed)
 

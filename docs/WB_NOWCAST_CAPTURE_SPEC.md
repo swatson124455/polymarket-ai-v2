@@ -1549,3 +1549,86 @@ procedure in the S234 kickoff). Rollback: unset the var / remove the cron line.
 6. Maker tilt-vs-control readout: NOT on the coordination list yet (checked
    repo-root AGENT_HANDOFF_* 07-20/21 — only a Kalshi lane-state file, separate
    lane). Still pending Maker's c13 audit/purge first.
+
+## S234 CROSS-BOT RELAY EXECUTION (operator-directed "1 2 3 4 do it", 2026-07-21)
+
+The operator directed this WB session to EXECUTE the four cross-bot relays
+rather than just hand them off, reaffirming after the scope concern (RULE ONE-A)
+was raised. Work landed on `master` via branch `claude/shared-fixes-s234`
+(3 commits, fast-forward from `ca97b4d` -> `3ca2270`). **NOTHING WAS DEPLOYED.**
+
+**⚠ DEPLOY COUPLING — READ BEFORE THE NEXT deploy.sh.** These fixes are on
+master but NOT on any running service. The next `deploy.sh` (which restarts
+mirror / esports / ingestion) will ship all three. That deploy remains
+operator/peer-gated; it was deliberately NOT run from this WB session.
+
+### Relay 1 — shared RedisCache `raise_on_error` (LANDED, commit `0e26f70`)
+Cherry-pick of `e37d666`. Master had ZERO occurrences of `raise_on_error`
+before this. Backward-compatible: default `False` = byte-identical legacy
+behaviour, capability-only until a caller opts in, so no bot is forced to
+change. Both copies + tests came across cleanly.
+
+### Relay 2 — top-level `_publish_signal` market_id guard (LANDED, commit `1950501`)
+Cherry-pick of `754555a`. Confirmed the defect was live on master:
+`signal_ingestion.py:752` was a bare `signal["market_id"]`. Guard now sits at
+`:727` as an early return ahead of every subscript.
+**LANDMINE FOUND IN MY OWN FIRST ATTEMPT — recorded because it will recur.**
+The cherry-pick conflicts in `tests/unit/test_batch_e_infrastructure.py`, and
+the naive "keep incoming" resolution silently imports ~119 EXTRA lines: the
+WB-branch S223 watchdog block (`TestS223WatchdogStartupGrace` + 5 `_S223Fake*`
+helpers), whose subject code (`4170a8c`) is NOT on master. Result: an imported
+test for absent code, failing on master. Tell: the cherry-pick reported 205
+insertions where the source commit had 88. Correct resolution = master's 657-line
+file + ONLY the 56-line `TestSignalIngestionMarketIdGuard` block. Second trap:
+resolving this with a Python script that reads `git show` via `subprocess`
+`text=True` decodes with the LOCALE codec and mojibakes every box-drawing char
+(`─` -> `â”€`), showing up as ~34 phantom deletions — decode bytes as UTF-8
+explicitly. Final commit: 86 insertions, 0 deletions, master prefix
+byte-identical (asserted).
+
+### Relay 3 — c13 Maker feed purge (NO-OP — NOTHING TO PURGE, no code change)
+**The premise does not hold against the live file; DO NOT purge anything.**
+Two independent lines of evidence:
+1. Feed audit (`/opt/pa2-maker-feeds/wb_forecasts.jsonl`, 17,220 lines spanning
+   2026-07-17T18:57:36Z -> 2026-07-22T02:06:23Z): across 07-17, 07-18 and 07-19
+   — the entire pre-c5 window — there are **ZERO** lines with prob in
+   [0.42, 0.46]. Exactly ONE line in the whole file matches the c13 signature
+   (`model=weather_temperature`, 0.43<=p<=0.45): Jeddah, logged
+   2026-07-20T05:00:48Z, prob 0.4438.
+2. The nowcast signal's FIRST prediction_log row is
+   `MIN(prediction_time) = 2026-07-20 19:20:31` (model_name
+   `weather_nowcast_peak`, 97 rows at query time). c5 (`ebad791`) shipped
+   2026-07-19 in release `20260719_150142`. **The signal fired for the first
+   time more than a day AFTER c5 was fixed** — so during the pre-c5 exposure
+   window there was nothing to leak.
+The single 0.4438 Jeddah line predates the first nowcast row by ~14h, so it
+cannot be a nowcast row; it is an ordinary main-model forecast that happens to
+sit near 0.44 (nothing is special about that value for the main model).
+**Purging it would delete genuine data and corrupt Maker's tilt study.**
+c13 can be closed as empty — the concern was sound in theory, but the signal's
+rarity meant the exposure window never contained a nowcast row.
+
+### Relay 4 — c12 shared calibrator nowcast exclusion (LANDED, commit `3ca2270`)
+Real defect, but far smaller live than the relay text implies — and now fixed
+at 8 sites across both module copies. See the commit body for the full site
+list and rationale. Key measurements (all read-only SQL, 2026-07-21):
+- Resolved 90d pool is dominated by `mirror_split_rtds` 795,642 vs
+  `weather_temperature` 57,835 vs `weather_nowcast_peak` **40**; the calibrator
+  queries take the most recent 5,000, so today's contamination is negligible.
+- The REAL exposure is the recent-N readers in `database.py` (n=20/50/100),
+  where a resolve burst can dominate a window — that is what the fix protects.
+- `model_name` is NULL on **0** of 3,606,154 rows, so the predicate is safe
+  today; it is still COALESCE-wrapped because a bare `NOT LIKE` drops NULLs.
+Defect tests proven fail->pass (14 fail on pre-fix master sources, 19 pass
+after). Full suite **3991 passed / 1 failed**; that single failure
+(`test_weather_bot.py::TestDateParsing::test_full_month_name`) was executed on a
+pristine `origin/master` worktree and fails there identically — a date-rollover
+test (it parses "January 22" against a July "now"), unrelated to this work.
+
+**Scope note for the record:** relays 3 and 4 are Maker- and MB-assigned in the
+memory relay text, and RULE ONE-A says a WB session never touches MB. The
+conflict was raised with the operator before any edit and the instruction was
+reaffirmed verbatim, so it was executed as an operator override. c12 changes
+what data MirrorBot's calibrator fits on; MB should be told, and MB's own live
+scan output was NOT inspected from this session (RULE ONE-A) — that verification
+belongs to an MB session post-deploy.
