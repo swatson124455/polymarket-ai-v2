@@ -1817,3 +1817,89 @@ use hysteresis / a per-source drop rule rather than a single hard per-city cut.
 recent prediction 02:57Z — the signal remains rare, as expected. Those 40
 resolved rows are exactly what c12 now excludes from the shared calibrators.
 Weather scan healthy: 49 cities / 100 groups / 330 markets at 18:59Z.
+
+## S234 — ALL KNOWN ISSUES RUN DOWN (2026-07-22 ~20:1xZ)
+
+Sweep of every open abnormality. **Four RESOLVED, two are live-gating design
+decisions that must NOT be changed unilaterally — recommendations below.**
+
+### ✅ 1. EDDB absent from the debias table — RESOLVED (timing artifact, self-healing)
+Predicted it was a supply artifact of the 9–21 LOCAL-hour gate; tested it instead
+of waiting. Dry-run of production `mesh_debias` at 20:05Z, with a full Berlin day
+accrued (paths isolated to /tmp; live table mtime verified untouched at
+09:17:14Z):
+```
+EDDB sd=0.34 dropped=False srcs=1     <- appears, and tighter than the dry-run's 0.54
+YSSY sd=0.54 dropped=False srcs=1
+YMML sd=0.57 dropped=False srcs=1
+```
+**Confirmed: nothing is wrong.** EDDB had only 6 rows before the 09:15Z run
+because Berlin (UTC+2) daylight starts ~07Z. It should appear in the 07-23
+09:15Z run unaided. No action.
+
+### ✅ 2. LTFM / EGLC regression — RESOLVED (not nat-caused)
+Neither has a nat anchor. sd drifted across the hard 1.5 cut on ordinary PWS
+churn (LTFM 1.40→1.47→1.61 and gained a 3rd source; EGLC 1.49→1.48→1.67). Both
+were already climbing before go-live. No action.
+
+### ✅ 3. Nowcast 17h silence — RESOLVED (genuine rarity, pipeline alive)
+Last line 03:06:45Z, nothing since across a full US afternoon. Checked the
+obvious suspect — debias gating — and it is NOT that: the three cities that
+produce every shadow line (KORD, KLAX, KDAL) are all PUBLISHED in the current
+table, so the signal is eligible. The pipeline emitted 55 lines earlier the same
+day. Silence is data-dependent (no mesh running-max crossed a bucket). Standing
+guidance holds: the signal is rare, do NOT "fix" it.
+
+### ✅ 4. Day-5 mesh-lead grade — RESOLVED AS NOT GRADEABLE (upstream data loss)
+`--lead 20260720` returns 0 events. Cause is the IEM 1-min arbiter, not our
+tooling (mesh files for 0720/0721 are present and intact). Coverage probe:
+```
+sid   0719 (control)   0720 (day-5)   0721
+ORD             1041            112      0
+DAL             1397              0      0
+SEA             1439            107      0
+MIA             1439             99      0
+ATL             1437             77      0
+HOU             1425              0      0
+```
+**The 0720 counts are IDENTICAL to the probe taken ~24h earlier** (ORD 112,
+SEA 107, MIA 99) — so that day's backfill has FINISHED at ~8%, it is not still
+arriving. **Day-5 is a lost day; do not keep retrying it.** 0721 is genuinely
+still pending (all zeros). **The next lead-trend point is day-6 (`--lead
+20260721`)**, once its backfill lands. The series therefore reads day-1..4 then
+a gap: 60%/74.8 → 62%/61.0 → 72%/49.0 → 77%/63.0, then day-6.
+
+### ⚠ 5. KBKF "unhealthy" x76/day — ROOT-CAUSED, fix NOT applied (needs a decision)
+NOT a broken station. Live probe: KBKF is healthy right now (obs 66 min old,
+temp 32.6). Its actual cadence is hourly **with 2–4 hour gaps**:
+`18:58, 17:58, 16:58, [gap], 14:58, 13:58, [3h gap], 09:58, [gap], 07:58, [4h gap], 03:58`
+versus KORD every ~5 min. `StationHealthMonitor` applies a UNIFORM
+`stale_threshold_minutes=180` (station_registry.py:1665) and gates ALL trading
+for the station on it (weather_bot.py:2837 → `return [], {}`), re-probing every
+10 min (cache TTL 600s). So during each natural gap Denver reads stale, gets
+skipped entirely, then recovers — 76 lines/day is several gap windows, not a
+fault.
+
+**Why I did not just loosen it:** this is a genuine trade-off, not a bug.
+Raising the threshold buys Denver coverage but means trading Denver on 3–4h-old
+METAR — and METAR freshness is exactly what the resolution-day running-max
+override depends on. Loosening a *trading halt* on a safety input is not a
+change to make silently. **RECOMMENDATION (needs operator go):** add an optional
+per-station `stale_threshold_minutes` override to the WeatherStation dataclass
+(default None = today's 180, byte-identical for all other cities) and set KBKF
+to ~270–300 min to match its observed cadence. Same shape as the S233
+`truth_provider` addition: both registry copies, defect tests, deploy.
+DO NOT "fix" this by dropping Denver — [[feedback_no_city_blacklist]].
+
+### ⚠ 6. Debias drop-rule churn — QUANTIFIED, change NOT applied (needs a decision)
+~8 cities sit within 0.1F of the hard 1.5 cut, so publish/drop flips daily on
+trivial movement (this is what produced finding 2). Consequence already
+recorded: "no city regressed" cannot serve as an acceptance test for any future
+mesh change. **RECOMMENDATION:** hysteresis (drop at >1.5, only re-publish
+below ~1.3) or the per-source rule already in QUEUE 4. Both change which cities
+the FLAG-ON nowcast may trade, so both need their own review + sign-off.
+
+### ✅ 7. Migration 079/080 WARNs on restart — previously CLEARED
+Both columns (`weather_calibration.actual_source`, `prediction_log.prob_frame`)
+verified present in the DB; the WARNs are re-runs hitting a statement timeout on
+already-applied DDL. Cosmetic, will recur on every deploy. No action.
