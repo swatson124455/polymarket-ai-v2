@@ -1004,9 +1004,15 @@ def run_once():
                 continue
             uws[0]["count"] = keep                      # keep+cross <= c0 <= |naked|: flip-safe
             plan["ladder_cross"] = plan.get("ladder_cross", 0) + 1
+            # reason 'ladder' (NOT 'unwind'): this order BUYS a new position on t2 — it commits
+            # fresh collateral, so the unwind exemptions ('a reducing fill frees collateral')
+            # do NOT apply to it (review 07-22). Tagging it 'unwind' would exempt it from the
+            # committed-capital gate and let several simultaneous hatches breach MAX_TOTAL.
+            # As 'ladder' it is capital-gated like any accumulating create and is dropped on
+            # breaker cycles — correct, since a breaker must not commit new cash.
             desired.setdefault(t2, []).append(
                 {"side": "no" if qn > 0 else "yes", "price_dollars": price2,
-                 "count": cross, "reason": "unwind"})
+                 "count": cross, "reason": "ladder"})
 
         # VELOCITY BREAKER application: reduce-only book — only 'unwind' quotes survive; every
         # accumulating quote (join/activate) is dropped from desired, so the diff CANCELS its
@@ -1373,11 +1379,18 @@ def _held_cost(client):
 
 
 def _strike_of(ticker):
-    """Numeric strike from a ladder ticker's last dash-field ('4.055', 'T81.99' -> 81.99).
-    None when unparseable -> that ticker never participates in ladder pairing."""
+    """Numeric strike from a ladder ticker: everything AFTER the SERIES-EVENT prefix, so a
+    NEGATIVE strike keeps its sign ('KXCPI-26SEP-T-0.4' -> -0.4, verified live on the public
+    API). Taking only the last dash-field silently returned +0.4 there — and a sign flip inverts
+    strike ordering, which would let ladder_pairing mark a genuinely UNFLOORED combo as paired
+    and strip every guard from it (review 07-22; sub-zero-F winter temp strikes are the live
+    exposure). None when unparseable -> that ticker never participates in pairing."""
     try:
-        return float(ticker.split("-")[-1].lstrip("T"))
-    except (ValueError, AttributeError, IndexError):
+        parts = ticker.split("-")
+        if len(parts) < 3:
+            return None
+        return float("-".join(parts[2:]).lstrip("T"))
+    except (ValueError, AttributeError, TypeError):
         return None
 
 

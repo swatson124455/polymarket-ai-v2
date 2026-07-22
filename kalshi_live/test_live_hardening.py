@@ -1137,3 +1137,49 @@ def test_balance_read_failure_is_loud(monkeypatch, tmp_path, capsys):
     row = _run(monkeypatch, c, str(tmp_path))
     assert "balance_read_failed" in row and row.get("balance_fail_streak") == 1
     assert "DAILY LOSS KILL DISARMED" in capsys.readouterr().out
+
+
+def test_strike_parse_preserves_negative_sign():
+    # Ladder review (07-22): last-dash-field parsing returned +0.4 for the live ticker shape
+    # KXCPI-26SEP-T-0.4, inverting strike ORDER — which marks a genuinely UNFLOORED combo as
+    # paired and strips every guard from it. Sub-zero-F winter temp strikes are the live risk.
+    assert q._strike_of("KXCPI-26SEP-T-0.4") == -0.4
+    assert q._strike_of("KXTEMPCHIH-27JAN1507-T-4.01") == -4.01
+    assert q._strike_of("KXAAAGASD-26JUL22-4.055") == 4.055      # positives unchanged
+    assert q._strike_of("KXTEMPNYCH-26JUL2117-T81.99") == 81.99
+    assert q._strike_of("KXWEIRD-26JUL22") is None and q._strike_of(None) is None
+    # UNFLOORED winter combo (+yes on the HIGHER strike) must stay NAKED = guards stay on
+    bad = {"KXTEMPCHIH-27JAN1507-T-4.01": 10.0, "KXTEMPCHIH-27JAN1507-T-9.01": -10.0}
+    assert q.ladder_pairing(bad) == bad
+    # FLOORED winter combo (+yes on the LOWER strike) still pairs correctly
+    good = {"KXTEMPCHIH-27JAN1507-T-9.01": 10.0, "KXTEMPCHIH-27JAN1507-T-4.01": -10.0}
+    assert all(v == 0 for v in q.ladder_pairing(good).values())
+
+
+def test_ladder_cross_is_capital_gated_not_unwind_exempt(monkeypatch, tmp_path):
+    # Ladder review (07-22): the hatch's cross BUYS a new position (commits fresh collateral),
+    # so tagging it 'unwind' wrongly exempted it from the committed-capital gate — several
+    # simultaneous hatches could breach MAX_TOTAL. It is now 'ladder': capital-gated.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=1)      # cap so tight nothing accumulating fits
+    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10)
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "KXAAAGASD-26JUL22-4.050", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"},
+        {"ticker": "KXAAAGASD-26JUL22-4.060", "usd_day": 90.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        if "4.050" in p:
+            return {"orderbook_fp": {"yes_dollars": [["0.13", "500"]], "no_dollars": [["0.85", "500"]]}}
+        return {"orderbook_fp": {"yes_dollars": [["0.06", "500"]], "no_dollars": [["0.92", "500"]]}}
+    monkeypatch.setattr(q, "public_get", pg)
+    c = MockClient(mode="live", resting=[], positions=[
+        {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "12.40"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("ladder_cross") == 1                    # hatch still PLANNED
+    crossed = [o for o in c.created if o["ticker"].endswith("4.060")]
+    assert not crossed                                     # ...but capital-gated, not placed
+    assert row.get("create_skipped", 0) >= 1
+    parked = [o for o in c.created if o["ticker"].endswith("4.050") and o["side"] == "no"]
+    assert len(parked) == 1                                # the true reducing unwind still exempt
