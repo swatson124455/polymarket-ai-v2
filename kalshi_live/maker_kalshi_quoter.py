@@ -836,14 +836,21 @@ def run_once():
                           f"${DAILY_LOSS_HALT_USD:.0f}) — STOP written, maker-flattening")
                     _flatten_all(client)
                     return 0
+            # RISK measure for the breakers = NAKED (unhedged) cost only. Gross held includes
+            # floored ladder pairs whose real downside is the strike gap, and gating on those
+            # pinned the bot in reduce-only over risk it does not carry (live 07-22).
+            # NOTE: the CAPITAL cap (committed vs MAX_TOTAL_CAPITAL) still uses GROSS held_cost —
+            # paired inventory really does consume cash, so capital accounting must not shrink.
+            risk_cost = naked_held_cost(held_by, cost_by)
+            plan["naked_held_usd"] = round(risk_cost, 2)
             hist = [h for h in st.get("held_hist", [])
                     if now.timestamp() - h[0] < BREAKER_WINDOW_S]
-            hist.append([now.timestamp(), held_cost])
+            hist.append([now.timestamp(), risk_cost])
             st["held_hist"] = hist[-max(30, BREAKER_WINDOW_S // 60):]
             # trips on VELOCITY (rapid growth = adverse accumulation) OR LEVEL (total unpaired
             # held-$ above the day's-rewards-scale ceiling) — either way: reduce-only below.
-            breaker = (held_cost - min(h[1] for h in hist) > BREAKER_HELD_GROWTH_USD
-                       or held_cost > HELD_MAX_USD)
+            breaker = (risk_cost - min(h[1] for h in hist) > BREAKER_HELD_GROWTH_USD
+                       or risk_cost > HELD_MAX_USD)
 
         # --- DE-RISK PASS (TAKER = GENUINE LAST RESORT ONLY). Normal position control is the
         # maker SKEW in desired_quotes (grow the reducing side, keep BOTH quotes live). The taker
@@ -1057,7 +1064,8 @@ def run_once():
             desired = {t: [q2 for q2 in qs if _keep_reducing(t, q2)]
                        for t, qs in desired.items()}
             desired = {t: qs for t, qs in desired.items() if qs}
-            print(f"WARNING breaker: held ${held_cost:.2f} (growth>{BREAKER_HELD_GROWTH_USD:.0f}"
+            print(f"WARNING breaker: naked ${plan.get('naked_held_usd', 0):.2f} of "
+                  f"${held_cost:.2f} held (growth>{BREAKER_HELD_GROWTH_USD:.0f}"
                   f"/{BREAKER_WINDOW_S}s or level>{HELD_MAX_USD:.0f}) — REDUCE-ONLY cycle")
 
         # REWARD-CREDIT TELEMETRY: LIP pays DiscountFactor^ticks-from-reference x size, so money
@@ -1393,6 +1401,27 @@ def _flatten_all(client):
         ok, c = flatten_to_zero(client, t, oids)
         print(f"flatten: ESCALATED {t} pos={pos:+.2f} -> taker residual "
               f"{'FLAT' if ok else 'RESIDUAL (check manually)'} ({c} crosses)")
+
+
+def naked_held_cost(held_by, cost_by):
+    """Cost basis of the NAKED (unhedged) portion of inventory only.
+
+    The risk gates (HELD_MAX level breaker, velocity breaker) must measure RISK, not gross
+    position. A ladder pair (+yes on a lower strike vs +no on a higher one) is floored at >= $1
+    per pair — its downside is the strike gap, pennies — yet counting its full cost against the
+    ceiling pinned the bot in REDUCE-ONLY over risk it does not carry, blocking all reward
+    earning (observed live 2026-07-22: $27.76 held of which $11.84 was fully paired, so the bot
+    sat out on ~$12 of near-riskless inventory). Cost basis is per-contract, so scale each
+    ticker's cost by the fraction of it that is still naked. Falls back to |naked| x $1 when the
+    venue omitted the cost field — conservative, never understates."""
+    naked = ladder_pairing(held_by)
+    total = 0.0
+    for t, n in (naked or {}).items():
+        if not n:
+            continue
+        per_ct = cost_by.get(t)
+        total += abs(n) * per_ct if per_ct else abs(n)
+    return total
 
 
 def _held_cost(client):

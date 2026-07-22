@@ -1218,3 +1218,31 @@ def test_throttle_step_ticks_knob(monkeypatch):
     assert qs0["yes"]["price_dollars"] == 0.50                # full 1.0x credit
     assert qs0["yes"]["count"] == qs["yes"]["count"]          # size throttle unchanged either way
     assert qs0["no"]["reason"] == "unwind"                    # de-risk side unaffected
+
+
+def test_breakers_measure_naked_not_gross(monkeypatch, tmp_path):
+    # Live 07-22: $27.76 held of which $11.84 was a FLOORED ladder pair. Gating the risk
+    # breakers on GROSS pinned the bot in reduce-only over risk it does not carry, blocking all
+    # reward earning. Breakers now measure NAKED cost; the CAPITAL cap still uses gross.
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 250.0)
+    # +10 on the LOWER strike vs -10 on the HIGHER = fully floored -> zero naked risk
+    held = {"KXAAAGASD-26JUL23-4.090": 10.0, "KXAAAGASD-26JUL23-4.100": -10.0}
+    cost = {"KXAAAGASD-26JUL23-4.090": 0.83, "KXAAAGASD-26JUL23-4.100": 0.58}
+    assert q.naked_held_cost(held, cost) == 0.0
+    # an unpaired position is measured at its real cost basis
+    held2 = {"KXAAAGASD-26JUL23-4.095": 20.0}
+    assert abs(q.naked_held_cost(held2, {"KXAAAGASD-26JUL23-4.095": 0.73}) - 14.6) < 1e-9
+    # missing cost field -> conservative |naked| x $1 fallback, never understated
+    assert q.naked_held_cost(held2, {}) == 20.0
+    # end-to-end: fully-paired inventory far above HELD_MAX must NOT trip the breaker
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 5.0); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    c = MockClient(mode="live", resting=[], positions=[
+        {"ticker": "KXAAAGASD-26JUL23-4.090", "position_fp": "10", "market_exposure_dollars": "8.30"},
+        {"ticker": "KXAAAGASD-26JUL23-4.100", "position_fp": "-10", "market_exposure_dollars": "5.80"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("held_cost_usd") == 14.1          # gross unchanged (capital accounting)
+    assert row.get("naked_held_usd") == 0.0          # risk correctly measured as zero
+    assert row.get("breaker_reduce_only") is None    # so it does NOT sit out
