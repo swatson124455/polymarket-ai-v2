@@ -270,6 +270,34 @@ def report(days=14):
         for s, v in (r.get("trade_by_series") or {}).items():
             series_trade[s] += _f(v.get("cash"))
     print(f"window: last {days}d, {len(rows)} snapshots")
+
+    # ---- CLEAN-INTERVAL REWARDS (the trustworthy measurement) ----------------------------
+    # equity = balance + cost-basis exposure (market_exposure_dollars is EXACT cost basis:
+    # verified 2026-07-22, 8.11 ct x $0.83 = $6.7313 to the cent). Book value therefore moves
+    # ONLY on realized events (fills/settlements) or on money appearing from nowhere = REWARDS.
+    # So an interval with ZERO fills and ZERO settlements attributes its whole equity change to
+    # rewards with no cash modelling and no assumptions — which is why this replaces the
+    # residual number that produced an impossible +$57.82 (see settlement_revenue docstring).
+    clean_rw, clean_h, total_h, dirty = 0.0, 0.0, 0.0, 0
+    for a, b in zip(rows, rows[1:]):
+        dt = (datetime.fromisoformat(b["ts"]) - datetime.fromisoformat(a["ts"])).total_seconds() / 3600
+        if dt <= 0:
+            continue
+        total_h += dt
+        eq_a = _f(a.get("balance")) + _f(a.get("position_exposure"))
+        eq_b = _f(b.get("balance")) + _f(b.get("position_exposure"))
+        if int(b.get("new_fills") or 0) == 0 and int(b.get("new_settlements") or 0) == 0:
+            clean_rw += eq_b - eq_a
+            clean_h += dt
+        else:
+            dirty += 1
+    cov = (clean_h / total_h * 100) if total_h else 0
+    print(f"\nREWARDS, clean-interval method (no fill modelling, no assumptions):")
+    print(f"  ${clean_rw:+.2f} measured across {clean_h:.1f}h of quiet intervals "
+          f"({cov:.0f}% of the {total_h:.1f}h window; {dirty} intervals had trading and are excluded)")
+    if clean_h > 0:
+        print(f"  implied rate: ${clean_rw / clean_h * 24:+.2f}/day  (extrapolated from quiet time only)")
+    print(f"  NOTE: excludes reward accrual during trading intervals, so this is a FLOOR, not a total.")
     print("\nper-day (MEASURED): rewards_residual | trading+settle cashflow")
     for d in sorted(day_rewards | day_trade):
         print(f"  {d}  rewards {day_rewards.get(d, 0):+8.2f}   trade {day_trade.get(d, 0):+8.2f}")
