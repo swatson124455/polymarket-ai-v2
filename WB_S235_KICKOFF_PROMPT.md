@@ -26,8 +26,27 @@ Main checkout `C:\lockes-picks\polymarket-ai-v2` is on ANOTHER bot's branch
   runtime artifact — never stage it.
 
 VPS: `ubuntu@18.201.216.0`, key `~/.ssh/wb_deploy2`. **Deployed release:
-`20260720_150112`** (unchanged all of S234; rollback chain 150112 → 115735 →
-113011 → `20260719_195417`). Do NOT deploy without operator sign-off.
+`20260721_230638`** (S234 late arc — ERA5 bootstrap date-bind fix `72d4753`,
+restart 03:07:26Z, post-deploy verified via `/proc/<MainPID>/cwd`). Rollback
+chain: 230638 → 150112 → 115735 → 113011 → `20260719_195417`. Do NOT deploy
+without operator sign-off.
+
+**nat_mesh is now LIVE** (`NAT_MESH_LIVE=1`, flipped 03:0xZ 07-22, first live
+tick 03:04:03Z injecting 3 `nat:` rows into both consumed pws_mesh files).
+Rollback: `crontab -e`, drop the `NAT_MESH_LIVE=1 ` prefix. §0 should now expect
+`live=1` in nat_mesh ticks and non-zero `grep -c "nat:"` on
+`/opt/pa2-weather-feeds/pws_mesh_$(date -u +%Y%m%d).jsonl`. **NEW WATCH:** the
+09:15Z `mesh_debias` run is the first to see nat anchors — confirm Berlin/Sydney/
+Melbourne (EDDB/YSSY/YMML) appear as table rows and that no city regressed.
+
+**⛔ MASTER `deploy.sh` IS BLOCKED — do NOT run it** (spec §"S234 EXECUTION ARC 3"):
+(a) master has not deployed since **2026-06-22**, so it would ship ~a month of
+every session's work to mirror/esports/ingestion, not just the 3 shared fixes;
+(b) it copies master's `deploy/polymarket-weather.service`, which is MISSING
+`/opt/pa2-maker-feeds` from `ReadWritePaths` — that would silently break the
+WB→Maker forecast export (the splinter drop-in only covers WorkingDirectory +
+ExecStart); (c) its pytest preflight aborts on the pre-existing
+`test_full_month_name` failure. Fix (b) and (c) first; (a) is an operator/peer call.
 
 **DB credential gotcha:** no usable `DB_PASSWORD` in the shared env — extract:
 `PW=$(grep -oP "postgresql[^ ]*://polymarket:\K[^@]+" /opt/pa2-shared/.env | head -1)`

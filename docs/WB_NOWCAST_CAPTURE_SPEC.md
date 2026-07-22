@@ -1632,3 +1632,70 @@ reaffirmed verbatim, so it was executed as an operator override. c12 changes
 what data MirrorBot's calibrator fits on; MB should be told, and MB's own live
 scan output was NOT inspected from this session (RULE ONE-A) — that verification
 belongs to an MB session post-deploy.
+
+## S234 EXECUTION ARC 3 — bootstrap fix DEPLOYED + nat_mesh LIVE + master deploy BLOCKED
+
+Operator "do it" on the three open items. Two done and verified; the third is
+**blocked on a finding the operator must see** (below).
+
+### 1. ERA5 bootstrap str-date fix — FIXED + DEPLOYED (release `20260721_230638`)
+Commit `72d4753`, cut from HEAD, splinter tarball -> `wb-release-cut.sh`, restart
+03:07:26Z. Rollback: `sudo ln -sfn /opt/pa2-weather-releases/20260720_150112
+/opt/polymarket-ai-v2-weather && sudo systemctl restart polymarket-weather`
+(chain 230638 -> 150112 -> 115735 -> 113011 -> `20260719_195417`).
+Post-deploy VERIFIED: symlink = `20260721_230638`; service active; the running
+process's own cwd is `/opt/pa2-weather-releases/20260721_230638` (checked via
+`/proc/<MainPID>/cwd`, not just the symlink) so the fix is genuinely live;
+`date.fromisoformat` present in the running tree; all 3 nowcast flags survived.
+Two migration WARNs (079, 080) printed on restart — **benign, verified**: both
+columns (`weather_calibration.actual_source`, `prediction_log.prob_frame`)
+already exist in the DB; the migrations are re-runs hitting a statement timeout
+on already-applied DDL, not missing schema.
+
+### 2. nat_mesh GO-LIVE — LIVE + VERIFIED (`NAT_MESH_LIVE=1`)
+crontab edited 03:0xZ (backup `~/wb_research/crontab.bak_20260722_natmeshlive`);
+6 wb crons unchanged. First live tick **03:04:03Z: `feeds=6 new_obs=3
+feed_fails=0 live=1`**, and 3 `nat:` rows appeared in BOTH consumed files
+(`~/wb_research/pws_mesh_20260722.jsonl` and
+`/opt/pa2-weather-feeds/pws_mesh_20260722.jsonl`), values sane (Singapore 84.74F
+at 11:00 local, Melbourne 57.2F winter). Zero `live_write_failed`.
+Rollback: `crontab -e` and drop the `NAT_MESH_LIVE=1 ` prefix.
+⚠ Verification gotcha: an escaped `grep -c \"nat:\"` inside a single-quoted ssh
+payload silently returns 0 — the first check looked like a failed injection.
+Grep on the remote directly.
+
+### 3. master `deploy.sh` — NOT RUN. THREE BLOCKERS (operator decision needed)
+This was authorized as "ship the 3 shared fixes + restart mirror/esports/
+ingestion". It is **not** that, and a WB session must not initiate it:
+
+**(a) It would ship ~a MONTH of unrelated master work, not 3 commits.** The
+newest master release is `/opt/pa2-releases/20260622_225148` — master has not
+been deployed since 2026-06-22. `deploy.sh` ships master HEAD, so it would
+release every change landed by every session since then (MB's included) into
+mirror/esports/ingestion in one shot. Blast radius is a month-scale multi-bot
+release, which is squarely an MB/peer-coordinated decision.
+
+**(b) It would STRIP the Maker feed's write permission.** `deploy.sh:208-210`
+copies `deploy/polymarket-weather.service` from the release over
+`/etc/systemd/system/`. Master's committed copy has
+`ReadWritePaths=/opt/pa2-shared/data /opt/pa2-shared/saved_models
+/var/log/polymarket` — it is MISSING `/opt/pa2-maker-feeds`, which the LIVE unit
+has (added S231 for the WB->Maker forecast export). The splinter drop-in
+`00-splinter.conf` only overrides `WorkingDirectory` + `ExecStart`, NOT
+`ReadWritePaths` — so after `daemon-reload` + restart, `ProtectSystem=strict`
+would make `/opt/pa2-maker-feeds` read-only and the forecast export would fail
+silently (it swallows all errors by design). **Fix before any master deploy:**
+add `/opt/pa2-maker-feeds` to master's committed
+`deploy/polymarket-weather.service`.
+
+**(c) The preflight aborts anyway.** `deploy.sh:46-49` runs
+`pytest tests/unit/` and exits on any failure.
+`test_weather_bot.py::TestDateParsing::test_full_month_name` currently fails
+(date-rollover; fails identically on pristine `origin/master`), so the deploy
+would abort at step 1/7 regardless. That test needs fixing (or the gate
+consciously bypassed) before master can ship at all.
+
+**Good news:** the splinter drop-in DOES protect WB's tree across a master
+deploy — verified by reading `00-splinter.conf`, which was written for exactly
+this and states it. So a future master deploy will not repoint WeatherBot; only
+the ReadWritePaths regression (b) actually touches WB.

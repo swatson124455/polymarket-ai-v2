@@ -38,7 +38,17 @@ work (8 pooled sites x both copies, defect tests fail->pass, suite 3991 pass /
 (first nowcast row 07-20 19:20:31Z, over a day AFTER c5 shipped 07-19; zero
 0.42-0.46 feed lines pre-c5). ⚠ **NOTHING DEPLOYED — the next `deploy.sh` ships
 all three and restarts mirror/esports/ingestion.** Spec §"S234 CROSS-BOT RELAY
-EXECUTION". Prior header (S233) below.)
+EXECUTION". **LATER S234 — "do it" arc 3:** ERA5 bootstrap str-date fix
+`72d4753` **DEPLOYED, release `20260721_230638`** (restart 03:07:26Z; live-verified
+via `/proc/<MainPID>/cwd`, not just the symlink; rollback chain 230638→150112→
+115735→113011→`20260719_195417`); **nat_mesh GO-LIVE `NAT_MESH_LIVE=1`** — first
+live tick 03:04:03Z injected 3 `nat:` rows into both consumed pws_mesh files
+(rollback = drop the cron prefix). **⛔ master `deploy.sh` NOT RUN — 3 blockers**:
+master undeployed since 2026-06-22 (would ship a month of all sessions' work),
+its committed weather unit is missing `/opt/pa2-maker-feeds` from ReadWritePaths
+(would silently break the WB→Maker feed), and its pytest preflight aborts on the
+pre-existing `test_full_month_name` failure. Spec §"S234 EXECUTION ARC 3".
+Prior header (S233) below.)
 Prior header (S233 — big session under operator "permission on all
 go": verification/watch + Tier-3 registry additions + shared signal fix (TWO
 deploys) + national-feed mesh collector BUILT & STAGING + a cleanup. Beyond the
