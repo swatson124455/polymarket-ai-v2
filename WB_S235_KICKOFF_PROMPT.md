@@ -151,16 +151,26 @@ then `export PGPASSWORD="$PW"; psql -h 127.0.0.1 -U polymarket -d polymarket`.
 
 ## QUEUE (operator-gated actions, in rough priority)
 
-1. **nat_mesh GO-LIVE — DONE 2026-07-22.** `NAT_MESH_LIVE=1` is on the cron;
-   first live tick 03:04:03Z injected 3 `nat:` rows into both consumed files.
-   **REMAINING VERIFICATION (the last unchecked step): the 09:15Z `mesh_debias`
-   run is the first to see nat anchors — confirm EDDB/YSSY/YMML appear as table
-   rows and that NO existing city regressed.** Rollback: drop the cron prefix.
-2. **ERA5 bootstrap str-date fix — DONE + DEPLOYED** (`72d4753`, release
-   `20260721_230638`). ⚠ **NOT YET PROVEN IN PRODUCTION** — no cold-start has
-   run since the restart, so `bootstrap_gfs` is still 314 rows. Watch for
-   `weatherbot_cold_start_bootstrap` → `bootstrap_complete` with zero
-   `bootstrap_row_failed`; that is the outstanding proof.
+1. **nat_mesh GO-LIVE — DONE + GRADED 2026-07-22.** 212 `nat:` rows/day, all
+   6 feeds, `feed_fails=0`. First nat-anchored `mesh_debias` (09:15:03Z):
+   **Sydney + Melbourne are NEW published cities** (sd 0.57/0.56), no city lost,
+   merged cities improved but still dropped as predicted. TWO ANOMALIES, both
+   run down (spec §"S234 DATA STATE"): **EDDB absent** — Berlin's local-hour gate
+   left only 6 rows before the 09:15Z run; **it should appear in the 07-23 run —
+   if it does NOT, that is a real finding, investigate.** **LTFM + EGLC
+   regressed** — NOT nat-caused (no nat anchors); sd drifted across the hard
+   1.5 cut. Rollback: drop the cron prefix.
+   ⚠ **NEW STRUCTURAL FINDING:** ~8 cities sit within 0.1F of the 1.5 drop cut,
+   so publish/drop churns daily on trivial sd movement. "No city regressed" is
+   NOT a usable acceptance test for any future mesh change — compare against
+   this churn baseline, or move to hysteresis / the per-source rule (QUEUE 4).
+2. **ERA5 bootstrap str-date fix — DONE, DEPLOYED, and now PROVEN IN
+   PRODUCTION.** `bootstrap_gfs` **314 → 964** rows; the proving event was
+   `cold_start_bootstrap city='Panama City' station=MPMG` →
+   `bootstrap_complete inserted=76` at 04:44Z, with **zero
+   `bootstrap_row_failed`** since the deploy. All 7 S233 registry cities now
+   hold 81–86 calibration pairs (up from 2–5) — they finally got their ERA5
+   seed. This item is CLOSED.
 3. **Peakpass (Phase-2 signal 2) — STILL DO NOT BUILD** (viability fail:
    supply vanishes after certainty; ~9% false-lock RETRACTED, do not re-cite).
    Next action if revisited = OFFLINE supply research, not bot code.

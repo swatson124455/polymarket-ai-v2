@@ -1754,3 +1754,66 @@ error-level lines since deploy: 0 on ALL FOUR services
 still `live=1` (11 `nat:` rows in today's consumed feed).
 Rollback: `deploy/rollback.sh`, or flip `/opt/polymarket-ai-v2` back to
 `/opt/pa2-releases/20260622_225148` and restart the 4 services.
+
+## S234 DATA STATE @ 2026-07-22 19:00Z — bootstrap fix PROVEN, first nat-anchored debias graded
+
+### ✅ ERA5 BOOTSTRAP FIX — PROVEN IN PRODUCTION (the outstanding proof, now closed)
+`bootstrap_gfs` rows **314 → 964** (`MAX(created_at)` 2026-07-22 04:44:38; the
+table had been frozen at 314 since 2026-06-12). The proving event:
+```
+04:44:29Z weatherbot_cold_start_bootstrap  city='Panama City' n_existing=0 station=MPMG
+04:44:36Z weatherbot_bootstrap_complete    inserted=76 station=MPMG total_pairs=76
+```
+**ZERO `weatherbot_bootstrap_row_failed` since the fix deployed** (03:07Z) — it
+had previously been firing with suppressed-duplicate counts up to 224/line.
+All 7 S233 registry cities now hold **81–86 calibration pairs each**
+(FACT 84, MPMG 81, OEJN 85, RKPK 86, RPLL 84, ZGGG 84, ZSQD 84) — up from the
+2–5 they had on 07-21. They received the ERA5 seed the defect had been denying
+them, so their EMOS cold-start is now days shorter than it would have been.
+
+### nat_mesh LIVE — accruing cleanly
+`live=1` on every tick, `feed_fails=0`, **212 `nat:` rows** in today's consumed
+feed across all 6 sources (RJTT 60, WSSS 66, EDDB 25, EDDM 25, YMML 18, YSSY 18).
+pws_mesh unaffected (`cities=49 wu_fails=0`, 20,760 lines).
+
+### FIRST NAT-ANCHORED `mesh_debias` (ran 2026-07-22 09:15:03Z) — graded
+5 of 6 nat sources landed as anchors. **Sydney (YSSY) and Melbourne (YMML) are
+NEW published cities** — `sd=0.57` and `sd=0.56`, single-source, exactly as the
+dry-run predicted. No city was LOST. Merged cities behave as predicted: EDDM
+1.87, RJTT 2.67, WSSS 1.95 — all improved but still above the 1.5 cut, so still
+dropped; go-live degraded nothing.
+
+**Anomaly A — EDDB (Berlin) ABSENT, though the dry-run predicted it.**
+Explained, not a bug: nat_mesh applies a LOCAL-hour gate (9–21), and Berlin is
+UTC+2, so EDDB rows only start ~06Z. At the 09:15Z run only **6 EDDB rows
+existed** for the day — too thin to survive `MIN_PWS_N=5` plus the ±15-min
+print-matching window. Australia's local daytime covers 00–09Z, which is why
+YSSY/YMML sailed through. **Prediction: EDDB should appear in the 07-23 09:15Z
+run**, once a full prior Berlin day (~25 rows) sits inside the 5-day trail
+window. If it is still absent on 07-23, that IS a finding — investigate then.
+
+**Anomaly B — LTFM and EGLC regressed published → dropped. NOT nat-caused.**
+Neither city has a nat anchor, so nat_mesh cannot mechanically touch them. Their
+residual_sd simply drifted across the hard 1.5 F cut:
+```
+LTFM  07-20 sd=1.40 (2 src)  07-21 sd=1.47 (2 src)  07-22 sd=1.61 (3 src) DROPPED
+EGLC  07-20 sd=1.49 (4 src)  07-21 sd=1.48 (4 src)  07-22 sd=1.67 (4 src) DROPPED
+```
+Both were already climbing before go-live, and LTFM gained a THIRD PWS source on
+07-22 — ordinary PWS-mesh churn adding noise.
+
+**The real finding underneath B: the drop rule is a hard threshold and the city
+population clusters right on it.** Cities within 0.1 F of the 1.5 cut right now:
+FACT 1.49, EHAM 1.48, KMIA 1.56, KSEA 1.57, EFHK 1.42, KORD 1.41, NZWN 1.40,
+LTFM 1.61. So **publish/drop flips day-to-day for ~8 cities on trivial sd
+movement**, and "no city regressed" is therefore NOT a usable acceptance
+criterion for any future mesh change — it will fail by chance most days.
+Anything evaluating a mesh change must compare against this churn baseline, or
+use hysteresis / a per-source drop rule rather than a single hard per-city cut.
+(This strengthens the case for the per-source drop rule already noted in QUEUE 4.)
+
+### nowcast
+`weather_nowcast_peak` now **105 rows, 40 resolved** (was 97/40 at 03:0xZ); most
+recent prediction 02:57Z — the signal remains rare, as expected. Those 40
+resolved rows are exactly what c12 now excludes from the shared calibrators.
+Weather scan healthy: 49 cities / 100 groups / 330 markets at 18:59Z.
