@@ -284,9 +284,14 @@ def _unwind_size(base, price, inv):
     room = the FULL MAX_MARKET_CAPITAL (not half): a reducing order is the ONLY order resting on
     its side (no paired accumulating side to share the per-market budget with), and its fill FREES
     collateral. Halving it (review C6/C10) throttled the de-risk drain to ~1/4 of the HARD
-    envelope, so a HARD-sized position could not passively flatten before the settle-taker fired."""
-    room = int(MAX_MARKET_CAPITAL / price) if price > 0 else int(round(abs(inv)))
-    return max(1, min(int(round(abs(inv))), room))
+    envelope, so a HARD-sized position could not passively flatten before the settle-taker fired.
+
+    int() (truncate), NEVER round(): Kalshi positions are fractional (position_fp e.g. 1.6), and
+    round(1.6)=2 rests MORE than held — a full fill would cross THROUGH flat by 0.4 ct (opposite
+    dust). Truncating rests 1, leaving 0.6 ct of sub-minimum dust that NO order can act on anyway
+    (venue min order = 1 ct) — provably-never-overshoot."""
+    room = int(MAX_MARKET_CAPITAL / price) if price > 0 else int(abs(inv))
+    return max(1, min(int(abs(inv)), room))
 
 
 def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta=0.0, stats=None):

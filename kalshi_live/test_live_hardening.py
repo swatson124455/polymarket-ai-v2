@@ -741,3 +741,13 @@ def test_reconcile_fail_escalates_blackout(monkeypatch, tmp_path):
     assert row.get("reconcile_fail") == 1
     assert row.get("read_fail_streak") == 2            # parse failure now drives the streak
     assert set(c.cancelled) == {"a", "b"}              # sustained -> last-known quotes cancelled
+
+
+# ---- fractional positions: unwind size TRUNCATES, never rounds up (never overshoots flat) ----
+def test_unwind_size_truncates_fractional_never_rounds_up(monkeypatch):
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 250.0)
+    # round(1.6)=2 would rest MORE than held -> full fill crosses through flat by 0.4 ct.
+    # int(1.6)=1 rests less, leaving 0.6 ct sub-minimum dust no order can act on (venue min 1 ct).
+    assert q._unwind_size(80, 0.50, 1.6) == 1
+    assert q._unwind_size(80, 0.50, 3.6) == 3          # round() would give 4 (overshoot)
+    assert q._unwind_size(80, 0.50, 2.0) == 2          # exact integers unchanged
