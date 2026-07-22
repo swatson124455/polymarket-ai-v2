@@ -2,11 +2,83 @@
 
 **Branch:** `claude/esports-sharp-line-rebuild-gqy1na` (session 4; supersedes
 `…-36c8u9-7m96gg` — same history + the PM-index coverage fix below)
-**Updated:** 2026-07-20 (session 9 — PRIMARY READOUT RAN at real n; NO-GO.
-Start at §0-S10, then §0-S9 for the lane, then §0-S8 for detail)
-**Read order:** this file (§0-S10 → §0-S9 → §0-S8 → §0-S7 → §0-S6f..§0-S6) →
+**Updated:** 2026-07-22 (session 9b — master-deploy restart verified clean; §0-S11.
+Start at §0-S11, then §0-S10 readout, §0-S9 lane, §0-S8 detail)
+**Read order:** this file (§0-S11 → §0-S10 → §0-S9 → §0-S8 → §0-S7 → §0-S6f..§0-S6) →
 `EB_SHARP_LINE_STATE.md` → `EB_SHARP_LINE_PLUMBING.md` →
 `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+
+---
+
+## 0-S11. SESSION-9b (2026-07-22 ~18:20Z) — MASTER DEPLOY RESTARTED EB: CAME BACK CLEAN. Owls feed DEAD (403). DB semaphore chronic (NOT deploy-caused).
+
+WB deployed master release `20260721_232241` (07-22 ~03:32Z, first master release
+since 06-22); `deploy.sh` restarts all 4 services so **polymarket-esports was
+RESTARTED**. Verified on EB's own terms — **EB came back clean, halt intact,
+rebuild state untouched.**
+
+- **⚠ `pipeline_ready` IS A NON-EXISTENT TOKEN ON EB** — 0 hits in the splinter
+  code (`20260618_104949`) and 0 in the retained journal (since 07-06). The
+  handed-over `grep pipeline_ready` check **can never pass on EB**; its absence
+  is NOT a cold-start failure. Judge EB readiness by `esportsbot_scan_summary` /
+  `scan_ms` instead. (Don't re-run that grep and conclude EB is broken.)
+- **Splinter held:** `00-splinter.conf` unchanged (Jun 18), ExecStart+
+  WorkingDirectory → `/opt/polymarket-ai-v2-esports` → `20260618_104949`,
+  active since 03:27:18Z, `NRestarts=0`. EB code NOT changed by the deploy.
+  ⚠ **Landmine (from WB's WeatherBot near-miss): if EB ever adds a custom
+  ReadWritePaths/EnvironmentFile to its LIVE unit it MUST also land in
+  `deploy/polymarket-esports.service` on master, or the next master deploy
+  silently reverts it.** EB's current unit was verified == master's copy.
+- **HALT INTACT (positively verified, not just "no trades"):**
+  `esports_entry_halted_winddown edge=0.0945 market_id=0x0529cd480a041b side=YES`
+  — EB found a qualifying edge and REFUSED it. Every scan `trades=0
+  opportunities=0 ws_trading=False`. The "order-ish" journal lines are
+  `trade_events_resolution` backfills (settlement bookkeeping), not orders.
+- **Rebuild state untouched:** collector ticking (18:00Z appended=42,
+  pm_matched=40==books=40, 9,688 lines), aliases md5 `8800c40b…`, 3 eb-odds
+  crons intact. The readout pipeline reads FLAT FILES + gamma/PandaScore —
+  **zero dependency on the bot's DB layer**, so the DB issue below cannot
+  affect it.
+
+**DB REVIEW — chronic + pre-existing, NOT deploy-caused (don't re-blame the deploy):**
+- Rates: pre-deploy ~480–508 semaphore-timeout lines/hr (07-21) → post ~590–700
+  (+~22% raw), but **mean scan_ms 101,559 → 101,788 = statistically IDENTICAL**;
+  slow-scans/hr ~21 → ~23. Behavior unchanged. Oldest RETAINED journal entry
+  (07-06) already shows the same error → predates retention.
+- **Cause = EB's 18-slot in-process asyncio semaphore** (`database.py`
+  `_sem_limit = max(total_connections,3)`; startup log `limit=18 pool_size=14`)
+  saturated by broad concurrent load. **NOT PostgreSQL** — PG 56/100 conns,
+  12 active. Distinct failures ≈273/hr (the ~6.5k/24h `LogMiner:` lines are
+  ECHOES of the same events — don't double-count them).
+- Top real consumers /24h: `order_gateway_daily_exposure_flush_failed` 1083,
+  `_update_current_prices` 988, `phase` 951, `EsportsMarketService` 809,
+  `EsportsDataCollector` 344.
+- **⚠ `order_gateway_daily_exposure_flush_failed` 1083×/day is a FINANCIAL
+  write-through failing** (the exact silent-corruption class CLAUDE.md's
+  persistence tree warns about). Harmless NOW (halted, trades=0, no open
+  positions) — **would matter the instant EB is un-halted. Resolve before any
+  un-halt.**
+- **RED HERRING, already checked — do not re-chase:** the freshness query
+  `SELECT max(coalesce(entry_time,timestamp)) FROM trades` IS a genuine full
+  **Parallel Seq Scan (cost 622,226; trades = 15 GB / 13.8M rows)** because
+  COALESCE defeats both `ix_trades_entry_time` and `ix_trades_timestamp`
+  (`max(entry_time)` alone = Index Only Scan, cost 2.65). BUT it fired only
+  **2× in 24h** (14 statement timeouts) vs 13,099 semaphore lines → **NOT the
+  cause of the saturation.** Fixing it is a real but minor efficiency win, and
+  the `trades` table is SHARED infra (RULE THREE: propose-only, affects MB).
+- **Nothing changed** — shared runtime infra is propose-only, and reconfiguring
+  a halted bot's DB layer is out of the sharp-line lane. Operator decision.
+
+**⛔ OWLS RECORDER DEAD — HTTP 403 on all 8 endpoints since 2026-07-20T15:30Z**
+(two days BEFORE the deploy; unrelated). `rem_month=None` = header absent →
+**auth rejected, not quota exhaustion**; `~/.eb_owls_key` untouched since Jul 17
+→ rejection is server-side (sub cancelled/lapsed or key revoked). Matches the
+open "cut or keep Owls sub $49.99/mo" thread — **operator: did you cancel?**
+If cancelled → remove the `30 * * * *` cron (currently burning 8 failed calls +
+8 junk 403 rows/hr into `owls_snapshots.jsonl`). **ZERO critical-path impact**
+(Owls = backup feed only since the historical backtest was proven dead; forward
+PinnOdds is the sole readout path). Key is SHARED with the SB session → their
+recorder is presumably 403ing too (coordination note only).
 
 ---
 
