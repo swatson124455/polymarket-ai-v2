@@ -353,12 +353,14 @@ def test_held_cost_reads_prod_position_fp():
     # PROD payload shape (verified 2026-07-20): position_fp string, no 'position' key
     c = MockClient(mode="live", positions=[
         {"ticker": "T1", "position_fp": "18.71"},
-        {"ticker": "T2", "position_fp": "-6.12"},
+        {"ticker": "T2", "position_fp": "-6.12", "market_exposure_dollars": "3.06"},
         {"ticker": "T3", "position_fp": "0.00"},
     ])
-    total, by = q._held_cost(c)
-    assert abs(total - 24.83) < 1e-9          # |18.71| + |-6.12|, $1/contract
+    total, by, costs = q._held_cost(c)
+    assert abs(total - (18.71 + 3.06)) < 1e-9  # exposure when present, |pos| fallback
     assert by == {"T1": 18.71, "T2": -6.12}
+    # avg cost per contract ONLY where the venue reports exposure — never fabricated
+    assert abs(costs["T2"] - 0.50) < 1e-9 and "T1" not in costs
 
 
 def test_committed_precheck_skips_over_cap(monkeypatch, tmp_path):
@@ -751,3 +753,74 @@ def test_unwind_size_truncates_fractional_never_rounds_up(monkeypatch):
     assert q._unwind_size(80, 0.50, 1.6) == 1
     assert q._unwind_size(80, 0.50, 3.6) == 3          # round() would give 4 (overshoot)
     assert q._unwind_size(80, 0.50, 2.0) == 2          # exact integers unchanged
+
+
+# ============ 2026-07-22 live-loss prevention (late-life gate, loss cap, breaker) ============
+def test_late_life_entry_gate(monkeypatch):
+    # 2026-07-22 loss: entered hourly temp with 34 of 58 min left (toxic final stretch).
+    # Gate: no entry past LATE_LIFE_FRAC(0.6) of a market's own life; abs-capped at 120 min.
+    monkeypatch.setattr(q, "LATE_LIFE_FRAC", 0.6)
+    monkeypatch.setattr(q, "MAX_ENTRY_CUTOFF_MIN", 120.0)
+    monkeypatch.setattr(q, "WIND_DOWN_MIN", 20)
+    monkeypatch.setattr(q, "SERIES_ALLOW", [])
+    from datetime import timedelta as _td
+    now = q.utcnow()
+    def prog(tk, start_min_ago, end_min_ahead):
+        return {"market_ticker": tk, "incentive_type": "liquidity", "target_size_fp": 1000,
+                "discount_factor_bps": 5000, "period_reward": 800000,
+                "start_date": (now - _td(minutes=start_min_ago)).isoformat(),
+                "end_date": (now + _td(minutes=end_min_ahead)).isoformat()}
+    # 58-min temp market, 34 min left: cutoff = max(20, 0.6*58=34.8) -> 34 < 34.8 -> EXCLUDED
+    assert q.select_footprint([prog("KXTEMPDCH-1-T1", 24, 34)], now) == []
+    # same market, 45 min left -> early-life, included
+    assert len(q.select_footprint([prog("KXTEMPDCH-1-T1", 13, 45)], now)) == 1
+    # 2-day gas market: frac would be 1728 min; abs cap 120 binds. 3h left -> in; 90min -> out
+    assert len(q.select_footprint([prog("KXAAAGASD-1-4.1", 2700, 180)], now)) == 1
+    assert q.select_footprint([prog("KXAAAGASD-1-4.1", 2790, 90)], now) == []
+
+
+def test_unwind_price_loss_capped(monkeypatch):
+    # 2026-07-22 loss: unwind chased the ref and realized ~50c/pair. Cap: exit-side price never
+    # rests above (1 - cost + MAX_UNWIND_LOSS); at/below the cap it rests at reference.
+    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10)
+    assert q._unwind_price(0.85, 0.62) == 0.48     # cap 1-0.62+0.10 binds (was resting 0.85)
+    assert q._unwind_price(0.30, 0.10) == 0.30     # cap 1.00 -> reference (normal bleed zone)
+    assert q._unwind_price(0.49, 0.0) == 0.49      # unknown basis -> cap disabled (legacy)
+    # end-to-end through desired_quotes: long yes at cost 0.62, book no-ref 0.49 -> capped 0.48
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=20.0, cost=0.62)}
+    assert qs["no"]["reason"] == "unwind" and qs["no"]["price_dollars"] == 0.48
+    # and with a cheap basis the unwind still rests at reference (no behavior change)
+    qs2 = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=20.0, cost=0.10)}
+    assert qs2["no"]["price_dollars"] == 0.49
+
+
+def test_velocity_breaker_reduce_only(monkeypatch, tmp_path):
+    # 2026-07-22 loss: held $0->$28 in 3 'cycle ok' cycles. Rapid held-$ growth must flip the
+    # book to REDUCE-ONLY: accumulating creates dropped, unwind still placed, plan flagged.
+    import time as _time
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "BREAKER_HELD_GROWTH_USD", 20.0)
+    monkeypatch.setattr(q, "BREAKER_WINDOW_S", 600)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"},
+        {"ticker": "T2", "usd_day": 90.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
+        json.dump({"held_hist": [[_time.time() - 120, 0.0]]}, f)   # held was $0 two min ago
+    c = MockClient(mode="live", resting=[],
+                   positions=[{"ticker": "T1", "position_fp": "50",
+                               "market_exposure_dollars": "25.00"}])  # now $25 held -> breaker
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("breaker_reduce_only") == 1
+    assert all(cr["side"] == "no" for cr in c.created)   # ONLY the reducing unwind placed
+    assert len(c.created) == 1                           # T2 (flat market) got NOTHING
+    # ...and with no prior history the same cycle would NOT trip (no growth measured)
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
+        json.dump({}, f)
+    c2 = MockClient(mode="live", resting=[],
+                    positions=[{"ticker": "T1", "position_fp": "50",
+                                "market_exposure_dollars": "25.00"}])
+    row2 = _run(monkeypatch, c2, str(tmp_path))
+    assert row2.get("breaker_reduce_only") is None

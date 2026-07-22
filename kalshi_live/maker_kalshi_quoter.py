@@ -29,6 +29,7 @@ Stop:   sudo touch <dir>/STOP
 Kill:   sudo systemctl disable --now polymarket-maker-kalshi-quoter.timer
 """
 import json
+import math
 import os
 import sys
 import time
@@ -157,6 +158,28 @@ RAMP_MIN = _envi("KALSHI_RAMP_MIN", 180)                    # start shrinking N 
 # of THAT market's own program lifetime (computed in select_footprint) so the ramp only bites in
 # the final stretch of short markets while long gas markets still get the full 180-min taper.
 RAMP_LIFE_FRAC = _envf("KALSHI_RAMP_LIFE_FRAC", 0.5)
+# --- LATE-LIFE ENTRY GATE (2026-07-22 live loss): a short-lived market near its end is a
+# one-way informed market — the outcome is nearly known, resting bids get adversely lifted
+# (hourly temp at 10:30pm: the day's max temp already happened). NEVER *enter* (footprint) a
+# market past LATE_LIFE_FRAC of its OWN life; a held position on such a market unwinds via the
+# strand path (reduce-only). For long-lived markets the fraction over-blocks, so the cutoff is
+# capped at MAX_ENTRY_CUTOFF_MIN absolute (e.g. gas daily: no entry in the final 2h).
+LATE_LIFE_FRAC = _envf("KALSHI_LATE_LIFE_FRAC", 0.6)
+MAX_ENTRY_CUTOFF_MIN = _envf("KALSHI_MAX_ENTRY_CUTOFF_MIN", 120.0)
+# --- UNWIND LOSS CAP (2026-07-22 live loss): the maker unwind re-priced at reference every
+# cycle CHASES a trending market — buying the reducing side at the top realized the full
+# adverse move (~50c/pair on DC vs the doctrine's 1-2c bleed). The reducing quote never rests
+# at a price that would lock in more than MAX_UNWIND_LOSS per pair vs our cost basis; past
+# that it rests AT the cap (deeper in the book) and the residual waits for the backstop.
+# Bounded realized loss per pair, accepted trade: delta may ride longer.
+MAX_UNWIND_LOSS = _envf("KALSHI_MAX_UNWIND_LOSS", 0.10)
+# --- VELOCITY CIRCUIT BREAKER (2026-07-22 live loss): held-$ grew $0->$28 in 3 cycles of
+# 'cycle ok' — adverse accumulation is invisible to plumbing telemetry. If held cost grows
+# more than BREAKER_HELD_GROWTH_USD within BREAKER_WINDOW_S, the WHOLE book goes REDUCE-ONLY
+# (only 'unwind' quotes survive; accumulating quotes are cancelled by the diff) until the
+# growth condition clears. Generic backstop for every toxicity mode not yet imagined.
+BREAKER_HELD_GROWTH_USD = _envf("KALSHI_BREAKER_HELD_GROWTH_USD", 20.0)
+BREAKER_WINDOW_S = _envi("KALSHI_BREAKER_WINDOW_S", 600)
 # --- STOP ESCALATION (audit HIGH-1): pure-maker STOP can leave you hanging (offsets may never
 # fill); pure-taker STOP is a fire-sale. STOP = maker-first with BOUNDED escalation: rest the
 # offsets, wait, re-check, and taker-cross ONLY what is still material after the wait.
@@ -214,8 +237,13 @@ def select_footprint(progs, now):
             start = parse_iso(p["start_date"])
         except Exception:
             continue
-        if end < now + timedelta(minutes=WIND_DOWN_MIN):
-            continue  # wind-down gate applied at selection too
+        life_min = max((end - start).total_seconds() / 60.0, 1.0)
+        # LATE-LIFE ENTRY GATE (2026-07-22): no entry past LATE_LIFE_FRAC of THIS market's own
+        # life (abs-capped for long markets); held inventory on excluded markets goes reduce-only
+        # via the strand path. Always at least the wind-down cutoff.
+        cutoff_min = min(MAX_ENTRY_CUTOFF_MIN, max(WIND_DOWN_MIN, LATE_LIFE_FRAC * life_min))
+        if end < now + timedelta(minutes=cutoff_min):
+            continue
         days = max((end - start).total_seconds() / 86400, 1 / 24)
         # period_reward may be present-but-null (pending programs) -> `or 0`, not .get default
         rows.append({"ticker": t, "usd_day": ((p.get("period_reward") or 0) / 10000) / days,
@@ -294,7 +322,19 @@ def _unwind_size(base, price, inv):
     return max(1, min(int(abs(inv)), room))
 
 
-def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta=0.0, stats=None):
+def _unwind_price(best, cost):
+    """Price for a reducing (unwind) quote: the book reference, CAPPED so a fill can never lock
+    in more than MAX_UNWIND_LOSS per pair vs our cost basis (pair realized loss = held-side cost
+    + exit-side price - 1). cost<=0 means basis unknown -> no cap (reference, legacy behavior).
+    Floored to the cent so float noise can never round the cap UP past the intended bound."""
+    if cost <= 0:
+        return best
+    cap = math.floor((1.0 - cost + MAX_UNWIND_LOSS) * 100.0) / 100.0
+    return min(best, cap)
+
+
+def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta=0.0, stats=None,
+                   cost=0.0):
     """Desired resting orders for one market. Returns list of
     {side, price_dollars, count, reason} — reason 'unwind' marks a RISK-REDUCING order
     (exempt from the capital cap). Delta-neutral shaping is driven by TWO signals:
@@ -325,10 +365,16 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # backstop takes over — never abandon an open position into resolution (fix F).
         if abs(inv) >= INV_TOLERANCE and _priceable:
             if inv > 0:
-                return [{"side": "no", "price_dollars": best_n,
-                         "count": _unwind_size(_capped_join(best_n, best_y), best_n, inv), "reason": "unwind"}]
-            return [{"side": "yes", "price_dollars": best_y,
-                     "count": _unwind_size(_capped_join(best_y, best_n), best_y, inv), "reason": "unwind"}]
+                up = _unwind_price(best_n, cost)
+                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
+                    return []                       # loss-cap out of range -> ride to backstop
+                return [{"side": "no", "price_dollars": up,
+                         "count": _unwind_size(_capped_join(up, best_y), up, inv), "reason": "unwind"}]
+            up = _unwind_price(best_y, cost)
+            if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
+                return []
+            return [{"side": "yes", "price_dollars": up,
+                     "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
         return []                                   # wind_down (flat -> pull entirely)
     if best_y is None or best_n is None:
         return []                                   # unpriceable side
@@ -366,11 +412,17 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # inv is frozen) — rest ONLY the reducing side to unwind passively.
         if abs(inv) >= INV_TOLERANCE:
             if inv > 0:      # long yes -> rest a reducing NO bid
-                return [{"side": "no", "price_dollars": best_n,
-                         "count": _unwind_size(_capped_join(best_n, best_y), best_n, inv), "reason": "unwind"}]
+                up = _unwind_price(best_n, cost)
+                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
+                    return []                       # loss-cap out of range -> ride to backstop
+                return [{"side": "no", "price_dollars": up,
+                         "count": _unwind_size(_capped_join(up, best_y), up, inv), "reason": "unwind"}]
             else:            # long no -> rest a reducing YES bid
-                return [{"side": "yes", "price_dollars": best_y,
-                         "count": _unwind_size(_capped_join(best_y, best_n), best_y, inv), "reason": "unwind"}]
+                up = _unwind_price(best_y, cost)
+                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
+                    return []
+                return [{"side": "yes", "price_dollars": up,
+                         "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
         if abs(ev) > INV_SOFT_CT:
             return []                               # event already directional -> don't ADD via activate
         add_y = max(JOIN_SIZE, target - ext_y)
@@ -438,12 +490,12 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # capital cap; capped at |inv| so it can't overshoot past flat). This does NOT bloat into a
         # held pair — it only sizes enough to cancel what we already hold.
         if abs(inv) >= INV_TOLERANCE:
-            if inv > 0:                             # long yes -> grow NO (reduces), keep at ref
-                n_price, n_reason = best_n, "unwind"
-                n_cnt = _unwind_size(_capped_join(best_n, best_y), best_n, inv)
+            if inv > 0:                             # long yes -> grow NO (reduces), at ref BUT
+                n_price, n_reason = _unwind_price(best_n, cost), "unwind"   # loss-capped
+                n_cnt = _unwind_size(_capped_join(n_price, best_y), n_price, inv)
             else:                                   # long no -> grow YES (reduces)
-                y_price, y_reason = best_y, "unwind"
-                y_cnt = _unwind_size(_capped_join(best_y, best_n), best_y, inv)
+                y_price, y_reason = _unwind_price(best_y, cost), "unwind"
+                y_cnt = _unwind_size(_capped_join(y_price, best_n), y_price, inv)
         if y_cnt > 0 and MIN_PRICE_DOLLARS < y_price <= MAX_PRICE_DOLLARS:
             quotes.append({"side": "yes", "price_dollars": y_price, "count": y_cnt, "reason": y_reason})
         if n_cnt > 0 and MIN_PRICE_DOLLARS < n_price <= MAX_PRICE_DOLLARS:
@@ -638,6 +690,8 @@ def run_once():
         # subtracting it would double-count and make activate oscillate every cycle.
         held_by = {}                          # signed net position per ticker (delta)
         held_cost = 0.0
+        cost_by = {}                          # per-ticker avg cost basis (unwind loss cap)
+        breaker = False
         if client.mode == "dry_run":
             standing = st.get("simulated_standing", {})
             own = {}
@@ -677,7 +731,7 @@ def run_once():
             # THIS cycle's position (not one cycle stale). Fail CLOSED (defer) if unreadable —
             # never shape/create blind to our own delta.
             try:
-                held_cost, held_by = _held_cost(client)
+                held_cost, held_by, cost_by = _held_cost(client)
             except Exception as e:
                 plan["positions_read_failed"] = repr(e)[:120]
                 _blackout_guard(client, st, plan)
@@ -685,6 +739,15 @@ def run_once():
                 return 0
             # BOTH reads succeeded -> a complete cycle; only NOW clear the blackout streak.
             st["read_fail_streak"] = 0
+            # VELOCITY CIRCUIT BREAKER: compare held-$ now vs the LOWEST held-$ inside the
+            # window. Rapid growth = adverse accumulation -> the whole book goes REDUCE-ONLY
+            # below (only unwind quotes survive; accumulating quotes cancelled by the diff).
+            # Self-releasing: reduce-only stops the growth, the window slides, the gate clears.
+            hist = [h for h in st.get("held_hist", [])
+                    if now.timestamp() - h[0] < BREAKER_WINDOW_S]
+            hist.append([now.timestamp(), held_cost])
+            st["held_hist"] = hist[-30:]
+            breaker = held_cost - min(h[1] for h in hist) > BREAKER_HELD_GROWTH_USD
 
         # --- DE-RISK PASS (TAKER = GENUINE LAST RESORT ONLY). Normal position control is the
         # maker SKEW in desired_quotes (grow the reducing side, keep BOTH quotes live). The taker
@@ -741,7 +804,8 @@ def run_once():
             try:
                 q = desired_quotes(m, ob.get("yes_dollars") or [], ob.get("no_dollars") or [],
                                    now, own=own.get(t), inv=held_by.get(t, 0.0),
-                                   event_delta=ev_delta.get(_event_key(t), 0.0), stats=qstats)
+                                   event_delta=ev_delta.get(_event_key(t), 0.0), stats=qstats,
+                                   cost=cost_by.get(t, 0.0))
             except Exception as e:
                 # isolate one degenerate market, but SURFACE it as quote_fail (a
                 # systematic desired_quotes failure must not hide inside gated_out)
@@ -772,12 +836,25 @@ def run_once():
             sbn = max((p for p, _ in snl), default=None)
             if sby is None or sbn is None or sby + sbn >= 1.0:
                 continue                                # unpriceable/crossed — taker handles it
-            if pos > 0 and MIN_PRICE_DOLLARS < sbn <= MAX_PRICE_DOLLARS:
-                desired[t] = [{"side": "no", "price_dollars": sbn,
-                               "count": _unwind_size(_capped_join(sbn, sby), sbn, pos), "reason": "unwind"}]
-            elif pos < 0 and MIN_PRICE_DOLLARS < sby <= MAX_PRICE_DOLLARS:
-                desired[t] = [{"side": "yes", "price_dollars": sby,
-                               "count": _unwind_size(_capped_join(sby, sbn), sby, pos), "reason": "unwind"}]
+            up_n = _unwind_price(sbn, cost_by.get(t, 0.0))
+            up_y = _unwind_price(sby, cost_by.get(t, 0.0))
+            if pos > 0 and MIN_PRICE_DOLLARS < up_n <= MAX_PRICE_DOLLARS:
+                desired[t] = [{"side": "no", "price_dollars": up_n,
+                               "count": _unwind_size(_capped_join(up_n, sby), up_n, pos), "reason": "unwind"}]
+            elif pos < 0 and MIN_PRICE_DOLLARS < up_y <= MAX_PRICE_DOLLARS:
+                desired[t] = [{"side": "yes", "price_dollars": up_y,
+                               "count": _unwind_size(_capped_join(up_y, sbn), up_y, pos), "reason": "unwind"}]
+
+        # VELOCITY BREAKER application: reduce-only book — only 'unwind' quotes survive; every
+        # accumulating quote (join/activate) is dropped from desired, so the diff CANCELS its
+        # standing counterpart. Position control keeps working; acquisition stops.
+        if breaker:
+            plan["breaker_reduce_only"] = 1
+            desired = {t: [q2 for q2 in qs if q2.get("reason") == "unwind"]
+                       for t, qs in desired.items()}
+            desired = {t: qs for t, qs in desired.items() if qs}
+            print(f"WARNING velocity breaker: held ${held_cost:.2f} grew >"
+                  f"${BREAKER_HELD_GROWTH_USD:.0f} within {BREAKER_WINDOW_S}s — REDUCE-ONLY cycle")
 
         desired, capped_markets = cap_desired(desired, usd_day)     # aggregate $ cap
         cancels, creates = diff_orders(standing, desired)
@@ -1007,7 +1084,8 @@ def _flatten_all(client):
             pass
     print(f"flatten: cancelled {n}/{len(orders)} resting quotes (stopped making)")
     try:
-        held = {t: p for t, p in _held_cost(client)[1].items() if abs(p) >= INV_TOLERANCE}
+        _tot, _by, _costs = _held_cost(client)
+        held = {t: p for t, p in _by.items() if abs(p) >= INV_TOLERANCE}
     except Exception as e:
         print(f"flatten: could NOT read positions ({e!r}) — inventory MAY remain, check manually")
         return
@@ -1036,6 +1114,11 @@ def _flatten_all(client):
             side, price, other = "yes", by, (bn or by)
         else:
             print(f"flatten: {t} pos={pos:+.2f} — reducing side unpriceable, will re-check at escalation")
+            continue
+        price = _unwind_price(price, _costs.get(t, 0.0))             # loss-capped offset
+        if price <= MIN_PRICE_DOLLARS:
+            print(f"flatten: {t} pos={pos:+.2f} — loss-cap leaves no priceable offset, "
+                  f"will re-check at escalation")
             continue
         cnt = _unwind_size(_capped_join(price, other), price, pos)   # <= |pos|, never overshoot
         try:
@@ -1070,13 +1153,15 @@ def _flatten_all(client):
 
 
 def _held_cost(client):
-    """(total_cost, {ticker: signed_contracts}) of held inventory (fills). Cost is
-    CONSERVATIVE — each held contract can be worth up to $1, so |pos|*1 reserves the
-    max. Real committed capital must include this, not just the resting book.
+    """(total_cost, {ticker: signed_contracts}, {ticker: avg_cost_per_contract}) of held
+    inventory (fills). Cost is CONSERVATIVE — each held contract can be worth up to $1, so
+    |pos|*1 reserves the max. Real committed capital must include this, not just the resting
+    book. The per-ticker avg cost feeds the unwind loss cap (only when the venue reports
+    market_exposure_dollars; absent -> no entry -> cap disabled for that ticker, never faked).
     RAISES if positions cannot be read — the caller must fail CLOSED (defer creates),
     never treat unknown inventory as $0 (matches the standing-read/reconcile guards)."""
     pos = client.get_positions()          # may raise -> caller defers all creates
-    by, total = {}, 0.0
+    by, costs, total = {}, {}, 0.0
     for p in (pos.get("market_positions") or []):
         # PROD-VERIFIED 2026-07-20: field is position_fp (string, fractional, signed);
         # 'position' does not exist -> reading it silently blinded the committed cap.
@@ -1086,8 +1171,11 @@ def _held_cost(client):
         by[p.get("ticker")] = n
         # REAL reserved cost, not |pos|*$1 (8x over-conservative -> tripped the cap at half
         # real capital and deadlocked the unwind). market_exposure_dollars = actual cost.
-        total += float(p.get("market_exposure_dollars") or abs(n))
-    return total, by
+        me = float(p.get("market_exposure_dollars") or 0)
+        total += me if me else abs(n)
+        if me:
+            costs[p.get("ticker")] = me / abs(n)
+    return total, by, costs
 
 
 def event_deltas(held_by):
