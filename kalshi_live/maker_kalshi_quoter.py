@@ -187,6 +187,21 @@ BREAKER_WINDOW_S = _envi("KALSHI_BREAKER_WINDOW_S", 600)
 # LEVEL trigger, complementing the velocity trigger above; can overshoot by at most one cycle's
 # small quote sizes before it bites.
 HELD_MAX_USD = _envf("KALSHI_HELD_MAX_USD", 20.0)
+# --- DAILY LOSS KILL (review 07-22: the "treadmill" gap): held-$ velocity/level breakers can't
+# see CUMULATIVE realized losses — acquire ~$18/hour, settle at a loss, repeat, forever under
+# both triggers with 'cycle ok'. Track equity (balance + held cost) vs the UTC-day start; a drop
+# beyond DAILY_LOSS_HALT_USD writes the STOP sentinel (maker-first flatten + halt until the
+# operator removes it). Completes the never-lose-more-than-the-rewards invariant's daily arm.
+DAILY_LOSS_HALT_USD = _envf("KALSHI_DAILY_LOSS_HALT_USD", 20.0)
+# --- config-coherence clamps (review 07-22): foot-gun envs must not silently disable trading
+# or the gate ordering. LATE_LIFE_FRAC >= 1 would exclude every short-lived market entirely;
+# MAX_ENTRY_CUTOFF below WIND_DOWN would violate the always-at-least-wind-down guarantee.
+if not (0.0 <= LATE_LIFE_FRAC <= 0.9):
+    print(f"WARNING LATE_LIFE_FRAC({LATE_LIFE_FRAC}) out of [0,0.9]; clamping")
+    LATE_LIFE_FRAC = min(max(LATE_LIFE_FRAC, 0.0), 0.9)
+if MAX_ENTRY_CUTOFF_MIN < WIND_DOWN_MIN:
+    print(f"WARNING MAX_ENTRY_CUTOFF_MIN({MAX_ENTRY_CUTOFF_MIN}) < WIND_DOWN_MIN({WIND_DOWN_MIN}); clamping up")
+    MAX_ENTRY_CUTOFF_MIN = float(WIND_DOWN_MIN)
 # --- STOP ESCALATION (audit HIGH-1): pure-maker STOP can leave you hanging (offsets may never
 # fill); pure-taker STOP is a fire-sale. STOP = maker-first with BOUNDED escalation: rest the
 # offsets, wait, re-check, and taker-cross ONLY what is still material after the wait.
@@ -750,10 +765,34 @@ def run_once():
             # window. Rapid growth = adverse accumulation -> the whole book goes REDUCE-ONLY
             # below (only unwind quotes survive; accumulating quotes cancelled by the diff).
             # Self-releasing: reduce-only stops the growth, the window slides, the gate clears.
+            # DAILY LOSS KILL (treadmill guard): equity = cash + held cost basis, so SETTLED
+            # losses show up here even though held-$ returns to zero. Drop beyond the daily
+            # budget -> write STOP (operator must clear it) + maker-first flatten NOW. Balance
+            # read failure only skips this check (primary reads above remain fail-closed).
+            _equity = None
+            try:
+                _equity = float(client.get_balance().get("balance_dollars") or 0) + held_cost
+            except Exception as e:
+                plan["balance_read_failed"] = repr(e)[:120]
+            if _equity is not None:
+                _day = now.strftime("%Y%m%d")
+                if st.get("equity_day") != _day:
+                    st["equity_day"] = _day
+                    st["equity_day_start"] = _equity
+                elif float(st.get("equity_day_start", _equity)) - _equity > DAILY_LOSS_HALT_USD:
+                    drop = float(st["equity_day_start"]) - _equity
+                    plan["daily_loss_halt"] = round(drop, 2)
+                    with open(STOP_FILE, "w") as fh:
+                        fh.write(f"auto daily-loss halt {now.isoformat()} drop=${drop:.2f} "
+                                 f"(equity ${_equity:.2f} vs day-start ${st['equity_day_start']:.2f})\n")
+                    print(f"WARNING DAILY LOSS HALT: equity down ${drop:.2f} today (> "
+                          f"${DAILY_LOSS_HALT_USD:.0f}) — STOP written, maker-flattening")
+                    _flatten_all(client)
+                    return 0
             hist = [h for h in st.get("held_hist", [])
                     if now.timestamp() - h[0] < BREAKER_WINDOW_S]
             hist.append([now.timestamp(), held_cost])
-            st["held_hist"] = hist[-30:]
+            st["held_hist"] = hist[-max(30, BREAKER_WINDOW_S // 60):]
             # trips on VELOCITY (rapid growth = adverse accumulation) OR LEVEL (total unpaired
             # held-$ above the day's-rewards-scale ceiling) — either way: reduce-only below.
             breaker = (held_cost - min(h[1] for h in hist) > BREAKER_HELD_GROWTH_USD
@@ -860,7 +899,20 @@ def run_once():
         # standing counterpart. Position control keeps working; acquisition stops.
         if breaker:
             plan["breaker_reduce_only"] = 1
-            desired = {t: [q2 for q2 in qs if q2.get("reason") == "unwind"]
+
+            def _keep_reducing(t, q2):
+                if q2.get("reason") == "unwind":
+                    return True
+                # fetch-fail-RETAINED standing copies carry no reason; cancelling a held
+                # ticker's live unwind over a transient fetch error would strand the position
+                # (review 07-22). Keep exactly the REDUCING side of a held ticker; everything
+                # else (accumulating, flat tickers) is dropped -> cancelled by the diff.
+                if q2.get("reason") is None:
+                    pos = held_by.get(t, 0.0)
+                    return ((pos > 0 and q2.get("side") == "no")
+                            or (pos < 0 and q2.get("side") == "yes"))
+                return False
+            desired = {t: [q2 for q2 in qs if _keep_reducing(t, q2)]
                        for t, qs in desired.items()}
             desired = {t: qs for t, qs in desired.items() if qs}
             print(f"WARNING breaker: held ${held_cost:.2f} (growth>{BREAKER_HELD_GROWTH_USD:.0f}"

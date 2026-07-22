@@ -852,3 +852,104 @@ def test_held_ceiling_level_trigger(monkeypatch, tmp_path):
     assert row.get("breaker_reduce_only") == 1           # level trigger, growth was zero
     assert all(cr["side"] == "no" for cr in c.created)   # only the reducing unwind rests
     assert len(c.created) == 1                           # flat T2 gets nothing while over the lid
+
+
+# ============ 07-22 review-response fixes (daily kill, retained-unwind, strand cap, clamps) ======
+def test_daily_loss_halt_writes_stop_and_flattens(monkeypatch, tmp_path):
+    # Treadmill guard: equity (cash + held cost) dropping > DAILY_LOSS_HALT_USD within the UTC
+    # day writes STOP (operator must clear) and maker-flattens immediately. Mock balance=100,
+    # held=25 -> equity 125; seed day-start at 150 -> drop 25 > 20 -> HALT.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 20.0)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9)          # isolate the daily-kill mechanism
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "STOP_ESCALATE_S", 0)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T2", "usd_day": 90.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
+        json.dump({"equity_day": q.utcnow().strftime("%Y%m%d"), "equity_day_start": 150.0}, f)
+    resting = [_order("a", "T1", "yes", 0.6, 10)]
+    c = MockClient(mode="live", resting=resting,
+                   positions=[{"ticker": "T1", "position_fp": "50",
+                               "market_exposure_dollars": "25.00"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("daily_loss_halt") == 25.0
+    assert os.path.exists(os.path.join(str(tmp_path), "STOP"))   # STOP written (sticky halt)
+    assert "a" in c.cancelled                                    # flatten cancelled resting
+    assert not any(cr["ticker"] == "T2" for cr in c.created)     # no new quoting after halt
+    # fresh day -> baseline set, NO halt even though equity is far below yesterday's start
+    os.remove(os.path.join(str(tmp_path), "STOP"))
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
+        json.dump({"equity_day": "19990101", "equity_day_start": 500.0}, f)
+    c2 = MockClient(mode="live", resting=[],
+                    positions=[{"ticker": "T1", "position_fp": "50",
+                                "market_exposure_dollars": "15.00"}])
+    row2 = _run(monkeypatch, c2, str(tmp_path))
+    assert row2.get("daily_loss_halt") is None
+    st = json.load(open(os.path.join(str(tmp_path), "quoter_state.json")))
+    assert st["equity_day"] == q.utcnow().strftime("%Y%m%d")     # re-baselined to today
+
+
+def test_breaker_keeps_retained_reducing_side(monkeypatch, tmp_path):
+    # Review new-bug: on a breaker cycle, a held ticker whose orderbook fetch failed had its
+    # RETAINED standing (incl. the live unwind) cancelled. Now: the reducing side survives,
+    # the accumulating side is still cancelled.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 20.0)
+    monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        raise ValueError("orderbook 502")   # transient fetch fail (RuntimeError = budget!)
+    monkeypatch.setattr(q, "public_get", pg)
+    resting = [_order("uw", "T1", "no", 0.40, 15),               # the live unwind (reducing)
+               _order("acc", "T1", "yes", 0.55, 8)]              # stale accumulating join
+    c = MockClient(mode="live", resting=resting,
+                   positions=[{"ticker": "T1", "position_fp": "30",   # long yes, $25 > ceiling
+                               "market_exposure_dollars": "25.00"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("breaker_reduce_only") == 1
+    assert "acc" in c.cancelled                                  # accumulating side cancelled
+    assert "uw" not in c.cancelled                               # reducing side SURVIVES
+
+
+def test_strand_unwind_is_loss_capped(monkeypatch, tmp_path):
+    # Review test-weak (MED): the incident path is the STRAND unwind; pin its loss cap.
+    # Long yes 30 @ cost 0.62; book no-ref 0.85 -> capped at 1-0.62+0.10=0.48, NOT 0.85.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])   # STRAND path only
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        return {"orderbook_fp": {"yes_dollars": [["0.13", "500"]], "no_dollars": [["0.85", "500"]]}}
+    monkeypatch.setattr(q, "public_get", pg)
+    c = MockClient(mode="live", resting=[],
+                   positions=[{"ticker": "STR", "position_fp": "30",
+                               "market_exposure_dollars": "18.60"}])   # cost 0.62/ct
+    _run(monkeypatch, c, str(tmp_path))
+    unw = [o for o in c.created if o["ticker"] == "STR"]
+    assert len(unw) == 1 and unw[0]["side"] == "no"
+    assert unw[0]["price"] == 0.48                               # capped, not chased to 0.85
+
+
+def test_env_clamps_footguns():
+    # LATE_LIFE_FRAC >= 1 would zero the short-market universe; MAX_ENTRY_CUTOFF < WIND_DOWN
+    # would violate gate ordering. Both clamp at import.
+    import importlib.util as _ilu
+    os.environ["KALSHI_LATE_LIFE_FRAC"] = "1.5"
+    os.environ["KALSHI_MAX_ENTRY_CUTOFF_MIN"] = "5"
+    os.environ["KALSHI_WIND_DOWN_MIN"] = "20"
+    try:
+        src = os.path.join(os.path.dirname(os.path.abspath(q.__file__)), "maker_kalshi_quoter.py")
+        s = _ilu.spec_from_file_location("q_clamp_test", src)
+        m = _ilu.module_from_spec(s); s.loader.exec_module(m)
+        assert m.LATE_LIFE_FRAC == 0.9
+        assert m.MAX_ENTRY_CUTOFF_MIN == 20.0
+    finally:
+        for k in ("KALSHI_LATE_LIFE_FRAC", "KALSHI_MAX_ENTRY_CUTOFF_MIN", "KALSHI_WIND_DOWN_MIN"):
+            os.environ.pop(k, None)
