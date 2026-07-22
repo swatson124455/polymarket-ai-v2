@@ -173,7 +173,7 @@
   {
    "file": "bots/weather_bot.py",
    "pattern": "S227",
-   "expect": 4
+   "expect": 5
   },
   {
    "file": "bots/weather_bot.py",
