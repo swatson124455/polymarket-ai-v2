@@ -805,11 +805,14 @@ def run_once():
         # maker-unwind what's about to close; don't carry directional delta into resolution).
         # A hard inventory breach alone does NOT taker — the skew + capital cap bound it while it
         # keeps quoting (that reflex 'get it out now' was the fire-sale that realized losses).
+        # ladder pairing: floored cross-strike pairs are ~riskless (see ladder_pairing) — every
+        # de-risk mechanism below targets the NAKED remainder, never the paired quantity.
+        naked_by = ladder_pairing(held_by)
         flattened = set()
         taker_flattens = 0
         if client.mode != "dry_run" and TAKER_FLATTEN and held_by:
             oids_by_t = {t: [o["order_id"] for o in ol] for t, ol in standing.items()}
-            for t, pos in list(held_by.items()):
+            for t, pos in list(naked_by.items()):
                 if abs(pos) < INV_TOLERANCE or taker_flattens >= TAKER_MAX_MKTS:
                     continue
                 near_settle = False
@@ -822,11 +825,15 @@ def run_once():
                     # COUNT it so a persistent blind spot in the settlement backstop is visible.
                     plan["settle_check_failed"] = plan.get("settle_check_failed", 0) + 1
                 if near_settle:                         # ONLY genuine last resort: settling soon
+                    # NOTE: flatten_to_zero crosses the ticker's FULL venue position (its own
+                    # fresh read), which can include a paired leg — bounded pennies, rare, and
+                    # never a flip (capped at |pos0|). The TRIGGER is naked-only by design.
                     ok, nc = flatten_to_zero(client, t, oids_by_t.get(t))
                     taker_flattens += 1
                     flattened.add(t)
                     standing.pop(t, None)               # its resting orders were cancelled
                     held_by.pop(t, None)
+                    naked_by.pop(t, None)
         plan["taker_flattens"] = taker_flattens
 
         # per-EVENT aggregate signed delta (post de-risk) — drives the throttle direction so
@@ -834,6 +841,7 @@ def run_once():
         ev_delta = event_deltas(held_by)
 
         desired = {}
+        book_refs = {}                                  # ticker -> (best_yes, best_no) this cycle
         for m in footprint:
             t = m["ticker"]
             if t in flattened:
@@ -853,7 +861,7 @@ def run_once():
                     # CANCELS our live reducing order — stranding the position on a transient
                     # fetch error (review 07-22 skeptic). Tagging is diff-neutral: the retained
                     # copy still matches standing exactly, so no cancel/create is emitted.
-                    _pos = held_by.get(t, 0.0)
+                    _pos = naked_by.get(t, 0.0)
                     desired[t] = [
                         dict({"side": o["side"], "price_dollars": o["price_dollars"],
                               "count": o["count"]},
@@ -863,9 +871,16 @@ def run_once():
                         for o in standing[t]]
                 fetch_failed += 1
                 continue
+            # book refs for the ladder escape hatch below (cheap re-parse of small lists)
+            _byl, _ = _levels(ob.get("yes_dollars") or [])
+            _bnl, _ = _levels(ob.get("no_dollars") or [])
+            _by_best = max((p for p, _ in _byl), default=None)
+            _bn_best = max((p for p, _ in _bnl), default=None)
+            if _by_best is not None and _bn_best is not None:
+                book_refs[t] = (_by_best, _bn_best)
             try:
                 q = desired_quotes(m, ob.get("yes_dollars") or [], ob.get("no_dollars") or [],
-                                   now, own=own.get(t), inv=held_by.get(t, 0.0),
+                                   now, own=own.get(t), inv=naked_by.get(t, 0.0),
                                    event_delta=ev_delta.get(_event_key(t), 0.0), stats=qstats,
                                    cost=cost_by.get(t, 0.0))
             except Exception as e:
@@ -883,7 +898,7 @@ def run_once():
         # unwind above. Rest the REDUCING side at reference so it still flattens passively;
         # the taker backstop only fires near settlement / on a hard breach.
         fp_tickers = {m["ticker"] for m in footprint}
-        for t, pos in list(held_by.items()):
+        for t, pos in list(naked_by.items()):
             if t in fp_tickers or t in flattened or abs(pos) < INV_TOLERANCE:
                 continue
             try:
@@ -906,6 +921,49 @@ def run_once():
             elif pos < 0 and MIN_PRICE_DOLLARS < up_y <= MAX_PRICE_DOLLARS:
                 desired[t] = [{"side": "yes", "price_dollars": up_y,
                                "count": _unwind_size(_capped_join(up_y, sbn), up_y, pos), "reason": "unwind"}]
+
+        # LADDER ESCAPE HATCH (operator 2026-07-22): a PARKED same-strike unwind (loss cap holds
+        # it below the touch) may never fill in a trended market — the exact regime where the
+        # position needs an exit most. Split the reducing size: half stays parked at the capped
+        # price, half rests on the ADJACENT strike (higher for long-yes, lower for long-no) at
+        # THAT book's reference. The cross fill doesn't realize the move — it converts the naked
+        # position into a FLOORED pair (risk ~ strike gap, see ladder_pairing). Both lanes are
+        # 'unwind'-tagged; combined size <= |naked| so no fill combination can flip the sign.
+        strikes_avail = defaultdict(list)
+        for t2 in book_refs:
+            s2 = _strike_of(t2)
+            if s2 is not None:
+                strikes_avail[_event_key(t2)].append((s2, t2))
+        for t, qn in list(naked_by.items()):
+            if abs(qn) < INV_TOLERANCE or t not in desired:
+                continue
+            uws = [qq for qq in desired[t] if qq.get("reason") == "unwind"]
+            ref = book_refs.get(t)
+            s0 = _strike_of(t)
+            if len(uws) != 1 or not ref or s0 is None:
+                continue
+            touch = ref[1] if qn > 0 else ref[0]        # the reducing side's own reference
+            if uws[0]["price_dollars"] >= touch - TICK / 2:
+                continue                                # at the touch -> not parked, no hatch
+            cands = [(s2, t2) for s2, t2 in strikes_avail.get(_event_key(t), [])
+                     if t2 != t and (s2 > s0 if qn > 0 else s2 < s0)]
+            if not cands:
+                continue
+            _s2, t2 = min(cands) if qn > 0 else max(cands)   # NEAREST adjacent strike
+            r2 = book_refs[t2]
+            price2 = r2[1] if qn > 0 else r2[0]         # buy NO on higher / YES on lower, at ref
+            if not (MIN_PRICE_DOLLARS < price2 <= MAX_PRICE_DOLLARS):
+                continue
+            c0 = uws[0]["count"]
+            keep = max(1, c0 // 2)
+            cross = min(c0 - keep, int(MAX_MARKET_CAPITAL / price2))
+            if cross < 1:
+                continue
+            uws[0]["count"] = keep                      # keep+cross <= c0 <= |naked|: flip-safe
+            plan["ladder_cross"] = plan.get("ladder_cross", 0) + 1
+            desired.setdefault(t2, []).append(
+                {"side": "no" if qn > 0 else "yes", "price_dollars": price2,
+                 "count": cross, "reason": "unwind"})
 
         # VELOCITY BREAKER application: reduce-only book — only 'unwind' quotes survive; every
         # accumulating quote (join/activate) is dropped from desired, so the diff CANCELS its
@@ -1164,7 +1222,12 @@ def _flatten_all(client):
     print(f"flatten: cancelled {n}/{len(orders)} resting quotes (stopped making)")
     try:
         _tot, _by, _costs = _held_cost(client)
-        held = {t: p for t, p in _by.items() if abs(p) >= INV_TOLERANCE}
+        _naked = ladder_pairing(_by)
+        _paired = sum(abs(_by[t]) - abs(_naked.get(t, 0)) for t in _by)
+        if _paired > 0:
+            print(f"flatten: {_paired:.0f} ct held in FLOORED ladder pairs (risk ~ strike gap) "
+                  f"— left to settle, offsetting only the naked remainder")
+        held = {t: p for t, p in _naked.items() if abs(p) >= INV_TOLERANCE}
     except Exception as e:
         print(f"flatten: could NOT read positions ({e!r}) — inventory MAY remain, check manually")
         return
@@ -1255,6 +1318,52 @@ def _held_cost(client):
         if me:
             costs[p.get("ticker")] = me / abs(n)
     return total, by, costs
+
+
+def _strike_of(ticker):
+    """Numeric strike from a ladder ticker's last dash-field ('4.055', 'T81.99' -> 81.99).
+    None when unparseable -> that ticker never participates in ladder pairing."""
+    try:
+        return float(ticker.split("-")[-1].lstrip("T"))
+    except (ValueError, AttributeError, IndexError):
+        return None
+
+
+def ladder_pairing(held_by):
+    """LADDER SELF-HEDGE (operator directive 2026-07-22): within one 'above X' event, long-YES
+    on a LOWER strike + long-NO on a HIGHER strike is a FLOORED pair — outcome <= low strike
+    pays the NO, outcome > high strike pays the YES, in between BOTH pay: settlement returns
+    >= $1 per matched pair, so the risk is ~the strike gap (pennies on adjacent strikes), not
+    the position. Match greedily (lowest longs vs highest shorts, strictly long_strike <
+    short_strike) and return naked_by = the UNMATCHED signed remainder per ticker. Paired
+    quantity is EXCLUDED from unwind targeting, throttle direction, the settle-taker and STOP
+    offsets — unwinding both legs of a floored pair pays two spreads to shed penny risk.
+    (The opposite-direction combo — yes on the HIGHER strike, no on the LOWER — has NO floor
+    and is deliberately never matched.) Pairing conserves the event's signed sum, so
+    event_deltas is unchanged either way."""
+    naked = dict(held_by)
+    by_event = defaultdict(list)
+    for t, n in (held_by or {}).items():
+        s = _strike_of(t)
+        if s is not None and n:
+            by_event[_event_key(t)].append((s, t))
+    for rows in by_event.values():
+        pos = sorted((s, t) for s, t in rows if naked.get(t, 0) > 0)            # longs, low first
+        neg = sorted(((s, t) for s, t in rows if naked.get(t, 0) < 0), reverse=True)  # shorts, high first
+        i = j = 0
+        while i < len(pos) and j < len(neg):
+            ls, lt = pos[i]
+            ss, st_ = neg[j]
+            if ls >= ss:
+                break                              # long strike not strictly below short strike
+            m = min(naked[lt], -naked[st_])
+            naked[lt] -= m
+            naked[st_] += m
+            if naked[lt] == 0:
+                i += 1
+            if naked[st_] == 0:
+                j += 1
+    return naked
 
 
 def event_deltas(held_by):

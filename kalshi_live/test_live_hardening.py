@@ -1004,3 +1004,82 @@ def test_breaker_cycle_is_not_systematic_failure(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "systematic failure" not in out                   # no false alarm
     assert "cycle ok" in out and "REDUCE-ONLY" in out        # honest: ok + the breaker's warning
+
+
+# ================= 07-22 LADDER SELF-HEDGE (pairing + escape hatch) =================
+def test_ladder_pairing_floored_pairs():
+    # +yes LOWER strike matched vs -no HIGHER strike = floored pair -> excluded from naked
+    held = {"KXAAAGASD-26JUL22-4.050": 20.0, "KXAAAGASD-26JUL22-4.060": -20.0}
+    naked = q.ladder_pairing(held)
+    assert naked["KXAAAGASD-26JUL22-4.050"] == 0 and naked["KXAAAGASD-26JUL22-4.060"] == 0
+    # WRONG direction (+yes HIGHER, -no LOWER) has NO floor -> never matched
+    held2 = {"KXAAAGASD-26JUL22-4.060": 20.0, "KXAAAGASD-26JUL22-4.050": -20.0}
+    naked2 = q.ladder_pairing(held2)
+    assert naked2 == held2
+    # partial: +30 low vs -20 high -> +10 naked low, 0 high
+    held3 = {"KXAAAGASD-26JUL22-4.050": 30.0, "KXAAAGASD-26JUL22-4.060": -20.0}
+    naked3 = q.ladder_pairing(held3)
+    assert naked3["KXAAAGASD-26JUL22-4.050"] == 10.0 and naked3["KXAAAGASD-26JUL22-4.060"] == 0
+    # temp T-prefix strikes parse; CROSS-event never pairs; unparseable untouched
+    held4 = {"KXTEMPDCH-26JUL2214-T73.99": 10.0, "KXTEMPDCH-26JUL2215-T75.99": -10.0,
+             "KXWEIRD-26JUL22-XYZ": 5.0}
+    naked4 = q.ladder_pairing(held4)
+    assert naked4 == held4                                   # different events + unparseable
+    # pairing conserves the event's signed sum (event_deltas unchanged)
+    assert sum(naked3.values()) == sum(held3.values())
+
+
+def test_paired_positions_not_unwound_or_takered(monkeypatch, tmp_path):
+    # A fully-paired event must produce NO unwind quotes and NO settle-taker crossing.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0); monkeypatch.setattr(q, "TAKER_FLATTEN", True)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])   # strand path would fire
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        if p.endswith("/orderbook"): return _BOOK
+        return {"market": {"close_time": "2000-01-01T00:00:00Z"}}       # already settling!
+    monkeypatch.setattr(q, "public_get", pg)
+    c = MockClient(mode="live", resting=[], positions=[
+        {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "9.00"},
+        {"ticker": "KXAAAGASD-26JUL22-4.060", "position_fp": "-20", "market_exposure_dollars": "8.00"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("taker_flattens", 0) == 0 and not c.crosses   # floored pair rides settlement
+    assert not c.created                                          # no strand unwinds either
+
+
+def test_ladder_escape_hatch_splits_parked_unwind(monkeypatch, tmp_path):
+    # Naked +20 on 4.050 at cost 0.62; book no-ref 0.85 -> unwind parks at 0.48 (2c cap...
+    # here MAX_UNWIND_LOSS=0.10 -> 0.48 < 0.85-tick = parked). Adjacent strike 4.060 has a
+    # book -> half the unwind stays parked, half rests NO on 4.060 at ITS reference.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10)
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "KXAAAGASD-26JUL22-4.050", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"},
+        {"ticker": "KXAAAGASD-26JUL22-4.060", "usd_day": 90.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        if "4.050" in p:   # collapsed book: yes 0.13 / no 0.85
+            return {"orderbook_fp": {"yes_dollars": [["0.13", "500"]], "no_dollars": [["0.85", "500"]]}}
+        return {"orderbook_fp": {"yes_dollars": [["0.06", "500"]], "no_dollars": [["0.92", "500"]]}}
+    monkeypatch.setattr(q, "public_get", pg)
+    c = MockClient(mode="live", resting=[], positions=[
+        {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "12.40"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("ladder_cross") == 1
+    ups = [o for o in c.created if o["ticker"].endswith("4.050") and o["side"] == "no"]
+    crs = [o for o in c.created if o["ticker"].endswith("4.060") and o["side"] == "no"]
+    assert len(ups) == 1 and ups[0]["price"] == 0.48          # parked lane at the capped price
+    # B carries its own JOIN no-bid (normal rent quoting) PLUS the cross-hedge lane; the cross
+    # is the one sized to the halved unwind (10), at B's own reference.
+    cross = [o for o in crs if o["count"] == 20 - ups[0]["count"]]
+    assert len(cross) == 1 and cross[0]["price"] == 0.92      # cross lane at B's OWN reference
+    assert ups[0]["count"] + cross[0]["count"] <= 20          # flip-safe: unwind lanes <= |naked|
+    # ...and when the unwind is NOT parked (cheap basis -> cap above ref) there is NO hatch
+    c2 = MockClient(mode="live", resting=[], positions=[
+        {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "2.00"}])
+    row2 = _run(monkeypatch, c2, str(tmp_path))
+    assert row2.get("ladder_cross") is None
