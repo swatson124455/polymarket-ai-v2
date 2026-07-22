@@ -128,10 +128,14 @@ then `export PGPASSWORD="$PW"; psql -h 127.0.0.1 -U polymarket -d polymarket`.
 
 ## SCHEDULED / WATCH (consume as they land)
 
-1. **Day-5 mesh-lead grade** — `mesh_validation.py --lead 20260720` once IEM
-   1-min covers 0720 (probe per-station vs own baseline first; S234 measured
-   0-9% = not ready; expect ~07-22/23). Also day-6+ if the operator wants the
-   series continued.
+1. **Day-5 (`--lead 20260720`) is a LOST DAY — do NOT keep retrying it.** IEM
+   1-min backfill for 0720 FINISHED at ~8% of baseline (ORD 112 / SEA 107 /
+   MIA 99 — byte-identical counts on probes 24h apart, so it is done, not
+   arriving). Mesh files are intact; the ARBITER is what is missing.
+   **Next lead-trend point is day-6, `--lead 20260721`**, once ITS backfill
+   lands (all zeros as of 07-22 20:1xZ). Probe coverage vs each station's own
+   baseline before grading. Series so far: 60%/74.8 → 62%/61.0 → 72%/49.0 →
+   77%/63.0, then a gap at day-5.
 2. `wb-vif-tune-remeasure` fires **07-24 10:00 ET** — MAIN-model post-VIF grade
    + VIF→2.0 recommendation + the nowcast shadow scorecard (now HAS data: 40
    rows / 91 shadows). Consume its notification.
@@ -139,9 +143,18 @@ then `export PGPASSWORD="$PW"; psql -h 127.0.0.1 -U polymarket -d polymarket`.
    `weatherbot_nowcast_crossing` ENTRY lines; window-cap + overshoot behavior
    on any entry. All shadows so far are reason=repriced — the S230 "hole open
    at the print" question accruing live evidence.
-4. **KBKF unhealthy streak** — did it recover? If still 100% unhealthy after
-   days, it's a station-registry/data-source question (NOT a blacklist — fix
-   grounding, never remove the city).
+4. **KBKF "unhealthy" — ROOT-CAUSED 07-22, fix NOT applied (needs your go).**
+   NOT a broken station: KBKF probes healthy (obs 66 min old, temp present) but
+   reports hourly with 2–4h GAPS, while `StationHealthMonitor` uses a uniform
+   180-min staleness threshold (station_registry.py:1665) that gates ALL Denver
+   trading (weather_bot.py:2837 → `return [], {}`). Each natural gap skips
+   Denver, then it recovers — 76 lines/day is gap windows, not a fault.
+   Deliberately NOT loosened: raising it means trading Denver on 3–4h-old METAR,
+   and METAR freshness is exactly what the resolution-day override consumes.
+   RECOMMENDATION: optional per-station `stale_threshold_minutes` on the
+   WeatherStation dataclass (default None = today's 180, byte-identical
+   elsewhere), KBKF ~270–300 min — same shape as the S233 truth_provider
+   addition. Spec §"ALL KNOWN ISSUES RUN DOWN". NEVER fix by dropping Denver.
 5. Maker tilt-vs-control readout (still pending Maker's c13 purge) — consume +
    relay when it lands on the coordination list.
 6. 7-city + HK EMOS cold-start continues (ICAO-keyed pairs accruing; HK VHHH
