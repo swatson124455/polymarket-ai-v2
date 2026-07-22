@@ -489,6 +489,9 @@ def test_unwind_create_exempt_from_committed_cap(monkeypatch, tmp_path):
     # THE STUCK-BOT FIX: held inventory ALONE exceeds MAX_TOTAL_CAPITAL. The accumulating
     # (join) side is correctly gated, but the REDUCING (unwind) side must STILL be placed —
     # otherwise the bot can never flatten (cap blocks the only de-risking order).
+    # (HELD ceiling disabled here to pin the committed-cap mechanism in ISOLATION — at defaults
+    # the $50 held would trip the level breaker first, which handles this scenario earlier.)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9)
     _cfg(monkeypatch, join=20, mktcap=250, totcap=10)     # cap $10, held will be ~$50
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
         {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
@@ -816,11 +819,36 @@ def test_velocity_breaker_reduce_only(monkeypatch, tmp_path):
     assert row.get("breaker_reduce_only") == 1
     assert all(cr["side"] == "no" for cr in c.created)   # ONLY the reducing unwind placed
     assert len(c.created) == 1                           # T2 (flat market) got NOTHING
-    # ...and with no prior history the same cycle would NOT trip (no growth measured)
+    # ...and with no prior history AND held below the LEVEL ceiling, no trip
+    monkeypatch.setattr(q, "HELD_MAX_USD", 20.0)
     with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
         json.dump({}, f)
     c2 = MockClient(mode="live", resting=[],
                     positions=[{"ticker": "T1", "position_fp": "50",
-                                "market_exposure_dollars": "25.00"}])
+                                "market_exposure_dollars": "15.00"}])
     row2 = _run(monkeypatch, c2, str(tmp_path))
     assert row2.get("breaker_reduce_only") is None
+
+
+def test_held_ceiling_level_trigger(monkeypatch, tmp_path):
+    # Operator invariant ("never lose more than the reward"): total unpaired held-$ above
+    # HELD_MAX_USD flips reduce-only even with ZERO growth (flat history) — a LEVEL lid on the
+    # only uncapped loss channel (settlement risk), sized to ~one day's measured rewards.
+    import time as _time
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "BREAKER_HELD_GROWTH_USD", 20.0)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 20.0)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"},
+        {"ticker": "T2", "usd_day": 90.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
+        json.dump({"held_hist": [[_time.time() - 120, 25.0]]}, f)   # held FLAT at $25 (no growth)
+    c = MockClient(mode="live", resting=[],
+                   positions=[{"ticker": "T1", "position_fp": "50",
+                               "market_exposure_dollars": "25.00"}])  # $25 > $20 ceiling
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("breaker_reduce_only") == 1           # level trigger, growth was zero
+    assert all(cr["side"] == "no" for cr in c.created)   # only the reducing unwind rests
+    assert len(c.created) == 1                           # flat T2 gets nothing while over the lid

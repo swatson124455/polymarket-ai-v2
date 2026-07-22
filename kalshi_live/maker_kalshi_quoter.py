@@ -180,6 +180,13 @@ MAX_UNWIND_LOSS = _envf("KALSHI_MAX_UNWIND_LOSS", 0.10)
 # growth condition clears. Generic backstop for every toxicity mode not yet imagined.
 BREAKER_HELD_GROWTH_USD = _envf("KALSHI_BREAKER_HELD_GROWTH_USD", 20.0)
 BREAKER_WINDOW_S = _envi("KALSHI_BREAKER_WINDOW_S", 600)
+# --- HELD-$ CEILING (operator invariant 2026-07-22: "never lose more than the reward"): total
+# unpaired held cost is the ONLY uncapped loss channel left (pairs capped at MAX_UNWIND_LOSS,
+# taker off). Above HELD_MAX_USD the whole book goes REDUCE-ONLY until it drains — sized so the
+# worst-case settlement loss on any day is about one day's measured rewards (~$20 receipt rate).
+# LEVEL trigger, complementing the velocity trigger above; can overshoot by at most one cycle's
+# small quote sizes before it bites.
+HELD_MAX_USD = _envf("KALSHI_HELD_MAX_USD", 20.0)
 # --- STOP ESCALATION (audit HIGH-1): pure-maker STOP can leave you hanging (offsets may never
 # fill); pure-taker STOP is a fire-sale. STOP = maker-first with BOUNDED escalation: rest the
 # offsets, wait, re-check, and taker-cross ONLY what is still material after the wait.
@@ -747,7 +754,10 @@ def run_once():
                     if now.timestamp() - h[0] < BREAKER_WINDOW_S]
             hist.append([now.timestamp(), held_cost])
             st["held_hist"] = hist[-30:]
-            breaker = held_cost - min(h[1] for h in hist) > BREAKER_HELD_GROWTH_USD
+            # trips on VELOCITY (rapid growth = adverse accumulation) OR LEVEL (total unpaired
+            # held-$ above the day's-rewards-scale ceiling) — either way: reduce-only below.
+            breaker = (held_cost - min(h[1] for h in hist) > BREAKER_HELD_GROWTH_USD
+                       or held_cost > HELD_MAX_USD)
 
         # --- DE-RISK PASS (TAKER = GENUINE LAST RESORT ONLY). Normal position control is the
         # maker SKEW in desired_quotes (grow the reducing side, keep BOTH quotes live). The taker
@@ -853,8 +863,8 @@ def run_once():
             desired = {t: [q2 for q2 in qs if q2.get("reason") == "unwind"]
                        for t, qs in desired.items()}
             desired = {t: qs for t, qs in desired.items() if qs}
-            print(f"WARNING velocity breaker: held ${held_cost:.2f} grew >"
-                  f"${BREAKER_HELD_GROWTH_USD:.0f} within {BREAKER_WINDOW_S}s — REDUCE-ONLY cycle")
+            print(f"WARNING breaker: held ${held_cost:.2f} (growth>{BREAKER_HELD_GROWTH_USD:.0f}"
+                  f"/{BREAKER_WINDOW_S}s or level>{HELD_MAX_USD:.0f}) — REDUCE-ONLY cycle")
 
         desired, capped_markets = cap_desired(desired, usd_day)     # aggregate $ cap
         cancels, creates = diff_orders(standing, desired)
