@@ -1202,3 +1202,19 @@ def test_reward_qualification_gate(monkeypatch):
     # HELD inventory still unwinds even in an unqualifiable market (de-risk is never reward-gated)
     out = q.desired_quotes(m, deep_y, thin_n, q.utcnow(), inv=20.0)
     assert out and all(x["reason"] == "unwind" for x in out)
+
+
+def test_throttle_step_ticks_knob(monkeypatch):
+    # Reward economics (CFTC-verified): score = 0.50^(ticks from reference) x size, so the
+    # throttle's 1-tick step HALVES that side's credit (or zeroes it if the book already meets
+    # Target Size above). Knob lets us A/B it; default 1 preserves existing behaviour exactly.
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
+    monkeypatch.setattr(q, "THROTTLE_STEP_TICKS", 1)          # default
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)}
+    assert qs["yes"]["price_dollars"] == 0.49                 # 1 tick inside best (0.50)
+    monkeypatch.setattr(q, "THROTTLE_STEP_TICKS", 0)          # A/B: stay at reference
+    qs0 = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)}
+    assert qs0["yes"]["price_dollars"] == 0.50                # full 1.0x credit
+    assert qs0["yes"]["count"] == qs["yes"]["count"]          # size throttle unchanged either way
+    assert qs0["no"]["reason"] == "unwind"                    # de-risk side unaffected

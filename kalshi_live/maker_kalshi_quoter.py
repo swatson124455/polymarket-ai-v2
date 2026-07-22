@@ -116,6 +116,14 @@ SERIES_ALLOW = [s for s in os.environ.get("KALSHI_SERIES_ALLOW", "").split(",") 
 #                 above SOFT skew 1 tick inside + shrink the ACCUMULATING side; above HARD pull
 #                 the accumulating side entirely (JOIN) / don't ADD via ACTIVATE (void-safe).
 # (Kalshi's ladder margin-offset remains a separate CAPITAL concern handled by the $ caps.)
+# --- THROTTLE PRICE STEP (reward economics, CFTC-verified 2026-07-22) ---
+# The LIP score is DiscountFactor^(ticks from the Reference Price) x size, and our programs run
+# discount_factor_bps=5000 => 0.50. So stepping the accumulating side 1 tick inside HALVES that
+# side's credit — and can zero it outright, because the qualifying walk stops once the book
+# reaches Target Size: a quote one tick back can fall out of the scored set entirely.
+# Set 0 to keep the accumulating side AT reference (full credit) and throttle by SIZE alone.
+# Default 1 = existing behaviour; this is a knob to A/B against the ledger, NOT a silent change.
+THROTTLE_STEP_TICKS = _envi("KALSHI_THROTTLE_STEP_TICKS", 1)
 INV_SOFT_CT = _envf("KALSHI_INV_SOFT_CT", 30.0)
 INV_HARD_CT = _envf("KALSHI_INV_HARD_CT", 80.0)
 # INVARIANT (fix H): a single JOIN fill must not by itself breach the hard cap, or one fill
@@ -527,13 +535,13 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                 if hard:
                     y_cnt = 0                       # HARD STOP: cap the envelope, stop the leak
                 else:
-                    y_price = round(best_y - TICK, 4)
+                    y_price = round(best_y - TICK * THROTTLE_STEP_TICKS, 4)
                     y_cnt = max(MIN_QUOTE_CT, int(y_cnt * (1 - over)))
             else:                                   # accumulating NO -> throttle NO
                 if hard:
                     n_cnt = 0
                 else:
-                    n_price = round(best_n - TICK, 4)
+                    n_price = round(best_n - TICK * THROTTLE_STEP_TICKS, 4)
                     n_cnt = max(MIN_QUOTE_CT, int(n_cnt * (1 - over)))
         # OFFSET the position: grow the REDUCING side toward |inv| at reference so its fills drain
         # the overhang back to ~zero net delta (maker offset, tagged 'unwind' = exempt from the
@@ -1051,6 +1059,26 @@ def run_once():
             desired = {t: qs for t, qs in desired.items() if qs}
             print(f"WARNING breaker: held ${held_cost:.2f} (growth>{BREAKER_HELD_GROWTH_USD:.0f}"
                   f"/{BREAKER_WINDOW_S}s or level>{HELD_MAX_USD:.0f}) — REDUCE-ONLY cycle")
+
+        # REWARD-CREDIT TELEMETRY: LIP pays DiscountFactor^ticks-from-reference x size, so money
+        # resting AT the touch earns full credit while money parked/stepped back earns 0.5^n (or
+        # nothing at all if the book already meets Target Size above it). Measure the split so the
+        # ledger can attribute rewards to quote placement instead of us theorising about it.
+        at_ref = off_ref = 0.0
+        for _t, _qs in desired.items():
+            _r = book_refs.get(_t)
+            if not _r:
+                continue
+            for _q in _qs:
+                _best = _r[0] if _q["side"] == "yes" else _r[1]
+                _v = _q["price_dollars"] * _q["count"]
+                if abs(_q["price_dollars"] - _best) < TICK / 2:
+                    at_ref += _v
+                else:
+                    off_ref += _v
+        plan["at_ref_usd"] = round(at_ref, 2)
+        plan["off_ref_usd"] = round(off_ref, 2)
+        plan["at_ref_pct"] = round(100 * at_ref / max(at_ref + off_ref, 1e-9), 1)
 
         desired, capped_markets = cap_desired(desired, usd_day)     # aggregate $ cap
         cancels, creates = diff_orders(standing, desired)
