@@ -3,7 +3,7 @@
 import asyncio
 import math
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -446,11 +446,43 @@ class TestMarketMapper:
 
 
 class TestDateParsing:
+    # S234: these two asserted `date(now.year, ...)` unconditionally, which
+    # silently encoded a CALENDAR ASSUMPTION rather than the parser's contract.
+    # _parse_date applies rule L2 (market_mapper.py): with no explicit year, a
+    # date more than 180 days in the PAST is read as next year's ("January 5"
+    # asked in December targets the coming January). So the expected year flips
+    # partway through every year. `January 22` crossed the boundary at 181 days
+    # past and began failing on 2026-07-21; `Feb 3` was 169 days past and would
+    # have started failing ~2026-08-02 — the same latent bug, 12 days behind.
+    # The helper mirrors L2 so both stay correct on every calendar day.
+    @staticmethod
+    def _expected(month: int, day: int) -> date:
+        today = datetime.now(timezone.utc).date()
+        parsed = date(today.year, month, day)
+        if (today - parsed).days > 180:
+            parsed = date(today.year + 1, month, day)
+        return parsed
+
     def test_full_month_name(self):
-        assert _parse_date("January 22") == date(datetime.now().year, 1, 22)
+        assert _parse_date("January 22") == self._expected(1, 22)
 
     def test_abbreviated_month(self):
-        assert _parse_date("Feb 3") == date(datetime.now().year, 2, 3)
+        assert _parse_date("Feb 3") == self._expected(2, 3)
+
+    def test_l2_rollforward_is_actually_exercised(self):
+        """Guard the guard: prove L2 really does roll a long-past date forward
+        and leave a recent one alone — so _expected() above can't mirror a bug.
+        Calendar-stable: the parser always builds from the CURRENT year, so a
+        date 200 days back lands on year+1 whether or not it crossed Jan 1."""
+        today = datetime.now(timezone.utc).date()
+
+        long_past = today - timedelta(days=200)
+        got = _parse_date(f"{long_past.strftime('%B')} {long_past.day}")
+        assert got == date(long_past.year + 1, long_past.month, long_past.day)
+
+        recent = today - timedelta(days=10)
+        got = _parse_date(f"{recent.strftime('%B')} {recent.day}")
+        assert got == date(today.year, recent.month, recent.day)
 
     def test_with_year(self):
         assert _parse_date("March 15, 2026") == date(2026, 3, 15)
