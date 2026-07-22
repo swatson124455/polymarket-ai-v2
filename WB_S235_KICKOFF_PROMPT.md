@@ -70,8 +70,10 @@ then `export PGPASSWORD="$PW"; psql -h 127.0.0.1 -U polymarket -d polymarket`.
 
 1. `bash scripts/wb_resume_check.sh` — expected: ALL PASS except (a) the known
    "agent WORKTREE" location FAIL, (b) a deploy-parity WARN (HEAD ahead of
-   `20260721_230638` by S234's trailing doc commits — no undeployed CODE). Any
-   OTHER FAIL → STOP and report.
+   `20260721_230638` by S234's trailing doc/manifest commits PLUS one test-file
+   commit `a98a19d` — the calendar-fragile TestDateParsing fix, which postdates
+   the release cut. Tests do not ship runtime behaviour, so there is no
+   undeployed BOT CODE). Any OTHER FAIL → STOP and report.
 2. VPS spot-checks (read-only): `readlink /opt/polymarket-ai-v2-weather` →
    **`20260721_230638`**; service active; the 3 WEATHER_ flags in the running
    process env (`WEATHER_NOWCAST_ENTRY_ENABLED=true`,
