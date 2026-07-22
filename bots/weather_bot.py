@@ -1495,9 +1495,23 @@ class WeatherBot(BaseBot):
                     # fallback. Was `forecast_temp - actual_temp`.
                     bias = actual_temp - forecast_temp
                     try:
+                        # S234: weather_calibration.target_date is a DATE column and
+                        # asyncpg refuses a str bind ("expected a datetime.date ...,
+                        # got 'str'") — fetch_historical_bias returns the date as an
+                        # ISO STRING by contract (forecast_client.py, Tuple[..., str,
+                        # ...]), so EVERY bootstrap row raised DataError and was
+                        # swallowed by the except below. bootstrap_gfs rows froze at
+                        # 314 (all 2026-05-31..06-12, zero since); cold stations lost
+                        # their ERA5 seed and fell back to live accrual + pooled
+                        # global. Same class as the S227 gt_cutoff fix (92740f3) at a
+                        # call site that fix missed. isinstance-guarded so a future
+                        # date/datetime from the producer passes through untouched.
+                        _td = target_date_str
+                        if isinstance(_td, str):
+                            _td = date.fromisoformat(_td)
                         await session.execute(text(_ins_sql), {
                             "sid": station.station_id,
-                            "td": target_date_str,
+                            "td": _td,
                             "ft": forecast_temp,
                             "at": actual_temp,
                             "lt": lead_hours,
