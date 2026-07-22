@@ -47,7 +47,16 @@ live tick 03:04:03Z injected 3 `nat:` rows into both consumed pws_mesh files
 master undeployed since 2026-06-22 (would ship a month of all sessions' work),
 its committed weather unit is missing `/opt/pa2-maker-feeds` from ReadWritePaths
 (would silently break the WB→Maker feed), and its pytest preflight aborts on the
-pre-existing `test_full_month_name` failure. Spec §"S234 EXECUTION ARC 3".
+pre-existing `test_full_month_name` failure. **ARC 4 — blockers CLEARED and
+MASTER DEPLOYED (release `20260721_232241`)**: fixed the calendar-fragile
+TestDateParsing (master `00372e8`; `Feb 3` would have broken ~08-02 too) and
+restored `/opt/pa2-maker-feeds` to the committed weather unit's ReadWritePaths
+(master `4b50ce7`) — proven by the feed growing 17,734→17,754 post-deploy.
+Master had not shipped since 06-22, so this released ~a month of all sessions'
+work (operator's call). Verified: 4/4 services active, **0 error lines on all
+four**, 3 shared fixes live, WB untouched on splinter `20260721_230638` with
+flags + nat_mesh `live=1` intact. ⚠ ingestion logs `Bulk inserted`, NOT
+`scan_done`. Rollback = `deploy/rollback.sh`. Spec §"S234 ARC 4".
 Prior header (S233) below.)
 Prior header (S233 — big session under operator "permission on all
 go": verification/watch + Tier-3 registry additions + shared signal fix (TWO

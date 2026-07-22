@@ -1699,3 +1699,58 @@ consciously bypassed) before master can ship at all.
 deploy — verified by reading `00-splinter.conf`, which was written for exactly
 this and states it. So a future master deploy will not repoint WeatherBot; only
 the ReadWritePaths regression (b) actually touches WB.
+
+## S234 ARC 4 — BLOCKERS CLEARED, MASTER DEPLOYED (operator "proceed")
+
+Both fixable blockers from ARC 3 were fixed and master was deployed. Blocker (a)
+— shipping ~a month of accumulated master work — was the operator's call, made
+with the finding in view.
+
+### Blocker (c) FIXED — `TestDateParsing` encoded a calendar assumption (master `00372e8`, WB copy on branch)
+`test_full_month_name` / `test_abbreviated_month` asserted `date(now.year, ...)`
+unconditionally. `_parse_date` applies rule **L2** (`market_mapper.py:333-339`):
+with no explicit year, a date >180 days in the PAST is read as next year's
+("January 5" asked in December targets the coming January). So the correct year
+flips partway through every calendar year. `January 22` crossed the boundary at
+**181 days** past and began failing 2026-07-21 — that is what blocked the
+preflight. `Feb 3` was **169 days** past and would have started failing
+**~2026-08-02**: the identical latent bug, 12 days behind (P16 adjacent-shape —
+found by enumerating, not by waiting for it to break). Both now use a helper
+mirroring L2, plus a new test proving L2 genuinely rolls a long-past date
+forward and leaves a recent one alone (so the helper cannot mirror a bug).
+**Production code UNCHANGED — L2 is deliberate and correct.**
+
+### Blocker (b) FIXED — committed weather unit lost the Maker feed path (master `4b50ce7`)
+Added `/opt/pa2-maker-feeds` to `deploy/polymarket-weather.service`'s
+`ReadWritePaths`, matching the live unit (S231 added it live, never to the
+committed copy, so every deploy silently reverted it).
+**PROVEN by the deploy itself:** post-deploy the live unit carries the path AND
+`wb_forecasts.jsonl` grew **17,734 -> 17,754 lines**. Had this not been fixed
+first, `ProtectSystem=strict` would have made the drop read-only and the export
+— which swallows every error by design — would have stopped silently.
+
+### MASTER DEPLOY — release `20260721_232241` (SUCCESSFUL)
+Previous master release was `20260622_225148` (2026-06-22), so this shipped
+~a month of accumulated master work to mirror/esports/ingestion in one release,
+including the 3 S234 shared fixes. Gate 1 (services active) and Gate 2 (no error
+spam) PASSED; Gate 3 (scan_ms from every bot within 420s) soft-WARNed — the
+script attributes it to EB v2 cold-start and continues. **Do not trust that warn
+either way — it was verified manually instead:**
+```
+release      /opt/pa2-releases/20260721_232241 ; all 4 services active
+shared fixes in RUNNING release: raise_on_error x7, market-agnostic x2,
+                                 nowcast predicate x4
+mirror       17 scan/discovery events since deploy
+esports       6 events since deploy
+ingestion    257 log lines — bulk price inserts, db_pool_health healthy
+             (it logs "Bulk inserted"/"Market <id> YES", NOT scan_done — a
+              scan_done grep returns 0 and looks dead when it is fine)
+weather      scanning 49 cities / 100 groups / 297 markets
+error-level lines since deploy: 0 on ALL FOUR services
+```
+**WB was untouched by the master deploy, as designed:** still on splinter release
+`20260721_230638`, `WorkingDirectory=/opt/polymarket-ai-v2-weather` (the
+`00-splinter.conf` drop-in held), all 3 nowcast flags survived, and nat_mesh is
+still `live=1` (11 `nat:` rows in today's consumed feed).
+Rollback: `deploy/rollback.sh`, or flip `/opt/polymarket-ai-v2` back to
+`/opt/pa2-releases/20260622_225148` and restart the 4 services.

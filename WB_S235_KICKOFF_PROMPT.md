@@ -39,14 +39,22 @@ Rollback: `crontab -e`, drop the `NAT_MESH_LIVE=1 ` prefix. §0 should now expec
 09:15Z `mesh_debias` run is the first to see nat anchors — confirm Berlin/Sydney/
 Melbourne (EDDB/YSSY/YMML) appear as table rows and that no city regressed.
 
-**⛔ MASTER `deploy.sh` IS BLOCKED — do NOT run it** (spec §"S234 EXECUTION ARC 3"):
-(a) master has not deployed since **2026-06-22**, so it would ship ~a month of
-every session's work to mirror/esports/ingestion, not just the 3 shared fixes;
-(b) it copies master's `deploy/polymarket-weather.service`, which is MISSING
-`/opt/pa2-maker-feeds` from `ReadWritePaths` — that would silently break the
-WB→Maker forecast export (the splinter drop-in only covers WorkingDirectory +
-ExecStart); (c) its pytest preflight aborts on the pre-existing
-`test_full_month_name` failure. Fix (b) and (c) first; (a) is an operator/peer call.
+**MASTER WAS DEPLOYED — release `20260721_232241`** (operator "proceed"; spec
+§"S234 ARC 4"). The two fixable blockers were fixed first and pushed to master:
+the calendar-fragile `TestDateParsing` (`00372e8`) and the committed weather
+unit's missing `/opt/pa2-maker-feeds` in `ReadWritePaths` (`4b50ce7`). The third
+— that master had not deployed since **2026-06-22**, so this shipped ~a month of
+every session's work to mirror/esports/ingestion — was the operator's call, made
+with the finding in view.
+Post-deploy manually verified (Gate 3 soft-warned; do not rely on it): all 4
+services active, **0 error-level lines on all four**, the 3 shared fixes present
+in the running release, mirror/esports/ingestion all doing real work.
+⚠ **`polymarket-ingestion` logs `Bulk inserted` / `Market <id> YES`, NOT
+`scan_done`** — grepping for scan_done returns 0 and makes it look dead when it
+is healthy. WB was untouched: still on splinter `20260721_230638`, drop-in held,
+flags survived, nat_mesh still `live=1`.
+Rollback: `deploy/rollback.sh`, or flip `/opt/polymarket-ai-v2` back to
+`/opt/pa2-releases/20260622_225148` + restart the 4 services.
 
 **DB credential gotcha:** no usable `DB_PASSWORD` in the shared env — extract:
 `PW=$(grep -oP "postgresql[^ ]*://polymarket:\K[^@]+" /opt/pa2-shared/.env | head -1)`
