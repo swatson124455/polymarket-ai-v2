@@ -846,8 +846,21 @@ def run_once():
                 # transient fetch fail: RETAIN this market's standing (do not
                 # let diff cancel everything on it); skip re-pricing this cycle
                 if standing.get(t):
-                    desired[t] = [{"side": o["side"], "price_dollars": o["price_dollars"],
-                                   "count": o["count"]} for o in standing[t]]
+                    # TAG the reducing side as 'unwind' when we hold a position here: a
+                    # reason-less retained copy is invisible to every polarity-aware gate
+                    # (cap_desired's unconditional keep, bound_creates priority, the breaker
+                    # filter), so under a tight capital cap the ticker gets dropped and the diff
+                    # CANCELS our live reducing order — stranding the position on a transient
+                    # fetch error (review 07-22 skeptic). Tagging is diff-neutral: the retained
+                    # copy still matches standing exactly, so no cancel/create is emitted.
+                    _pos = held_by.get(t, 0.0)
+                    desired[t] = [
+                        dict({"side": o["side"], "price_dollars": o["price_dollars"],
+                              "count": o["count"]},
+                             **({"reason": "unwind"} if (abs(_pos) >= INV_TOLERANCE and
+                                 ((_pos > 0 and o["side"] == "no") or
+                                  (_pos < 0 and o["side"] == "yes"))) else {}))
+                        for o in standing[t]]
                 fetch_failed += 1
                 continue
             try:

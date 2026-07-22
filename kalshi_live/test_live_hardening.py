@@ -953,3 +953,28 @@ def test_env_clamps_footguns():
     finally:
         for k in ("KALSHI_LATE_LIFE_FRAC", "KALSHI_MAX_ENTRY_CUTOFF_MIN", "KALSHI_WIND_DOWN_MIN"):
             os.environ.pop(k, None)
+
+
+def test_retained_reducing_survives_tight_capital_cap(monkeypatch, tmp_path):
+    # Skeptic repro (07-22): a fetch-fail-RETAINED reducing quote was reason-less, so
+    # cap_desired's unwind-keep did not protect it; at CANARY cap ($20) with the unwind book
+    # already filling the cap, the ticker was dropped and the diff CANCELLED the live reducing
+    # order. Now the retained reducing side is tagged 'unwind' at the source. NOTE the tight
+    # totcap here -- the earlier test used totcap=200, which masked exactly this.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=20)          # canary-scale cap
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "FETCHFAIL", "usd_day": 1.0, "target": 1, "end": "2099-01-01T00:00:00Z"},
+        {"ticker": "BIGUNWIND", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    def pg(p):
+        if "incentive" in p: return {"incentive_programs": [], "next_cursor": ""}
+        if "FETCHFAIL" in p: raise ValueError("orderbook 502")   # transient fetch fail
+        return {"orderbook_fp": {"yes_dollars": [["0.50", "9999"]], "no_dollars": [["0.49", "9999"]]}}
+    monkeypatch.setattr(q, "public_get", pg)
+    resting = [_order("keepme", "FETCHFAIL", "no", 0.30, 20)]   # live reducing order, $6
+    c = MockClient(mode="live", resting=resting, positions=[
+        {"ticker": "FETCHFAIL", "position_fp": "20", "market_exposure_dollars": "6.00"},
+        {"ticker": "BIGUNWIND", "position_fp": "40", "market_exposure_dollars": "18.00"}])
+    _run(monkeypatch, c, str(tmp_path))
+    assert "keepme" not in c.cancelled       # live reducing order NOT cancelled under tight cap
