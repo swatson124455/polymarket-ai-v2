@@ -250,6 +250,72 @@ standing recommendation, one session away from being acted on.** §H's widening 
   `KXRT` ($1,263/day).
 - Single point in time; programs churn hourly.
 
+### §M5 — SECTORS WE ARE NOT IN: where could we eat, or get scraps? (2026-07-23 ~03:10Z)
+
+`kalshi_live/kalshi_sector_scan.py` — top 40 series by pool $/day, **4 markets sampled each**,
+scored at the deployed shape (join 20 ct/side, $15/market) with all four rulebook rules applied.
+Output `kalshi_live/sector_scan.json`.
+
+⚠ **SCANNER BUG FOUND AND FIXED MID-RUN — the first output was inverted.** The initial version
+scored share without applying R3, and put `KXWNBAMENTION` at the **top** with $604/day capture
+while **0%** of its sampled books were two-sided. Under R3 an excluded snapshot pays **nobody**,
+and per §M2 our 20 ct cannot rescue a book that misses a 1000-contract Target Size. With R3
+applied that series scores **$0**. Every number below is post-fix.
+
+#### The single most useful finding: the biggest pools are UNEARNABLE
+
+| series | pool $/day | programs | two-sided |
+|---|---|---|---|
+| KXWNBAMENTION | 4,469 | 18 | **0%** |
+| KXMLBMENTION | 4,469 | 18 | **0%** |
+| KXLIUKELIMINATION | 1,567 | 13 | **0%** |
+| KXHURCAT | 433 | 10 | **0%** |
+| KXLUV | 433 | 15 | **0%** |
+| KXCHINAAI | 380 | 18 | **0%** |
+| KXGOOG | 362 | 9 | **0%** |
+
+**$12,112/day of headline pool — 24.5% of the venue's $49,411/day — sat at 0% two-sided.**
+Those snapshots are excluded and pay nobody, ours or anyone's. **Pool-size ranking points
+straight at them.** This is why R3 has to be applied before any opportunity ranking.
+
+#### Candidates that ARE two-sided (reference: `KXAAAGASD` = **$6.00/market/day**)
+
+| series | $/mkt/day | 2-sided | programs | structure | verdict |
+|---|---|---|---|---|---|
+| KXCLAUDE | **12.21** | 100% | 4 | date-nested (monotone) | best per-market on the board, but n=4 and tiny |
+| KXEARNINGSMENTIONLMT | 7.42 | 100% | 13 | — | ⚠ **mention family = settlement trap** |
+| KXEARNINGSMENTIONAXP | 4.50 | 100% | 14 | — | ⚠ same |
+| KXEARNINGSMENTIONAAL | 4.04 | 100% | 15 | — | ⚠ same |
+| KXEARNINGSMENTIONINTC | 2.78 | 100% | 15 | — | ⚠ same |
+| **KXINTC** | 1.98 | 100% | 9 | **numeric threshold ladder** | ✅ structurally safe |
+| KXROLEINPRODUCTIONDOOMSDAY | 1.50 | 100% | 20 | **named/mutually exclusive** | ❌ event-aggregate would mis-fire |
+| **KXPM** | 1.46 | 100% | 11 | **numeric threshold ladder** | ✅ structurally safe |
+| **KXRT** | 0.69 | 100% | **70** | **numeric threshold ladder** | ✅ scraps-at-scale |
+| **KXFUNDRAISING** | 0.59 | 100% | **86** | A-prefixed numeric ladder | ✅ scraps-at-scale |
+
+- **"Eat in": nothing clearly beats what we hold.** `KXCLAUDE` is the only thing scoring above
+  GASD per market, and it is 4 programs sampled 4 times — far too thin to act on.
+- **"Scraps": `KXRT` (70 programs) and `KXFUNDRAISING` (86 programs)** are the real shape — low
+  per-market, high program COUNT, 100% two-sided, threshold-laddered. Extrapolated $48/day and
+  $51/day respectively vs GASD's $144/day.
+- The `EARNINGSMENTION*` cluster scores well and is 100% two-sided, but it is the **mention
+  family** the tab flags as a settlement trap (`FIGHTMENTION` +745 in-window / −1338 settled).
+  **Score is a reason to investigate, never to trade.**
+
+#### BLOCKERS before any of this is actionable
+1. **MAKER FEES UNVERIFIED — hard blocker.** Only `KXTEMP*`, `KXAAAGASD`, `KXAAAGASW` are
+   fee-verified $0 by prod read-back. A maker fee on a new series can swallow the entire reward.
+2. **TOXICITY UNMEASURED** for every candidate. The reward side says nothing about whether the
+   flow filling you is informed. This is what the mention trap is.
+3. **STRUCTURE per series.** The event-aggregate throttle assumes additive "above X" ladders;
+   categorical/mutually-exclusive series would sum anti-correlated strikes and mis-fire.
+   ⚠ The classifier used here is a crude numeric-suffix heuristic and **mis-flags prefixed
+   numerics** — `KXFUNDRAISING-…-A145000000` is really a threshold ladder. Verify per series
+   by hand, do not trust the heuristic.
+4. **n = 4 markets per series, one instant.** Extrapolating that to 70–86 programs is a big leap
+   and is shown only as `extrap`. Treat per-market figures as the measurement and the series
+   totals as indicative.
+
 ### §M3 — code-vs-rulebook conformance check
 
 | rule clause (S1) | implementation | verdict |
