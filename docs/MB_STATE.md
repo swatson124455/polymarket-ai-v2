@@ -77,7 +77,7 @@
 > preloads the gamma cache ONCE per process (`:1259`) and the re-review is a
 > single long-lived invocation, so all 20 traders are graded on the same
 > 07-22 snapshot (keys=213,623). Internally uniform; verified alive after the
-> write (3 JSONs, pid 31257). `scripts/rereview_diff.py` (`4d2b7d1`) is the
+> write (3 JSONs, pid 31257). `scripts/rereview_diff.py` (`16af40b`) is the
 > strict completion check: anything short of roster-complete is rc=4 naming
 > the uncompared addresses — "FLIPPED: 0" now only prints next to a
 > roster-complete compare. Interim (3/20): all ADMIT→ADMIT, edges
