@@ -13,6 +13,33 @@ Rules for future sessions:
 
 ---
 
+## A0. HANDOFF PROTOCOL — SANDBOX RESULTS ARE MANDATORY (operator directive 2026-07-22)
+
+**Every handoff must report the no-money SANDBOX study results, not just live bot state.**
+The sandbox is where strategy questions actually get answered: live A/B on this account is
+confounded (config changes, deposits, time-of-day) and any arm that fills constantly never
+produces the quiet intervals the rewards measurement needs — and it costs real money to learn.
+The paired sandbox scores both arms on IDENTICAL book snapshots using the real CFTC LIP formula.
+
+Include: study name, sample size, the numbers, and explicitly WHAT IT DOES NOT COVER (reward
+side vs fill/cost side). Keep the caveat attached to the number.
+
+**CURRENT SANDBOX STANDING RESULT** — `kalshi_live/kalshi_ab_throttle_study.py`
+(read-only, no keys, imports the CFTC scoring core from `scripts/maker_kalshi_recorder.py`):
+
+| n = 612 market-snapshots | mean share | in qualifying set | reward multiple |
+|---|---|---|---|
+| arm A — 1 tick inside (**DEPLOYED**) | 0.1056 | 88% | 1.00x |
+| arm B — at reference | 0.1684 | 100% | **1.59x** |
+
+- The 1-tick step **ZEROES** our credit in **12%** of snapshots (falls outside the qualifying set).
+- **NOT COVERED:** fill rate / cost side — not simulatable without queue position. Measured LIVE
+  instead: at-reference ~**tripled** naked-inventory build ($11→$30 in ~40 min, 2 ceiling trips).
+- **Verdict: keep `THROTTLE_STEP_TICKS=1`.** ~37% of reward forfeited to cut exposure build ~2/3;
+  correct at this size (one bad accumulation > a day of rewards).
+- Parked, UNMEASURED on the risk side: `KALSHI_THROTTLE_SMART=1` (default OFF) — skip the step
+  only when the top level alone already meets Target Size. Needs its own sandbox run first.
+
 ## A. LEDGER (chronological)
 
 | date | event | $ / verdict | source |
