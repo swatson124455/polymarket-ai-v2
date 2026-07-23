@@ -1903,3 +1903,47 @@ the FLAG-ON nowcast may trade, so both need their own review + sign-off.
 Both columns (`weather_calibration.actual_source`, `prediction_log.prob_frame`)
 verified present in the DB; the WARNs are re-runs hitting a statement timeout on
 already-applied DDL. Cosmetic, will recur on every deploy. No action.
+
+## S234 NEGATIVE RESULT — lead-HOUR structure inside <24h is NOT exploitable
+
+Asked whether the per-hour breakdown of the `<24h` bucket contains a tradeable
+signal. It does not. Recording it because the idea ("gate entries to the good
+lead hours") is plausible enough that someone will propose it.
+
+Data path: `calibration_check._build_per_side_lead_time_sql` used VERBATIM (only
+an added output column); Brier/BSS use calibration_check's own formulas.
+Window `--since 20260713_160229`, NO side, n=5653.
+
+**1. No hour has positive skill at a meaningful base rate.** Every cell with a
+non-degenerate base rate (0.25–0.66, n>=100 — hours 0,1,2,3,4,6,8,9,10,11,12,13,
+14,21,23) has NEGATIVE BSS (−0.15 to −1.37). The cells that LOOK good are all
+base-rate traps: hour 5 (base 0.076, acc 92.7%, BSS ≈ 0) merely MATCHES
+climatology; hours 15/16/22 likewise (base 0.178/0.000/0.016). High accuracy
+there measures how predetermined the outcome was, not model skill.
+**Do not cite "hour 5 is well calibrated" — it is climatology.**
+
+**2. Split-half stability test — sign stable, ranking NOT.** Splitting the
+window at 2026-07-16 13:11:31 and recomputing per block:
+```
+block    FIRST half        SECOND half
+0-2      -1.132 n=826      -0.059 n=128
+3-5      -0.162 n=741      -0.176 n=679
+6-7      -4.482 n=180      -1.295 n=293
+8-12     -0.866 n=626      -0.443 n=1365
+13-17    -0.021 n=132      -0.365 n=320
+18-23    -0.126 n=321      -6.430 n=42
+```
+12/12 negative — the deficiency is REAL and uniform, not sampling noise. But the
+ORDERING is unstable (worst block is 6-7 in the first half, 18-23 in the second;
+0-2 moves −1.13 → −0.06). **You cannot reliably identify "the bad hours", so
+lead-hour gating is not buildable.** Note also that 8-12 dominates the pooled
+number by VOLUME (2392 of 5653 rows), not by being distinctively bad — it is
+mid-pack in both halves.
+
+**3. Implication.** The deficiency is uniform across lead time, so the lever is
+the MODEL/CALIBRATION, not trade gating — i.e. the VIF path already in flight.
+The second half is mostly POST-VIF-1.8 and is still uniformly negative, which
+says the 1.4→1.8 raise did not fix the overconfidence. That is the strongest
+available argument for the 07-24 `wb-vif-tune-remeasure` recommending VIF→2.0.
+Caveats: the window straddles the 07-19 VIF change (regime-mixed), and the
+calibrator is hands-off until ~08-07 — measurement only, not a tuning trigger.
