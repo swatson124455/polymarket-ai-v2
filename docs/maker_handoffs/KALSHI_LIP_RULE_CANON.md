@@ -423,6 +423,71 @@ not as a fraction of contracts quoted.**
 condition every time. Not silently re-run here — the frozen dataset is what the committed numbers
 refer to, and replacing it would break reproducibility.
 
+### §M7 — RECEIPT-GRADE REWARD DATA (operator screenshots, 2026-07-23). THE MODEL OVER-PREDICTS.
+
+The operator supplied Kalshi web-UI transaction rows: **"Liquidity Incentive For Event <ticker>"**
+with dated dollar amounts. This is **RECEIPT** evidence — actual credited money — and it is the
+ground truth every reward figure in this lane has been approximating. It supersedes modelled
+capture wherever the two disagree.
+
+#### (a) Payouts are labelled PER EVENT but land PER CONTRACT
+Multiple rows appear for the same event (`KXAAAGASD-26JUL23` × 4; `KXTEMPCHIH-26JUL2211` × 2).
+That matches R4/R2: each contract's program pays separately; the UI just labels by event ticker.
+
+#### (b) R2 CONFIRMED BY RECEIPT — the $1.00 threshold is real and binding
+Smallest observed credits: **$1.01, $1.14, $1.33, $1.37, $1.42**. **Nothing below $1.00 appears.**
+Contracts landing just above the threshold *do* pay. This is the first non-modelled confirmation.
+
+#### (c) ⚠ TEMP IS THE EARNER — and my "temp is dark" framing was a SNAPSHOT ARTEFACT
+Largest observed credits are all `KXTEMP*`: **NYCH $12.94**, AUSH $7.39, DCH/CHIH/NYCH in the
+$1.4–3.2 band. Gas-daily contracts pay **$1.42–$3.75**.
+§M4 recorded "all five KXTEMP* series have ZERO active programs — temp contributes nothing
+today." That was TRUE AT 02:35–03:14Z and MISLEADING as a characterisation: temp programs are
+**~1-hour and hourly-cycling**, so an instantaneous read between windows shows zero. **Do not
+read a point-in-time program census as a statement about a series' earning power.**
+
+#### (d) ⚠⚠ THE MODEL OVER-PREDICTS BY ROUGHLY 2–6× — treat §M1/§M4/§M5 as UPPER BOUNDS
+For `KXAAAGASD-26JUL23`, §M4 predicted per-Time-Period payouts of **$22.10 / $16.81 / $9.43 /
+$2.54** on its top four contracts. The visible receipts for that event are **$3.75 / $1.75 /
+$2.57 / $2.02** (sum $10.09 vs $50.88 predicted, ~5×).
+
+Why the model runs hot — all of these are real and none are in it:
+- it assumes we rest at reference on BOTH sides for the WHOLE Time Period; live we are throttled,
+  frequently one-sided, and periodically reduce-only;
+- it scores an instantaneous book, while payout integrates over every snapshot in the period,
+  including the overnight drought (§M6) when we earn nothing;
+- competitors requote and dilute our share continuously.
+
+**Consequence: every `$/day` figure in §M1, §M4 and §M5 is an UPPER BOUND, not a forecast.**
+Relative ranking between series is far more trustworthy than the absolute level. Re-state them
+that way; do not quote them as expected earnings.
+⚠ Caveat on this comparison: the screenshots are a partial scroll, so more contracts may have
+paid off-screen. The direction (model high) is solid; the exact multiple is indicative.
+
+#### (e) NO INCENTIVE ENDPOINT EXISTS — probed and recorded, so nobody re-probes
+READ-ONLY authenticated probe of ~25 candidate paths. **All 404 except:**
+`/portfolio/settlements` · `/portfolio/fills` · `/portfolio/orders` · `/portfolio/positions`
+(returns `event_positions` incl. `realized_pnl_dollars`) · `/portfolio/balance`.
+404s included: `/portfolio/transfers|ledger|incentives|rewards|account_history|balance_history|
+transactions|earnings|payouts|credits|activity|statements|incentive_earnings|
+liquidity_incentives|rewards_history|incentive_history`, `/incentives`, `/incentive_payouts`,
+`/incentive_programs/payouts`.
+**The web UI is the ONLY source of receipt-grade reward data.** Operator screenshots are
+therefore a first-class instrument, not an anecdote.
+
+#### (f) `portfolio_value` FOUND — reconciles EXACTLY to the UI
+`/portfolio/balance` → `{"balance": 7685, "balance_dollars": "76.8589", "portfolio_value": 2080}`.
+**Both integers are CENTS.** cash $76.8589 + positions $20.80 = **$97.6589** = the UI's
+"Portfolio $97.65". Exact.
+⚠ UNIT TRAP, same family as R1: `balance`/`portfolio_value`/settlement `revenue`/`value` are
+integer CENTS, while `*_dollars` fields are dollar strings. (Checked: `settlement_revenue()`
+at `kalshi_attribution_ledger.py:137` already does `/100.0` correctly — the cents bug is NOT
+the cause of the bad residual. Ruled out, not found.)
+NOTE the quoter's loss meter uses `balance + held COST BASIS`
+(`maker_kalshi_quoter.py:844-850`), deliberately, so settled positions don't read as losses.
+That is a different quantity from the venue's market-value `portfolio_value`. Both defensible —
+but do not treat them as the same number.
+
 ### §M3 — code-vs-rulebook conformance check
 
 | rule clause (S1) | implementation | verdict |
