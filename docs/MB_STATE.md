@@ -18,6 +18,70 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-07-22 SESSION CLOSE — READ THIS FIRST
+>
+> **HEADLINE: every edge number this lane has ever reported was FLATTERED.**
+> The `markets` resolution labels were incomplete, and the missing slice was
+> systematically NEGATIVE in every cohort. Corrected (CLOB-verified):
+> cohort1 **+0.0604 → +0.0315**; cohort2 **+0.0567 → +0.0399**; cohort3 was
+> reported "no resolved data" but actually had **7 markets at −0.0258**;
+> benched bum −0.5049 (n=2). Nothing moved toward passing; every P dropped.
+>
+> **ROOT CAUSE (shared infra, affects ALL bots):** `polymarket-ingestion`
+> crash-looping (334 restarts); its resolution queue hit the 300s statement
+> timeout every cycle, so the backfill wrote **nothing for 56h** against a
+> 38,696-market backlog. Fixed the query cost with a partial index
+> `idx_markets_unresolved_enddate` (matches the queue predicate + end_date
+> ordering; additive, CONCURRENTLY). Index alone was NOT enough — it needed
+> fresh stats; autoanalyze on `markets` 17:45Z supplied them and the queue
+> **succeeded 18:01Z, first time in 56h**.
+>
+> **LABEL FIX THAT ACTUALLY UNBLOCKED US — CLOB SUPPLEMENT.** The shared
+> backfill drains ~3 markets/30min (poison-batch: `end_date ASC` re-chews
+> permanently-unresolvable markets) ⇒ ~270 days, unusable. Instead supplemented
+> the gamma cache straight from CLOB (source proven: 196/196 verified, 0
+> unreachable, 0 mismatches): **+14,791 labels, gamma 198,832 → 213,623, ADMIT
+> label gap 32.0% → 1.9%** (residual = 610 genuinely-open + 330 CLOB-
+> unreachable, disclosed). Backup `gamma_resolutions.json.pre-clob-supplement`.
+>
+> **WHY THE TRADER VERDICTS ARE SUSPECT:** the deep-dive grades skill from
+> `DB + gamma cache` — the SAME degraded source. **26.5% of all ADMIT skill
+> evidence was unlabelable**, worst on three cohort-3 members graded on ~50%
+> of their evidence (`0x216509be` 53%, `0x7c3db723` 51%, `0xe542afd3` 50%).
+> That plausibly explains cohort-3's live edge landing NEGATIVE.
+> ⇒ **ADMIT RE-REVIEW of all 20 ADMITs RUNNING** (`/tmp/admit_rereview3.sh`,
+> out-dir `deep_dive_rereview/`, originals preserved for the before/after diff;
+> `<== FLIPPED` marks any verdict that fails complete labels). REJECTs are
+> rate-based ⇒ unaffected. 5 label-starved INSUFFICIENTs may have been wrongly
+> shelved.
+>
+> **EXECUTED THIS SESSION:** run-4 CLEAN-FINISH (28/28, 6 ADMIT/9 REJECT/13
+> INSUFFICIENT) → cohort-3 promotion + bum time-out in ONE fenced restart
+> (roster 25→30, verified `roster=30`, 0 alarms) → fill-cache proof gates (i)
+> and (ii) BOTH PASS → cohort-1 active-trader vetting (7): **6 ADMIT / 1
+> INSUFFICIENT**, and the INSUFFICIENT is the benched bum (edge +0.0031,
+> P=0.678 on his CLEANEST sample) — **his time-out is independently vindicated
+> by three lines of evidence**. NOTE those 6 ADMITs were ALSO graded on
+> incomplete labels ⇒ they are in the re-review (roster grew 14 → 20).
+>
+> **CROSS-BOT (WB relay):** master release `20260721_232241` (41 commits, a
+> month) went live on `polymarket-mirror` 03:27Z. **Verified on MB's own
+> terms:** scanning (`elites=300 open_positions=9`, ~2.8s cycles), gates
+> blocking, exits + zombie reap working, exposure reconciling, state restored,
+> **paper mode confirmed** (`simulation_mode=True`, canary 0). Calibrator
+> healthy post-c12: `fitted on 5000 resolved predictions`, fts fitted, 267
+> `mirror_calibrated` emissions adjusting BOTH directions. All error signatures
+> PRE-EXISTING and mostly improved per-hour (adverse slippage 29→4.5/h).
+> **KEEP THE RELEASE — no rollback.** One pre-existing anomaly: a 123h position
+> stuck in a force-exit retry loop, blocked by the 10% adverse-slippage guard
+> (correct protection, but it loops).
+>
+> **STILL OPEN / NOT FIXED (flagged, need operator go — shared infra):**
+> (a) backfill poison-batch ordering (~3/cycle ⇒ backlog never drains);
+> (b) `end_date_iso` NULL on **56%** of markets ⇒ starved by NULLS-LAST AND
+> invisible to the health check, so the true backlog exceeds the reported
+> 38,696; (c) the stuck force-exit loop; (d) master docs-sync PR for MB_STATE.
+
 > **2026-07-21 20:07Z — BATCH-BOUNDARY LEDGER MUTATION EXECUTED (operator-
 > authorized "fold into and proceed" + "proceed"). ROSTER DELTA (protocol-
 > logged):** run-4 finished CLEAN 07-20 23:52Z ([28/28], 6 ADMIT / 9 REJECT /
@@ -834,6 +898,50 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   `sudo cp -a /tmp/copyable_cache /tmp/walkforward3.json /tmp/walkforward3.log /tmp/gamma2.log /opt/pa2-shared/mb_copyable_data/`
 
 ## 7. Landmines (do not trip)
+
+### Added 2026-07-22 (label-integrity + infra session)
+
+- **EMPTY-SET FALSE PASS — the highest-value lesson of the session. Tripped
+  TWICE in different clothes.** (1) An A/B differential harness whose output
+  files silently failed to write: `diff` compared two EMPTY streams and printed
+  "IDENTICAL". (2) The ADMIT re-review's `mkdir` failed, the dive produced zero
+  JSONs, and the before/after diff globbed an empty dir and printed
+  **"FLIPPED: 0"** — indistinguishable from "all 20 ADMITs survived". ANY
+  comparison/verification MUST assert its inputs are NON-EMPTY and fail loud
+  otherwise. A zero-row result is never evidence of agreement.
+- **`/opt/pa2-shared/mb_copyable_data` is ROOT-owned — this bit again.** Any
+  polymarket-run job needing a NEW output dir must have it pre-created via
+  `sudo mkdir + sudo chown polymarket:polymarket`. `chain_deep_dive` dies at
+  `os.makedirs` with PermissionError and exits rc=0-looking within seconds.
+- **Non-ASCII in a script uploaded over SSH breaks bash** (`syntax error:
+  unexpected end of file`). Em-dashes / `§` / arrows mangle in transit. Sanitize
+  uploaded scripts to pure ASCII.
+- **`trust_after` is NOT a time filter.** `analyze_shadow.repair_record` KEEPS
+  every LADDER-ARMED record regardless of `detect_ts` — the epoch is consulted
+  ONLY for ladderless records. 80% of live records are ladder-armed, so passing
+  an epoch as `trust` does NOT create a forward-only window. A real forward cut
+  needs an explicit `detect_ts >= epoch` filter (see `run()`'s benched branch).
+- **The resolution backfill only sees markets the BOT TRADED** (queues driven by
+  `trades`/`paper_trades`/`traded_markets`/`positions`). The shadow lane writes
+  none of those, so shadow-copied markets are refreshed only by accident. Do not
+  assume `markets.resolved` is current for shadow markets — verify against CLOB.
+- **Backfill poison-batch:** the queue orders `end_date ASC NULLS LAST` and keeps
+  re-picking the OLDEST markets, which are the permanently-unresolvable ones ⇒
+  ~3 resolutions per 30-min cycle. A "backlog < N" gate is therefore UNREACHABLE
+  and must never be used as a precondition.
+- **A stale-stats plan can defeat a correct index.** The partial index alone did
+  not fix the resolution-queue timeout; it only took effect once `markets` was
+  analyzed. After adding an index to a big table, ANALYZE before concluding the
+  fix failed.
+- **CLOB is the trustworthy resolution source** (`resolution_backfill.
+  _fetch_market_by_condition_id` + `_clob_to_market_format`, resolution derived
+  from token PRICES which reflect UMA settlement). Verified 196/196 with 0
+  mismatches and 0 unreachable. Gamma cache format is
+  `{condition_id: {resolution, resolved_at, yes_token_id, no_token_id, category}}`
+  and the deep-dive merges it under the DB (DB wins, gamma fills holes).
+- **API cache rows key the market as `marketId`** (NOT `conditionId`) —
+  `copyable_cache/<addr>.json` → `{"status":..., "trades":[{marketId, tokenId,
+  side, size, price, timestamp}]}`. Guessing the field name silently yields 0.
 
 - **The V1 exchanges are DEAD for live flow (2026-07-12).** Any forward-
   looking on-chain detection MUST use the V2 exchanges + topic0
