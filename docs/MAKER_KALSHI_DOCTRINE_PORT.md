@@ -63,7 +63,11 @@ funded from pUSD (you cannot post a YES ask without holding YES;
 | 6 | Capital: accumulating creates stop at the cap; **`unwind` creates NEVER blocked**; held value must be REAL | **GAP — CONFIRMED REAL, FIX ATTEMPTED AND REVERTED.** Net cap is delta-aware; the two GROSS caps are not. Held value was never faked here. See §3 — this is the session's main finding and its main failure | `:652`, `:656`, `:668` |
 | 7 | STOP = maker-first with bounded escalation to taker | **N/A by platform.** Our kill is cancel-all-then-halt; positions ride to resolution, which is the intended exit | `kill_sequence` |
 
-## §3 THE CAPITAL DEADLOCK — CONFIRMED REAL, FIX ATTEMPTED, **REVERTED**
+## §3 THE CAPITAL DEADLOCK — **FIXED** (a660aa1 -> 87b7c30 -> 44998b1)
+
+**STATUS 2026-07-22: closed.** Three commits, three adversarial review rounds,
+13 mutants. The history below is kept verbatim because the two failed attempts
+are the reusable part; the working fix is summarised in 3e.
 
 ### 3a. The defect (stands — verified in code, independent of the failed fix)
 
@@ -114,6 +118,20 @@ buys risk reduction ONLY. This means the deadlock's two harms must be separated:
 - **"Cannot hedge"** — fixable in principle by a one-sided reducing placement,
   but that requires deliberately breaking the two-sided invariant for a
   risk-only purpose. That is an operator design decision, not a bug fix.
+
+### 3e. THE FIX THAT WORKED
+
+1. **Merge-aware capital accounting** (`a660aa1`). The cap was MERGE-blind, not
+   delta-blind. `eff_cost = cost - min(sz, held_on_opposite_side)`. No
+   exemption, no boolean, no sign rule — and pairs against a PENDING sibling
+   are deliberately not counted, because legs fill independently, so ordinary
+   two-sided quoting stays capped exactly as before.
+2. **One-sided de-risk placement** (`87b7c30`, hardened `44998b1`). Necessary
+   because the caller is two-sided-or-nothing. Scores ZERO rewards, so it buys
+   risk reduction ONLY. Held by `onesided_hold()` on price stability and
+   released by a `q_inv` inventory snapshot on ANY fill.
+3. **`match_fills_paper` un-blinded** so an ask-only quote can fill at all,
+   with one-sided rows bounded to flat (two-sided family semantics untouched).
 
 ### 3d. Minimum bar for any retry (from the review, recorded as requirements)
 
