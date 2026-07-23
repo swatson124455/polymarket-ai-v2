@@ -1928,3 +1928,23 @@ def test_plan_quote_commit_rejects_duplicate_legs():
     ok, *_ = mle.plan_quote_commit([_res("yes", "A"), _res("yes", "B")], None,
                                    0.48, 0.52, 100.0, 100.0, 1000.0)
     assert not ok
+
+
+def test_sector_of_substring_false_positives_REGRESSION():
+    """Twins of the `heat-`/"miami-heat" bug, found 2026-07-23 while vetting
+    the $20 pilot tier against LIVE data — a live market really was
+    misclassified. Short tokens embedded in ordinary words: ar-IRAN-g (a BTS
+    album), se-NATO-r, premier-E (a movie), d-EPL-oyment. A mislabelled
+    market walks into, or dodges, the sector allowlist."""
+    def sec(slug):
+        return mle.sector_of({"category": "", "question": "", "slug": slug})
+    assert sec("arirang-bts-top-album-2026") != "geopolitical"
+    assert sec("will-a-senator-be-indicted") != "geopolitical"
+    assert sec("movie-premiere-date-for-avatar") != "sports"
+    assert sec("deployment-of-new-ai-model") != "sports"
+    # …without breaking the real ones
+    assert sec("iran-strikes-israel") == "geopolitical"
+    assert sec("will-iranian-forces-withdraw") == "geopolitical"
+    assert sec("nato-expands-membership") == "geopolitical"
+    assert sec("premier-league-winner") == "sports"
+    assert sec("epl-top-scorer-2026") == "sports"

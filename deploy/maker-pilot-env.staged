@@ -1,0 +1,69 @@
+# MAKER PILOT CONFIG — STAGED 2026-07-23, NOT APPLIED
+#
+# Apply to /opt/pa2-maker-live/env ONLY when the operator-provisioned wallet
+# exists AND the operator gives the go. Applying it early would also disrupt
+# the paper arm's full-universe measurement (the gate-policy clock restarted
+# 2026-07-23 16:38Z).
+#
+# SIZING BASIS (measured 2026-07-23 against the live rewarded universe):
+#   `rewardsMinSize` (msz) is the threshold to QUALIFY FOR REWARDS — it is NOT
+#   the exchange's minimum order size. Smaller orders are accepted; they simply
+#   score nothing. Since our own thesis is that trading edge alone is breakeven
+#   at best and the income IS the subsidy, a sub-msz pilot would run the
+#   strategy with its only profit source switched off. So the pilot quotes AT
+#   the msz threshold, and picks the CHEAPEST tier that still qualifies.
+#
+#   msz by sector (140-market live universe, 07-23):
+#     sports        $20 x3, $40 x10, $50 x12     <- cheapest real tier
+#     entertainment $20 x1, $50 x11
+#     politics      $20 x1, $40 x4, $50 x7, $100 x4, $200 x9
+#     unknown       $20 x4, $50 x10, $200 x11    <- EXCLUDED, gate hole
+#     geopolitical  mostly $200
+#     weather       $100 x25  (UNIFORM — no cheap weather exists)
+#
+#   => A sub-$150 wallet CANNOT run the census-backed weather slice: one
+#      market at $100, or zero below that. The $20 tier is where a small
+#      wallet buys a diversified, reward-QUALIFYING footprint.
+#
+# WHY NOT "unknown": it is the known fail-open in-play gate hole —
+# mis-categorised event markets quote straight through settlement. A non-empty
+# allowlist fail-closes them out, which is the point. Note this costs us the
+# 4 cheapest $20 markets; deliberate.
+
+MAKER_SUBMIT_MODE=live
+MAKER_LIVE_ACK=I-UNDERSTAND-REAL-MONEY
+# MAKER_PK=<operator wallet private key>
+# MAKER_FUNDER=<polymarket deposit-wallet address>
+# MAKER_SIG_TYPE=  <- determine EMPIRICALLY at --stage sanity, never guess
+
+# ── universe: cheapest reward-qualifying tier, gate-hole sectors excluded ──
+MAKER_SECTOR_ALLOWLIST=sports,entertainment,politics
+MAKER_MAX_MARKETS=3
+MAKER_MAX_PER_SECTOR=2
+
+# ── caps, RE-SIZED for a ~$60 wallet ──────────────────────────────────────
+# The defaults were sized for a $100-300 wallet and are DANGEROUS here: the
+# stock day-loss floor of $75 EXCEEDS a $60 wallet, so it would never fire —
+# we would lose the whole wallet before the guard tripped. Every cap below is
+# scaled so it binds INSIDE the wallet.
+MAKER_MARKET_GROSS_CAP_USD=30
+MAKER_EVENT_CAP_USD=30
+MAKER_SECTOR_GROSS_CAP_USD=60
+MAKER_DAY_LOSS_FLOOR_USD=15
+
+# ── behavior ───────────────────────────────────────────────────────────────
+MAKER_ONESIDED_DERISK=1
+MAKER_GATE_POLICY=P0_base
+MAKER_QUOTE_STYLE=wide
+
+# ── STAGED-BUT-UNVERIFIED, settle these at preflight before going live ────
+# 1. Does a sub-msz order score? Place $3 and $20 orders and call
+#    is_order_scoring on BOTH. Measure it; do not reason about it.
+# 2. MAKER_SIG_TYPE from --stage sanity.
+# 3. Confirm the cancel-response shape via the scoring stage's cxshape probe.
+# 4. "SOFT" IS UNMEASURED. The operator's selection criterion is soft (low
+#    competition) markets. Nothing here measures competition — pool size and
+#    msz do not. `pool/msz` looks tempting but MAKER_NUMBERS_LEDGER.md warns
+#    it is NEGATIVELY correlated with realized yield (adverse-selection risk,
+#    not quality), so it is NOT used to rank. A real softness measure would
+#    have to be built.

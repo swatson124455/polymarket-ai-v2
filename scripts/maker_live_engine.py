@@ -378,7 +378,11 @@ def onesided_derisk_leg(approved, st, cfg):
 
 
 KW = [
-    (r"nba|nfl|mlb|nhl|ncaa|premier|epl|serie-a|la-liga|bundesliga|ligue|ufc|atp|wta|pga|f1-|grand-prix|world-cup|fifa|uefa|copa|boxing|tennis|-vs-|derby|open-", "sports"),
+    # \b on the short/embeddable tokens: bare `premier` matched "premiere"
+    # (a MOVIE) and bare `epl` matched "dEPLoyment" — same substring class as
+    # the `heat-`/"miami-heat" bug (found 2026-07-23 while vetting the $20
+    # pilot tier). A mislabelled market walks into or dodges the allowlist.
+    (r"nba|nfl|mlb|nhl|ncaa|\bpremier\b|\bepl\b|serie-a|la-liga|bundesliga|ligue|ufc|atp|wta|pga|f1-|grand-prix|world-cup|fifa|uefa|copa|boxing|tennis|-vs-|derby|open-", "sports"),
     (r"lol-|league-of-legends|cs2|csgo|counter-strike|dota|valorant|esports|lck|lpl|lec|ewc", "esports"),
     (r"bitcoin|btc|ethereum|eth-|solana|xrp|doge|crypto", "crypto"),
     (r"trump|election|president|senate|congress|mayor|governor|primary|nominee|supreme-court|minister|parliament", "politics"),
@@ -390,7 +394,9 @@ KW = [
      r"|heat-wave|heatwave|heat-index|heat-advisory|heat-warning|heat-dome"
      r"|heat-emergency|excessive-heat|extreme-heat|record-heat|weather", "weather"),
     (r"fed-|interest-rate|cpi|inflation|gdp|recession|s-p-500|spx|nasdaq|spy|wti|crude|tariff|treasury", "finance"),
-    (r"israel|gaza|ukraine|russia|iran|nato|ceasefire|hormuz|houthi|war-", "geopolitical"),
+    # `iran` matched ar-IRAN-g (a BTS album) and `nato` matched se-NATO-r.
+    # \biran (start-anchored, not \b…\b) still catches iran/iranian/irans.
+    (r"israel|gaza|ukraine|russia|\biran|\bnato\b|ceasefire|hormuz|houthi|war-", "geopolitical"),
     (r"oscar|grammy|emmy|box-office|album|movie|netflix|spotify", "entertainment"),
 ]
 
