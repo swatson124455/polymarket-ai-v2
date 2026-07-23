@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Durable shadow readout — FRESH DB labels + per-cohort split + trigger alert.
+"""Durable shadow readout — DB labels + CLOB supplement + cohort split + alert.
 
 WHY (landmine 2026-07-15): `analyze_shadow.py --gamma-cache` reads a resolution
 cache that goes STALE the moment new markets trade, so it silently reports
@@ -11,6 +11,26 @@ pre-registered readout SEPARATELY for cohort-1 (all roster) and cohort-2 (the
 deep-dive admits, own start epoch — never pooled), appends to a durable log, and
 writes an ALERT file when a cohort crosses the power bar OR its edge is
 convincingly negative before then.
+
+WHY THE DB ALONE IS NOT ENOUGH (landmine 2026-07-22, the label-integrity
+session): the shared resolution backfill only ever queues markets THE BOT
+TRADED (`trades`/`paper_trades`/`traded_markets`/`positions`). The shadow lane
+writes none of those, so `markets.resolved` is refreshed for shadow-copied
+markets only by accident — it was incomplete on 32% of ADMIT evidence and the
+missing slice was systematically NEGATIVE, flattering every edge this lane had
+ever reported (cohort1 +0.0604 -> +0.0315, cohort2 +0.0567 -> +0.0399, cohort3
+"no data" -> -0.0258). The DB is therefore a PARTIAL source here, not the fresh
+one. Fix: merge a CLOB-verified resolution supplement UNDER the DB (DB always
+wins; the supplement fills holes only) — the same precedence the chain deep-dive
+uses. CLOB is the trustworthy source (resolution derived from token prices that
+reflect UMA settlement; verified 196/196, 0 mismatches, 0 unreachable).
+
+The 07-15 staleness lesson still binds and is why precedence is DB-first and why
+provenance is printed on every block: `labels: DB=<n> +supp=<n> unlabelled=<n>`.
+If the supplement is missing/unreadable/labels nothing, this runner REFUSES to
+read out (loudly, into the durable log) rather than silently reverting to the
+flattered DB-only source — a zero-row supplement is never evidence of agreement
+(empty-set false-pass class, 2026-07-22).
 
 READ-ONLY: DB reads + the shadow JSONL; appends to the durable readout log.
 INVOCATION (VPS / cron):
@@ -165,6 +185,66 @@ async def fresh_outcomes(tokens: list[str]) -> dict[str, int]:
         out[yt] = 1 if m["resolution"] == "YES" else 0
         out[nt] = 0 if m["resolution"] == "YES" else 1
     return out
+
+
+class SupplementError(RuntimeError):
+    """The resolution supplement could not be used. Fatal by design: falling
+    back to DB-only labels silently restores the FLATTERED readout (see module
+    docstring), and a flattered number is indistinguishable from a good one."""
+
+
+def supplement_outcomes(path: str, tokens: list[str]) -> dict[str, int]:
+    """token_id -> 1/0 from the CLOB-verified resolution cache, restricted to
+    markets that touch the shadow token set.
+
+    Cache format (`gamma_resolutions.json`):
+      {condition_id: {resolution, resolved_at, yes_token_id, no_token_id, ...}}
+
+    Both legs of a matched market are labelled (mirroring `fresh_outcomes`), so
+    the caller's `len(outcomes) // 2` market count stays consistent across the
+    two sources. Only definitively-resolved YES/NO markets contribute.
+    Raises SupplementError on anything that would yield a silent DB-only run.
+    """
+    try:
+        with open(path) as f:
+            cache = json.load(f)
+    except FileNotFoundError as e:
+        raise SupplementError(f"supplement not found: {path}") from e
+    except (OSError, ValueError) as e:
+        raise SupplementError(f"supplement unreadable ({path}): {e}") from e
+    if not isinstance(cache, dict) or not cache:
+        raise SupplementError(f"supplement empty or not an object: {path}")
+    want = set(tokens)
+    out: dict[str, int] = {}
+    for m in cache.values():
+        if not isinstance(m, dict) or m.get("resolution") not in ("YES", "NO"):
+            continue
+        yt, nt = str(m.get("yes_token_id")), str(m.get("no_token_id"))
+        if yt not in want and nt not in want:
+            continue
+        out[yt] = 1 if m["resolution"] == "YES" else 0
+        out[nt] = 0 if m["resolution"] == "YES" else 1
+    return out
+
+
+def merge_outcomes(db: dict[str, int], supp: dict[str, int]) -> dict[str, int]:
+    """DB WINS, supplement fills holes only — the chain deep-dive's precedence.
+    The DB is the system's own settled record; the supplement exists solely
+    because the backfill structurally cannot see shadow markets."""
+    merged = dict(supp)
+    merged.update(db)
+    return merged
+
+
+def label_provenance(tokens: list[str], db: dict[str, int],
+                     merged: dict[str, int]) -> str:
+    """One-line source disclosure printed in EVERY readout header. Without it a
+    reader cannot tell a complete-label block from a flattered one (the 07-22
+    finding was invisible for weeks precisely because nothing printed this)."""
+    added = sum(1 for t in merged if t not in db)
+    unl = sum(1 for t in tokens if t not in merged)
+    return (f"labels: DB={len(db) // 2} mkts +supp={added // 2} mkts, "
+            f"{unl}/{len(tokens)} shadow tokens still unlabelled")
 
 
 def cohort_readout(records, outcomes, trust_after, traders, cfg) -> dict:
@@ -346,18 +426,44 @@ async def run(args) -> int:
     reduced = reduced_cohorts(roster_raw)
     recs = az.load_records(args.log)
     tokens = sorted({str(r["token_id"]) for r in recs if r.get("token_id")})
-    outcomes = await fresh_outcomes(tokens)
+    db_outcomes = await fresh_outcomes(tokens)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    # DB labels are PARTIAL for shadow markets (module docstring). Merge the
+    # CLOB-verified supplement UNDER them, or refuse to read out — never fall
+    # back to DB-only, which is the flattered source.
+    try:
+        supp = supplement_outcomes(args.supplement, tokens)
+        if not supp:
+            raise SupplementError(
+                f"supplement labelled 0 of {len(tokens)} shadow tokens "
+                f"({args.supplement}) — a zero-row result is not agreement")
+    except SupplementError as e:
+        fail = (f"===== shadow readout {stamp}  REFUSED =====\n"
+                f"FATAL: {e}\n"
+                f"DB-only labels are INCOMPLETE for shadow markets and flatter "
+                f"every edge (2026-07-22). Refusing to append a readout line "
+                f"rather than emit a flattered one. ALERT file left untouched. "
+                f"Fix the supplement, then re-run shadow_readout.py.")
+        print(fail, file=sys.stderr)
+        try:
+            with open(args.out, "a") as f:
+                f.write(fail + "\n")
+        except OSError:
+            pass
+        return 2
+    outcomes = merge_outcomes(db_outcomes, supp)
+    provenance = label_provenance(tokens, db_outcomes, outcomes)
     OBS = ("probe", "benched")  # observation-only groups: never a cohort count
     counts = "+".join(str(len(a)) for n, a, _ in cohorts if n not in OBS)
     for obs in OBS:
         obs_n = next((len(a) for n, a, _ in cohorts if n == obs), 0)
         if obs_n:
             counts += f"+{obs_n}{obs}"
-    lines = [f"===== shadow readout {stamp}  (fresh DB labels: "
+    lines = [f"===== shadow readout {stamp}  (DB+CLOB-supplement labels: "
              f"{len(outcomes) // 2} resolved markets among {len(tokens)} shadow "
              f"tokens; cohorts from {os.path.basename(args.roster)}: "
-             f"{counts}) ====="]
+             f"{counts}) =====",
+             f"  [{provenance}]"]
     all_alerts: list[str] = []
     for name, members, trust in cohorts:
         label = f"{name}({len(members)})"
@@ -742,6 +848,51 @@ def _self_test() -> int:
             and "conc=0xa" in fmt_line("probe(1)", _won, 30))
     print(f"  [conc] tautological arm 100% cut, cohort line kept : {ok21}")
     ok &= ok21
+    # ---- label supplement (2026-07-22 label-integrity fix) -----------------
+    import tempfile
+    _mk = lambda cid, r, y, n: (cid, {"resolution": r, "yes_token_id": y,
+                                      "no_token_id": n, "resolved_at": "x"})
+    _cache = dict([_mk("c1", "YES", "t1", "t2"), _mk("c2", "NO", "t3", "t4"),
+                   _mk("c3", "YES", "t9", "t10"),        # untouched by shadow
+                   _mk("c4", None, "t5", "t6")])         # unresolved -> skipped
+    with tempfile.TemporaryDirectory() as _d:
+        _p = os.path.join(_d, "g.json")
+        with open(_p, "w") as f:
+            json.dump(_cache, f)
+        _toks = ["t1", "t3", "t5"]
+        _s = supplement_outcomes(_p, _toks)
+        # only markets touching the shadow set, BOTH legs, unresolved dropped
+        ok22 = (_s == {"t1": 1, "t2": 0, "t3": 0, "t4": 1})
+        print(f"  [labels] supplement: shadow-only, both legs, YES/NO : {ok22}")
+        ok &= ok22
+        # DB WINS on conflict; supplement only fills holes
+        _db = {"t1": 0, "t2": 1}
+        _m = merge_outcomes(_db, _s)
+        ok23 = (_m["t1"] == 0 and _m["t2"] == 1 and _m["t3"] == 0)
+        print(f"  [labels] merge precedence: DB wins, supp fills : {ok23}")
+        ok &= ok23
+        # provenance is non-empty and counts BOTH sources + the residual gap
+        _prov = label_provenance(_toks, _db, _m)
+        ok24 = ("DB=1 mkts" in _prov and "+supp=1 mkts" in _prov
+                and "1/3 shadow tokens still unlabelled" in _prov)
+        print(f"  [labels] provenance discloses DB/supp/unlabelled : {ok24}")
+        ok &= ok24
+        # empty-set false pass: a supplement that labels NOTHING must not read
+        # as agreement — the caller treats {} as fatal, and the loaders raise
+        ok25 = (supplement_outcomes(_p, ["zz"]) == {})
+        for _bad, _why in ((os.path.join(_d, "nope.json"), "missing"),
+                           (_p + ".empty", "empty")):
+            if _why == "empty":
+                with open(_bad, "w") as f:
+                    json.dump({}, f)
+            try:
+                supplement_outcomes(_bad, _toks)
+                ok25 = False
+            except SupplementError:
+                pass
+        print(f"  [labels] missing/empty supplement raises, never {{}} : {ok25}")
+        ok &= ok25
+    # verdict LAST — a case added after this print is invisible to the reader
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -757,6 +908,13 @@ if __name__ == "__main__":
     # the cron runs as polymarket and must be able to write here)
     ap.add_argument("--out", default="/opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_log.txt")
     ap.add_argument("--alert", default="/opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_ALERT.txt")
+    ap.add_argument("--supplement",
+                    default="/opt/pa2-shared/mb_copyable_data/copyable_cache/"
+                            "gamma_resolutions.json",
+                    help="CLOB-verified resolution cache merged UNDER the DB "
+                         "labels (DB wins; supplement fills the holes the "
+                         "shared backfill structurally cannot see). Missing or "
+                         "zero-label => the readout REFUSES to run.")
     ap.add_argument("--fee", type=float, default=0.02)
     ap.add_argument("--econ-floor", type=float, default=0.02, dest="econ_floor")
     ap.add_argument("--p-min", type=float, default=0.95, dest="p_min")
