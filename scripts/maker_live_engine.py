@@ -172,6 +172,15 @@ def load_config(env=None):
         "px_jitter_ticks": int(f("MAKER_PX_JITTER_TICKS", 1)),
         "rotation_frac": f("MAKER_ROTATION_FRAC", 0.0),
         "sensor_feed": env.get("MAKER_SENSOR_FEED") or None,
+        # One-sided DE-RISK placement. When only the risk-reducing leg of a
+        # pair passes the guards (the capital deadlock: the accumulating leg
+        # is denied, so two-sided-or-nothing would place NOTHING and leave
+        # the position unhedged), place that leg alone. It scores no rewards
+        # — two-sided MIN — so this buys risk reduction only, never income.
+        # Default ON: it can only add quoting in a state that otherwise
+        # produces silence, and it is risk-reducing by construction.
+        "onesided_derisk": (env.get("MAKER_ONESIDED_DERISK", "1")
+                            .strip().lower() not in ("0", "false", "no")),
     }
     # bounds validation — a nonsense knob must fail LOUD at start, not
     # corrupt the money path at runtime (review finding 15: negative
@@ -210,6 +219,74 @@ def event_worst(poss, cost, covered, nout):
     if covered < nout:
         minw = min(minw, 0.0)
     return minw - cost
+
+
+def leg_reduces_exposure(leg, sz, y, n):
+    """True when THIS leg, filling ALONE, moves |net exposure| toward zero.
+
+    Solo-fill semantics are the whole point: the two legs rest and fill
+    INDEPENDENTLY, so a leg must be judged on its own effect and never on a
+    pair's net effect. Judging the pair is exactly what sank the first
+    capital-deadlock fix (a 'reducing' verdict there exempted the
+    accumulating sibling leg too).
+
+    A size that would cross THROUGH flat returns False: that opens the
+    opposite position, which is a new bet rather than a de-risk (Kalshi's
+    A1 overshoot bug). Conservative by design — we would rather place
+    nothing than flip the sign.
+    """
+    net = y - n
+    if net == 0 or sz <= 0:
+        return False
+    after = net + sz if leg == "yes" else net - sz
+    return abs(after) < abs(net) and after * net >= 0
+
+
+def plan_quote_commit(pair, onesided_leg, jit_bid, jit_ask, sz_b, sz_a, now):
+    """Turn a batch result set into the standing-quote state to commit.
+
+    Returns (ok, ob, oa, qh_row). ok=False means treat as a partial/failed
+    placement (cancel any survivor). Extracted from run() because this is the
+    integration layer where the previous two attempts died: a review mutation
+    of the inline version (`want_n = 1` unconditionally) made the engine
+    place-then-instantly-cancel EVERY quote forever — earning nothing — and
+    the entire 140-test suite still passed. Pure function, so it is testable.
+    """
+    want_n = 1 if onesided_leg else 2
+    if len(pair) != want_n or not all(r["ok"] for _, r in pair):
+        return False, None, None, None
+    legs = {p["leg"]: (p, r) for p, r in pair}
+    yb, nb = legs.get("yes"), legs.get("no")
+    # the recorded leg must be the leg we intended to place alone
+    if onesided_leg and (yb is None) != (onesided_leg == "no"):
+        return False, None, None, None
+    ob = ({"oid": yb[1]["oid"], "px": yb[0]["px"], "sz": yb[0]["sz"],
+           "cost": yb[0]["px"] * yb[0]["sz"]} if yb else None)
+    oa = ({"oid": nb[1]["oid"], "px": nb[0]["px"], "sz": nb[0]["sz"],
+           "cost": nb[0]["px"] * nb[0]["sz"]} if nb else None)
+    # a leg that is NOT standing must be None in the quote row, or the paper
+    # fill model would credit a leg that never rested
+    return True, ob, oa, [now, jit_bid if yb else None,
+                          jit_ask if nb else None, sz_b, sz_a]
+
+
+def onesided_derisk_leg(approved, st, cfg):
+    """Which leg, if any, may be placed ALONE as a pure de-risk.
+
+    Extracted from run() so the PLACEMENT DECISION is testable, not just the
+    arithmetic underneath it. The previous deadlock fix passed its unit tests
+    and still failed because the guard was never exercised against its real
+    caller — the decision layer is where that class of bug lives.
+
+    Returns "yes" / "no" / None. None means fall back to two-sided-or-nothing.
+    """
+    if not cfg.get("onesided_derisk") or len(approved) != 1:
+        return None
+    a0 = approved[0]
+    if leg_reduces_exposure(a0["leg"], a0["sz"],
+                            st.get("y", 0.0), st.get("n", 0.0)):
+        return a0["leg"]
+    return None
 
 
 KW = [
@@ -1225,17 +1302,35 @@ def match_fills_paper(prints, qh, st, yes_asset, prev_ts):
             if r[0] <= ts:
                 row = r
                 break
-        if row is None or row[1] is None:
+        # A row is unusable only when BOTH legs are pulled. The old test
+        # (`row[1] is None`) discarded the whole row on a missing BID, so an
+        # ASK-ONLY quote rested but could never record a fill — silent
+        # measurement blindness, and precisely the shape a one-sided de-risk
+        # of a LONG-YES position takes (found 2026-07-22).
+        if row is None or (row[1] is None and row[2] is None):
             continue
         _, qbid, qask, sz_b, sz_a = row
-        if p < qbid:
-            st["y"] = round(st.get("y", 0.0) + sz_b, 4)
-            st["spent"] = round(st.get("spent", 0.0) + sz_b * qbid, 4)
-            fills += 1
+        # A standing row is re-credited on EVERY qualifying print (family
+        # behavior, shared by v1-v6 — do NOT change it for two-sided rows or
+        # cross-arm comparability breaks). But on a ONE-SIDED de-risk row that
+        # ratchet would run a long-YES position straight through flat into a
+        # larger opposite position — falsifying the very invariant
+        # leg_reduces_exposure enforces at placement. So a one-sided row is
+        # credited only up to what actually takes us to flat (review F2).
+        one_sided = (qbid is None) != (qask is None)
+        net_now = st.get("y", 0.0) - st.get("n", 0.0)
+        if qbid is not None and p < qbid:
+            take = min(sz_b, max(0.0, -net_now)) if one_sided else sz_b
+            if take > 0:
+                st["y"] = round(st.get("y", 0.0) + take, 4)
+                st["spent"] = round(st.get("spent", 0.0) + take * qbid, 4)
+                fills += 1
         elif qask is not None and p > qask:
-            st["n"] = round(st.get("n", 0.0) + sz_a, 4)
-            st["spent"] = round(st.get("spent", 0.0) + sz_a * (1.0 - qask), 4)
-            fills += 1
+            take = min(sz_a, max(0.0, net_now)) if one_sided else sz_a
+            if take > 0:
+                st["n"] = round(st.get("n", 0.0) + take, 4)
+                st["spent"] = round(st.get("spent", 0.0) + take * (1.0 - qask), 4)
+                fills += 1
         if fills:
             merge_pairs(st)
     return fills, max_ts
@@ -1880,6 +1975,17 @@ def run(base, cfg):
                     and abs(raw_bid - cur[0]) < REQUOTE_TICKS \
                     and abs(raw_ask - cur[1]) < REQUOTE_TICKS:
                 continue                     # hysteresis: standing quote holds
+            # NO hysteresis for a ONE-SIDED de-risk quote — deliberately.
+            # An earlier version held it while price was stable and net != 0.
+            # That poisoned the feature through its own SUCCESS path: nothing
+            # clears ob/oa on a FILL, so once the hedge filled, the stale leg
+            # still read as standing, net was still != 0, and the market was
+            # skipped — engine holding a phantom hedge, resting nothing,
+            # earning nothing, for as long as the price stayed within 2 ticks.
+            # The partial fill that relieves the cap is the NORMAL outcome
+            # here, so the hold condition was anti-correlated with recovery.
+            # A one-sided quote therefore requotes every scan; that churn is
+            # cheap next to a multi-hour blind hold (review F1, 2026-07-22).
             # requote = cancel standing, place fresh (no native replace in V2)
             if st.get("ob") or st.get("oa"):
                 cancel_market_quotes(key, "requote", now)
@@ -1913,9 +2019,26 @@ def run(base, cfg):
                     deny_why = why
             # two-sided or nothing: a single-legged quote scores zero
             # (two-sided MIN) and doubles adverse exposure
-            if len(approved) == 2:
+            #
+            # THE ONE EXCEPTION (2026-07-22) — a lone DE-RISKING leg. The
+            # rationale above is about ACCUMULATING exposure; a leg that
+            # reduces |net| inverts it. This is the only path out of the
+            # capital deadlock: when we hold a directional position and the
+            # accumulating leg is denied, two-sided-or-nothing would place
+            # NOTHING and leave that position unhedged until resolution.
+            # It still scores zero rewards, so this buys risk reduction
+            # ONLY — it never restores the income the deadlock costs.
+            onesided_leg = (None if len(approved) == 2
+                            else onesided_derisk_leg(approved, st, cfg))
+            if len(approved) == 2 or onesided_leg:
                 placements.extend(approved)
-                pl_meta.append((key, raw_bid, raw_ask, jit_bid, jit_ask, sz_b, sz_a))
+                pl_meta.append((key, raw_bid, raw_ask, jit_bid, jit_ask,
+                                sz_b, sz_a, onesided_leg))
+                if onesided_leg:
+                    # NOT guards.denials — this is a successful placement, and
+                    # seeding it there would crowd real denial reasons out of
+                    # the operator's top-6 health line (review F5)
+                    meta["onesided_derisk_n"] = meta.get("onesided_derisk_n", 0) + 1
             else:
                 st["want_raw"] = None
                 _backoff(st, now)         # denial churn control (finding 8)
@@ -1961,22 +2084,18 @@ def run(base, cfg):
                 by_mkt = defaultdict(list)
                 for p, r in zip(placements, results):
                     by_mkt[p["mkt"]].append((p, r))
-                for key, raw_bid, raw_ask, jit_bid, jit_ask, sz_b, sz_a in pl_meta:
+                for (key, raw_bid, raw_ask, jit_bid, jit_ask, sz_b, sz_a,
+                     onesided_leg) in pl_meta:
                     st = st_of(key)
                     pair = by_mkt.get(key, [])
-                    if len(pair) == 2 and all(r["ok"] for _, r in pair):
-                        legs = {p["leg"]: (p, r) for p, r in pair}
-                        yb, nb = legs["yes"], legs["no"]
-                        st["ob"] = {"oid": yb[1]["oid"], "px": yb[0]["px"],
-                                    "sz": yb[0]["sz"],
-                                    "cost": yb[0]["px"] * yb[0]["sz"]}
-                        st["oa"] = {"oid": nb[1]["oid"], "px": nb[0]["px"],
-                                    "sz": nb[0]["sz"],
-                                    "cost": nb[0]["px"] * nb[0]["sz"]}
+                    c_ok, c_ob, c_oa, c_row = plan_quote_commit(
+                        pair, onesided_leg, jit_bid, jit_ask, sz_b, sz_a, now)
+                    if c_ok:
+                        st["ob"], st["oa"] = c_ob, c_oa
                         st["want_raw"] = [raw_bid, raw_ask]
                         st["backoff"] = 0.0
                         qh = st.setdefault("qh", [])
-                        qh.append([now, jit_bid, jit_ask, sz_b, sz_a])
+                        qh.append(c_row)
                         if len(qh) > 400:
                             del qh[:len(qh) - 400]
                         for p, r in pair:
@@ -2167,8 +2286,13 @@ def run(base, cfg):
 
             if now - hb > 300:
                 hb = now
+                # ob OR oa: a one-sided de-risk quote may hold only the NO
+                # leg, and an ob-only test would report it as not quoting —
+                # under-reporting exactly the state that feature creates
+                # (review F4)
                 quoting = sum(1 for k, s2 in state.items()
-                              if k != "meta" and isinstance(s2, dict) and s2.get("ob"))
+                              if k != "meta" and isinstance(s2, dict)
+                              and (s2.get("ob") or s2.get("oa")))
                 gross = sum(s2.get("spent", 0.0) for k, s2 in state.items()
                             if k != "meta" and isinstance(s2, dict))
                 nzomb = sum(len(s2.get("zombies") or []) for k, s2 in state.items()
@@ -2194,6 +2318,7 @@ def run(base, cfg):
                       f"halted={meta.get('halted', False)} zombies={nzomb} "
                       f"lmiss={_LEDGER_MISS['n']} "
                       f"feedfail={meta.get('feed_fail_n', 0)} "
+                      f"derisk1={meta.get('onesided_derisk_n', 0)} "
                       f"anom={meta.get('feed_anomaly_n', 0)}"
                       f"/{meta.get('unmatched_fills_n', 0)} "
                       f"respend={respend} "

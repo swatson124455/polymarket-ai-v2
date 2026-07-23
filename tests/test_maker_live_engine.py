@@ -1619,3 +1619,210 @@ def test_merge_aware_sector_cap_uses_the_same_effective_cost():
     ok, why = g.check_place({"leg": "no", "px": 0.485, "sz": 300.0},
                             m, st, state, uni, time.time())
     assert ok, "sector cap must price the guaranteed merge too (%s)" % why
+
+
+# ── one-sided de-risk placement (breaks the capital deadlock, 07-22) ────────
+def test_leg_reduces_exposure_solo_fill_semantics():
+    """Judged per leg on a SOLO fill — never on a pair's net effect, which is
+    what sank the first deadlock fix."""
+    # long YES 300: the NO leg reduces, the YES leg does not
+    assert mle.leg_reduces_exposure("no", 300.0, 300.0, 0.0)
+    assert mle.leg_reduces_exposure("no", 100.0, 300.0, 0.0)     # partial
+    assert not mle.leg_reduces_exposure("yes", 100.0, 300.0, 0.0)
+    # long NO 300: mirror image
+    assert mle.leg_reduces_exposure("yes", 300.0, 0.0, 300.0)
+    assert not mle.leg_reduces_exposure("no", 100.0, 0.0, 300.0)
+    # flat: nothing to reduce — a fresh pair must never qualify
+    assert not mle.leg_reduces_exposure("no", 100.0, 0.0, 0.0)
+    assert not mle.leg_reduces_exposure("yes", 100.0, 0.0, 0.0)
+    # overshoot THROUGH flat is a new bet, not a de-risk (Kalshi A1).
+    # NOTE the second case is the one that actually exercises the sign
+    # guard: 150 against a long 100 lands at -50, which is CLOSER to flat,
+    # so the magnitude test alone would wave it through. Mutation-checked —
+    # dropping `after * net >= 0` must fail here.
+    assert not mle.leg_reduces_exposure("no", 400.0, 100.0, 0.0)
+    assert not mle.leg_reduces_exposure("no", 150.0, 100.0, 0.0)
+    assert not mle.leg_reduces_exposure("yes", 150.0, 0.0, 100.0)
+    # exact flatten is the ideal case
+    assert mle.leg_reduces_exposure("no", 100.0, 100.0, 0.0)
+
+
+def test_config_onesided_derisk_default_on_and_disableable():
+    assert mle.load_config(env={})["onesided_derisk"] is True
+    for off in ("0", "false", "no", "NO"):
+        assert mle.load_config(
+            env={"MAKER_ONESIDED_DERISK": off})["onesided_derisk"] is False
+
+
+def test_fill_matcher_credits_an_ask_only_quote_REGRESSION():
+    """The silent blindness: the old row test discarded any row with a None
+    BID, so an ask-only de-risk quote rested but never filled in paper —
+    the exact shape a long-YES hedge takes. Fails if the guard reverts to
+    `row[1] is None`."""
+    st = {"y": 300.0, "n": 0.0, "spent": 149.0}
+    qh = [[100.0, None, 0.52, 100.0, 100.0]]        # ask-only standing
+    prints = [{"timestamp": 101.0, "price": 0.60, "asset": "Y"}]
+    fills, _ = mle.match_fills_paper(prints, qh, st, "Y", 0.0)
+    assert fills == 1, "ask-only quote must be able to fill"
+    assert st["n"] == 0.0 and st["y"] == 200.0, \
+        "100 NO bought pairs off 100 held YES via merge_pairs"
+
+
+def test_fill_matcher_bid_only_quote_still_works():
+    """A bid-only quote is the de-risk shape for a LONG-NO position, and it
+    fills up to flat. (It cannot fill from a FLAT book — that would CREATE
+    exposure, the opposite of a de-risk; see the F2 bound.)"""
+    st = {"y": 0.0, "n": 100.0, "spent": 48.0}
+    qh = [[100.0, 0.48, None, 100.0, 100.0]]        # bid-only standing
+    prints = [{"timestamp": 101.0, "price": 0.40, "asset": "Y"}]
+    fills, _ = mle.match_fills_paper(prints, qh, st, "Y", 0.0)
+    assert fills == 1
+    assert st["y"] == 0.0 and st["n"] == 0.0        # 100 bought, 100 merged
+
+
+def test_fill_matcher_bid_only_cannot_open_exposure_from_flat():
+    st = {"y": 0.0, "n": 0.0, "spent": 0.0}
+    qh = [[100.0, 0.48, None, 100.0, 100.0]]
+    prints = [{"timestamp": 101.0, "price": 0.40, "asset": "Y"}]
+    fills, _ = mle.match_fills_paper(prints, qh, st, "Y", 0.0)
+    assert fills == 0 and st["y"] == 0.0
+
+
+def test_fill_matcher_ignores_a_fully_pulled_row():
+    st = {"y": 0.0, "n": 0.0, "spent": 0.0}
+    qh = [[100.0, None, None, 100.0, 100.0]]
+    prints = [{"timestamp": 101.0, "price": 0.40, "asset": "Y"}]
+    fills, _ = mle.match_fills_paper(prints, qh, st, "Y", 0.0)
+    assert fills == 0 and st["y"] == 0.0
+
+
+def test_fill_matcher_ask_only_does_not_credit_the_absent_bid_leg():
+    """An ask-only row must not buy YES on a low print — that would credit a
+    leg that is not standing."""
+    st = {"y": 0.0, "n": 0.0, "spent": 0.0}
+    qh = [[100.0, None, 0.52, 100.0, 100.0]]
+    prints = [{"timestamp": 101.0, "price": 0.10, "asset": "Y"}]
+    fills, _ = mle.match_fills_paper(prints, qh, st, "Y", 0.0)
+    assert fills == 0 and st["y"] == 0.0
+
+
+def _appr(leg, sz=100.0):
+    return [{"mkt": "1234", "leg": leg, "tok": "T", "px": 0.485, "sz": sz,
+             "tick": "0.001", "neg_risk": False}]
+
+
+def test_onesided_derisk_leg_decision_layer():
+    """The PLACEMENT DECISION, not just the arithmetic — attempt 1 failed
+    precisely here, in the layer between guard and caller."""
+    cfg = cfg_over()
+    long_yes = {"y": 300.0, "n": 0.0}
+    # only the reducing leg may go alone
+    assert mle.onesided_derisk_leg(_appr("no"), long_yes, cfg) == "no"
+    assert mle.onesided_derisk_leg(_appr("yes"), long_yes, cfg) is None
+    # mirror
+    long_no = {"y": 0.0, "n": 300.0}
+    assert mle.onesided_derisk_leg(_appr("yes"), long_no, cfg) == "yes"
+    assert mle.onesided_derisk_leg(_appr("no"), long_no, cfg) is None
+    # FLAT: never — a fresh pair's surviving leg must not sneak through
+    assert mle.onesided_derisk_leg(_appr("no"), {"y": 0.0, "n": 0.0}, cfg) is None
+    # a full pair is not this function's business
+    both = _appr("yes") + _appr("no")
+    assert mle.onesided_derisk_leg(both, long_yes, cfg) is None
+    # nothing approved
+    assert mle.onesided_derisk_leg([], long_yes, cfg) is None
+    # kill switch
+    assert mle.onesided_derisk_leg(_appr("no"), long_yes,
+                                   cfg_over(onesided_derisk=False)) is None
+
+
+def test_onesided_derisk_leg_refuses_overshoot_through_flat():
+    """A hedge bigger than the position flips the sign — not a de-risk."""
+    cfg = cfg_over()
+    assert mle.onesided_derisk_leg(_appr("no", 400.0), {"y": 100.0, "n": 0.0},
+                                   cfg) is None
+    assert mle.onesided_derisk_leg(_appr("no", 100.0), {"y": 100.0, "n": 0.0},
+                                   cfg) == "no"
+
+
+# ── commit path (review F3: this layer had ZERO coverage; a `want_n = 1`
+# mutation made the engine place-then-cancel every quote forever, earning
+# nothing, and all 140 tests still passed) ─────────────────────────────────
+def _res(leg, oid):
+    return ({"leg": leg, "px": 0.485, "sz": 100.0}, {"ok": True, "oid": oid})
+
+
+def test_plan_quote_commit_two_sided():
+    pair = [_res("yes", "OY"), _res("no", "ON")]
+    ok, ob, oa, row = mle.plan_quote_commit(pair, None, 0.48, 0.52,
+                                            100.0, 100.0, 1000.0)
+    assert ok and ob["oid"] == "OY" and oa["oid"] == "ON"
+    assert row == [1000.0, 0.48, 0.52, 100.0, 100.0]
+
+
+def test_plan_quote_commit_one_sided_no_leg():
+    """The long-YES hedge: only oa stands, and the ABSENT bid leg must be
+    None in the quote row or the fill model credits a leg that never rested."""
+    ok, ob, oa, row = mle.plan_quote_commit([_res("no", "ON")], "no", 0.48,
+                                            0.52, 100.0, 100.0, 1000.0)
+    assert ok and ob is None and oa["oid"] == "ON"
+    assert row == [1000.0, None, 0.52, 100.0, 100.0]
+
+
+def test_plan_quote_commit_one_sided_yes_leg():
+    ok, ob, oa, row = mle.plan_quote_commit([_res("yes", "OY")], "yes", 0.48,
+                                            0.52, 100.0, 100.0, 1000.0)
+    assert ok and oa is None and ob["oid"] == "OY"
+    assert row == [1000.0, 0.48, None, 100.0, 100.0]
+
+
+def test_plan_quote_commit_rejects_wrong_leg_count():
+    """M6a: `want_n = 1` unconditionally => every two-sided commit is treated
+    as a partial and instantly cancelled => the bot earns $0 forever."""
+    # two legs returned but only one intended
+    ok, *_ = mle.plan_quote_commit([_res("yes", "OY"), _res("no", "ON")],
+                                   "no", 0.48, 0.52, 100.0, 100.0, 1000.0)
+    assert not ok
+    # one leg returned but two intended (real partial acceptance)
+    ok2, *_ = mle.plan_quote_commit([_res("yes", "OY")], None, 0.48, 0.52,
+                                    100.0, 100.0, 1000.0)
+    assert not ok2
+
+
+def test_plan_quote_commit_rejects_the_wrong_leg():
+    """M6c: a swapped leg mapping would put the NO order in ob and corrupt
+    accrual, pend_y/pend_n and every downstream reader."""
+    ok, *_ = mle.plan_quote_commit([_res("yes", "OY")], "no", 0.48, 0.52,
+                                   100.0, 100.0, 1000.0)
+    assert not ok, "recorded leg must be the leg we intended to place alone"
+
+
+def test_plan_quote_commit_rejects_failed_result():
+    pair = [({"leg": "no", "px": 0.485, "sz": 100.0},
+             {"ok": False, "oid": None, "err": "rejected"})]
+    ok, *_ = mle.plan_quote_commit(pair, "no", 0.48, 0.52, 100.0, 100.0, 1000.0)
+    assert not ok
+
+
+def test_onesided_fill_cannot_ratchet_through_flat_REGRESSION():
+    """Review F2: a standing row is re-credited on EVERY qualifying print, so
+    an ask-only de-risk row would run long-YES 300 into long-NO 900 —
+    falsifying the invariant leg_reduces_exposure enforces at placement."""
+    st = {"y": 300.0, "n": 0.0, "spent": 145.5}
+    qh = [[100.0, None, 0.52, 300.0, 300.0]]
+    prints = [{"timestamp": 100.0 + i, "price": 0.60, "asset": "Y"}
+              for i in range(1, 5)]
+    mle.match_fills_paper(prints, qh, st, "Y", 0.0)
+    assert st["y"] - st["n"] == 0.0, "one-sided fill must stop at flat"
+    assert st["n"] == 0.0 and st["y"] == 0.0     # 300 bought, 300 merged
+
+
+def test_two_sided_fill_keeps_family_ratchet_semantics():
+    """The re-credit behavior is shared by arms v1-v6; changing it for
+    TWO-sided rows would break cross-arm comparability. Only the one-sided
+    path is bounded."""
+    st = {"y": 0.0, "n": 0.0, "spent": 0.0}
+    qh = [[100.0, 0.48, 0.52, 100.0, 100.0]]
+    prints = [{"timestamp": 100.0 + i, "price": 0.60, "asset": "Y"}
+              for i in range(1, 5)]
+    mle.match_fills_paper(prints, qh, st, "Y", 0.0)
+    assert st["n"] == 400.0, "two-sided family semantics must be unchanged"
