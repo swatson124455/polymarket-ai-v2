@@ -10,13 +10,189 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-17 (local steward session, ~12:40 UTC — run-3 killed, run-4 merged fair-params batch launched after 3-round blind review; hft-cache + stale-gamma landmines found+mitigated) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-07-23 (local steward session, ~02:35 UTC — the daily readout was still reading DB-only labels and printing flattered edges; merged the CLOB supplement under the DB, then closed the shadow-set label gap with a targeted CLOB pass (262/262 reachable, 135 new labels, 80/80 independent cross-check). cohort2 is now POWERED and NOT DEMONSTRATED. ADMIT re-review still in flight, unaffected. HANDOFF: read the 2026-07-23 block in §0 first) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
-## 0. IMMEDIATE RESUME (2026-07-14 local steward session — read this block first)
+## 0. IMMEDIATE RESUME (read this block first)
+
+> ## 2026-07-23 (~02:30Z) — THE DAILY READOUT WAS STILL FLATTERED. FIXED.
+>
+> **The 07-22 label fix never reached the thing that reports numbers.** The
+> CLOB supplement landed in the gamma cache; `scripts/shadow_readout.py` built
+> its token→outcome map from `markets` ONLY (deliberately, per its own 07-15
+> anti-stale-cache landmine) and never read that cache. So the 12:30Z readout —
+> the artifact that fires the ALERT and carries the pre-registered verdict —
+> kept printing the flattered edges. Two commits, both on branch head:
+> * `54540e0` — merge the supplement **UNDER** the DB (DB wins, supplement
+>   fills holes); every block now prints `labels: DB=n +supp=n, k/N shadow
+>   tokens still unlabelled`; a missing/unreadable/zero-label supplement makes
+>   the readout **REFUSE** (loud line in the durable log, ALERT untouched,
+>   rc=2) rather than silently revert to the flattered source.
+> * `28370a0` — `scripts/shadow_label_supplement.py`: the 07-22 supplement was
+>   keyed on the TRADERS' markets and covered **21 of 405 shadow tokens**. This
+>   labels the SHADOW set directly (unlabelled token → condition_id from
+>   `markets` → CLOB, derivation reused verbatim from `resolution_backfill`).
+>   Live: 262 targets, **262/262 reachable, 135 newly labelled**, 127 genuinely
+>   still open, **0 CONFLICT**; cache 213,623 → 213,758, backup
+>   `gamma_resolutions.json.pre-shadow-supplement-20260723`.
+>   Pre-write cross-check vs an INDEPENDENT source: 80 shadow markets the DB
+>   had already resolved, re-fetched from CLOB → **compared=80 AGREE=80
+>   DISAGREE=0** (non-emptiness asserted).
+>
+> **WHAT THE COMPLETE-LABEL READOUT SAYS** (dry-run 02:29Z, scratch
+> `--out`/`--alert`, durable log untouched; same instant, same records — arms
+> non-empty and identical, first-buys 107/118/130/45):
+>
+> | line | DB-only (old) | DB+supplement (now) |
+> |---|---|---|
+> | cohort1(15) REDUCED | 33 mkts +0.0607 P=0.854 | **42 mkts +0.0335 P=0.739** |
+> | cohort2(8) | 25 mkts +0.0331 P=0.707 | **39 mkts +0.0210 P=0.648** |
+> | cohort3(6) | 0 resolved | **7 mkts −0.0258 P=0.141** |
+> | benched(1) | 4 mkts −0.0176 | **19 mkts +0.0717 P=0.764** |
+>
+> cohort3 reproduces the prior session's independently-derived corrected figure
+> (**−0.0258 on 7**) to the digit, from a different code path — that is the
+> cross-check that the pipeline is now reading the true labels.
+>
+> **⚠ TWO THINGS THE OPERATOR MUST SEE:**
+> 1. **cohort2 is now POWERED and FAILS.** 39/30 resolved, edge +0.0210
+>    (barely over the +0.02 floor), **P=0.648 ≪ 0.95 ⇒ NOT DEMONSTRATED**,
+>    concentration `0xbaa2bcb5…39%`. The ALERT will fire on the next real
+>    12:30Z run and asks for the per-trader breakdown + LOO before any verdict.
+> 2. **The benched bum is drifting toward his re-admission bar** —
+>    forward-since-bench **+0.0717 on 19 resolved, P=0.764**. Bar is edge ≥
+>    +0.02 **AND P ≥ 0.90 on ≥ 20**: n is one short and P is well under. **No
+>    action, no proposal yet** — noting it so nobody is surprised.
+>
+> **Residual gap: 235 of 405 shadow tokens still unlabelled** — 127 markets
+> genuinely still open, the rest have no condition_id anywhere in `markets`
+> (97 tokens as measured 02:25Z) and need a token→market lookup to reach.
+> Re-run `shadow_label_supplement.py --write` after new resolutions land; the
+> readout needs no further change, it picks up whatever the cache gains.
+>
+> **ADMIT RE-REVIEW UNAFFECTED BY THAT CACHE WRITE** — `chain_deep_dive.py`
+> preloads the gamma cache ONCE per process (`:1259`) and the re-review is a
+> single long-lived invocation, so all 20 traders are graded on the same
+> 07-22 snapshot (keys=213,623). Internally uniform; verified alive after the
+> write (3 JSONs, pid 31257). `scripts/rereview_diff.py` (`16af40b`) is the
+> strict completion check: anything short of roster-complete is rc=4 naming
+> the uncompared addresses — "FLIPPED: 0" now only prints next to a
+> roster-complete compare. Interim (3/20): all ADMIT→ADMIT, edges
+> +0.0382→+0.0382, +0.0220→+0.0205, +0.0237→+0.0209.
+
+> ## 2026-07-22 SESSION CLOSE — READ THIS FIRST
+>
+> **HEADLINE: every edge number this lane has ever reported was FLATTERED.**
+> The `markets` resolution labels were incomplete, and the missing slice was
+> systematically NEGATIVE in every cohort. Corrected (CLOB-verified):
+> cohort1 **+0.0604 → +0.0315**; cohort2 **+0.0567 → +0.0399**; cohort3 was
+> reported "no resolved data" but actually had **7 markets at −0.0258**;
+> benched bum −0.5049 (n=2). Nothing moved toward passing; every P dropped.
+>
+> **ROOT CAUSE (shared infra, affects ALL bots):** `polymarket-ingestion`
+> crash-looping (334 restarts); its resolution queue hit the 300s statement
+> timeout every cycle, so the backfill wrote **nothing for 56h** against a
+> 38,696-market backlog. Fixed the query cost with a partial index
+> `idx_markets_unresolved_enddate` (matches the queue predicate + end_date
+> ordering; additive, CONCURRENTLY). Index alone was NOT enough — it needed
+> fresh stats; autoanalyze on `markets` 17:45Z supplied them and the queue
+> **succeeded 18:01Z, first time in 56h**.
+>
+> **LABEL FIX THAT ACTUALLY UNBLOCKED US — CLOB SUPPLEMENT.** The shared
+> backfill drains ~3 markets/30min (poison-batch: `end_date ASC` re-chews
+> permanently-unresolvable markets) ⇒ ~270 days, unusable. Instead supplemented
+> the gamma cache straight from CLOB (source proven: 196/196 verified, 0
+> unreachable, 0 mismatches): **+14,791 labels, gamma 198,832 → 213,623, ADMIT
+> label gap 32.0% → 1.9%** (residual = 610 genuinely-open + 330 CLOB-
+> unreachable, disclosed). Backup `gamma_resolutions.json.pre-clob-supplement`.
+>
+> **WHY THE TRADER VERDICTS ARE SUSPECT:** the deep-dive grades skill from
+> `DB + gamma cache` — the SAME degraded source. **26.5% of all ADMIT skill
+> evidence was unlabelable**, worst on three cohort-3 members graded on ~50%
+> of their evidence (`0x216509be` 53%, `0x7c3db723` 51%, `0xe542afd3` 50%).
+> That plausibly explains cohort-3's live edge landing NEGATIVE.
+> ⇒ **ADMIT RE-REVIEW of all 20 ADMITs RUNNING** (`/tmp/admit_rereview3.sh`,
+> out-dir `deep_dive_rereview/`, originals preserved for the before/after diff;
+> `<== FLIPPED` marks any verdict that fails complete labels). REJECTs are
+> rate-based ⇒ unaffected. 5 label-starved INSUFFICIENTs may have been wrongly
+> shelved.
+>
+> **EXECUTED THIS SESSION:** run-4 CLEAN-FINISH (28/28, 6 ADMIT/9 REJECT/13
+> INSUFFICIENT) → cohort-3 promotion + bum time-out in ONE fenced restart
+> (roster 25→30, verified `roster=30`, 0 alarms) → fill-cache proof gates (i)
+> and (ii) BOTH PASS → cohort-1 active-trader vetting (7): **6 ADMIT / 1
+> INSUFFICIENT**, and the INSUFFICIENT is the benched bum (edge +0.0031,
+> P=0.678 on his CLEANEST sample) — **his time-out is independently vindicated
+> by three lines of evidence**. NOTE those 6 ADMITs were ALSO graded on
+> incomplete labels ⇒ they are in the re-review (roster grew 14 → 20).
+>
+> **CROSS-BOT (WB relay):** master release `20260721_232241` (41 commits, a
+> month) went live on `polymarket-mirror` 03:27Z. **Verified on MB's own
+> terms:** scanning (`elites=300 open_positions=9`, ~2.8s cycles), gates
+> blocking, exits + zombie reap working, exposure reconciling, state restored,
+> **paper mode confirmed** (`simulation_mode=True`, canary 0). Calibrator
+> healthy post-c12: `fitted on 5000 resolved predictions`, fts fitted, 267
+> `mirror_calibrated` emissions adjusting BOTH directions. All error signatures
+> PRE-EXISTING and mostly improved per-hour (adverse slippage 29→4.5/h).
+> **KEEP THE RELEASE — no rollback.** One pre-existing anomaly: a 123h position
+> stuck in a force-exit retry loop, blocked by the 10% adverse-slippage guard
+> (correct protection, but it loops).
+>
+> **STILL OPEN / NOT FIXED (flagged, need operator go — shared infra):**
+> (a) backfill poison-batch ordering (~3/cycle ⇒ backlog never drains);
+> (b) `end_date_iso` NULL on **56%** of markets ⇒ starved by NULLS-LAST AND
+> invisible to the health check, so the true backlog exceeds the reported
+> 38,696; (c) the stuck force-exit loop; (d) master docs-sync PR for MB_STATE.
+
+> **2026-07-21 20:07Z — BATCH-BOUNDARY LEDGER MUTATION EXECUTED (operator-
+> authorized "fold into and proceed" + "proceed"). ROSTER DELTA (protocol-
+> logged):** run-4 finished CLEAN 07-20 23:52Z ([28/28], 6 ADMIT / 9 REJECT /
+> 13 INSUFFICIENT; final ADMIT set ≡ the queued 6, JSON-verified). ONE ledger
+> edit + readout-clone refresh (`21ad7ba`) + ONE fenced watcher restart:
+> **(a) COHORT-3 PROMOTED** — 6 ADMITs (0xf705fa04 graduates from probe,
+> 0x7c3db723, 0xe542afd3, 0x216509be, 0x2ee04b8b, 0xa6a856a8), own epoch
+> 2026-07-21T20:05:30Z, probe emptied; **(b) BUM BENCHED** — 0x44886115 moved
+> cohort1_original→`benched` (from_cohort=cohort1, TIME-OUT; reason: chain-
+> verified drag edge −0.1051 P=0.107 on 22 resolved, 46% conc; re-admit bar
+> pre-registered: forward-since-bench edge≥+0.02 AND P≥0.90 on ≥20 resolved,
+> operator go). clean=30 == c1(15)+c2(8)+c3(6)+benched(1); backup
+> `chain_audit.json.pre-cohort3-20260721`. Verified: `roster=30` in watcher
+> log, 0 alarms, VPS load_cohorts OK. cohort1 now prints REDUCED/NO-VERDICT
+> (its pre-registered verdict stays the LOCKED pre-bench line: POWERED at
+> 12:30Z 07-20, NOT DEMONSTRATED). **Fill-cache PROOF GATE (i): PASS**
+> (bounded A/B, 3 addrs, fill-multisets IDENTICAL, pinned [90439826,
+> 90639826]). **Gate (ii) RUNNING** (amended, disclosed: flag-off vs flag-on
+> FRESH dives of 0x7744bfd7 — inactive 32d → head-drift-immune; the
+> pre-registered compare-vs-07-17-JSON is impossible after 4d label drift);
+> verdict marker `/tmp/proof_gate_ii_VERDICT.txt`. **NEXT AUTO-STEP:** on gate
+> verdict → launch `/tmp/launch_c1vet.sh` (cohort-1 7-active vetting,
+> gate-conditional cache flag; expected ~2A/2R/3I at run-4 base rates). Then
+> deepen wave (freeze set: 13 run-4 INSUFFICIENTs ⊇ the 9 confounded) →
+> 0x70d94a solo. Watch next 12:30Z: header must read 15+8+6+1benched.
+
+> **➡ NEXT SESSION: start from `MB_DEEP_DIVE_NEXT_PROMPT.md` (fresh, self-
+> contained, 2026-07-19) — it has the current state, armed queues, procedures,
+> and this session's landmines. The dated blocks below (9–14 newest first) are
+> the ledger detail; the blocks before them are prior-session history, kept for
+> provenance. Do NOT re-derive from the old blocks — the prompt + blocks 9–14
+> are current.**
+>
+> **2026-07-19 SESSION CLOSE (one-paragraph state):** run-4 (fair-params
+> re-adjudication, code `27ee79b`) at **19/28, alive (pid 3269649)**; promotion
+> queue = **6 chain-verified ADMITs** (`0xf705fa` graduates from probe +
+> `0x7c3db723`/`0xe542afd3`/`0x216509be`/`0x2ee04b8b`/`0xa6a856a8`), executes
+> as **cohort3** in ONE fenced watcher restart at the batch boundary (operator
+> word). Shadow watcher healthy (roster 25, 0 alarms). Readout generalized to
+> `cohort<N>` (blocks 11,13,14) so the promotion works. Fill-cache + multi-
+> sweep BUILT behind `--fill-cache-dir` (block 10) with a pre-registered proof
+> gate before the deepen wave uses it. **Reviews this session: two adversarial
+> workflows + one root-cause audit → ~15 defects found & fixed AT ROOT, every
+> one in not-yet-exercised code (the running readout + live run-4 were clean
+> throughout).** All work pushed to the branch (`329444e`+). NO live batch-end
+> watcher survives session end — next session re-checks run-4 on start.
 
 > **2026-07-17 UPDATE (local steward session; operator-approved "proceed with
 > all action items") — RUN-3 KILLED, RUN-4 (merged, fair-params) LAUNCHED
@@ -120,6 +296,94 @@
 >    roster file, detached launch, --max-receipts 30000. (c) THEN
 >    `0x70d94a` solo deepen at --max-receipts 120000 (~4h receipts).
 >    Sequence strictly serial (one batch at a time on the shared RPC).
+> 10. **SPEEDUPS 1+2 BUILT (operator-approved 07-19; option 3/paid endpoint
+>    REJECTED): `scripts/chain_fill_cache.py` (`b67fe20`)** — persistent
+>    per-address chain-fill cache (+receipt-side memory, key tx|token_id)
+>    + populate_multi ONE-sweep-for-N-addresses; wired into chain_deep_dive
+>    behind `--fill-cache-dir` (default OFF = byte-identical old path,
+>    differentially proven by adversarial review). 5 review findings fixed
+>    (silent coverage hole on non-adjacent merge; reorg margin on the write
+>    path; cache-file collision with API caches; gap error-frac denominator;
+>    malformed-blob fallback). 65 tests green.
+>    **EMPIRICAL PROOF GATE (pre-registered, MUST pass before any batch uses
+>    the flag):** at run-4 exit, on the idle RPC: (i) bounded A/B — multi
+>    sweep vs per-addr sweeps over the same block range for 2-3 addrs →
+>    fill sets must be IDENTICAL; (ii) full re-dive of one completed trader
+>    via populate+cache → verdict AND tier-1/2 counts must match its
+>    existing JSON exactly. Only then does the deepen wave run with
+>    `--fill-cache-dir` (expected ~10-25x cheaper sweeps). Failure of
+>    either → deepen wave runs FLAG-OFF (old path), no function lost.
+> 11. **COHORT-3 PROMOTION PREREQUISITE BUILT (operator "go" 07-19; `cdf01fb`):**
+>    `shadow_readout.load_cohorts` generalized from hardcoded cohort1/cohort2/
+>    probe to read any `cohort<N>` key (own epoch, never pooled) — needed
+>    because the daily readout couldn't represent a 3rd cohort. Differential-
+>    IDENTICAL on the live 16+8+1probe roster (offline AND a VPS dry-run in
+>    the real venv). Adversarial workflow (4 lenses × verify) caught a REAL
+>    HIGH defect I introduced — an empty `cohort<N>` addresses list slipped
+>    every guard → `filter_traders("")` pools the WHOLE roster mislabeled →
+>    could fire a false POWERED go/no-go alert (the 2026-07-15 finding-A
+>    silent-pooling class). FIXED at root (empty admitted cohort now raises,
+>    matching HEAD's `if not c2`); self-test PASS incl the new case; a
+>    simulated real promotion (16+8+6, probe emptied) loads clean. Cron
+>    auto-adopts at 12:30Z (branch-pinned refresh THEN roster read = new code
+>    + new roster always consistent). **BATCH-BOUNDARY PROMOTION (armed):**
+>    at run-4 exit, the run-4 ADMITs (6 so far: 0xf705fa graduates from probe
+>    + 0x7c3db7/0xe542af/0x216509/0x2ee04b/0xa6a856; +any more before t28)
+>    become cohort3 via ONE fenced mirror3_shadow_deploy.sh restart —
+>    procedure in steward scratchpad `cohort3_promotion_procedure.md`
+>    (chain_audit.json: clean 25→30, add cohort3 key w/ own epoch, empty the
+>    probe key; invariant clean==union checked offline before deploy).
+> 12. **READOUT (07-19 14:56Z VPS dry-run, fresh labels):** cohort1(16)
+>    28/30 resolved edge +0.0440 P(>0)=0.720 conc 0x448861…37%; cohort2(8)
+>    14/30 edge +0.0432 P(>0)=0.648 conc 0xbaa2bc…35%; probe 0 resolved.
+>    Both UNDERPOWERED, both drifting mildly POSITIVE as markets resolve
+>    (cohort1 +0.031→+0.044 within the day). No verdict; no alert.
+> 13. **TRIPLE-BLIND REVIEW of all session code (07-19; 3 blind lenses ×
+>    adversarial verify): 5 confirmed findings, ALL in NOT-YET-EXERCISED code
+>    — the live-critical paths (running readout on the live roster, flag-off
+>    run-4) came back CLEAN. All 5 FIXED + committed (`7f5c771`,`d2bca15`,
+>    `8b3ce27`):**
+>    - [med, stack_vs_firstbuy_forward #2/#4/#5] the forward test read RAW
+>      /price best_ask+verdict, bypassing `az.repair_records` (the /book-ladder
+>      repair the money-gate readout treats as ground truth) → priced the
+>      estimand off a flattered/gate-dodging quote; AND powered the verdict on
+>      POSITION count while the bootstrap clusters by TOKEN → cross-trader
+>      token overlap could fire a "POWERED" verdict on ~2 markets; no
+>      concentration disclosure. FIX: canonical repair pipeline + power on
+>      DISTINCT token-clusters + inline concentration. Pre-registration
+>      corrected BEFORE any data (tool not yet run). 4 new self-test asserts.
+>    - [low, shadow_readout #1] an intra-group DUPLICATE address passed the
+>      cross-group set() guards but broke the leave-one-out `rest` →
+>      filter_traders("") → whole-roster pooling in the LOO line. FIX: fail
+>      loud on any intra-group dup.
+>    - [low, chain_fill_cache #3] a superset re-populate summed leaf_ok
+>      (double-count) → could understate the lossy-gap rpc_err_frac and mask
+>      an incomplete sweep. FIX: replace-on-superset (don't sum).
+>    Nothing here changed a currently-live number. Method note: the two
+>    workflow reviews this session (readout cohort<N>, then this triple-blind)
+>    each caught a real defect the single-pass reviews missed — the money-gate
+>    surface warrants the multi-lens adversarial pass.
+> 14. **ROOT-CAUSE AUDIT of all fixes (07-19; classify + adversarial challenge
+>    per fix): most fixes root-cause+clean; 3 real residuals fixed at ROOT
+>    (`2856fe8`):**
+>    - **[the important one] the empty-cohort raise + intra-group-dup raise
+>      were TWO reactive per-path guards on the SAME footgun** — cohort_readout
+>      passing empty members into filter_traders (where ""=all records) → whole
+>      roster pooled+mislabeled. Added the CLASS fix: cohort_readout treats
+>      empty members as ZERO records at the single chokepoint every group +
+>      every LOO flows through. Kept the two fail-loud guards (ledger-integrity
+>      value). Any future empty-member path is now safe, not just the two we
+>      enumerated. Defense-in-depth self-test added.
+>    - fill_cache merge_ranges: superset-replace only covered the reachable
+>      shape; a PARTIAL overlap still summed leaf_ok → now refuses anything but
+>      strict-adjacent-or-superset (general double-count closed).
+>    - forward test: `cluster_bootstrap_p` was copy-pasted → now calls the
+>      canonical `az.cluster_bootstrap_p` (a duplicated verdict statistic can
+>      drift). Removed the copy + unused `random` import.
+>    - SKIPPED (documented, not a band-aid): element-wise dict validation in
+>      chain_fill_cache.load() — a contrived corruption the write path never
+>      produces, degrades gracefully (one trader INSUFFICIENT, self-heals), not
+>      worth an O(n) scan on every load. All self-tests + 65 pytest green.
 
 > **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
@@ -699,6 +963,74 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   `sudo cp -a /tmp/copyable_cache /tmp/walkforward3.json /tmp/walkforward3.log /tmp/gamma2.log /opt/pa2-shared/mb_copyable_data/`
 
 ## 7. Landmines (do not trip)
+
+### Added 2026-07-23 (readout label-source session)
+
+- **A DATA FIX IS NOT DONE UNTIL THE REPORTING PATH READS IT.** The 07-22 CLOB
+  supplement was correct and verified, and the daily readout kept printing
+  flattered edges for a full day because it built labels from `markets` only
+  and never opened the cache. When you fix a source, grep every consumer that
+  produces a NUMBER and prove each one moved — a fixed source with an unmoved
+  consumer looks exactly like a fix that worked.
+- **Two supplements, two different key sets.** `gamma_resolutions.json` was
+  built around the ADMIT deep-dive's evidence (the TRADERS' markets); it
+  covered 21 of 405 SHADOW tokens. "The cache is supplemented" never implies
+  it is supplemented for YOUR token set — measure the intersection.
+- **`chain_deep_dive.py` preloads the gamma cache ONCE per process** (`:1259`),
+  so a mid-run cache write does NOT contaminate a running dive — and equally,
+  a running dive will NOT pick up a label you just added. Restart to adopt.
+- **`shadow_readout.py` now REFUSES to run** (rc=2, loud line in the durable
+  log, ALERT untouched) if the supplement is missing/unreadable/labels nothing.
+  That is deliberate: a missing daily line is loud, a flattered one is not. If
+  the readout goes quiet, look for the FATAL line in `shadow_readout_log.txt`
+  before assuming cron died.
+- **`markets` knows the condition_id of markets it has NOT resolved.** That is
+  what makes a targeted CLOB pass cheap (203 of 300 unlabelled shadow tokens
+  were reachable that way). Only the residue needs a token→market lookup.
+
+### Added 2026-07-22 (label-integrity + infra session)
+
+- **EMPTY-SET FALSE PASS — the highest-value lesson of the session. Tripped
+  TWICE in different clothes.** (1) An A/B differential harness whose output
+  files silently failed to write: `diff` compared two EMPTY streams and printed
+  "IDENTICAL". (2) The ADMIT re-review's `mkdir` failed, the dive produced zero
+  JSONs, and the before/after diff globbed an empty dir and printed
+  **"FLIPPED: 0"** — indistinguishable from "all 20 ADMITs survived". ANY
+  comparison/verification MUST assert its inputs are NON-EMPTY and fail loud
+  otherwise. A zero-row result is never evidence of agreement.
+- **`/opt/pa2-shared/mb_copyable_data` is ROOT-owned — this bit again.** Any
+  polymarket-run job needing a NEW output dir must have it pre-created via
+  `sudo mkdir + sudo chown polymarket:polymarket`. `chain_deep_dive` dies at
+  `os.makedirs` with PermissionError and exits rc=0-looking within seconds.
+- **Non-ASCII in a script uploaded over SSH breaks bash** (`syntax error:
+  unexpected end of file`). Em-dashes / `§` / arrows mangle in transit. Sanitize
+  uploaded scripts to pure ASCII.
+- **`trust_after` is NOT a time filter.** `analyze_shadow.repair_record` KEEPS
+  every LADDER-ARMED record regardless of `detect_ts` — the epoch is consulted
+  ONLY for ladderless records. 80% of live records are ladder-armed, so passing
+  an epoch as `trust` does NOT create a forward-only window. A real forward cut
+  needs an explicit `detect_ts >= epoch` filter (see `run()`'s benched branch).
+- **The resolution backfill only sees markets the BOT TRADED** (queues driven by
+  `trades`/`paper_trades`/`traded_markets`/`positions`). The shadow lane writes
+  none of those, so shadow-copied markets are refreshed only by accident. Do not
+  assume `markets.resolved` is current for shadow markets — verify against CLOB.
+- **Backfill poison-batch:** the queue orders `end_date ASC NULLS LAST` and keeps
+  re-picking the OLDEST markets, which are the permanently-unresolvable ones ⇒
+  ~3 resolutions per 30-min cycle. A "backlog < N" gate is therefore UNREACHABLE
+  and must never be used as a precondition.
+- **A stale-stats plan can defeat a correct index.** The partial index alone did
+  not fix the resolution-queue timeout; it only took effect once `markets` was
+  analyzed. After adding an index to a big table, ANALYZE before concluding the
+  fix failed.
+- **CLOB is the trustworthy resolution source** (`resolution_backfill.
+  _fetch_market_by_condition_id` + `_clob_to_market_format`, resolution derived
+  from token PRICES which reflect UMA settlement). Verified 196/196 with 0
+  mismatches and 0 unreachable. Gamma cache format is
+  `{condition_id: {resolution, resolved_at, yes_token_id, no_token_id, category}}`
+  and the deep-dive merges it under the DB (DB wins, gamma fills holes).
+- **API cache rows key the market as `marketId`** (NOT `conditionId`) —
+  `copyable_cache/<addr>.json` → `{"status":..., "trades":[{marketId, tokenId,
+  side, size, price, timestamp}]}`. Guessing the field name silently yields 0.
 
 - **The V1 exchanges are DEAD for live flow (2026-07-12).** Any forward-
   looking on-chain detection MUST use the V2 exchanges + topic0
