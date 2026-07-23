@@ -10,13 +10,78 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-19 (local steward session, ~23:30 UTC — run-4 at 19/28, 6-ADMIT promotion queued at batch boundary; readout generalized to cohort<N>; fill-cache+multi-sweep built behind a proof gate; two workflow reviews + a root-cause audit fixed ~15 defects at root, all in not-yet-live code. HANDOFF: read `MB_DEEP_DIVE_NEXT_PROMPT.md` + §0 blocks 9–14) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-07-23 (local steward session, ~02:35 UTC — the daily readout was still reading DB-only labels and printing flattered edges; merged the CLOB supplement under the DB, then closed the shadow-set label gap with a targeted CLOB pass (262/262 reachable, 135 new labels, 80/80 independent cross-check). cohort2 is now POWERED and NOT DEMONSTRATED. ADMIT re-review still in flight, unaffected. HANDOFF: read the 2026-07-23 block in §0 first) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
 ## 0. IMMEDIATE RESUME (read this block first)
+
+> ## 2026-07-23 (~02:30Z) — THE DAILY READOUT WAS STILL FLATTERED. FIXED.
+>
+> **The 07-22 label fix never reached the thing that reports numbers.** The
+> CLOB supplement landed in the gamma cache; `scripts/shadow_readout.py` built
+> its token→outcome map from `markets` ONLY (deliberately, per its own 07-15
+> anti-stale-cache landmine) and never read that cache. So the 12:30Z readout —
+> the artifact that fires the ALERT and carries the pre-registered verdict —
+> kept printing the flattered edges. Two commits, both on branch head:
+> * `54540e0` — merge the supplement **UNDER** the DB (DB wins, supplement
+>   fills holes); every block now prints `labels: DB=n +supp=n, k/N shadow
+>   tokens still unlabelled`; a missing/unreadable/zero-label supplement makes
+>   the readout **REFUSE** (loud line in the durable log, ALERT untouched,
+>   rc=2) rather than silently revert to the flattered source.
+> * `28370a0` — `scripts/shadow_label_supplement.py`: the 07-22 supplement was
+>   keyed on the TRADERS' markets and covered **21 of 405 shadow tokens**. This
+>   labels the SHADOW set directly (unlabelled token → condition_id from
+>   `markets` → CLOB, derivation reused verbatim from `resolution_backfill`).
+>   Live: 262 targets, **262/262 reachable, 135 newly labelled**, 127 genuinely
+>   still open, **0 CONFLICT**; cache 213,623 → 213,758, backup
+>   `gamma_resolutions.json.pre-shadow-supplement-20260723`.
+>   Pre-write cross-check vs an INDEPENDENT source: 80 shadow markets the DB
+>   had already resolved, re-fetched from CLOB → **compared=80 AGREE=80
+>   DISAGREE=0** (non-emptiness asserted).
+>
+> **WHAT THE COMPLETE-LABEL READOUT SAYS** (dry-run 02:29Z, scratch
+> `--out`/`--alert`, durable log untouched; same instant, same records — arms
+> non-empty and identical, first-buys 107/118/130/45):
+>
+> | line | DB-only (old) | DB+supplement (now) |
+> |---|---|---|
+> | cohort1(15) REDUCED | 33 mkts +0.0607 P=0.854 | **42 mkts +0.0335 P=0.739** |
+> | cohort2(8) | 25 mkts +0.0331 P=0.707 | **39 mkts +0.0210 P=0.648** |
+> | cohort3(6) | 0 resolved | **7 mkts −0.0258 P=0.141** |
+> | benched(1) | 4 mkts −0.0176 | **19 mkts +0.0717 P=0.764** |
+>
+> cohort3 reproduces the prior session's independently-derived corrected figure
+> (**−0.0258 on 7**) to the digit, from a different code path — that is the
+> cross-check that the pipeline is now reading the true labels.
+>
+> **⚠ TWO THINGS THE OPERATOR MUST SEE:**
+> 1. **cohort2 is now POWERED and FAILS.** 39/30 resolved, edge +0.0210
+>    (barely over the +0.02 floor), **P=0.648 ≪ 0.95 ⇒ NOT DEMONSTRATED**,
+>    concentration `0xbaa2bcb5…39%`. The ALERT will fire on the next real
+>    12:30Z run and asks for the per-trader breakdown + LOO before any verdict.
+> 2. **The benched bum is drifting toward his re-admission bar** —
+>    forward-since-bench **+0.0717 on 19 resolved, P=0.764**. Bar is edge ≥
+>    +0.02 **AND P ≥ 0.90 on ≥ 20**: n is one short and P is well under. **No
+>    action, no proposal yet** — noting it so nobody is surprised.
+>
+> **Residual gap: 235 of 405 shadow tokens still unlabelled** — 127 markets
+> genuinely still open, the rest have no condition_id anywhere in `markets`
+> (97 tokens as measured 02:25Z) and need a token→market lookup to reach.
+> Re-run `shadow_label_supplement.py --write` after new resolutions land; the
+> readout needs no further change, it picks up whatever the cache gains.
+>
+> **ADMIT RE-REVIEW UNAFFECTED BY THAT CACHE WRITE** — `chain_deep_dive.py`
+> preloads the gamma cache ONCE per process (`:1259`) and the re-review is a
+> single long-lived invocation, so all 20 traders are graded on the same
+> 07-22 snapshot (keys=213,623). Internally uniform; verified alive after the
+> write (3 JSONs, pid 31257). `scripts/rereview_diff.py` (`4d2b7d1`) is the
+> strict completion check: anything short of roster-complete is rc=4 naming
+> the uncompared addresses — "FLIPPED: 0" now only prints next to a
+> roster-complete compare. Interim (3/20): all ADMIT→ADMIT, edges
+> +0.0382→+0.0382, +0.0220→+0.0205, +0.0237→+0.0209.
 
 > ## 2026-07-22 SESSION CLOSE — READ THIS FIRST
 >
@@ -898,6 +963,30 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   `sudo cp -a /tmp/copyable_cache /tmp/walkforward3.json /tmp/walkforward3.log /tmp/gamma2.log /opt/pa2-shared/mb_copyable_data/`
 
 ## 7. Landmines (do not trip)
+
+### Added 2026-07-23 (readout label-source session)
+
+- **A DATA FIX IS NOT DONE UNTIL THE REPORTING PATH READS IT.** The 07-22 CLOB
+  supplement was correct and verified, and the daily readout kept printing
+  flattered edges for a full day because it built labels from `markets` only
+  and never opened the cache. When you fix a source, grep every consumer that
+  produces a NUMBER and prove each one moved — a fixed source with an unmoved
+  consumer looks exactly like a fix that worked.
+- **Two supplements, two different key sets.** `gamma_resolutions.json` was
+  built around the ADMIT deep-dive's evidence (the TRADERS' markets); it
+  covered 21 of 405 SHADOW tokens. "The cache is supplemented" never implies
+  it is supplemented for YOUR token set — measure the intersection.
+- **`chain_deep_dive.py` preloads the gamma cache ONCE per process** (`:1259`),
+  so a mid-run cache write does NOT contaminate a running dive — and equally,
+  a running dive will NOT pick up a label you just added. Restart to adopt.
+- **`shadow_readout.py` now REFUSES to run** (rc=2, loud line in the durable
+  log, ALERT untouched) if the supplement is missing/unreadable/labels nothing.
+  That is deliberate: a missing daily line is loud, a flattered one is not. If
+  the readout goes quiet, look for the FATAL line in `shadow_readout_log.txt`
+  before assuming cron died.
+- **`markets` knows the condition_id of markets it has NOT resolved.** That is
+  what makes a targeted CLOB pass cheap (203 of 300 unlabelled shadow tokens
+  were reachable that way). Only the residue needs a token→market lookup.
 
 ### Added 2026-07-22 (label-integrity + infra session)
 
