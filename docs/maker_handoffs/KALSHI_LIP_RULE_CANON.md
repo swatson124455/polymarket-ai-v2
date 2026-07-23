@@ -566,6 +566,47 @@ Sequence: fix/□drop temp → confirm gas-only is net positive over a real wind
   difference is exposure profile, not pure edge.
 - `-9.2%` and `+1.1%` are net-of-notional over one window, not annualised anything.
 
+### §M9 — FEES CONFIRMED AGAINST OUR OWN RECEIPTS + the INCENTIVE-PROGRAM LANDSCAPE
+
+#### Fee formula — VERIFIED, 67/67 fee-bearing rows match
+Published formula (secondary sources; the official `kalshi.com/docs/kalshi-fee-schedule.pdf` is
+**bot-blocked** — curl returns a JS challenge, not a PDF, so it is NOT quotable):
+```
+taker = ceil(0.07 * P * (1-P) * qty * 100) / 100      maker = 25% of taker      cap $0.035/contract
+```
+**Tested against `kalshi_transactions_2026-07-23.csv`: every one of the 67 fee-bearing rows
+matches the taker-or-maker prediction within $0.02. Zero unmatched.** That is receipt-grade
+confirmation of the formula, independent of the blocked PDF.
+
+Fee reality for us: **175 of 244 trades (71.7%) paid ZERO fees**; total fees **$2.58**
+(GAS $0.92 / TEMP $1.66) against a **$79.99** trading loss.
+⚠ **Fees are NOT the problem — they are 3% of the bleed.** Adverse selection is (§M8).
+⚠ But maker fees are **NOT universally zero** on Kalshi. Our series are exempt (verified by
+read-back + these receipts). **Any widening candidate must have its fee status established
+before admission** — a non-exempt series charges ~25% of taker on every maker fill.
+
+#### The three OTHER incentive programs — one is a trap, one may be free money
+| program | pays for | how to get it | verdict |
+|---|---|---|---|
+| **Liquidity Incentive (LIP)** | **resting quotes** | automatic, all members | what we run today |
+| **Combo Incentive** | **maker VOLUME** of eligible trades, pro-rata | **must OPT IN by email** | ⭐ pays for FILLS — the thing we currently treat as pure cost. Periods ≥1 week. **We are presumably not opted in.** |
+| **Liquidity Provider (DLP)** | designated MM in incentivised series | requires an executed **Market Maker Agreement** | ⚠ **TRAP — see below** |
+| **Volume Incentive** | volume | not yet read | unassessed |
+
+⚠⚠ **THE MARKET-MAKER-AGREEMENT TRAP.** The LIP rulebook (S1) excludes from Eligible
+Participants: *"members who have executed a Market Maker Agreement with Kalshi"*. The DLP
+program **requires** exactly that agreement. **They are therefore MUTUALLY EXCLUSIVE — signing an
+MM agreement would DISQUALIFY us from the LIP income we currently earn.** Do not pursue DLP or
+"become a market maker" status without modelling the LIP income being given up.
+(The MM route also carries a **98% availability per hour** quoting obligation — far beyond our
+current operating profile.)
+
+**ACTION CANDIDATE (operator decision, free to ask):** opt into the **Combo Incentive Program**.
+It rewards maker volume, which we generate anyway and currently book as pure cost. It is an
+email opt-in, not a contract, so it does not appear to carry the MM-agreement disqualification —
+**but confirm that with Kalshi before opting in**, since eligibility wording is what creates the
+DLP trap above.
+
 ### §M3 — code-vs-rulebook conformance check
 
 | rule clause (S1) | implementation | verdict |
