@@ -184,6 +184,72 @@ plug-in buys it back by resting an extra fillable order, i.e. with **risk**.
 **This does not by itself justify changing anything — it justifies re-deriving the plug-in's
 expected value before the A/B result is acted on.** (task #7)
 
+### §M4 — WHERE WE ARE vs WHERE THE DATA SAYS WE SHOULD BE (2026-07-23 ~02:55Z)
+
+**Allocation within the allowlist is already near-optimal. The allowlist itself is the problem.**
+
+Per-market expected `$/day` at the deployed shape (JOIN 20 ct/side, $15/market), scored on the
+frozen dataset; live holdings from `kalshi_status_readonly.py`:
+
+| rank | market | $/period | **$/day** | ours |
+|---|---|---|---|---|
+| 1 | KXAAAGASD-26JUL23-4.100 | 22.10 | **40.34** | ✅ |
+| 2 | KXAAAGASD-26JUL23-4.095 | 16.81 | **30.68** | ✅ |
+| 3 | KXAAAGASD-26JUL23-4.105 | 9.43 | **17.22** | ✅ |
+| 4 | KXAAAGASW-26JUL27-4.160 | 35.02 | 5.38 | ✅ |
+| 5 | KXAAAGASW-26JUL27-4.140 | 32.13 | 4.94 | ✅ |
+| 6 | KXAAAGASD-26JUL23-4.090 | 2.54 | 4.64 | ✅ |
+| 7 | KXAAAGASW-26JUL27-4.200 | 23.88 | 3.67 | ❌ |
+| 8 | KXAAAGASD-26JUL23-4.085 | 0.72 | 1.31 | ❌ |
+| 12 | KXAAAGASW-26JUL27-4.120 | 1.40 | 0.22 | ✅ dud |
+
+- **We hold 7 markets worth $103.41/day of the $110.18/day available in-allowlist — 94% capture**,
+  and 6 of the top 8. Actual K=7 vs the §M1 theoretical optimum of K≈6–7. **Bang on. There is
+  nothing meaningful to gain by reallocating inside the allowlist.**
+- ⚠ **The `$/period` column is exactly the trap R1 warns about.** Ranked by `$/period`,
+  `GASW-4.160` ($35.02) looks like the single best market on the board. By `$/day` it is **7×
+  worse** than `GASD-4.100`. A naive pool-ranking inverts the portfolio.
+- Two duds held: `GASW-4.120` at $0.22/day, and `GASW-26JUL27-4.080` (a live position) has **no
+  active program at all** — zero rewards, pure inventory risk.
+
+**The real constraint — venue-wide census, all 2,547 active programs / 192 series:**
+
+```
+venue total pool      $49,411/day
+our allowlist          $4,611/day  =  9.33% of the venue
+  KXAAAGASD            $4,380/day  venue rank 3    <- 95% of our allowlist's value
+  KXAAAGASW              $231/day  venue rank 43   <- dead weight
+  KXTEMP* (all 5)            $0/day  NO ACTIVE PROGRAMS
+```
+
+- **`KXAAAGASD` is a genuinely excellent pick — rank 3 of 192 series venue-wide.** Not luck.
+- **`KXAAAGASW` is dead weight**: rank 43, yet it holds 4 of our 8 positions and half our resting
+  orders. Capital and inventory risk are sitting where the reward is not.
+- **Temp is dark.** All five city series have zero active programs right now, so today the
+  "#1 EV sector, ~30×" (running tab §C) contributes **nothing**. Any plan assuming temp carries
+  us is wrong as of this timestamp.
+
+#### ⚠ §M4a — this CORRECTS the parked widening recommendation in running tab §H
+
+Running tab §H recommends: *"GAS candidate: `KXAAAGASM` (monthly, 54 mkts, **$5,400 pool = 5.4×
+daily gas**). This is the recommended slight widening available now."*
+
+**Measured: `KXAAAGASM` = $255/day, venue rank 39. `KXAAAGASD` = $4,380/day, rank 3.**
+GASM is **~17× WORSE per day**, not 5.4× better. The $5,400 headline is a **monthly** pool; the
+comparison silently divided a month by a day. **This is the R1 unit error, already sitting in a
+standing recommendation, one session away from being acted on.** §H's widening advice is
+**withdrawn** pending a $/day re-rank.
+
+**CAVEATS on the venue census — do not act on the ranking alone:**
+- `pool $/day` is the **size of the prize, not our capture**. Capture depends on competition,
+  which needs books; only our own allowlist was book-scored here.
+- **Toxicity is a separate axis and cuts hard against the top of the list.** Venue ranks 1–2 are
+  `KXWNBAMENTION` / `KXMLBMENTION` ($4,469/day each) — the *mention* family the running tab flags
+  as a settlement trap (`FIGHTMENTION` +745 in-window / −1338 settled). **High pool ≠ good.**
+  Unevaluated large pools: `KXFUNDRAISING` ($2,501/day, rank 4), `KXLIUKELIMINATION` ($1,567/day),
+  `KXRT` ($1,263/day).
+- Single point in time; programs churn hourly.
+
 ### §M3 — code-vs-rulebook conformance check
 
 | rule clause (S1) | implementation | verdict |
