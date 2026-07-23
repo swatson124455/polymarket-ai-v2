@@ -2006,3 +2006,64 @@ have to become better than a market whose Brier is already ~0.247.
 disagreed most with price) — that is the trading-relevant cut, not a general
 model-vs-market claim; entry price includes the crossed spread; window straddles
 the 07-19 VIF change. Measurement only — calibrator hands-off until ~08-07.
+
+## S234 — WHY WE LOSE IN A SOFT MARKET (self-inflicted adverse selection)
+
+Reconciles two facts that look contradictory: weather markets ARE soft, and we
+lose to them decisively. Deduped, n=230 markets, since 20260713_160229.
+
+### The market IS soft — measured, not assumed
+```
+climatology Brier (base 0.509) 0.2499
+MARKET Brier 0.2468   BSS vs climatology  +0.0125   <- market beats a naive
+MODEL  Brier 0.3686   BSS vs climatology  -0.4748      base rate by only +1.3%
+```
+The price carries almost NO information beyond the base rate. Softness is real.
+**But softness is an OPPORTUNITY, not an edge** — harvesting it requires a
+forecast better than the base rate, and ours is 47% WORSE than one.
+
+**CORRECTION to an earlier framing in this session:** it was stated that the bar
+is "beating a market whose Brier is already ~0.247", implying a competent
+market. That overstates the opponent. The market is only +1.3% over climatology,
+so **the real bar is simply to beat the base rate.** Lower hurdle, and the
+opportunity is NOT defended by a sharp counterparty.
+
+### The mechanism — we generate the adverse selection ourselves
+```
+mean |p-0.5|:  model 0.324   vs   market 0.059
+```
+The market sits on the fence (~0.44-0.56); the model sits at the poles
+(~0.18/0.82). Since the bot ENTERS ON DISAGREEMENT, nearly every entry is
+"market says coin-flip, we say 80/20" — and position selection is driven by the
+size of our own error.
+
+ADVERSE-SELECTION TEST (Brier vs |model - market|):
+```
+band        n   modelBrier   mktBrier
+0.00-0.10   7      0.2042     0.2434   (n too small, non-monotonic)
+0.10-0.20  20      0.3401     0.2349   (n small)
+0.20-0.30  53      0.3008     0.2410
+0.30-0.45 100      0.3713     0.2473
+0.45+      50      0.4694     0.2571
+```
+Across the 203 markets with meaningful disagreement the model's Brier climbs
+0.30 -> 0.37 -> 0.47 while the market's stays FLAT at 0.24-0.26. **The bigger we
+disagree, the more wrong we are.** That is not an informed counterparty picking
+us off — it is an overconfident model plus a disagreement-triggered entry rule
+sizing hardest into its own worst estimates. (Do not claim monotonicity across
+all five bands; the two smallest are noisy.)
+
+### Consequence for the fix
+This makes VIF the right lever for a CONCRETE reason: variance inflation
+directly attacks `mean |p-0.5| = 0.324`. Pulling it toward the market's 0.059
+improves Brier AND shrinks the entry set to genuine disagreements — hitting the
+estimate and the selection at once. Whether 2.0 suffices is the 07-24
+`wb-vif-tune-remeasure` question. Consistent with PIT mean 0.593 (overconfident)
+and with S222 failing A1/A3 repeatedly.
+
+**Scope caveat (important):** these 230 markets are SELECTED by the bot
+disagreeing with price, which biases the subset toward contested ~50/50 markets
+where price cannot carry much information. So "market beats climatology by only
+1.3%" is a statement about the markets WE ENTER, not proof the whole weather
+universe is soft. Testing softness on markets we do NOT enter needs a market-price
+source for un-traded markets, which the current data path lacks — open question.
