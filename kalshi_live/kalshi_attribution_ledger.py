@@ -9,7 +9,17 @@ accounted:
 
     rewards_residual = delta_balance - fills_cashflow - settlements_revenue
 
-between two consecutive snapshots (all three terms measured from the API). Labels:
+between two consecutive snapshots (all three terms measured from the API).
+
+⚠ THE RESIDUAL CANNOT SEE EXTERNAL MONEY. A deposit or withdrawal lands in `balance` with no
+fill and no settlement, so it is booked as REWARDS. This is not hypothetical: the operator's
++$20 deposit on 2026-07-22 pm shows up here as a +$19.60 residual step at ~19:34Z, and it is
+the entire remaining gap between the corrected residual ($26.18 over the 07-22→23 window) and
+the receipts ($6.58 of credits in that window). Kalshi exposes no transactions endpoint, so
+this cannot be automated — after ANY money movement, note it, the same way the quoter's loss
+meter has to be re-baselined.
+
+Labels:
   MEASURED  = read directly from the venue (balance, fills, settlements, resting book)
   ALLOCATED = rewards residual split across series pro-rata by our resting-quote presence
               (presence IS what Kalshi pays for, but the split is ours, not the venue's)
@@ -91,26 +101,137 @@ def series_of(ticker):
     return (ticker or "").split("-")[0]
 
 
-def fill_cashflow(f):
-    """Signed CASH flow of one fill from OUR account's perspective (negative = cash out).
-    Kalshi fill: action buy/sell, side yes/no, count, yes_price. Buying any side costs that
-    side's price x count; selling receives it. NO-side price = 1 - yes_price.
+# =======================================================================================
+# CASH-FLOW MODEL — ROOT FIX 2026-07-23. Read this before touching anything below.
+# =======================================================================================
+# WHAT A FILL IS. We only ever place V2 orders with side='bid' or side='ask'
+# (maker_kalshi_client.create_order_v2 / create_quote). Kalshi renders those back on
+# /portfolio/fills as exactly two shapes — 317/317 live fills, no exceptions:
+#     book_side='bid'  <->  outcome_side='yes'  <->  legacy (action='buy',  side='yes')
+#     book_side='ask'  <->  outcome_side='no'   <->  legacy (action='sell', side='no')
+# The legacy (action, side) pair describes the ORDER, not the direction of cash. An 'ask' IS
+# our NO bid, so "sell no" is us BUYING NO — cash OUT. This function read it literally and
+# booked it as cash IN, on 156 of 317 fills. That is the whole reason rewards_residual
+# printed +$57.82/day and +$75.17/day on a ~$65 account.
+#
+# WHY A SIGN FLIP IS NOT THE FIX (measured, do not repeat this). Kalshi has no naked short
+# and nets per market, so an 'ask' fill against a long-YES position opens nothing: it closes
+# pairs, and each closed pair releases $1. Cash on the offsetting quantity is therefore
+# +(1 - price_paid) — an INFLOW. Booking every fill as an outflow ("just flip the sign")
+# scored the live 07-22→23 window at -$741.15 of fill cash against a balance-implied
+# -$60.91. The old code scored -$86.54. The position-aware model below scores -$60.91, exact
+# in every one of the 27 intervals. THE CASH MODEL MUST BE POSITION-AWARE.
+#
+# VERIFICATION (read-only API pull 2026-07-23; every receipt independent of this code):
+#   open positions   3/3  exact vs /portfolio/positions `position_fp`   (legacy 0/3)
+#   settlements     51/51 exact — reconstructed net x market_result predicts `revenue`
+#                          to the cent                                  (legacy 18/51,
+#                          and all 18 are trivial revenue=0 rows)
+#   per market      51/51 flat-or-settled tickers reproduce the transactions-CSV
+#                          realized_pnl_with_fees from replayed cash + settlement revenue
+#   per interval    27/27 ledger intervals reproduce the balance-implied cash exactly
+#   RECEIPTS        rewards_residual then isolates the LIP credits to the cent:
+#                          +$4.35 in the 07-22T06:29Z interval ($1.88 + $2.47) and
+#                          +$2.23 in the 07-22T06:58Z one. CSV total to date $25.21.
+# Pinned in test_attribution.py against those same venue payloads.
+# =======================================================================================
 
-    FEES ARE SUBTRACTED (external review 2026-07-22, accepted): the live fill payload carries
-    `fee_cost` (probe-verified 07-22 18:05Z). Omitting it pushed every fee into the
-    rewards_residual bucket, i.e. a taker-fee leak would have been reported as REWARDS —
-    corrupting the one number the whole strategy is judged on. Maker fills are fee-free
-    (receipt-verified), so today's impact is ~0; a taker fill would not have been."""
-    cnt = _f(f.get("count_fp") or f.get("count"))
-    yp = _f(f.get("yes_price_dollars") or f.get("yes_price"))
-    if yp > 1.0:                      # some payloads carry cents — normalize
-        yp = yp / 100.0
-    price = yp if (f.get("side") == "yes") else (1.0 - yp)
-    cash = -price * cnt if f.get("action") == "buy" else price * cnt
-    fee = _f(f.get("fee_cost"))
-    if fee > 1000:                    # cents-scale guard (fee_cost lacks a _dollars suffix)
-        fee = fee / 100.0
-    return cash - abs(fee)
+
+def fill_outcome(f):
+    """Which OUTCOME this fill ACQUIRES: 'yes' or 'no'.
+
+    RAISES on any shape we have not verified against the venue. Emitting a wrong rewards
+    number is strictly worse than emitting none — a crash leaves the watermark unadvanced
+    and self-heals once the new shape is understood."""
+    bs = f.get("book_side")
+    if bs in ("bid", "ask"):
+        return "yes" if bs == "bid" else "no"
+    oc = f.get("outcome_side")        # 317/317 agreement with book_side on the live tape
+    if oc in ("yes", "no"):
+        return oc
+    raise ValueError(f"unrecognised fill shape (no book_side/outcome_side): {f!r}")
+
+
+def fill_count(f):
+    return _f(f.get("count_fp") or f.get("count"))
+
+
+def fill_price(f):
+    """Dollar price of the outcome this fill ACQUIRES.
+    yes_price_dollars + no_price_dollars == 1.0000 on 317/317 live fills, so the derived
+    fallback is exact when the outcome's own field is absent."""
+    oc = fill_outcome(f)
+    raw = f.get(f"{oc}_price_dollars")
+    if raw is None:
+        yp = _f(f.get("yes_price_dollars") or f.get("yes_price"))
+        if yp > 1.0:                  # some payloads carry cents — normalize
+            yp = yp / 100.0
+        return yp if oc == "yes" else 1.0 - yp
+    p = _f(raw)
+    if p > 1.0:
+        p = p / 100.0
+    return p
+
+
+def fill_fee(f):
+    """Fee of one fill, in DOLLARS, always >= 0 (a fee is never income).
+
+    `fee_cost` is dollars despite lacking the _dollars suffix — RECEIPT-VERIFIED: the 59
+    fee-bearing fills on the live tape sum to $2.5823, exactly the transactions-CSV
+    open+close fee total ($2.5823). Canon §M10: maker fills are free by default, so a
+    fee-bearing row is a TAKER trade. Omitting this pushed taker fees into rewards_residual,
+    i.e. reported a fee leak as REWARDS."""
+    return abs(_f(f.get("fee_cost")))
+
+
+def fill_position_delta(f):
+    """Signed contract delta of one fill: + = more YES, - = more NO.
+    Matches the venue's own `position_fp` convention (signed, string, fractional)."""
+    return fill_count(f) if fill_outcome(f) == "yes" else -fill_count(f)
+
+
+def fill_cashflow(f, position_before):
+    """Signed CASH flow of one fill from OUR account's perspective (negative = cash out).
+
+    SIGNATURE CHANGED 2026-07-23 — the signature WAS the bug. A position-independent
+    function cannot express Kalshi cash: the same fill is an outflow when it opens and an
+    inflow when it nets against opposite inventory. `position_before` is the signed net
+    position in THIS market immediately before this fill (use replay_fills, which computes
+    it). The second argument is deliberately required: defaulting it to 0 would silently
+    reproduce the "flip the sign" model that scored 12x too much cash out.
+
+    opening quantity : pay the acquired outcome's price          -> -price * qty
+    offsetting qty   : closes a pair, venue releases $1 each     -> +(1 - price) * qty
+    fees             : always subtracted (see fill_fee)"""
+    cnt = fill_count(f)
+    price = fill_price(f)
+    delta = fill_position_delta(f)
+    reduces = bool(position_before) and (position_before > 0) != (delta > 0)
+    offset = min(cnt, abs(position_before)) if reduces else 0.0
+    opened = cnt - offset
+    return -price * opened + (1.0 - price) * offset - fill_fee(f)
+
+
+def replay_fills(fills):
+    """Chronologically replay a fill tape, returning (events, positions).
+
+    events   list of {"fill", "cash", "delta", "position_before", "position_after"} in
+             created_time order — cash is position-aware, so the tape must be replayed from
+             a point where every ticker in it was flat. Callers pass the FULL tape.
+    positions {ticker: signed net contracts} after the last fill.
+
+    Settled markets never trade again, so no settlement reset is needed: per ticker the tape
+    is the complete history. Ordering matters (netting is path-dependent), hence the sort."""
+    events, positions = [], defaultdict(float)
+    for f in sorted(fills, key=lambda x: ((x.get("created_time") or ""), (x.get("fill_id") or ""))):
+        t = f.get("ticker") or f.get("market_ticker")
+        before = positions[t]
+        cash = fill_cashflow(f, before)
+        delta = fill_position_delta(f)
+        positions[t] = before + delta
+        events.append({"fill": f, "cash": cash, "delta": delta,
+                       "position_before": before, "position_after": positions[t]})
+    return events, dict(positions)
 
 
 def settlement_revenue(s):
@@ -127,13 +248,13 @@ def settlement_revenue(s):
          "payouts" on a $65 account — a worse number that merely looked authoritative.
       H2 "matched pairs net and return $1/pair at trade time, unmodelled": REFUTED — replaying
          the tape found 0.00 contracts netted against opposite inventory that day.
-    REMAINING SUSPECT (unverified, do NOT code on faith): fill_cashflow's sell-side convention.
-    Kalshi has no naked short, so an OPENING "sell no" is economically a BUY of yes and costs
-    yes_price x count, while this function books it as RECEIVING no_price x count. That
-    asymmetry would create exactly this shape of unexplained inflow. Proving it needs
-    position-aware (opening vs closing) cash modelling per fill.
-    UNTIL THEN: rewards_residual is NOT a trustworthy rewards figure. Ground truth for rewards
-    is the Kalshi web UI (the only receipt-grade number to date: ~$18.60, operator-confirmed)."""
+    2026-07-23 — RESOLVED, and it was NOT here. The docstring's own third suspect was right:
+    fill_cashflow's sell-side convention. See the CASH-FLOW MODEL block above. This function
+    is CORRECT and is now independently confirmed: reconstructing the net position from the
+    fill tape with the corrected convention predicts `revenue` to the cent on 51/51
+    settlements, including every non-zero one ($22.00, $2.93, $0.31, $0.29, $0.23, $0.12,
+    $0.06). H1's "revenue under-reports payouts" is refuted a second time, from a new
+    direction. Do NOT substitute winning-side-count x $1 here."""
     return _f(s.get("revenue")) / 100.0
 
 
@@ -184,17 +305,41 @@ def collect():
     if baseline:
         fw = max([f.get("created_time") or fw for f in all_fills] + [fw])
         sw = max([s.get("settled_time") or sw for s in all_settles] + [sw])
-    fills = [f for f in all_fills if (f.get("created_time") or "") > fw]
     settles = [s for s in all_settles if (s.get("settled_time") or "") > sw]
+
+    # Cash is POSITION-AWARE (see the CASH-FLOW MODEL block), so it must be replayed from the
+    # FULL tape — the position a windowed fill nets against was built by earlier fills.
+    all_events, recon_pos = replay_fills(all_fills)
+    events = [e for e in all_events if (e["fill"].get("created_time") or "") > fw]
+    fills = [e["fill"] for e in events]
+
+    # SELF-CHECK, every run. The cash model and the position reconstruction share one sign
+    # convention, so if the venue's own position_fp disagrees with the replay, the cash number
+    # in this row is wrong too — and that is exactly the failure that ran undetected for days.
+    # Also catches a TRUNCATED tape (get_paginated caps at 50 x 200 fills; truncation drops the
+    # OLDEST fills, which silently corrupts the starting position of long-lived tickers).
+    settled_tickers = {s.get("ticker") for s in all_settles}
+    venue_pos = {p.get("ticker"): _f(p.get("position_fp") or p.get("position")) for p in pos}
+    checkable = set(venue_pos) | {t for t, v in recon_pos.items()
+                                  if abs(v) > 0.005 and t not in settled_tickers}
+    recon_mismatch = {t: [round(venue_pos.get(t, 0.0), 4), round(recon_pos.get(t, 0.0), 4)]
+                      for t in sorted(checkable)
+                      if abs(venue_pos.get(t, 0.0) - recon_pos.get(t, 0.0)) > 0.005}
+    if recon_mismatch:
+        print(f"WARNING position reconstruction disagrees with the venue on "
+              f"{len(recon_mismatch)} ticker(s) [venue, replayed]: {recon_mismatch} — "
+              f"fills_cash and rewards_residual in this row are NOT trustworthy")
 
     by_series_trade = defaultdict(lambda: {"cash": 0.0, "maker_ct": 0.0, "taker_ct": 0.0})
     fills_cash = 0.0
-    for f in fills:
-        c = fill_cashflow(f)
+    fills_fees = 0.0
+    for e in events:
+        f, c = e["fill"], e["cash"]
         fills_cash += c
+        fills_fees += fill_fee(f)
         row = by_series_trade[series_of(f.get("ticker"))]
         row["cash"] += c
-        cnt = _f(f.get("count_fp") or f.get("count"))
+        cnt = fill_count(f)
         row["taker_ct" if f.get("is_taker") else "maker_ct"] += cnt
     settle_rev = 0.0
     by_series_settle = defaultdict(float)
@@ -223,7 +368,9 @@ def collect():
         "resting_orders": len(orders),
         "presence_usd_by_series": {k: round(v, 2) for k, v in sorted(presence.items())},
         "new_fills": len(fills), "fills_cash": round(fills_cash, 4),          # MEASURED
+        "fills_fees": round(fills_fees, 4),             # MEASURED (already inside fills_cash)
         "new_settlements": len(settles), "settle_revenue": round(settle_rev, 4),  # MEASURED
+        "position_recon_mismatch": recon_mismatch,      # {} = cash model agrees with venue
         "trade_by_series": {k: {kk: round(vv, 4) for kk, vv in v.items()}
                             for k, v in sorted(by_series_trade.items())},
         "rewards_residual": rewards_residual,           # MEASURED (None on first run)
@@ -238,7 +385,7 @@ def collect():
     st["settlements_watermark"] = max([s.get("settled_time") or sw for s in settles] + [sw])
     save_state(st)
     print(f"ledger ok balance=${bal:.2f} exposure=${exposure:.2f} fills={len(fills)} "
-          f"(cash {fills_cash:+.2f}) settles={len(settles)} (+{settle_rev:.2f}) "
+          f"(cash {fills_cash:+.2f}, fees {fills_fees:.4f}) settles={len(settles)} (+{settle_rev:.2f}) "
           f"rewards_residual={'n/a-first-run' if rewards_residual is None else f'{rewards_residual:+.2f}'} "
           f"presence=${total_presence:.2f}/{len(presence)} series")
     return 0
@@ -286,11 +433,18 @@ def report(days=14):
         total_h += dt
         eq_a = _f(a.get("balance")) + _f(a.get("position_exposure"))
         eq_b = _f(b.get("balance")) + _f(b.get("position_exposure"))
-        # resting orders RESERVE collateral out of balance_dollars (probe-verified 07-22:
-        # balance $42.93 -> $24.79 on placing 8 quotes). So an interval is only clean if the
-        # resting book ALSO held still — otherwise place/cancel churn moves balance and would
-        # be misread as rewards. (Our running tab's old note "resting orders do NOT deduct
-        # from balance_dollars" is WRONG; this filter is why that matters.)
+        # ⚠ 2026-07-23 — THE PREMISE OF THIS FILTER IS REFUTED, the filter is kept anyway.
+        # The claim was: resting orders RESERVE collateral out of balance_dollars (probe
+        # 07-22: balance $42.93 -> $24.79 on placing 8 quotes), so quote churn would be
+        # misread as rewards. Measured against the live ledger with the corrected cash model:
+        # 24 of 27 intervals residual EXACTLY $0.0000, including 07-22T13:44 (presence
+        # $14.10 -> $31.32, 1 -> 5 resting orders, ZERO fills) and 07-22T16:44 (presence
+        # $27.22 -> $46.78, 3 -> 8 orders, ZERO fills). Balance did not move on either. The
+        # original probe was confounded by fills. So the running tab's old note was RIGHT:
+        # resting orders do NOT deduct from balance_dollars.
+        # Left in place because it only costs coverage, never correctness, and because the
+        # residual above is now the trustworthy number — this whole clean-interval method was
+        # a workaround for the residual being broken and is superseded, not load-bearing.
         pa = sum((a.get("presence_usd_by_series") or {}).values())
         pb = sum((b.get("presence_usd_by_series") or {}).values())
         quiet_book = abs(pb - pa) < 0.005 and a.get("resting_orders") == b.get("resting_orders")
