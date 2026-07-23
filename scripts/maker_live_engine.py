@@ -256,6 +256,14 @@ def plan_quote_commit(pair, onesided_leg, jit_bid, jit_ask, sz_b, sz_a, now):
     if len(pair) != want_n or not all(r["ok"] for _, r in pair):
         return False, None, None, None
     legs = {p["leg"]: (p, r) for p, r in pair}
+    # duplicate legs collapse in the dict: without this, a pair of two "yes"
+    # entries would commit as one-sided and DROP the other order id — never
+    # recorded in ob/oa, so never cancellable = a permanent ghost at a stale
+    # price. The inline version raised KeyError; .get() made it fail-OPEN.
+    # Unreachable today, but this arc has been killed twice by exactly this
+    # class of thing (review G3).
+    if len(legs) != want_n:
+        return False, None, None, None
     yb, nb = legs.get("yes"), legs.get("no")
     # the recorded leg must be the leg we intended to place alone
     if onesided_leg and (yb is None) != (onesided_leg == "no"):
@@ -268,6 +276,86 @@ def plan_quote_commit(pair, onesided_leg, jit_bid, jit_ask, sz_b, sz_a, now):
     # fill model would credit a leg that never rested
     return True, ob, oa, [now, jit_bid if yb else None,
                           jit_ask if nb else None, sz_b, sz_a]
+
+
+def commit_placements(pl_meta, by_mkt, st_of, now, cancel_fn, denials,
+                      backoff_fn, log_fn):
+    """Commit a batch's results to standing-quote state.
+
+    Extracted WHOLE (not just its arithmetic) because the previous round
+    extracted only plan_quote_commit and the review showed that merely
+    RELOCATED the untested surface: four one-line mutations of the remaining
+    call site still passed the entire suite, including one that silently
+    killed the feature and one that silently reverted the one-sided fill
+    bound. Dependencies are injected so this is drivable from a test.
+    """
+    for (key, raw_bid, raw_ask, jit_bid, jit_ask, sz_b, sz_a,
+         onesided_leg) in pl_meta:
+        st = st_of(key)
+        pair = by_mkt.get(key, [])
+        ok, ob, oa, row = plan_quote_commit(pair, onesided_leg, jit_bid,
+                                            jit_ask, sz_b, sz_a, now)
+        if ok:
+            st["ob"], st["oa"] = ob, oa
+            st["want_raw"] = [raw_bid, raw_ask]
+            # inventory snapshot: any later fill moves y/n away from this and
+            # releases the one-sided hold (onesided_hold)
+            st["q_inv"] = [st.get("y", 0.0), st.get("n", 0.0)]
+            st["backoff"] = 0.0
+            qh = st.setdefault("qh", [])
+            qh.append(row)
+            if len(qh) > 400:
+                del qh[:len(qh) - 400]
+            for p, r in pair:
+                log_fn({"t": round(now), "act": "place", "mkt": key,
+                        "leg": p["leg"], "px": p["px"], "sz": p["sz"],
+                        "oid": r["oid"]})
+        else:
+            # partial acceptance = one-sided exposure: cancel the survivor;
+            # a FAILED survivor-cancel leaves a zombie
+            oids = [r["oid"] for _, r in pair if r["ok"] and r["oid"]]
+            if oids and not cancel_fn(oids):
+                st["zombies"] = (st.get("zombies") or []) + oids
+                denials["cancel_failed"] += 1
+            st["ob"] = st["oa"] = None
+            st["want_raw"] = None
+            denials["partial_place"] += 1
+            backoff_fn(st, now)
+            log_fn({"t": round(now), "act": "place_failed", "mkt": key,
+                    "errs": [r["err"] for _, r in pair if not r["ok"]]})
+
+
+def onesided_hold(st, raw_bid, raw_ask):
+    """Should a standing ONE-SIDED de-risk quote be left alone this scan?
+
+    History, because both failure modes are live-money bugs:
+      v1 held while price was stable AND net != 0. Nothing clears ob/oa on a
+      FILL, so after the hedge filled the stale leg still read as standing and
+      net was still != 0 -> the market was skipped for hours: phantom hedge,
+      nothing resting, nothing earned. The hold was anti-correlated with
+      recovery, because the relieving fill is the NORMAL outcome (review F1).
+      v2 deleted the hold entirely -> cancel/replace EVERY scan (~1 Hz). Order
+      -API calls are not counted against HTTP_BUDGET_PER_HOUR and cancels are
+      unbatched, but the functional killer is queue position: a lone de-risk
+      leg earns nothing and exists only to FILL, and requoting it every second
+      parks it permanently at the back of the queue. Paper cannot see this —
+      match_fills_paper fills on price alone — so paper would show the feature
+      working while live showed it inert (review G1).
+
+    So: hold on price stability, and release on any INVENTORY CHANGE. q_inv is
+    snapshotted at commit; any fill (or merge) moves y/n and forces a requote.
+    """
+    cur = st.get("want_raw")
+    snap = st.get("q_inv")
+    if cur is None or snap is None:
+        return False
+    if bool(st.get("ob")) == bool(st.get("oa")):
+        return False                      # not a one-sided quote
+    if [st.get("y", 0.0), st.get("n", 0.0)] != list(snap):
+        return False                      # inventory moved -> re-evaluate now
+    standing = cur[0] if st.get("ob") else cur[1]
+    fresh = raw_bid if st.get("ob") else raw_ask
+    return abs(fresh - standing) < REQUOTE_TICKS
 
 
 def onesided_derisk_leg(approved, st, cfg):
@@ -1975,17 +2063,11 @@ def run(base, cfg):
                     and abs(raw_bid - cur[0]) < REQUOTE_TICKS \
                     and abs(raw_ask - cur[1]) < REQUOTE_TICKS:
                 continue                     # hysteresis: standing quote holds
-            # NO hysteresis for a ONE-SIDED de-risk quote — deliberately.
-            # An earlier version held it while price was stable and net != 0.
-            # That poisoned the feature through its own SUCCESS path: nothing
-            # clears ob/oa on a FILL, so once the hedge filled, the stale leg
-            # still read as standing, net was still != 0, and the market was
-            # skipped — engine holding a phantom hedge, resting nothing,
-            # earning nothing, for as long as the price stayed within 2 ticks.
-            # The partial fill that relieves the cap is the NORMAL outcome
-            # here, so the hold condition was anti-correlated with recovery.
-            # A one-sided quote therefore requotes every scan; that churn is
-            # cheap next to a multi-hour blind hold (review F1, 2026-07-22).
+            # one-sided de-risk quote: hold on price stability, release on any
+            # inventory change (see onesided_hold — both the phantom-hold and
+            # the requote-every-scan failure modes are documented there)
+            if onesided_hold(st, raw_bid, raw_ask):
+                continue
             # requote = cancel standing, place fresh (no native replace in V2)
             if st.get("ob") or st.get("oa"):
                 cancel_market_quotes(key, "requote", now)
@@ -2084,42 +2166,9 @@ def run(base, cfg):
                 by_mkt = defaultdict(list)
                 for p, r in zip(placements, results):
                     by_mkt[p["mkt"]].append((p, r))
-                for (key, raw_bid, raw_ask, jit_bid, jit_ask, sz_b, sz_a,
-                     onesided_leg) in pl_meta:
-                    st = st_of(key)
-                    pair = by_mkt.get(key, [])
-                    c_ok, c_ob, c_oa, c_row = plan_quote_commit(
-                        pair, onesided_leg, jit_bid, jit_ask, sz_b, sz_a, now)
-                    if c_ok:
-                        st["ob"], st["oa"] = c_ob, c_oa
-                        st["want_raw"] = [raw_bid, raw_ask]
-                        st["backoff"] = 0.0
-                        qh = st.setdefault("qh", [])
-                        qh.append(c_row)
-                        if len(qh) > 400:
-                            del qh[:len(qh) - 400]
-                        for p, r in pair:
-                            ledger_write(base, "orders",
-                                         {"t": round(now), "act": "place",
-                                          "mkt": key, "leg": p["leg"],
-                                          "px": p["px"], "sz": p["sz"],
-                                          "oid": r["oid"]})
-                    else:
-                        # partial acceptance = one-sided exposure: cancel the
-                        # survivor; a FAILED survivor-cancel leaves a zombie
-                        oids = [r["oid"] for _, r in pair if r["ok"] and r["oid"]]
-                        if oids and not execc.cancel(oids):
-                            st["zombies"] = (st.get("zombies") or []) + oids
-                            guards.denials["cancel_failed"] += 1
-                        st["ob"] = st["oa"] = None
-                        st["want_raw"] = None
-                        guards.denials["partial_place"] += 1
-                        _backoff(st, now)
-                        ledger_write(base, "orders",
-                                     {"t": round(now), "act": "place_failed",
-                                      "mkt": key,
-                                      "errs": [r["err"] for _, r in pair
-                                               if not r["ok"]]})
+                commit_placements(pl_meta, by_mkt, st_of, now,
+                                  execc.cancel, guards.denials, _backoff,
+                                  lambda rec: ledger_write(base, "orders", rec))
 
         # ── minute loop: fills, accrual, floors, persistence, heartbeat ─────
         if now - last_minute >= 60:

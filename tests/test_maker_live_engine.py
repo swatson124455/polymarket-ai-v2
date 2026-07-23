@@ -1826,3 +1826,105 @@ def test_two_sided_fill_keeps_family_ratchet_semantics():
               for i in range(1, 5)]
     mle.match_fills_paper(prints, qh, st, "Y", 0.0)
     assert st["n"] == 400.0, "two-sided family semantics must be unchanged"
+
+
+# ── caller-level commit + one-sided hold (review round 2: G1/G3/F3) ─────────
+class _Denials(dict):
+    def __missing__(self, k):
+        return 0
+
+
+def _commit_ctx():
+    state, logs, cancelled = {}, [], []
+    return (state, logs, cancelled,
+            lambda k: state.setdefault(k, {"y": 0.0, "n": 0.0}),
+            lambda oids: (cancelled.extend(oids), True)[1],
+            _Denials(), lambda st, now: st.update(backoff=1.0),
+            lambda rec: logs.append(rec))
+
+
+def test_commit_placements_two_sided_sets_both_legs_and_snapshot():
+    state, logs, cancelled, st_of, cancel, den, boff, log = _commit_ctx()
+    state["1234"] = {"y": 300.0, "n": 0.0}
+    meta = [("1234", 0.48, 0.52, 0.48, 0.52, 100.0, 100.0, None)]
+    by_mkt = {"1234": [_res("yes", "OY"), _res("no", "ON")]}
+    mle.commit_placements(meta, by_mkt, st_of, 1000.0, cancel, den, boff, log)
+    st = state["1234"]
+    assert st["ob"]["oid"] == "OY" and st["oa"]["oid"] == "ON"
+    assert st["qh"][-1] == [1000.0, 0.48, 0.52, 100.0, 100.0]
+    assert st["q_inv"] == [300.0, 0.0]        # snapshot for the hold release
+    assert len(logs) == 2 and not cancelled
+
+
+def test_commit_placements_one_sided_records_only_that_leg():
+    """N1b/N5: passing the wrong onesided_leg, or writing a both-legs qh row,
+    silently kills the feature or reverts the one-sided fill bound. Both are
+    caller-level and were invisible to the previous suite."""
+    state, logs, cancelled, st_of, cancel, den, boff, log = _commit_ctx()
+    state["1234"] = {"y": 300.0, "n": 0.0}
+    meta = [("1234", 0.48, 0.52, 0.48, 0.52, 100.0, 100.0, "no")]
+    mle.commit_placements(meta, {"1234": [_res("no", "ON")]}, st_of, 1000.0,
+                          cancel, den, boff, log)
+    st = state["1234"]
+    assert st["ob"] is None and st["oa"]["oid"] == "ON"
+    # the ABSENT bid leg must be None or match_fills_paper stops treating the
+    # row as one-sided and the through-flat bound silently disappears
+    assert st["qh"][-1] == [1000.0, None, 0.52, 100.0, 100.0]
+    assert not cancelled
+
+
+def test_commit_placements_partial_cancels_survivor_and_backs_off():
+    state, logs, cancelled, st_of, cancel, den, boff, log = _commit_ctx()
+    meta = [("1234", 0.48, 0.52, 0.48, 0.52, 100.0, 100.0, None)]
+    bad = ({"leg": "no", "px": 0.485, "sz": 100.0},
+           {"ok": False, "oid": None, "err": "rejected"})
+    mle.commit_placements(meta, {"1234": [_res("yes", "OY"), bad]}, st_of,
+                          1000.0, cancel, den, boff, log)
+    st = state["1234"]
+    assert st["ob"] is None and st["oa"] is None
+    assert cancelled == ["OY"] and den["partial_place"] == 1
+    assert st.get("backoff") == 1.0
+    assert logs[-1]["act"] == "place_failed"
+
+
+def test_commit_placements_failed_cancel_makes_a_zombie():
+    state = {}
+    st_of = lambda k: state.setdefault(k, {"y": 0.0, "n": 0.0})
+    den = _Denials()
+    meta = [("1234", 0.48, 0.52, 0.48, 0.52, 100.0, 100.0, None)]
+    bad = ({"leg": "no", "px": 0.485, "sz": 100.0},
+           {"ok": False, "oid": None, "err": "x"})
+    mle.commit_placements(meta, {"1234": [_res("yes", "OY"), bad]}, st_of,
+                          1000.0, lambda oids: False, den,
+                          lambda st, now: None, lambda rec: None)
+    assert state["1234"]["zombies"] == ["OY"] and den["cancel_failed"] == 1
+
+
+def test_onesided_hold_releases_on_a_fill():
+    """Review G1/F1: the hold must survive price stability but NOT survive an
+    inventory change — the relieving fill is the feature's normal outcome."""
+    st = {"ob": None, "oa": {"oid": "ON"}, "want_raw": [0.48, 0.52],
+          "y": 300.0, "n": 0.0, "q_inv": [300.0, 0.0]}
+    assert mle.onesided_hold(st, 0.48, 0.52)          # stable -> hold
+    st["y"] = 195.0                                    # a fill landed
+    assert not mle.onesided_hold(st, 0.48, 0.52)       # -> requote NOW
+    st["y"], st["n"] = 300.0, 0.0
+    assert not mle.onesided_hold(st, 0.48, 0.60)       # price moved -> requote
+
+
+def test_onesided_hold_never_holds_a_two_sided_or_unsnapshotted_quote():
+    two = {"ob": {"oid": "OY"}, "oa": {"oid": "ON"}, "want_raw": [0.48, 0.52],
+           "y": 0.0, "n": 0.0, "q_inv": [0.0, 0.0]}
+    assert not mle.onesided_hold(two, 0.48, 0.52)
+    nosnap = {"ob": None, "oa": {"oid": "ON"}, "want_raw": [0.48, 0.52],
+              "y": 300.0, "n": 0.0}
+    assert not mle.onesided_hold(nosnap, 0.48, 0.52)
+
+
+def test_plan_quote_commit_rejects_duplicate_legs():
+    """G3: duplicate legs collapse in the dict; .get() made that fail-OPEN,
+    committing a two-sided intent as one-sided and dropping an order id that
+    could then never be cancelled."""
+    ok, *_ = mle.plan_quote_commit([_res("yes", "A"), _res("yes", "B")], None,
+                                   0.48, 0.52, 100.0, 100.0, 1000.0)
+    assert not ok
