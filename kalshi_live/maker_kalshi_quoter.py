@@ -97,6 +97,19 @@ MIN_QUOTE_CT = _envi("KALSHI_MIN_QUOTE_CT", 2)      # never quote a live side be
 MAX_ACTIVATE_CAPITAL = _envf("KALSHI_MAX_ACTIVATE_CAPITAL", 150.0)  # $/void market
 MAX_MARKET_CAPITAL = _envf("KALSHI_MAX_MARKET_CAPITAL", 250.0)  # $ cap per market (both sides)
 MAX_TOTAL_CAPITAL = _envf("KALSHI_MAX_TOTAL_CAPITAL", 10000.0)  # $ cap on the whole resting book
+# FUNDING GATE (KALSHI_FUNDING_GATE, default 0 = OFF, provable no-op). When OFF the accumulating
+# capital gate is the legacy `committed (= surviving resting notional + held_cost) vs
+# MAX_TOTAL_CAPITAL`, byte-for-byte. When ON it STOPS counting already-spent held_cost (that cash
+# left `balance` at fill; re-counting it is the treadmill the operator kept escaping by RAISING the
+# cap) and instead caps the resting BUY book at min(free_cash, MAX_TOTAL_CAPITAL) — free cash is a
+# HARD ceiling that is safe whether the venue's `balance` is GROSS or NET of resting reservations:
+# a resting fill can never draw more cash than free cash funds, so no overdraw either way; if
+# `balance` turned out NET the worst case is a re-freeze (revert the flag), never a blowup.
+# VENUE ASSUMPTION (state it, do not silently rely on it): Kalshi reserves cash at FILL, not at
+# placement (GROSS) — measured n~4 place/cancel with balance delta 0 (KALSHI_RUNNING_TAB.md 07-20,
+# kalshi_attribution_ledger.py:436). Rootfix design:
+# docs/maker_handoffs/KALSHI_CAPITAL_ACCOUNTING_ROOTFIX_2026-07-23.md.
+FUNDING_GATE = _envi("KALSHI_FUNDING_GATE", 0)  # 0 = legacy gross+held gate; 1 = free-cash funding gate
 MAX_PRICE_DOLLARS = _envf("KALSHI_MAX_PRICE_DOLLARS", 0.97)  # never rest a bid above this
 MIN_PRICE_DOLLARS = _envf("KALSHI_MIN_PRICE_DOLLARS", 0.01)  # never rest a bid at/below this
 WIND_DOWN_MIN = _envi("KALSHI_WIND_DOWN_MIN", 45)   # pull quotes N min before end
@@ -793,6 +806,8 @@ def run_once():
         # subtracting it would double-count and make activate oscillate every cycle.
         held_by = {}                          # signed net position per ticker (delta)
         held_cost = 0.0
+        free_cash = None                      # real free cash (balance_dollars); None = unread this
+                                              # cycle -> funding gate FAILS CLOSED to the legacy gate
         cost_by = {}                          # per-ticker avg cost basis (unwind loss cap)
         breaker = False
         if client.mode == "dry_run":
@@ -860,7 +875,10 @@ def run_once():
             # portfolio_value's semantics first — NOT fixed here.
             _equity = None
             try:
-                _equity = float(client.get_balance().get("balance_dollars") or 0) + held_cost
+                # ONE get_balance() call; free_cash reused by the funding gate below (no second
+                # fetch). A raise leaves free_cash None (init above) -> funding gate fails closed.
+                free_cash = float(client.get_balance().get("balance_dollars") or 0)
+                _equity = free_cash + held_cost
             except Exception as e:
                 plan["balance_read_failed"] = repr(e)[:120]
                 st["balance_fail_streak"] = int(st.get("balance_fail_streak", 0)) + 1
@@ -1254,6 +1272,13 @@ def run_once():
         committed = sum(o["price_dollars"] * o["count"]
                         for ol in standing.values() for o in ol
                         if o["order_id"] not in cancelled_ok)
+        # FUNDING GATE (KALSHI_FUNDING_GATE=1): the resting BUY book that would draw cash IF it
+        # fills = the SAME surviving-standing gross notional as `committed` right now, but WITHOUT
+        # the already-spent held_cost term (that cash already left `balance` at fill; re-counting it
+        # is the treadmill). Gated below against min(free_cash, MAX_TOTAL_CAPITAL). Fails CLOSED to
+        # the legacy gross+held gate when the balance read failed this cycle (free_cash is None).
+        funding_committed = committed
+        funding_gate_on = bool(FUNDING_GATE) and free_cash is not None
         # held_cost was read ahead of the quote loop (fail-closed there); reuse it — no
         # second positions fetch, and the cycle already halted if it was unreadable.
         committed += held_cost
@@ -1271,9 +1296,19 @@ def run_once():
                 if not reducing or c["side"] in failed_cancel_sides.get(c["ticker"], ()):
                     create_skipped += 1
                     continue
-            if not reducing and committed + cost > MAX_TOTAL_CAPITAL:
-                create_skipped += 1                 # cap gates ACCUMULATING orders only
-                continue
+            if not reducing:
+                # ACCUMULATING gate — reducing/unwind creates are ALWAYS exempt (a risk-reducing
+                # order can never over-commit; Kalshi frees the covered collateral on fill).
+                #   Flag ON  : never rest more BUY notional than free cash can fund (HARD ceiling);
+                #              MAX_TOTAL_CAPITAL stays a backstop -> whichever is smaller binds.
+                #   Flag OFF : byte-for-byte the legacy `committed vs MAX_TOTAL_CAPITAL` gate.
+                if funding_gate_on:
+                    if funding_committed + cost > min(free_cash, MAX_TOTAL_CAPITAL):
+                        create_skipped += 1
+                        continue
+                elif committed + cost > MAX_TOTAL_CAPITAL:
+                    create_skipped += 1                 # cap gates ACCUMULATING orders only
+                    continue
             try:
                 resp = client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
                                     post_only=True, client_order_id=order_id_for(cyc, i, c["side"]))
@@ -1285,6 +1320,8 @@ def run_once():
                     ro = resp.get("order") if isinstance(resp.get("order"), dict) else resp
                     oid = (ro or {}).get("order_id") or oid
                 created_ok.append((c, oid)); committed += cost
+                if funding_gate_on and not reducing:
+                    funding_committed += cost           # a filled accumulating buy would draw cash
             except Exception as e:
                 create_fail += 1
                 if first_create_err is None:        # anonymous create_fail hid WHAT was rejected
@@ -1335,6 +1372,12 @@ def run_once():
             "committed_usd": round(committed, 2),
             "held_cost_usd": round(held_cost, 2),
         })
+        # funding-gate observability — emitted ONLY when the gate is active so a flag-OFF plan row
+        # is byte-identical to the legacy output (provable no-op).
+        if funding_gate_on:
+            plan["funding_gate"] = 1
+            plan["funding_committed_usd"] = round(funding_committed, 2)
+            plan["free_cash_usd"] = round(free_cash, 2)
     finally:
         # bookkeeping ALWAYS runs, even if the cycle body raised
         append_plan(plan)
