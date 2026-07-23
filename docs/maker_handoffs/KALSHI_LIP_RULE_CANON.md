@@ -662,6 +662,36 @@ Most listed series are **sports** (NFL/NBA/MLB/NHL/NCAA/PGA/UEFA all at maker 1)
 trivially available in a signed-in browser. When a primary source 429s, that is a *rate limit*, not
 a wall — route through the operator's session rather than concluding the document is inaccessible.
 
+### §M11 — KALSHI SUPPORT REPLY (AI-generated, 2026-07-23). 1 of 5 ANSWERED. ⚠ SEP-1 SUNSET CONFIRMED
+
+The operator sent the §KALSHI_SUPPORT_EMAIL_DRAFT questions. The reply was **AI-generated** and is
+**LOW AUTHORITY** — where it conflicts with the CFTC filing (S1) or the fee schedule PDF, the
+primary sources win. Scored against what was actually asked:
+
+| # | asked | reply | verdict |
+|---|---|---|---|
+| 1 | Does Combo opt-in affect **LIP eligibility**? Confirm in writing. | "The program rules **do not state** that opting in is treated as a Market Maker Agreement, and they **do not link it** to LIP eligibility." | ⚠ **NOT ANSWERED.** That is *absence of evidence*, not confirmation. It is mildly reassuring — silence is consistent with Combo ≠ MM Agreement — but it is not the written assurance requested. **Do not opt in on this basis alone.** |
+| 2 | Which series are maker-fee exempt? | Pointed at the fee-schedule PDF. | **MOOT — we answered it ourselves** (§M10). Their reply adds one useful operational fact: fees are calculated **at execution** and surface on the **order object** as `maker_fees_dollars`. |
+| 3 | Is there an API endpoint for incentive **payouts**? | "Incentive programs are visible through the `incentive_programs` endpoint. The API Technical FAQ does not list a separate endpoint for incentive or liquidity reward payouts." | ✅ **ANSWERED — no endpoint exists.** Corroborates our 112-path probe (§M7e). ⚠ But they **conflate two different things**: `incentive_programs` lists the *programs* (pools, target size, DF — we already consume it); it does **not** report what we were *paid*. |
+| 3c | **Put the event ticker on CSV `credit` rows** | *(ignored entirely)* | ❌ **UNANSWERED.** This was the highest-value ask — without it, per-series reward attribution requires manual screenshot cross-referencing (which is what §M8 had to do). |
+| 4 | Volume Incentive: eligible? opt-in? stacks with LIP? | Gave programme dates and "rewards trading volume in eligible markets". | ❌ **NONE of the three sub-questions answered.** |
+| 5 | Confirm an MM Agreement makes an account **ineligible** for LIP | *(not addressed at all)* | ❌ **UNANSWERED.** The §M9 trap remains unconfirmed by the venue — though S1's own exclusion clause already states it. |
+
+#### ⚠⚠ THE MOST IMPORTANT THING IN THE REPLY — a business-planning fact, not a support answer
+> "This program runs from **September 15, 2025 through September 1, 2026**" — Volume Incentive
+
+The LIP rulebook (S1) independently says the Program continues "until the earlier of
+**September 1, 2026**, or the date that Kalshi amends or terminates the Program."
+
+**BOTH incentive programmes carry the SAME September 1, 2026 expiry.** The entire reward basis —
+which is the *only* reason this strategy is viable at all, since §M8 shows the trading side is
+net negative — has a known common expiry date. This corroborates the "Sep-1 LIP sunset tripwire"
+already parked in running tab §E and handoff §5 item 4, and **upgrades it from a single-programme
+risk to a whole-revenue-basis risk**.
+
+Operator ruling on record is "assume renewal; census = tripwire." That remains a *ruling*, not
+evidence. Any plan whose payback period extends past 2026-09-01 must state this dependency.
+
 ### §M3 — code-vs-rulebook conformance check
 
 | rule clause (S1) | implementation | verdict |
