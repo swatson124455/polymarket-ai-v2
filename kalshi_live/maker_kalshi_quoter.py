@@ -214,9 +214,14 @@ BREAKER_WINDOW_S = _envi("KALSHI_BREAKER_WINDOW_S", 600)
 HELD_MAX_USD = _envf("KALSHI_HELD_MAX_USD", 20.0)
 # --- DAILY LOSS KILL (review 07-22: the "treadmill" gap): held-$ velocity/level breakers can't
 # see CUMULATIVE realized losses — acquire ~$18/hour, settle at a loss, repeat, forever under
-# both triggers with 'cycle ok'. Track equity (balance + held cost) vs the UTC-day start; a drop
-# beyond DAILY_LOSS_HALT_USD writes the STOP sentinel (maker-first flatten + halt until the
-# operator removes it). Completes the never-lose-more-than-the-rewards invariant's daily arm.
+# both triggers with 'cycle ok'. Equity (balance + held cost) is metered against TWO uninflatable
+# quotas — drawdown from the intraday high-water mark, and the cumulative sum of per-cycle equity
+# DECREASES — and the worse of them breaching DAILY_LOSS_HALT_USD writes the STOP sentinel
+# (maker-first flatten + halt until the operator removes it). Completes the daily arm of the
+# never-lose-more-than-the-rewards invariant.
+# WAS a drop from a FROZEN day-start, which INCOME inflated: reward credits raised equity while
+# the baseline stood still, so the room to lose grew all day (measured 07-23: $76.42 of effective
+# room against a $40 nominal quota, on an $85 account). See the meter in run_once.
 DAILY_LOSS_HALT_USD = _envf("KALSHI_DAILY_LOSS_HALT_USD", 20.0)
 # --- config-coherence clamps (review 07-22): foot-gun envs must not silently disable trading
 # or the gate ordering. LATE_LIFE_FRAC >= 1 would exclude every short-lived market entirely;
@@ -841,10 +846,18 @@ def run_once():
             # window. Rapid growth = adverse accumulation -> the whole book goes REDUCE-ONLY
             # below (only unwind quotes survive; accumulating quotes cancelled by the diff).
             # Self-releasing: reduce-only stops the growth, the window slides, the gate clears.
-            # DAILY LOSS KILL (treadmill guard): equity = cash + held cost basis, so SETTLED
+            # DAILY LOSS KILL (treadmill guard): equity = cash + held COST BASIS, so SETTLED
             # losses show up here even though held-$ returns to zero. Drop beyond the daily
             # budget -> write STOP (operator must clear it) + maker-first flatten NOW. Balance
             # read failure only skips this check (primary reads above remain fail-closed).
+            # COST BASIS, NOT MARK, DELIBERATELY (re-affirmed 2026-07-23): /portfolio/balance
+            # exposes portfolio_value (integer cents) as a venue mark, but whether it INCLUDES
+            # cash is unverified — read wrong it double-counts the balance and halves or doubles
+            # the meter, and the state freeze forbids probing the endpoint. Cost basis also keeps
+            # the meter noise-free: an entry moves cash down and cost up by the same amount, so
+            # only realized/settled moves tick it. KNOWN GAP: open (unrealized) losses stay
+            # invisible until settlement. That is a separate change needing a live probe of
+            # portfolio_value's semantics first — NOT fixed here.
             _equity = None
             try:
                 _equity = float(client.get_balance().get("balance_dollars") or 0) + held_cost
@@ -859,20 +872,53 @@ def run_once():
             else:
                 st["balance_fail_streak"] = 0
             if _equity is not None:
+                # DRAWDOWN, NOT DROP-FROM-DAY-START (defect fixed 2026-07-23). Measuring against
+                # a FROZEN day-start let INCOME inflate the quota: every reward credit raised the
+                # numerator while the baseline stood still, so the room to lose grew monotonically
+                # all day. Measured live 07-23: equity $99.76 vs day_start $63.34 => the halt only
+                # tripped at $23.34 — $76.42 of effective room against a nominal $40 quota (1.91x),
+                # i.e. 76% of an $85 account could evaporate first. Two meters now, both immune to
+                # income and to deposits, and the halt fires on the WORSE of them:
+                #   dd   = drawdown from the intraday HIGH-WATER MARK. A credit/deposit lifts the
+                #          peak by the same amount it lifts equity, so it buys ZERO extra room.
+                #   down = CUMULATIVE sum of per-cycle equity DECREASES. Up-moves are ignored
+                #          entirely, so no inflow can pay back a loss already taken (a deposit
+                #          resets 'dd' but can never reset 'down'). This is the treadmill arm.
+                # Peak seeds from equity_day_start so a PRE-fix state file migrates with the old
+                # drop-from-day-start behaviour intact as a FLOOR: the meter is >= the old one on
+                # every input, never weaker.
                 _day = now.strftime("%Y%m%d")
                 if st.get("equity_day") != _day:
                     st["equity_day"] = _day
                     st["equity_day_start"] = _equity
-                elif float(st.get("equity_day_start", _equity)) - _equity > DAILY_LOSS_HALT_USD:
-                    drop = float(st["equity_day_start"]) - _equity
-                    plan["daily_loss_halt"] = round(drop, 2)
-                    with open(STOP_FILE, "w") as fh:
-                        fh.write(f"auto daily-loss halt {now.isoformat()} drop=${drop:.2f} "
-                                 f"(equity ${_equity:.2f} vs day-start ${st['equity_day_start']:.2f})\n")
-                    print(f"WARNING DAILY LOSS HALT: equity down ${drop:.2f} today (> "
-                          f"${DAILY_LOSS_HALT_USD:.0f}) — STOP written, maker-flattening")
-                    _flatten_all(client)
-                    return 0
+                    st["equity_day_peak"] = _equity
+                    st["equity_day_down"] = 0.0
+                    st["equity_prev"] = _equity
+                else:
+                    _start = float(st.get("equity_day_start", _equity))
+                    _peak = max(float(st.get("equity_day_peak", _start)), _equity)
+                    _prev = float(st.get("equity_prev", _equity))
+                    _down = float(st.get("equity_day_down", 0.0)) + max(0.0, _prev - _equity)
+                    st["equity_day_peak"] = _peak
+                    st["equity_day_down"] = _down
+                    st["equity_prev"] = _equity
+                    _dd = _peak - _equity
+                    plan["daily_dd"] = round(_dd, 2)
+                    plan["daily_down"] = round(_down, 2)
+                    drop = max(_dd, _down)
+                    if drop > DAILY_LOSS_HALT_USD:
+                        plan["daily_loss_halt"] = round(drop, 2)
+                        with open(STOP_FILE, "w") as fh:
+                            fh.write(f"auto daily-loss halt {now.isoformat()} drop=${drop:.2f} "
+                                     f"(equity ${_equity:.2f} vs day-peak ${_peak:.2f}; "
+                                     f"dd ${_dd:.2f} / cumulative-down ${_down:.2f}; "
+                                     f"day-start ${_start:.2f})\n")
+                        print(f"WARNING DAILY LOSS HALT: equity down ${drop:.2f} today "
+                              f"(dd ${_dd:.2f} from peak ${_peak:.2f}, cumulative-down "
+                              f"${_down:.2f} > ${DAILY_LOSS_HALT_USD:.0f}) — STOP written, "
+                              f"maker-flattening")
+                        _flatten_all(client)
+                        return 0
             # RISK measure for the breakers = NAKED (unhedged) cost only. Gross held includes
             # floored ladder pairs whose real downside is the strike gap, and gating on those
             # pinned the bot in reduce-only over risk it does not carry (live 07-22).
@@ -898,7 +944,13 @@ def run_once():
         # keeps quoting (that reflex 'get it out now' was the fire-sale that realized losses).
         # ladder pairing: floored cross-strike pairs are ~riskless (see ladder_pairing) — every
         # de-risk mechanism below targets the NAKED remainder, never the paired quantity.
-        naked_by = ladder_pairing(held_by)
+        naked_by = ladder_pairing(held_by, plan)     # plan collects 'strike_parse_failed'
+        if plan.get("strike_parse_failed"):
+            # LOUD: held inventory whose strike would not parse can never be paired, so 100% of
+            # it stays naked with no error. Silent darkness here is indistinguishable from
+            # 'nothing to pair' — say it out loud, every cycle it is true.
+            print(f"WARNING strike parse FAILED on {plan['strike_parse_failed']} held ticker(s) — "
+                  f"that inventory cannot be ladder-paired (unpairable, counted naked)")
         # LIVE STRESS TEST of the ladder self-hedge (operator 07-22: stress it live rather than
         # re-review it). Every cycle, assert the invariants the pairing MUST satisfy against real
         # positions; any violation is loud + counted, so a wrong pairing surfaces immediately
@@ -961,6 +1013,15 @@ def run_once():
         # per-EVENT aggregate signed delta (post de-risk) — drives the throttle direction so
         # correlated nested strikes can't accumulate unbounded directional exposure.
         ev_delta = event_deltas(held_by)
+        # ...but ONLY across events proved to be additive threshold ladders. A categorical event
+        # is reported per-ticker instead (see event_deltas); count them so an un-nettable event
+        # in the book is visible rather than inferred.
+        _ev_groups = defaultdict(list)
+        for _t in held_by:
+            _ev_groups[_event_key(_t)].append(_t)
+        _nonladder = [k for k, ts in _ev_groups.items() if not _is_ladder_event(ts)]
+        if _nonladder:
+            plan["nonladder_events"] = len(_nonladder)
 
         desired = {}
         book_refs = {}                                  # ticker -> (best_yes, best_no) this cycle
@@ -1007,7 +1068,7 @@ def run_once():
             try:
                 q = desired_quotes(m, ob.get("yes_dollars") or [], ob.get("no_dollars") or [],
                                    now, own=own.get(t), inv=naked_by.get(t, 0.0),
-                                   event_delta=ev_delta.get(_event_key(t), 0.0), stats=qstats,
+                                   event_delta=event_delta_for(ev_delta, t), stats=qstats,
                                    cost=cost_by.get(t, 0.0))
             except Exception as e:
                 # isolate one degenerate market, but SURFACE it as quote_fail (a
@@ -1523,23 +1584,51 @@ def _held_cost(client):
     return total, by, costs
 
 
-def _strike_of(ticker):
+def _strike_of(ticker, stats=None):
     """Numeric strike from a ladder ticker: everything AFTER the SERIES-EVENT prefix, so a
     NEGATIVE strike keeps its sign ('KXCPI-26SEP-T-0.4' -> -0.4, verified live on the public
     API). Taking only the last dash-field silently returned +0.4 there — and a sign flip inverts
     strike ordering, which would let ladder_pairing mark a genuinely UNFLOORED combo as paired
     and strip every guard from it (review 07-22; sub-zero-F winter temp strikes are the live
-    exposure). None when unparseable -> that ticker never participates in pairing."""
-    try:
-        parts = ticker.split("-")
-        if len(parts) < 3:
-            return None
-        return float("-".join(parts[2:]).lstrip("T"))
-    except (ValueError, AttributeError, TypeError):
+    exposure). None when unparseable -> that ticker never participates in pairing.
+
+    REAL TICKER SHAPES (parsing fix 2026-07-23):
+      KXAAAGASD-26JUL22-4.055       3 fields, bare strike
+      KXTEMPNYCH-26JUL2117-T81.99   'T'-prefixed strike
+      KXCPI-26SEP-T-0.4             'T'-prefixed NEGATIVE strike (the sign MUST survive)
+      KXAAAGASM-25MAR31-US-4.00     LEGACY 4-part, region-qualified. float('US-4.00') raised,
+                                    so this returned None and ladder_pairing went DARK
+                                    SILENTLY — 100% of that inventory read as unpairable with
+                                    no error anywhere. Latent today (gas dropped the '-US'
+                                    suffix); it re-arms the moment Kalshi restores it.
+    Leading PURELY-ALPHABETIC qualifier fields are dropped — never the LAST field (that is a
+    categorical outcome, not a qualifier) and never a bare 'T' (that is the strike prefix, and
+    eating it would flip the sign of 'T-0.4').
+
+    CATEGORICAL strikes ('-HELLO', '-LAL') still return None BY DESIGN: they are not thresholds,
+    must never be ordered, and must never be paired. That is not an error — but it IS invisible,
+    so every failure bumps stats['strike_parse_failed'] when a stats dict is supplied. Without
+    the counter a fully dark pairing pass is indistinguishable from 'no pairs were available'."""
+    def _fail():
+        if stats is not None:
+            stats["strike_parse_failed"] = stats.get("strike_parse_failed", 0) + 1
         return None
+    try:
+        fields = ticker.split("-")
+    except (AttributeError, TypeError):
+        return _fail()
+    if len(fields) < 3:
+        return _fail()
+    fields = fields[2:]
+    while len(fields) > 1 and fields[0].isalpha() and fields[0] != "T":
+        fields.pop(0)                      # 'US' in KXAAAGASM-25MAR31-US-4.00
+    try:
+        return float("-".join(fields).lstrip("T"))
+    except (ValueError, TypeError):
+        return _fail()
 
 
-def ladder_pairing(held_by):
+def ladder_pairing(held_by, stats=None):
     """LADDER SELF-HEDGE (operator directive 2026-07-22): within one 'above X' event, long-YES
     on a LOWER strike + long-NO on a HIGHER strike is a FLOORED pair — outcome <= low strike
     pays the NO, outcome > high strike pays the YES, in between BOTH pay: settlement returns
@@ -1550,12 +1639,19 @@ def ladder_pairing(held_by):
     offsets — unwinding both legs of a floored pair pays two spreads to shed penny risk.
     (The opposite-direction combo — yes on the HIGHER strike, no on the LOWER — has NO floor
     and is deliberately never matched.) Pairing conserves the event's signed sum, so
-    event_deltas is unchanged either way."""
+    event_deltas is unchanged either way.
+
+    stats (optional dict): receives 'strike_parse_failed' — the count of HELD tickers whose
+    strike would not parse, i.e. inventory this pass could not even consider for pairing. A
+    non-zero count on a book that expects to pair means the pairing is DARK; run_once surfaces
+    it in the plan row. Tickers with zero position are not counted (nothing went dark)."""
     naked = dict(held_by)
     by_event = defaultdict(list)
     for t, n in (held_by or {}).items():
-        s = _strike_of(t)
-        if s is not None and n:
+        if not n:
+            continue
+        s = _strike_of(t, stats)
+        if s is not None:
             by_event[_event_key(t)].append((s, t))
     for rows in by_event.values():
         pos = sorted((s, t) for s, t in rows if naked.get(t, 0) > 0)            # longs, low first
@@ -1576,15 +1672,64 @@ def ladder_pairing(held_by):
     return naked
 
 
+def _is_ladder_event(tickers):
+    """TRUE only when the tickers of ONE event form a provable ADDITIVE THRESHOLD LADDER:
+    every one of them parses to a numeric strike, and those strikes are DISTINCT (a threshold
+    ladder has exactly one contract per threshold — a duplicate proves the strike field is not
+    the discriminator, so the event is something else). Fail SAFE: unprovable => not a ladder.
+
+    Canon §T: reward accrues per CONTRACT, risk accrues per EVENT, and the event aggregate is
+    the true directional risk ONLY for an 'above X' ladder, where the strikes are directionally
+    correlated and adjacent ones partly offset. A CATEGORICAL series (independent word-binaries,
+    mutually_exclusive:false, strike_type:custom) or a bucket/range series fails this test:
+    its strikes are independent or ANTI-correlated, and netting them is not conservative, it is
+    wrong in the dangerous direction. This is the structural reason categorical series are
+    unsafe to admit — it no longer depends on allowlist hygiene."""
+    strikes = []
+    for t in tickers:
+        s = _strike_of(t)
+        if s is None:
+            return False
+        strikes.append(s)
+    return len(set(strikes)) == len(strikes)
+
+
 def event_deltas(held_by):
-    """Aggregate SIGNED net position across the strikes of each event. Kalshi ticker =
-    SERIES-EVENT-STRIKE; strikes of one nested-threshold ladder ('above X') are
-    DIRECTIONALLY correlated, so the event aggregate — not the per-ticker position — is the
-    true directional exposure. Returns {event_key: signed_delta}."""
+    """Aggregate SIGNED net position across the strikes of each event — but ONLY where the
+    event is a PROVABLE additive threshold ladder (_is_ladder_event). Kalshi ticker =
+    SERIES-EVENT-STRIKE; strikes of one nested-threshold ladder ('above X') are DIRECTIONALLY
+    correlated, so the event aggregate — not the per-ticker position — is the true directional
+    exposure.
+
+    DEFECT FIXED 2026-07-23: the old version bucketed EVERY ticker by '-'.join(split('-')[:2])
+    with no additivity test. On a categorical series that collapses N INDEPENDENT risks into one
+    key, so long 20 of one word-binary + short 20 of another netted to ZERO and the event read
+    FLAT while two live naked exposures were carried. ladder_pairing already abstains safely on
+    non-numeric strikes (_strike_of -> None); this is the equivalent guard for the aggregate.
+
+    Returns {risk_key: signed_delta}. risk_key is the EVENT key for a proven ladder and the
+    TICKER ITSELF otherwise (independent risks are reported independently, never netted). Look a
+    ticker up with event_delta_for() — a bare ev[_event_key(t)] index silently reads 0.0 on a
+    categorical event, which is exactly the failure this fix removes."""
+    groups = defaultdict(list)
+    for t in (held_by or {}):
+        groups[_event_key(t)].append(t)
     ev = defaultdict(float)
-    for t, n in (held_by or {}).items():
-        ev["-".join(t.split("-")[:2])] += n
+    for k, tickers in groups.items():
+        ladder = _is_ladder_event(tickers)
+        for t in tickers:
+            ev[k if ladder else t] += held_by[t]
     return dict(ev)
+
+
+def event_delta_for(ev_delta, ticker):
+    """Resolve one ticker's directional delta out of an event_deltas() result. TICKER key FIRST
+    (an unprovable/categorical event is keyed per ticker, and an independent risk must never
+    inherit its siblings' net), then the EVENT key (proven ladder — this is how a FLAT strike
+    inside a directional ladder still gets throttled), then 0.0."""
+    if ticker in ev_delta:
+        return ev_delta[ticker]
+    return ev_delta.get(_event_key(ticker), 0.0)
 
 
 def _event_key(ticker):

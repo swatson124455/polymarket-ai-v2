@@ -1285,7 +1285,9 @@ def test_ladder_invariants_flagged_live(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
     monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
-    monkeypatch.setattr(q, "ladder_pairing", lambda h: {t: -v for t, v in h.items()})  # sign flip
+    # stub must accept the optional stats arg added 2026-07-23 (ladder_pairing(held, stats=None))
+    monkeypatch.setattr(q, "ladder_pairing",
+                        lambda h, stats=None: {t: -v for t, v in h.items()})           # sign flip
     c = MockClient(mode="live", resting=[], positions=[
         {"ticker": "KXAAAGASD-26JUL23-4.090", "position_fp": "10", "market_exposure_dollars": "8.30"}])
     row = _run(monkeypatch, c, str(tmp_path))
@@ -1377,3 +1379,165 @@ def test_mirror_symmetry_event_delta_and_reduce_only(monkeypatch, tmp_path):
     rev = q.ladder_pairing({lo: -10.0, hi: 10.0})     # NOT floored -> untouched
     assert all(v == 0 for v in fwd.values())
     assert rev == {lo: -10.0, hi: 10.0}
+
+
+# ============ 2026-07-23 defect fixes: Q1 categorical netting, Q2 strike parse, Q3 loss meter ====
+
+class _BalClient(MockClient):
+    """MockClient with a settable cash balance (the daily-loss meter's numerator)."""
+    def __init__(self, bal, **kw):
+        super().__init__(**kw)
+        self._bal = float(bal)
+    def get_balance(self):
+        return {"balance_dollars": f"{self._bal:.4f}"}
+
+
+# ---- Q1: event_deltas must NOT net independent (categorical) risks ----
+_CAT = {"KXWORDLE-26JUL23-HELLO": 20.0, "KXWORDLE-26JUL23-WORLD": -20.0}
+
+def test_event_deltas_does_not_net_categorical_event():
+    # PIN: a categorical series (independent word-binaries, strike_type custom) holds N
+    # INDEPENDENT risks. Netting +20 of one against -20 of another reported FLAT while two
+    # naked exposures were live. Pre-fix: {"KXWORDLE-26JUL23": 0.0}.
+    ed = q.event_deltas(_CAT)
+    assert 0.0 not in ed.values()                    # nothing may read FLAT while inventory is live
+    assert q.event_delta_for(ed, "KXWORDLE-26JUL23-HELLO") == 20.0
+    assert q.event_delta_for(ed, "KXWORDLE-26JUL23-WORLD") == -20.0
+
+def test_event_deltas_still_nets_a_proven_threshold_ladder():
+    # counter-pin: a genuine additive ladder MUST still aggregate (that is the whole point of
+    # the signal) — the guard must not degrade every event to per-ticker.
+    held = {"KXTEMPNYCH-26JUL2014-T81": 12.0, "KXTEMPNYCH-26JUL2014-T83": 18.0,
+            "KXTEMPNYCH-26JUL2014-T85": 20.0}
+    ed = q.event_deltas(held)
+    assert ed == {"KXTEMPNYCH-26JUL2014": 50.0}
+    assert q.event_delta_for(ed, "KXTEMPNYCH-26JUL2014-T81") == 50.0
+    # a FLAT sibling strike inside the same proven ladder still inherits the aggregate
+    assert q.event_delta_for(ed, "KXTEMPNYCH-26JUL2014-T99") == 50.0
+
+def test_is_ladder_event_requires_numeric_and_distinct_strikes():
+    assert q._is_ladder_event(["KXAAAGASD-26JUL23-4.050", "KXAAAGASD-26JUL23-4.060"])
+    assert not q._is_ladder_event(["KXWORDLE-26JUL23-HELLO", "KXWORDLE-26JUL23-WORLD"])
+    # ONE non-numeric member poisons the event: mixed => not provably additive => no netting
+    assert not q._is_ladder_event(["KXAAAGASD-26JUL23-4.050", "KXAAAGASD-26JUL23-LATE"])
+    # duplicate strikes => 'strike' is not the discriminator => not a ladder
+    assert not q._is_ladder_event(["KXX-26JUL23-4.050", "KXX-26JUL23-4.050"])
+
+def test_categorical_inventory_is_flagged_in_the_plan_row(monkeypatch, tmp_path):
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    c = MockClient(mode="live", resting=[], positions=[
+        {"ticker": "KXWORDLE-26JUL23-HELLO", "position_fp": "20", "market_exposure_dollars": "10.00"},
+        {"ticker": "KXWORDLE-26JUL23-WORLD", "position_fp": "-20", "market_exposure_dollars": "10.00"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("nonladder_events") == 1          # un-nettable event visible in telemetry
+    assert row.get("strike_parse_failed") == 2       # and the unpairable inventory is LOUD
+
+
+# ---- Q2: _strike_of must parse the real ticker shapes, and fail LOUDLY ----
+def test_strike_of_parses_legacy_region_qualified_ticker():
+    # PIN: legacy 4-part gas ticker. Pre-fix float("US-4.00") raised -> None -> ladder pairing
+    # went DARK SILENTLY on 100% of that inventory.
+    assert q._strike_of("KXAAAGASM-25MAR31-US-4.00") == 4.00
+    assert q._strike_of("KXAAAGASM-25MAR31-US-T-1.50") == -1.50   # qualifier + signed T-strike
+    # regressions (pass on BOTH builds — regression guards, not pins):
+    assert q._strike_of("KXCPI-26SEP-T-0.4") == -0.4              # sign must survive
+    assert q._strike_of("KXAAAGASD-26JUL22-4.055") == 4.055
+    # categorical strikes must STAY None (never force a numeric reading)
+    assert q._strike_of("KXWORDLE-26JUL23-HELLO") is None
+    assert q._strike_of("KXNBAFINALS-26-LAL") is None
+
+def test_ladder_pairing_works_on_legacy_region_qualified_tickers():
+    # PIN: +low / -high on the legacy shape is a FLOORED pair and must pair to zero.
+    held = {"KXAAAGASM-25MAR31-US-4.00": 10.0, "KXAAAGASM-25MAR31-US-4.50": -10.0}
+    assert all(v == 0 for v in q.ladder_pairing(held).values())
+
+def test_strike_parse_failure_is_counted_not_silent():
+    # PIN: the counter is the ONLY way a fully-dark pairing pass is distinguishable from
+    # "no pairs were available".
+    stats = {}
+    naked = q.ladder_pairing({"KXWORDLE-26JUL23-HELLO": 5.0,
+                              "KXAAAGASD-26JUL23-4.050": 5.0}, stats)
+    assert stats.get("strike_parse_failed") == 1     # only the categorical one
+    assert naked["KXWORDLE-26JUL23-HELLO"] == 5.0    # and it stays fully naked, by design
+    # zero-position tickers are not counted (no inventory => nothing went dark)
+    stats2 = {}
+    q.ladder_pairing({"KXWORDLE-26JUL23-HELLO": 0.0}, stats2)
+    assert stats2 == {}
+
+
+# ---- Q3: the daily-loss quota must measure an UNINFLATABLE drawdown ----
+def _q3cfg(monkeypatch):
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9)
+    monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 20.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "STOP_ESCALATE_S", 0)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [], "next_cursor": ""}
+                        if "incentive" in p else
+                        {"orderbook_fp": {"yes_dollars": [["0.50", "9999"]], "no_dollars": [["0.49", "9999"]]}})
+
+def test_daily_loss_measures_drawdown_from_intraday_high_water_mark(monkeypatch, tmp_path):
+    # PIN (defect a): reward credits inflated the numerator while day-start stayed FROZEN, so
+    # room grew monotonically all day. Measured live: equity 99.76 vs day_start 63.34 => the
+    # halt only tripped at 23.34 on an $85 account. Post-fix the quota is a DRAWDOWN.
+    _q3cfg(monkeypatch)
+    d = str(tmp_path)
+    assert _run(monkeypatch, _BalClient(100.0, mode="live"), d).get("daily_loss_halt") is None
+    assert _run(monkeypatch, _BalClient(150.0, mode="live"), d).get("daily_loss_halt") is None
+    row = _run(monkeypatch, _BalClient(125.0, mode="live"), d)
+    # pre-fix: day_start=100, equity=125 -> "up $25" -> NO halt, with $45 of extra room banked.
+    assert row.get("daily_loss_halt") == 25.0
+    assert os.path.exists(os.path.join(d, "STOP"))
+
+def test_daily_loss_cumulative_downticks_survive_a_deposit(monkeypatch, tmp_path):
+    # PIN (defect c): a mid-day deposit used to add room 1:1 (and, under a naive high-water
+    # mark alone, would also FORGIVE the drawdown already taken). The cumulative adverse-move
+    # meter only ever counts DOWN moves, so income and deposits cannot pay it back.
+    _q3cfg(monkeypatch)
+    d = str(tmp_path)
+    assert _run(monkeypatch, _BalClient(100.0, mode="live"), d).get("daily_loss_halt") is None
+    assert _run(monkeypatch, _BalClient(85.0, mode="live"), d).get("daily_loss_halt") is None   # -15
+    assert _run(monkeypatch, _BalClient(200.0, mode="live"), d).get("daily_loss_halt") is None  # deposit
+    row = _run(monkeypatch, _BalClient(190.0, mode="live"), d)                                  # -10
+    assert row.get("daily_loss_halt") == 25.0        # 15 + 10, NOT reset by the +115 inflow
+    assert row.get("daily_down") == 25.0 and row.get("daily_dd") == 10.0
+
+def test_daily_loss_legacy_state_file_still_halts_on_day_start_drop(monkeypatch, tmp_path):
+    # migration guard: a state file written by the PRE-fix build has no peak/prev keys. The peak
+    # must seed from equity_day_start so the old drop-from-day-start behaviour is a FLOOR, never
+    # weaker. (Passes on both builds by construction — a compatibility guard, not a pin.)
+    _q3cfg(monkeypatch)
+    d = str(tmp_path)
+    with open(os.path.join(d, "quoter_state.json"), "w") as f:
+        json.dump({"equity_day": q.utcnow().strftime("%Y%m%d"), "equity_day_start": 150.0}, f)
+    row = _run(monkeypatch, _BalClient(100.0, mode="live"), d)
+    assert row.get("daily_loss_halt") == 50.0
+
+
+# ---- findings NOT fixed here (design changes needing their own review) ----
+@pytest.mark.xfail(strict=True, reason="FINDING 1: a floored pair's real downside is the STRIKE "
+                                       "GAP x contracts, and naked_held_cost reports it as $0 — "
+                                       "a wide-gap pair carries real risk no breaker can see")
+def test_finding_paired_downside_invisible_to_naked_held_cost():
+    lo, hi = "KXAAAGASD-26JUL23-4.00", "KXAAAGASD-26JUL23-6.00"      # $2.00 strike gap
+    held = {lo: 10.0, hi: -10.0}
+    cost = {lo: 0.60, hi: 0.55}
+    assert q.naked_held_cost(held, cost) >= 10 * 2.00
+
+@pytest.mark.xfail(strict=True, reason="FINDING 2: a fully MATCHED pair on a ticker whose program "
+                                       "has expired (dropped from the footprint) has naked=0, so "
+                                       "the strand-unwind and the settle-taker both skip it — no "
+                                       "exit path exists if the legs stop being jointly exitable")
+def test_finding_no_exit_path_for_matched_pair_off_footprint(monkeypatch, tmp_path):
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])       # program expired
+    c = MockClient(mode="live", resting=[], positions=[
+        {"ticker": "KXAAAGASD-26JUL23-4.00", "position_fp": "10", "market_exposure_dollars": "6.00"},
+        {"ticker": "KXAAAGASD-26JUL23-6.00", "position_fp": "-10", "market_exposure_dollars": "5.50"}])
+    _run(monkeypatch, c, str(tmp_path))
+    assert c.created, "no exit order was emitted for the stranded matched pair"
