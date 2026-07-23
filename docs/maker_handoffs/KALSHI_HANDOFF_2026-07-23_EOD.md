@@ -118,10 +118,11 @@ net-of-full-rewards stays materially negative; else hold or reversibly size down
 ### RUNNING (still not returned as of 18:25Z): `wef4ikfcf` — CAPITAL-ACCOUNTING ROOT-FIX
 Launched ~18:12Z, **still running at handoff close.** Designing the fix for the gross-vs-net
 committed bug (§1 treadmill). Will write `KALSHI_CAPITAL_ACCOUNTING_ROOTFIX_2026-07-23.md`.
-**NEXT SESSION: check `/workflows` or `TaskOutput wef4ikfcf` FIRST — if that file exists, read it;
-if the dive was killed by the session ending, resume it (`Workflow scriptPath` +
-`resumeFromRunId: wf_60f6f8d2-5e0`, script at
-`…/workflows/scripts/kalshi-capital-accounting-rootfix-wf_60f6f8d2-5e0.js`).**
+**NEXT SESSION — how to not lose it (resume is SAME-SESSION ONLY, so cross-session you RE-RUN):**
+1. First check if it finished in THIS session: does `docs/maker_handoffs/KALSHI_CAPITAL_ACCOUNTING_ROOTFIX_2026-07-23.md` exist? If yes, read it — done, nothing to run.
+2. If not, RE-RUN the committed script (a new session cannot `resumeFromRunId` across the boundary and has no cache — it re-runs fresh, ~30–60 min):
+   `Workflow({ scriptPath: "docs/maker_handoffs/workflow_scripts/kalshi-capital-accounting-rootfix-wf_60f6f8d2-5e0.js" })`
+   All 6 dive scripts are committed under `docs/maker_handoffs/workflow_scripts/` so ANY of them can be re-run for reference.
 Key question it answers: what does Kalshi ACTUALLY reserve (measured from balance deltas, not the
 retracted "4.3× netting" folklore), and should the real limit be net-capital + a PER-EVENT cap
 rather than the global gross knob. The machinery (`ladder_pairing`, `naked_held_cost`) already
