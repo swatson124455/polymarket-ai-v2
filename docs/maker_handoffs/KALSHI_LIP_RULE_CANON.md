@@ -730,6 +730,72 @@ remains the open question; a coverage win is not automatically a reward win.
   freeze file as the deliberate non-exception. Every other value identical. No STOP sentinel.
   **The freeze held; the single change was predicted and recorded in advance.**
 
+### §M13 — ⚠⚠ CORRECTION TO §M8. MY FRAMING WAS WRONG ON TWO COUNTS (operator challenge, 2026-07-23)
+
+Operator: *"most of the loss was you being a dumbass... when you stopped losing money on bugs and
+fuck ups we killed it."* **Tested, and substantially CORRECT.** §M8's headline
+(**"NET −$54.78, the bot is net negative"**) is withdrawn as a characterisation. The arithmetic was
+right; the framing around it was not.
+
+#### ERROR 1 — I pooled a one-time emergency unwind into a steady-state verdict
+On our series maker fills are fee-free (§M10), so **any fee-bearing row is a TAKER trade** — a
+forced exit, not the strategy. That gives a clean, objective split:
+
+| | n | P&L |
+|---|---|---|
+| **TAKER-touched** | 69 | **−39.11** ← 49% of the entire loss |
+| pure MAKER | 175 | −40.88 |
+| of which: **07-20 20:3x mass IOC flatten** (operator-directed emergency unwind) | 45 | **−33.09** |
+
+| date | n | ALL | maker-only | **taker-touched** |
+|---|---|---|---|---|
+| 2026-07-20 | 85 | −44.13 | −5.02 | **−39.11** |
+| 2026-07-21 | 13 | −11.65 | −11.65 | **0.00** |
+| 2026-07-22 | 146 | −24.22 | −24.22 | **0.00** |
+
+**Every single taker trade in the entire export is on 07-20, and −$33.09 of it is one 4-minute
+operator-directed IOC flatten.** Since `TAKER_FLATTEN=0` there have been **zero** taker trades.
+07-20 also predates the delta-neutral rebuild and contains the documented $21 go-live error.
+Carrying it into a headline "the bot is net negative" is exactly the kind of pooled-sample framing
+the concentration rule (Protocol 14) exists to stop. **The operator's objection is correct.**
+
+#### ERROR 2 — I matched trading days against credit days. CREDITS LAG BY A TIME PERIOD.
+R1 says payout happens **once per Time Period**, at its end. The posting timestamps prove it:
+
+```
+credits posted 07-21T01:36/02:50  -> pay for KXAAAGASD-26JUL21 and KXTEMPAUSH-26JUL2021
+credits posted 07-22T02:29/02:58  -> pay for KXTEMPDCH/CHIH-26JUL2123
+```
+Credits post **after the period closes**, not on the day the quoting happened. So §M8 compared
+**3 days of trading against 2 days of credits** — and the operator's screenshots show a further
+**~$42 posting on 07-23** that the export does not contain at all. That is a real accounting
+error on my part, and it biases the result **pessimistic**.
+
+⚠ **It also biases the GAS/TEMP split — against gas.** Period lengths differ enormously:
+temp ≈1h (credits post within hours, fully captured), gas-daily 13.15h (captured), **gas-weekly
+156.08h, ending 2026-07-27T03:59Z — NOT YET CLOSED, so every dollar of GASW quoting is
+UNCREDITED in this export.** GASW shows 7 trades / −$0.36 with $0.00 of credit income purely
+because its period has not ended.
+
+#### WHAT STILL STANDS, AND WHAT DOES NOT
+- ❌ **WITHDRAWN:** "the bot is net negative / not killing it" as a characterisation of current
+  operation. It described a window dominated by a one-off emergency unwind and an incomplete
+  credit ledger.
+- ✅ **STANDS, and is actually STRENGTHENED:** temp bleeds far worse than gas. The lag bias runs
+  *against* gas (gas-weekly credits missing entirely, temp credits fully posted), so the true
+  gas-vs-temp gap is **wider** than §M8's +1.1% / −9.2%, not narrower.
+- ✅ **STANDS:** the adverse-selection signature in temp (positions carried into resolution
+  expiring worthless) — that is within-window and unaffected by credit timing.
+- ⚠ **UNRESOLVED:** the post-fix steady state. Maker-only P&L by day is −5.02 / −11.65 / −24.22,
+  but trade counts are 85 / 13 / 146 and the offsetting credits for 07-22 land on 07-23+. **The
+  honest position is that the post-07-20 window cannot be scored until a CSV export containing
+  07-23 (and ideally 07-27, when GASW's period closes) exists.**
+
+#### THE MEASUREMENT THAT SETTLES IT
+**Re-export the transaction CSV after 2026-07-27T04:00Z.** That is the first moment at which every
+Time Period covering our 07-21→07-23 quoting has closed and been credited — gas-weekly included.
+Until then, any net figure is a partial ledger, and I should not have presented one as a verdict.
+
 ### §M3 — code-vs-rulebook conformance check
 
 | rule clause (S1) | implementation | verdict |
