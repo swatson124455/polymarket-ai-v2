@@ -488,6 +488,84 @@ NOTE the quoter's loss meter uses `balance + held COST BASIS`
 That is a different quantity from the venue's market-value `portfolio_value`. Both defensible —
 but do not treat them as the same number.
 
+### §M8 — GROUND TRUTH FROM THE FULL TRANSACTION EXPORT. **THE ANSWER IS NARROW, NOT WIDEN.**
+
+Operator supplied the complete Kalshi transaction export (`Kalshi-Transactions-2026.csv`, copied
+to `kalshi_live/kalshi_transactions_2026-07-23.csv`). 254 rows: 244 `trade`, 10 `credit`.
+This is **RECEIPT-GRADE and complete for its window** — it supersedes every modelled figure and
+the entire `rewards_residual` apparatus.
+
+#### WHOLE FILE (trades 07-20..22, credits 07-21..22)
+```
+trading P&L before fees   -77.4108
+fees paid                  -2.5823
+trading P&L after fees    -79.9931
+LIP credits               +25.2100
+------------------------------------
+NET                       -54.7831      credits cover 0.32x of the bleed
+```
+
+#### ⚠ "THE BOT IS KILLING IT" — **NOT SUPPORTED. The bot is net negative.**
+Per day (`close_timestamp`): 07-20 **−$44.13** (0 credits) · 07-21 **+$6.98** (the one positive
+day) · 07-22 **−$17.64**. 07-20 predates the delta-neutral fixes and contains the documented
+$21 go-live error, so it is not representative — but even excluding it the window is negative.
+
+#### THE DECOMPOSITION THAT MATTERS — like-for-like 07-21..22 (both trades AND credits present)
+Credits carry an **EMPTY** `market_ticker` in the CSV, so family attribution comes from the
+operator's UI screenshots. **Cross-check: screenshot-attributed total $25.21 == CSV credit total
+$25.21, exact.** That validates the attribution.
+
+| family | trades | trading P&L | credits | **NET** | notional | **net % of notional** |
+|---|---|---|---|---|---|---|
+| **GAS** (`KXAAAGAS*`) | 99 | **+0.25** | +2.15 | **+2.40** | 214.85 | **+1.1%** ✅ |
+| **TEMP** (`KXTEMP*`) | 60 | **−36.12** | +23.06 | **−13.06** | 142.67 | **−9.2%** ❌ |
+| TOTAL | 159 | −35.86 | +25.21 | −10.65 | | rewards cover 0.70x |
+
+**GAS IS PROFITABLE. TEMP IS NOT, AND TEMP IS THE ENTIRE LOSS.**
+Temp earns the *biggest* credits ($23.06 of $25.21 = 91% of all reward income) and still loses
+money, because its trading bleed is 2.6× its credit income.
+
+Bleed efficiency over the whole file: GAS 130 trades, −$5.28 on $268.28 notional = **−1.97%**.
+TEMP 114 trades, −$74.71 on $233.83 notional = **−31.95%**. **Temp bleeds ~16× worse per dollar
+of notional.**
+
+#### WHY — the worst trades are the adverse-selection signature, and they are all temp
+```
+-7.23  KXTEMPCHIH-26JUL2212-T69.99  yes  11.85 ct  0.61 -> 0.00
+-7.20  KXTEMPLAXH-26JUL2212-T71.99  yes  15.00 ct  0.48 -> 0.00
+-5.61  KXTEMPDCH-26JUL2123-T73.99   yes  11.00 ct  0.66 -> 0.15
+-5.16  KXTEMPDCH-26JUL2021-T79.99   no   19.00 ct  0.29 -> 0.02
+-4.70  KXTEMPCHIH-26JUL2123-T70.99  yes  10.00 ct  0.70 -> 0.23
+```
+Positions carried into resolution and expiring worthless. Hourly temp markets resolve fast against
+one-way informed flow — **this is the FIGHTMENTION settlement-trap shape occurring inside our own
+allowlist**, in the series the running tab §C ranks #1.
+
+#### ⚠⚠ THIS INVERTS THE SECTOR HIERARCHY (running tab §C)
+§C ranks `weather_temp` **#1 at 14.65 NET/cap/day, ~30× the next sector** — a MODEL estimate.
+Receipts say temp is the only thing losing money and gas is the only thing making it.
+**Where model and receipts disagree, receipts win.** §C's temp ranking is not safe to act on.
+
+#### CONSEQUENCE FOR THE WIDENING QUESTION
+The operator asked how to open scope. **The measured answer is the opposite: the first move is to
+NARROW** — the profitable slice is gas, and temp is subtracting from it. Widening into more
+series while a known-losing series stays enabled just adds variance on top of a negative base.
+Sequence: fix/□drop temp → confirm gas-only is net positive over a real window → then widen.
+
+**BLOCKED BY THE FREEZE — this is a PROPOSAL, not a change.** Dropping `KXTEMP*` from
+`KALSHI_SERIES_ALLOW` is a Tier-2 trade-universe change and needs operator authorisation.
+
+#### CAVEATS (do not drop these when quoting the above)
+- **The export ENDS 07-22.** 07-23 is absent, yet the screenshots show 07-23 was a large credit
+  day (~$42 visible, incl. a single $12.94). The trend may be materially better than this window.
+  **Re-export after 07-23 closes before treating the verdict as final.**
+- n = 159 trades over 2 days. Small, and it spans config changes (deposit, cap 65→85, naked-risk
+  fix). Not a clean experiment.
+- Credit attribution to family relies on screenshots; only the TOTAL is CSV-verified (exactly).
+- Temp was quoted during the hours it was *available*; gas runs longer windows. Some of the
+  difference is exposure profile, not pure edge.
+- `-9.2%` and `+1.1%` are net-of-notional over one window, not annualised anything.
+
 ### §M3 — code-vs-rulebook conformance check
 
 | rule clause (S1) | implementation | verdict |
