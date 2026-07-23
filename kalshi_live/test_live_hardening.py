@@ -799,6 +799,10 @@ def test_unwind_price_loss_capped(monkeypatch):
 
 
 def test_velocity_breaker_reduce_only(monkeypatch, tmp_path):
+    # pins the TAP-OUT behaviour (KEEP_BOTH off): reduce-only drops the accumulating side
+    # entirely. The default-on two-sided variant is covered by
+    # test_reduce_only_keeps_market_two_sided.
+    monkeypatch.setattr(q, "REDUCE_ONLY_KEEP_BOTH", False)
     # 2026-07-22 loss: held $0->$28 in 3 'cycle ok' cycles. Rapid held-$ growth must flip the
     # book to REDUCE-ONLY: accumulating creates dropped, unwind still placed, plan flagged.
     import time as _time
@@ -831,6 +835,10 @@ def test_velocity_breaker_reduce_only(monkeypatch, tmp_path):
 
 
 def test_held_ceiling_level_trigger(monkeypatch, tmp_path):
+    # pins the TAP-OUT behaviour (KEEP_BOTH off): reduce-only drops the accumulating side
+    # entirely. The default-on two-sided variant is covered by
+    # test_reduce_only_keeps_market_two_sided.
+    monkeypatch.setattr(q, "REDUCE_ONLY_KEEP_BOTH", False)
     # Operator invariant ("never lose more than the reward"): total unpaired held-$ above
     # HELD_MAX_USD flips reduce-only even with ZERO growth (flat history) — a LEVEL lid on the
     # only uncapped loss channel (settlement risk), sized to ~one day's measured rewards.
@@ -1283,3 +1291,36 @@ def test_ladder_invariants_flagged_live(monkeypatch, tmp_path, capsys):
     row = _run(monkeypatch, c, str(tmp_path))
     assert row.get("ladder_violation", 0) >= 1
     assert "LADDER INVARIANT VIOLATED" in capsys.readouterr().out
+
+
+def test_reduce_only_keeps_market_two_sided(monkeypatch, tmp_path):
+    # CFTC Feb-2026: a snapshot with one-sided liquidity is EXCLUDED -> $0 rewards, including on
+    # the exit quote. Reduce-only used to drop the accumulating side entirely, making us
+    # one-sided exactly while the guard was engaged (observed live 07-23: 3/3 markets earning $0).
+    # Plug-in ON: keep both sides, accumulating shrunk to the floor. OFF: exact old behaviour.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0); monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 5.0)      # force the breaker on
+    monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    pos = [{"ticker": "T1", "position_fp": "20", "market_exposure_dollars": "12.00"}]
+
+    monkeypatch.setattr(q, "REDUCE_ONLY_KEEP_BOTH", True)
+    c = MockClient(mode="live", resting=[], positions=list(pos))
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("breaker_reduce_only") == 1
+    assert row.get("two_sided_markets") == 1 and row.get("one_sided_markets") == 0
+    sides = {o["side"] for o in c.created}
+    assert sides == {"yes", "no"}                                  # market still qualifies
+    acc = [o for o in c.created if o["side"] == "yes"]
+    assert acc and acc[0]["count"] == 2                            # floor size only
+
+    # TAP OUT -> byte-identical old behaviour: accumulating side dropped, one-sided
+    monkeypatch.setattr(q, "REDUCE_ONLY_KEEP_BOTH", False)
+    c2 = MockClient(mode="live", resting=[], positions=list(pos))
+    row2 = _run(monkeypatch, c2, str(tmp_path))
+    assert row2.get("breaker_reduce_only") == 1
+    assert {o["side"] for o in c2.created} == {"no"}                # exit quote only
+    assert row2.get("one_sided_markets") == 1

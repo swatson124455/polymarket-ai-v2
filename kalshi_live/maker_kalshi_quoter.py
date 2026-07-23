@@ -130,6 +130,17 @@ THROTTLE_STEP_TICKS = _envi("KALSHI_THROTTLE_STEP_TICKS", 1)
 # placement the live A/B measured as ~tripling naked-inventory build. The reward gain is
 # measured; the risk cost of THIS narrower version is NOT. Enable only to run that test.
 THROTTLE_SMART = os.environ.get("KALSHI_THROTTLE_SMART") == "1"
+# --- REDUCE-ONLY KEEPS BOTH SIDES (plug-in; instant off via env, no deploy needed) ---
+# The CFTC Feb-2026 amendment EXCLUDES any snapshot without two-sided qualifying liquidity. The
+# breaker's reduce-only mode drops the accumulating side, which makes us ONE-SIDED — so while
+# the guard is engaged we earn exactly $0, including on the exit quote that is still resting.
+# Observed live 07-23: all 3 markets one-sided during reduce-only, and the bot flips in and out
+# of that state every few minutes, so a large share of the day earns nothing.
+# With this ON the accumulating side is kept but SHRUNK TO THE FLOOR (MIN_QUOTE_CT) instead of
+# pulled: the market stays qualifying (both quotes earn) while added risk is ~10x smaller than a
+# normal join. NOT zero added risk — a floor quote can still fill; that is the trade.
+# TAP OUT: set KALSHI_REDUCE_ONLY_KEEP_BOTH=0 in live.env and the next cycle reverts exactly.
+REDUCE_ONLY_KEEP_BOTH = os.environ.get("KALSHI_REDUCE_ONLY_KEEP_BOTH", "1") == "1"
 INV_SOFT_CT = _envf("KALSHI_INV_SOFT_CT", 30.0)
 INV_HARD_CT = _envf("KALSHI_INV_HARD_CT", 80.0)
 # INVARIANT (fix H): a single JOIN fill must not by itself breach the hard cap, or one fill
@@ -1104,8 +1115,23 @@ def run_once():
                     return ((pos > 0 and q2.get("side") == "no")
                             or (pos < 0 and q2.get("side") == "yes"))
                 return False
-            desired = {t: [q2 for q2 in qs if _keep_reducing(t, q2)]
-                       for t, qs in desired.items()}
+            def _shape(t, qs):
+                out = []
+                for q2 in qs:
+                    if _keep_reducing(t, q2):
+                        out.append(q2)
+                    elif (REDUCE_ONLY_KEEP_BOTH and abs(naked_by.get(t, 0.0)) >= INV_TOLERANCE
+                          and q2.get("count", 0) > MIN_QUOTE_CT):
+                        # ONLY where we HOLD inventory: keep that market two-sided (else the
+                        # snapshot is excluded and even our resting exit quote earns $0) at the
+                        # floor size, so added risk is ~10x smaller than a normal join. FLAT
+                        # markets stay pulled — reduce-only must still mean reduce-only.
+                        out.append(dict(q2, count=MIN_QUOTE_CT, reason="minjoin"))
+                    elif (REDUCE_ONLY_KEEP_BOTH and abs(naked_by.get(t, 0.0)) >= INV_TOLERANCE
+                          and q2.get("reason") is not None):
+                        out.append(q2)          # already at/below the floor — keep as-is
+                return out
+            desired = {t: _shape(t, qs) for t, qs in desired.items()}
             desired = {t: qs for t, qs in desired.items() if qs}
             print(f"WARNING breaker: naked ${plan.get('naked_held_usd', 0):.2f} of "
                   f"${held_cost:.2f} held (growth>{BREAKER_HELD_GROWTH_USD:.0f}"
@@ -1127,6 +1153,10 @@ def run_once():
                     at_ref += _v
                 else:
                     off_ref += _v
+        _two = sum(1 for _qs in desired.values()
+                   if {q2["side"] for q2 in _qs} >= {"yes", "no"})
+        plan["two_sided_markets"] = _two
+        plan["one_sided_markets"] = len(desired) - _two
         plan["at_ref_usd"] = round(at_ref, 2)
         plan["off_ref_usd"] = round(off_ref, 2)
         plan["at_ref_pct"] = round(100 * at_ref / max(at_ref + off_ref, 1e-9), 1)
