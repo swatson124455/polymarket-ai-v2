@@ -1324,3 +1324,56 @@ def test_reduce_only_keeps_market_two_sided(monkeypatch, tmp_path):
     assert row2.get("breaker_reduce_only") == 1
     assert {o["side"] for o in c2.created} == {"no"}                # exit quote only
     assert row2.get("one_sided_markets") == 1
+
+
+# ================= MIRROR SYMMETRY (operator guardrail 2026-07-23) =================
+# Every quoting decision must behave IDENTICALLY for a long-NO position as for the mirrored
+# long-YES one. Kalshi is symmetric (a NO bid at p is a YES ask at 1-p), so any asymmetry is a
+# BUG — and a polarity bug is the worst kind here: it would throttle the wrong side, or unwind
+# in the direction that GROWS the position. This asserts the property directly rather than
+# spot-checking one polarity, so it also guards every future change to the shaping logic.
+def _mirror(qs):
+    """Map a quote list to what the mirrored book should produce: sides swapped."""
+    return sorted((("no" if x["side"] == "yes" else "yes"), round(x["price_dollars"], 4),
+                   x["count"], x.get("reason")) for x in qs)
+
+
+def _plain(qs):
+    return sorted((x["side"], round(x["price_dollars"], 4), x["count"], x.get("reason"))
+                  for x in qs)
+
+
+@pytest.mark.parametrize("inv,cost", [
+    (0.0, 0.0),        # flat
+    (5.0, 0.0),        # small position -> unwind, no throttle
+    (50.0, 0.0),       # above SOFT -> throttle + unwind
+    (100.0, 0.0),      # at/above HARD -> accumulating side pulled
+    (20.0, 0.62),      # loss-capped unwind (parked)
+    (2.0, 0.0),        # below tolerance
+])
+def test_mirror_symmetry_long_yes_vs_long_no(monkeypatch, inv, cost):
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0); monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
+    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10); monkeypatch.setattr(q, "THROTTLE_STEP_TICKS", 1)
+    m = {"target": 1, "end": "2099-01-01T00:00:00Z"}
+    yl = [["0.55", "9999"]]; nl = [["0.42", "9999"]]
+    a = q.desired_quotes(m, yl, nl, q.utcnow(), inv=inv, cost=cost)          # long yes
+    b = q.desired_quotes(m, nl, yl, q.utcnow(), inv=-inv, cost=cost)         # mirrored long no
+    assert _plain(a) == _mirror(b), f"polarity asymmetry at inv={inv} cost={cost}: {a} vs {b}"
+
+
+def test_mirror_symmetry_event_delta_and_reduce_only(monkeypatch, tmp_path):
+    # event-driven throttle must mirror too (flat ticker inside a directional event)
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0); monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
+    m = {"target": 1, "end": "2099-01-01T00:00:00Z"}
+    yl = [["0.55", "9999"]]; nl = [["0.42", "9999"]]
+    a = q.desired_quotes(m, yl, nl, q.utcnow(), inv=0.0, event_delta=55.0)
+    b = q.desired_quotes(m, nl, yl, q.utcnow(), inv=0.0, event_delta=-55.0)
+    assert _plain(a) == _mirror(b)
+    # ladder pairing must mirror: +low/-high floors, and so must -low/+high under sign flip
+    lo, hi = "KXAAAGASD-26JUL23-4.050", "KXAAAGASD-26JUL23-4.060"
+    fwd = q.ladder_pairing({lo: 10.0, hi: -10.0})     # floored -> fully paired
+    rev = q.ladder_pairing({lo: -10.0, hi: 10.0})     # NOT floored -> untouched
+    assert all(v == 0 for v in fwd.values())
+    assert rev == {lo: -10.0, hi: 10.0}
