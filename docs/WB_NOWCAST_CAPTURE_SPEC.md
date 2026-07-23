@@ -1947,3 +1947,62 @@ says the 1.4→1.8 raise did not fix the overconfidence. That is the strongest
 available argument for the 07-24 `wb-vif-tune-remeasure` recommending VIF→2.0.
 Caveats: the window straddles the 07-19 VIF change (regime-mixed), and the
 calibrator is hands-off until ~08-07 — measurement only, not a tuning trigger.
+
+## S234 — DO WE BEAT THE MARKET? NO, IN ZERO SLICES. (+ a sample-size correction)
+
+Everything prior scored the model against CLIMATOLOGY. This scores it against
+the PRICE PAID, which is the question that decides whether there is edge.
+
+Frame (S226 discipline, sanity-checked not assumed): `predicted_prob` is P(YES)
+on every row; `trade_events.price` is the token price of the SIDE BOUGHT, so
+market P(YES) = price for YES entries, 1-price for NO. Sanity check PASSED for
+NO (99.5% of NO entries have model P(YES) BELOW market — the bot buys NO when it
+thinks YES is overpriced). It did NOT confirm for YES (14.3%); YES numbers are
+therefore weaker evidence regardless of n.
+
+### ⚠ FIRST, A SAMPLE-SIZE CORRECTION THAT AFFECTS PRIOR WORK
+`prediction_log` holds MANY rows per market, so the per-side x lead-time view is
+weighted by how often a market was re-predicted, not by markets:
+**6,419 raw rows collapse to 230 distinct markets (~28x inflation).**
+The `>=48h` cell that appeared to beat the market by +0.918 was **ONE Paris
+market (target 2026-07-19, bucket_type=exact, entry price flat 0.515) counted 41
+times** — 41/41 same outcome, leave-one-out leaves nothing. Effective n=1.
+**`calibration_check` does NOT dedup this section**: `_build_per_side_lead_time_sql()`
+takes only `clean`, and `_print_per_side_lead_time_brier()` has no dedup path, so
+the per-side x lead table and its H0' verdict (n=650 vs n=41) are computed on
+inflated counts EVEN WHEN `--dedup-markets` is passed. The main calibration
+section does dedup. Fix or label it.
+
+### RESULT (deduped to one row per market — the LAST prediction before entry)
+```
+slice        n    modelBrier  marketBrier  skill_vs_mkt
+ALL        230      0.3686      0.2468      -0.4935
+NO         216      0.3713      0.2487      -0.4932
+YES         14      0.3263      0.2179      -0.4977
+<24h       178      0.3803      0.2476      -0.5356
+24-48h      51      0.3347      0.2441      -0.3712
+>=48h        1        --          --        DISCARDED (the Paris market)
+NO 0-2h     23      0.4298      0.2516      -0.7082
+NO 3-5h     37      0.3320      0.2353      -0.4110
+NO 6-7h     15      0.5105      0.2750      -0.8563
+NO 8-12h    49      0.3977      0.2476      -0.6061
+NO 13-17h   21      0.2847      0.2562      -0.1114
+NO 18-23h   21      0.4201      0.2350      -0.7875
+```
+**ZERO slices beat the market.** Least-bad is NO 13-17h at -0.111 on n=21 = noise.
+Note the market's Brier is remarkably STABLE at 0.235-0.275 across every slice
+while the model swings 0.28-0.51 — the market is uniformly competent and the
+model is not.
+
+### WHAT IT MEANS
+The bot enters where its own probability estimate is WORSE than the price it
+pays. That is negative edge structurally, not a threshold that needs tuning —
+and it is consistent with S222 failing A1/A3 repeatedly ("retire nothing") and
+with the uniformly-negative-vs-climatology result above. A better-calibrated
+model (VIF, EMOS) is necessary but NOT obviously sufficient: the model would
+have to become better than a market whose Brier is already ~0.247.
+
+**Scope caveats:** conditional on the bot's OWN entries (the markets where it
+disagreed most with price) — that is the trading-relevant cut, not a general
+model-vs-market claim; entry price includes the crossed spread; window straddles
+the 07-19 VIF change. Measurement only — calibrator hands-off until ~08-07.
