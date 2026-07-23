@@ -1246,3 +1246,40 @@ def test_breakers_measure_naked_not_gross(monkeypatch, tmp_path):
     assert row.get("held_cost_usd") == 14.1          # gross unchanged (capital accounting)
     assert row.get("naked_held_usd") == 0.0          # risk correctly measured as zero
     assert row.get("breaker_reduce_only") is None    # so it does NOT sit out
+
+
+def test_throttle_skips_step_when_it_would_zero_credit(monkeypatch):
+    # Sandbox A/B (n=612): the 1-tick step ZEROED reward credit in 12% of snapshots — when the
+    # depth AT the best price already meets Target Size, the qualifying walk stops there and a
+    # quote one tick back is outside the scored set. Free win: stay at reference in exactly that
+    # case and take the risk reduction from SIZE instead.
+    monkeypatch.setattr(q, "THROTTLE_STEP_TICKS", 1); monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "THROTTLE_SMART", True)   # opt-in; DEFAULT OFF in production
+    # top level ALONE meets target(1000) -> stepping back scores zero -> stay at ref, shrink more
+    fat = [["0.50", "5000"]]
+    m = {"target": 1000, "end": "2099-01-01T00:00:00Z"}
+    qs = {x["side"]: x for x in q.desired_quotes(m, fat, [["0.49", "5000"]], q.utcnow(), inv=50.0)}
+    assert qs["yes"]["price_dollars"] == 0.50                 # AT reference (full credit kept)
+    # thin top level -> a tick back is still inside the qualifying set -> step as before
+    thin_top = [["0.50", "50"], ["0.49", "5000"]]
+    qs2 = {x["side"]: x for x in q.desired_quotes(m, thin_top, [["0.49", "5000"]], q.utcnow(), inv=50.0)}
+    assert qs2["yes"]["price_dollars"] == 0.49                # stepped (unchanged behaviour)
+    # the risk brake survives either way: throttled size is below the un-throttled join
+    flat = {x["side"]: x for x in q.desired_quotes(m, fat, [["0.49", "5000"]], q.utcnow(), inv=0.0)}
+    assert qs["yes"]["count"] < flat["yes"]["count"]
+
+
+def test_ladder_invariants_flagged_live(monkeypatch, tmp_path, capsys):
+    # Live stress test: pairing must never flip a sign, never report naked>held, and must
+    # conserve each event's signed sum. A violation must be LOUD and counted, not silent.
+    _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    monkeypatch.setattr(q, "ladder_pairing", lambda h: {t: -v for t, v in h.items()})  # sign flip
+    c = MockClient(mode="live", resting=[], positions=[
+        {"ticker": "KXAAAGASD-26JUL23-4.090", "position_fp": "10", "market_exposure_dollars": "8.30"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("ladder_violation", 0) >= 1
+    assert "LADDER INVARIANT VIOLATED" in capsys.readouterr().out

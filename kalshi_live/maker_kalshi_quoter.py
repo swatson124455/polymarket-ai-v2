@@ -124,6 +124,12 @@ SERIES_ALLOW = [s for s in os.environ.get("KALSHI_SERIES_ALLOW", "").split(",") 
 # Set 0 to keep the accumulating side AT reference (full credit) and throttle by SIZE alone.
 # Default 1 = existing behaviour; this is a knob to A/B against the ledger, NOT a silent change.
 THROTTLE_STEP_TICKS = _envi("KALSHI_THROTTLE_STEP_TICKS", 1)
+# SMART-STEP (default OFF): skip the price step when the top level alone already meets Target
+# Size, because the sandbox A/B measured the step ZEROING our credit in 12% of such snapshots.
+# DEFAULT OFF ON PURPOSE: it puts the accumulating side back AT reference, which is exactly the
+# placement the live A/B measured as ~tripling naked-inventory build. The reward gain is
+# measured; the risk cost of THIS narrower version is NOT. Enable only to run that test.
+THROTTLE_SMART = os.environ.get("KALSHI_THROTTLE_SMART") == "1"
 INV_SOFT_CT = _envf("KALSHI_INV_SOFT_CT", 30.0)
 INV_HARD_CT = _envf("KALSHI_INV_HARD_CT", 80.0)
 # INVARIANT (fix H): a single JOIN fill must not by itself breach the hard cap, or one fill
@@ -377,6 +383,28 @@ def _unwind_price(best, cost):
     return min(best, cap)
 
 
+def _throttled_quote(best, cnt, over, levels, target):
+    """(price, count) for a THROTTLED accumulating side.
+
+    The step-inside is a risk brake, but the sandbox A/B (n=612 real snapshots, CFTC formula)
+    measured it ZEROING our reward credit in 12% of cases — not halving it. That happens when
+    the depth AT the best price already meets Target Size: the qualifying walk stops there, so
+    anything a tick behind is outside the scored set entirely and earns nothing.
+
+    So: only pay the price step when it still buys us something. If the top level alone already
+    satisfies Target Size, keep the quote AT reference (full 1.0x credit) and take the risk
+    reduction from SIZE instead — the brake is preserved, the reward is not thrown away.
+    Free-win case identified by the A/B; everywhere else behaviour is unchanged."""
+    shrunk = max(MIN_QUOTE_CT, int(cnt * (1 - over)))
+    depth_at_best = sum(s for p, s in levels if abs(p - best) < TICK / 2)
+    if THROTTLE_SMART and THROTTLE_STEP_TICKS > 0 and depth_at_best >= target > 0:
+        # stepping back would fall outside the qualifying set -> stay at ref, shrink harder
+        return best, max(MIN_QUOTE_CT, int(shrunk * (1 - over)))
+    if THROTTLE_STEP_TICKS <= 0:
+        return best, shrunk
+    return round(best - TICK * THROTTLE_STEP_TICKS, 4), shrunk
+
+
 def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta=0.0, stats=None,
                    cost=0.0):
     """Desired resting orders for one market. Returns list of
@@ -535,14 +563,12 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                 if hard:
                     y_cnt = 0                       # HARD STOP: cap the envelope, stop the leak
                 else:
-                    y_price = round(best_y - TICK * THROTTLE_STEP_TICKS, 4)
-                    y_cnt = max(MIN_QUOTE_CT, int(y_cnt * (1 - over)))
+                    y_price, y_cnt = _throttled_quote(best_y, y_cnt, over, yl, target)
             else:                                   # accumulating NO -> throttle NO
                 if hard:
                     n_cnt = 0
                 else:
-                    n_price = round(best_n - TICK * THROTTLE_STEP_TICKS, 4)
-                    n_cnt = max(MIN_QUOTE_CT, int(n_cnt * (1 - over)))
+                    n_price, n_cnt = _throttled_quote(best_n, n_cnt, over, nl, target)
         # OFFSET the position: grow the REDUCING side toward |inv| at reference so its fills drain
         # the overhang back to ~zero net delta (maker offset, tagged 'unwind' = exempt from the
         # capital cap; capped at |inv| so it can't overshoot past flat). This does NOT bloat into a
@@ -862,6 +888,23 @@ def run_once():
         # ladder pairing: floored cross-strike pairs are ~riskless (see ladder_pairing) — every
         # de-risk mechanism below targets the NAKED remainder, never the paired quantity.
         naked_by = ladder_pairing(held_by)
+        # LIVE STRESS TEST of the ladder self-hedge (operator 07-22: stress it live rather than
+        # re-review it). Every cycle, assert the invariants the pairing MUST satisfy against real
+        # positions; any violation is loud + counted, so a wrong pairing surfaces immediately
+        # instead of silently stripping guards from inventory that is not actually hedged.
+        for _t, _n in naked_by.items():
+            _h = held_by.get(_t, 0.0)
+            if (_n and _h and (_n > 0) != (_h > 0)) or abs(_n) > abs(_h) + 1e-9:
+                plan["ladder_violation"] = plan.get("ladder_violation", 0) + 1
+                print(f"WARNING LADDER INVARIANT VIOLATED {_t}: naked {_n:+.2f} vs held {_h:+.2f} "
+                      f"(sign flip or naked>held) — pairing is UNSAFE")
+        for _ev in {_event_key(t) for t in held_by}:
+            _sh = sum(v for k, v in held_by.items() if _event_key(k) == _ev)
+            _sn = sum(v for k, v in naked_by.items() if _event_key(k) == _ev)
+            if abs(_sh - _sn) > 1e-6:               # pairing must CONSERVE the event's signed sum
+                plan["ladder_violation"] = plan.get("ladder_violation", 0) + 1
+                print(f"WARNING LADDER SUM NOT CONSERVED {_ev}: held {_sh:+.2f} vs naked {_sn:+.2f}")
+        plan["paired_ct"] = round(sum(abs(held_by.get(t, 0.0)) - abs(n) for t, n in naked_by.items()), 2)
         flattened = set()
         taker_flattens = 0
         taker_failed = 0
