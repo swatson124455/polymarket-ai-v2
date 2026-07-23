@@ -651,9 +651,43 @@ class Guards:
         cap = cfg["inv_cap_mult"] * m["msz"]
         if abs(net_after) > cap + 1e-9 and abs(net_after) > abs(y - n):
             return self.deny("market_net_cap")
+        # MERGE-AWARE CAPITAL ACCOUNTING (2026-07-22). min(y, n) pairs merge
+        # to exactly $1 and are netted out of spend (merge_pairs :1158). A buy
+        # of the COMPLEMENT of inventory we ALREADY HOLD forms those pairs the
+        # moment it fills — guaranteed, not contingent on any other order — so
+        # its true capital cost is (cost - pairs_formed * $1), which is often
+        # NEGATIVE (the hedge releases capital).
+        #
+        # Charging such an order its gross cost is what deadlocked the engine:
+        # merge_pairs nets `spent` down only AFTER the fill while this cap is
+        # checked BEFORE the order, so a flat cap denied the very order whose
+        # fill would relieve it (Kalshi's stuck-bot, their fix A).
+        #
+        # Pairs against a PENDING sibling leg are deliberately NOT counted.
+        # Legs rest and fill INDEPENDENTLY, so that merge is contingent;
+        # counting it would let ordinary two-sided quoting escape the cap
+        # entirely — the defect that sank the previous attempt at this fix.
+        # Relief is therefore bounded by HELD inventory on the opposite side,
+        # which also makes an over-hedge self-limiting: only the portion that
+        # actually pairs off is relieved, the excess is charged in full.
+        #
+        # ⚠ LIVE-MODE CASH CAVEAT: this is a VALUE identity, not a cash-flow
+        # identity. merge_pairs nets the ledger immediately, but on-chain the
+        # pair sits as locked collateral until a merge is actually executed
+        # (see merge_pairs docstring), so real wallet USDC does NOT come back
+        # at fill time. The gross cap is therefore a RISK bound here, not a
+        # cash bound; actual cash is bounded by the wallet balance and the
+        # venue rejecting over-balance orders. Matters for a small pilot
+        # wallet — size the pilot on cash, not on this number.
+        net_held = y - n
+        if intent["leg"] == "yes":
+            pairable = max(0.0, -net_held)      # short YES / long NO
+        else:
+            pairable = max(0.0, net_held)       # long YES
+        eff_cost = cost - min(intent["sz"], pairable) * 1.0
         pend_cost = (st.get("ob", {}) or {}).get("cost", 0.0) + \
                     (st.get("oa", {}) or {}).get("cost", 0.0)
-        if st.get("spent", 0.0) + pend_cost + sib_cost + cost \
+        if st.get("spent", 0.0) + pend_cost + sib_cost + eff_cost \
                 > cfg["market_gross_cap"]:
             return self.deny("market_gross_cap")
         # sector gross over LIVE markets (departed markets are quarantined
@@ -665,7 +699,7 @@ class Guards:
                         if isinstance(s2, dict) and s2.get("sector") == sec
                         and not s2.get("departed")
                         and not k2.startswith("meta"))
-        if sec_spent + sib_cost + cost > sec_cap:
+        if sec_spent + sib_cost + eff_cost > sec_cap:
             return self.deny("sector_gross_cap")
         # per-event netted one-winner floor (v6 semantics on the y/n model)
         ok_ev, ev_reason = self._event_cap_ok(intent, m, state, uni_by_ev,

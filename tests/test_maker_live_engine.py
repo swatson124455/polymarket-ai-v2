@@ -1532,3 +1532,90 @@ def test_discover_allowlist_zero_match_logs_loudly(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(mle, "get", lambda url, timeout=15: page)
     assert mle.discover(str(tmp_path), cfg_over(sector_allowlist={"wether"})) == []
     assert "matched ZERO" in capsys.readouterr().out
+
+
+# ── merge-aware capital accounting (the capital deadlock, 07-22) ────────────
+# Every test below is mutation-checked against BOTH degenerate implementations:
+#   relief = 0            (merge-blind: the pre-fix behavior)
+#   relief = intent size  (over-generous: counts contingent/absent merges)
+# A test that survives either mutation pins nothing (the lesson from the
+# reverted first attempt, where 4 of 6 tests passed a fully-broken guard).
+
+def test_merge_aware_hedge_against_held_inventory_passes_gross_cap():
+    """THE deadlock: long YES sitting at the gross cap. Buying NO pairs off
+    held YES 1-for-1, releasing $1 per pair, so its true capital cost is
+    negative and the cap must not deny it. Fails under relief=0."""
+    g, m, state, uni = fresh_guard_ctx()
+    st = state[str(m["id"])]
+    st.update({"y": 300.0, "n": 0.0, "spent": 149.0})
+    ok, why = g.check_place({"leg": "no", "px": 0.485, "sz": 300.0},
+                            m, st, state, uni, time.time())
+    assert ok, "hedge against held inventory must not be capped (%s)" % why
+
+
+def test_merge_aware_does_not_relieve_the_accumulating_side():
+    """Buying MORE of the side we are already long forms no pairs — full
+    cost, still denied. Fails under relief=size."""
+    g, m, state, uni = fresh_guard_ctx()
+    # net cap deliberately lifted so ONLY the gross cap can produce the deny —
+    # a disjunctive assertion here would let market_net_cap rescue a broken
+    # implementation (how the first attempt's tests passed a mutant).
+    g.cfg = cfg_over(inv_cap_mult=100.0)
+    st = state[str(m["id"])]
+    st.update({"y": 300.0, "n": 0.0, "spent": 149.0})
+    ok, why = g.check_place({"leg": "yes", "px": 0.485, "sz": 100.0},
+                            m, st, state, uni, time.time())
+    assert not ok and why == "market_gross_cap"
+
+
+def test_merge_aware_gives_no_relief_to_a_fresh_two_sided_pair():
+    """No held inventory => nothing to pair against => ordinary two-sided
+    quoting is capped exactly as before. This is the defect that sank the
+    previous attempt. Fails under relief=size."""
+    g, m, state, uni = fresh_guard_ctx()
+    g.cfg = cfg_over(market_gross_cap=90.0)
+    st = state[str(m["id"])]                      # y = n = 0
+    leg2 = {"leg": "no", "px": 0.485, "sz": 100.0}
+    ok, why = g.check_place(leg2, m, st, state, uni, time.time(),
+                            sibling={"leg": "yes", "px": 0.485, "sz": 100.0})
+    assert not ok and why == "market_gross_cap"
+
+
+def test_merge_aware_relief_is_bounded_by_held_size_so_overshoot_is_charged():
+    """Hedging FAR past the position: only the portion that actually pairs
+    off is relieved; the excess is charged in full and denied. This is what
+    makes overshoot self-limiting without a sign-flip rule.
+    Fails under relief=size."""
+    g, m, state, uni = fresh_guard_ctx()
+    g.cfg = cfg_over(inv_cap_mult=100.0)     # isolate: only gross may deny
+    st = state[str(m["id"])]
+    st.update({"y": 50.0, "n": 0.0, "spent": 149.0})
+    # 400 @ 0.485 = $194 cost, only 50 pairs off => eff $144 >> headroom $1
+    ok, why = g.check_place({"leg": "no", "px": 0.485, "sz": 400.0},
+                            m, st, state, uni, time.time())
+    assert not ok and why == "market_gross_cap", \
+        "over-hedge beyond held inventory must be charged in full"
+
+
+def test_merge_aware_relief_follows_the_held_side_not_the_leg():
+    """Symmetry: when short YES (long NO), it is the YES leg that pairs off.
+    Fails under any implementation that ignores the sign of net_held."""
+    g, m, state, uni = fresh_guard_ctx()
+    st = state[str(m["id"])]
+    st.update({"y": 0.0, "n": 300.0, "spent": 149.0})
+    ok, _ = g.check_place({"leg": "yes", "px": 0.485, "sz": 300.0},
+                          m, st, state, uni, time.time())
+    assert ok, "YES leg must be relieved when the held side is NO"
+    ok2, why2 = g.check_place({"leg": "no", "px": 0.485, "sz": 100.0},
+                              m, st, state, uni, time.time())
+    assert not ok2 and why2 in ("market_gross_cap", "market_net_cap")
+
+
+def test_merge_aware_sector_cap_uses_the_same_effective_cost():
+    g, m, state, uni = fresh_guard_ctx()
+    state["other"] = {"sector": "politics", "spent": 580.0}
+    st = state[str(m["id"])]
+    st.update({"y": 300.0, "n": 0.0})
+    ok, why = g.check_place({"leg": "no", "px": 0.485, "sz": 300.0},
+                            m, st, state, uni, time.time())
+    assert ok, "sector cap must price the guaranteed merge too (%s)" % why
