@@ -362,6 +362,67 @@ straight at them.** This is why R3 has to be applied before any opportunity rank
    and is shown only as `extrap`. Treat per-market figures as the measurement and the series
    totals as indicative.
 
+### §M6 — OVERNIGHT LIQUIDITY DROUGHT + a SELECTION BIAS in §M1/§M2 (2026-07-23 03:14Z)
+
+Operator asked how two-sided quoting is doing and — correctly — flagged that volume is near zero
+at this hour, so the ratio should be checked rather than the counts. That check found two things.
+
+#### (a) The books, not the bot. ~79% of the allowlist is UNEARNABLE right now.
+
+All 39 allowlist contracts with active programs, market-level test (does the BOOK reach Target
+Size on each side, per R3 — nothing to do with our orders):
+
+```
+OK two-sided                 8 / 39   = 20.5%
+a side is completely EMPTY  28 / 39   = 71.8%   <- the whole story
+depth < Target(1000)         3 / 39
+
+by event:  KXAAAGASD-26JUL23   2/24 =  8.3%
+           KXAAAGASW-26JUL27   6/15 = 40.0%
+```
+
+Under R3 a contract whose book is one-sided is **excluded and pays nobody**, and per §M2 our 20 ct
+cannot rescue a 1000-contract Target Size. So this is **environmental, not behavioural** — we
+cannot earn two-sided credit in a contract where nobody is on the other side.
+
+Our own quoting at the same moment: **1 two-sided / 2 one-sided of 3 quoted = 33%**, with
+`breaker_reduce_only = 0` — **the plug-in is not even engaged**, so the guard is NOT the cause of
+our one-sidedness tonight.
+
+The A/B ON arm tracks this decay exactly, which is the point:
+
+| time | ON-arm TWO-SIDED % | reduce-only % of cycles |
+|---|---|---|
+| 02:05Z (13 cycles) | 79.0% | 76.9% |
+| 03:13Z (47 cycles) | **46.4%** | 27.7% |
+
+⚠ **IMPLICATION FOR THE A/B (task #1).** The ON arm ran 01:38–04:38Z and the OFF arm starts after
+04:38Z — both overnight, but across a **moving liquidity gradient**. Two-sided coverage is falling
+for reasons that have nothing to do with the plug-in. Comparing the arms without normalising for
+market-level two-sidedness repeats the confound that got the 07-22 live throttle A/B disowned.
+**Normalise: measure our two-sided rate as a fraction of the contracts whose BOOKS were two-sided,
+not as a fraction of contracts quoted.**
+
+#### (b) ⚠ SELECTION BIAS in §M1/§M2 — self-caught, my defect
+
+`kalshi_concentration_study.py:133` **skips** a contract when either side's book is empty
+(`if not yl or not nl: continue`). Those contracts never entered the frozen dataset. So:
+
+- **§M2's "86.1% two-sided" is conditional on both sides being non-empty** — a pre-filtered
+  denominator. The unconditional rate is materially lower (20.5% at 03:14Z).
+- **§M1's capture figures are computed only over non-empty books**, so they **overstate** what
+  the same capital would earn across the real contract population.
+- **§M2's core claim survives unchanged**: our 20 ct was marginal in 0/304. Excluded contracts
+  are ones where we are even *less* able to be the marginal maker, so adding them can only
+  strengthen that finding.
+- **§M5 is NOT affected**: `kalshi_series_scan.py:116` returns `(0, 0, False)` for an empty side
+  rather than dropping it, so those contracts are correctly counted as failures. That is exactly
+  why §M5 could report the $12,112/day unearnable pool.
+
+**Do not quote §M1/§M2 rates as unconditional.** Either re-sample without the filter, or state the
+condition every time. Not silently re-run here — the frozen dataset is what the committed numbers
+refer to, and replacing it would break reproducibility.
+
 ### §M3 — code-vs-rulebook conformance check
 
 | rule clause (S1) | implementation | verdict |
