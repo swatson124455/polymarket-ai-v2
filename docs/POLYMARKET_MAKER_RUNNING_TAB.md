@@ -20,6 +20,32 @@ Rules for every session (binding):
 
 ---
 
+## ⚠ DO NOT CONFLATE — TWO SEPARATE CAP PROBLEMS (read before touching caps)
+
+The gross cap has had **two independent defects**. They sound alike, they live
+on the same line of code, and merging them in your head will either re-open a
+closed bug or silently drop an open one.
+
+| | **MERGE-BLINDNESS** | **CAP SIZING** |
+|---|---|---|
+| Status | ✅ **FIXED 2026-07-22** (`a660aa1`) | 🔴 **STILL OPEN** (GAP-4, parked) |
+| The defect | The cap charged a hedge its GROSS cost, ignoring that buying the complement of held inventory forms $1 pairs on fill. `merge_pairs` nets spend down AFTER the fill; the cap is checked BEFORE the order — so it denied the very order whose fill would relieve it | The cap is a flat **$150 per market** regardless of that market's min-quote size. 30/140 live markets have `msz > $150`, so a single minimum two-sided quote already exceeds it |
+| Symptom | Bot holds an unwanted directional position it is structurally forbidden from hedging; both legs stop ⇒ all quoting stops | Those 30 markets are **structurally unquotable** — the bot can never quote them at all, at any inventory level |
+| Fix shape | Price the guaranteed merge: `eff_cost = cost − min(sz, held_opposite)` | Size the cap off `msz` (or per-sector), NOT a flat dollar figure. **Needs an operator capital decision** |
+| Depends on inventory? | YES — only bites once you hold a directional position | NO — bites on an empty book, from the first quote |
+
+**The tell:** if the bot cannot quote a market it has **never traded**, that is
+SIZING. If it cannot quote a market it is **already holding a position in**,
+that was merge-blindness (and is fixed — if it recurs, it is a regression, not
+GAP-4).
+
+**Related but also distinct:** `MAKER_ONESIDED_DERISK` is neither of the above —
+it handles the case where the accumulating leg is legitimately capped and only
+the hedge leg should still go out. If `derisk1` fires often, the root cause is
+usually SIZING, not hedging.
+
+---
+
 ## A. LEDGER (chronological)
 
 | date | event | verdict / state | source |
