@@ -3,8 +3,15 @@
 **Scope: MAKER-KALSHI ONLY.** Do NOT touch `claude/maker-bot`, MB/WB/EB/SB, shared modules.
 Branch `claude/maker-kalshi-live`, HEAD `9c3c6b4`. Work in a linked worktree; bash cwd drifts.
 
-**Step zero for the next session:** read this file, then `KALSHI_LIP_RULE_CANON.md` (the rules +
-§M1–M13 measurements), then verify §0 state yourself before believing it.
+**Step zero for the next session:** paste `KALSHI_KICKOFF_NEXT_SESSION.md` as your opening message
+(step-zero + verify block + the 3 gotchas with exact expected hashes). Then read this file, then
+`KALSHI_LIP_RULE_CANON.md` (the rules + §M1–M13 measurements), then verify §0 state yourself before
+believing it.
+
+⚠ **BRANCH HEAD ≠ DEPLOYED — the single easiest way to lose money here.** Deployed quoter
+`727ca7c5…` (ran all day, unchanged). Branch HEAD quoter `9a24f605…` (this session committed code
+fixes that are NOT deployed and NOT all deploy-ready). `git show HEAD:file | md5sum` will not match
+the box — that is correct. NEVER `deploy HEAD`; every deploy is per-file, md5-gated, reviewed. See §4.
 
 ---
 
@@ -108,15 +115,28 @@ the claimed gap. **Decision gated on re-export of the transaction CSV AFTER 2026
 when every period (incl. gas-weekly) has credited. Pre-registered rule: de-admit temp ONLY if
 net-of-full-rewards stays materially negative; else hold or reversibly size down.
 
-### RUNNING (not yet returned): `wef4ikfcf` — CAPITAL-ACCOUNTING ROOT-FIX
-Launched ~18:12Z. Designing the fix for the gross-vs-net committed bug (§1 treadmill). Will write
-`KALSHI_CAPITAL_ACCOUNTING_ROOTFIX_2026-07-23.md`. **Check `/workflows` or TaskOutput `wef4ikfcf`.**
-Key question it's answering: what does Kalshi ACTUALLY reserve (measured from balance deltas, not
-the retracted "4.3× netting" folklore), and should the real limit be net-capital + a PER-EVENT cap
+### RUNNING (still not returned as of 18:25Z): `wef4ikfcf` — CAPITAL-ACCOUNTING ROOT-FIX
+Launched ~18:12Z, **still running at handoff close.** Designing the fix for the gross-vs-net
+committed bug (§1 treadmill). Will write `KALSHI_CAPITAL_ACCOUNTING_ROOTFIX_2026-07-23.md`.
+**NEXT SESSION: check `/workflows` or `TaskOutput wef4ikfcf` FIRST — if that file exists, read it;
+if the dive was killed by the session ending, resume it (`Workflow scriptPath` +
+`resumeFromRunId: wf_60f6f8d2-5e0`, script at
+`…/workflows/scripts/kalshi-capital-accounting-rootfix-wf_60f6f8d2-5e0.js`).**
+Key question it answers: what does Kalshi ACTUALLY reserve (measured from balance deltas, not the
+retracted "4.3× netting" folklore), and should the real limit be net-capital + a PER-EVENT cap
 rather than the global gross knob. The machinery (`ladder_pairing`, `naked_held_cost`) already
 exists; the cap just doesn't use it. **The deadliest refuter angle: a pair that half-fills leaves a
 hedge that only existed on paper → under-reservation blowup. The fix must keep a free-cash hard
-ceiling.**
+ceiling.** This is the fix that ends both the cap treadmill AND the inert-brake state (§0) — the
+highest-value open thread in the whole handoff.
+
+## §3a LIVE SNAPSHOT AT HANDOFF CLOSE (2026-07-23 18:24:47Z) — for drift comparison next session
+`fp=40 quoted=15 two-sided=12 one-sided=3 committed=$234.53/250 held=$85.54 naked=$27.95
+at_ref=75.7%`. Cap raise to 250 took effect (committed climbed from the $150-pin to $234). Bot is
+actively quoting 15 markets, 12 two-sided. `at_ref` 75.7% (dipped from ~94% as it deploys fresh
+capital into newer books — watch it recover). Balance $162.04, ~8 positions. **If the next session
+sees committed pinned at $250 with cash idle again, the treadmill has returned — the root-fix
+(above) is the answer, not another raise.**
 
 ---
 
