@@ -692,6 +692,44 @@ risk to a whole-revenue-basis risk**.
 Operator ruling on record is "assume renewal; census = tripwire." That remains a *ruling*, not
 evidence. Any plan whose payback period extends past 2026-09-01 must state this dependency.
 
+### §M12 — A/B COMPLETE (2026-07-23 13:53Z). PLUG-IN CONFIRMED ON ITS OWN METRIC.
+
+Timer fired on schedule; marker now `{"arm_on_start":"...01:38:21Z","arm_off_start":"...04:38:22Z"}`.
+
+| arm | cycles | reduce-only % | **two-sided DURING reduce-only** | mean naked $ | mean committed $ | ladder viol. |
+|---|---|---|---|---|---|---|
+| **ON** | 89 | 14.6% | **66.1%** (56 mkt-cycles) | 13.13 | 57.20 | 0 |
+| **OFF** | 247 | 40.5% | **0.0%** (127 mkt-cycles) | 15.97 | 39.23 | 0 |
+
+**66.1% vs 0.0% during reduce-only.** Without the plug-in, reduce-only mode goes **completely
+one-sided, every time**. With it, two-thirds of held markets keep both sides resting. The
+mechanism is deterministic (the accumulating side is floored at `MIN_QUOTE_CT` rather than
+pulled), so the gap is not a sampling artefact. **CONFIRMED on the coverage metric.**
+Risk did not worsen: ON carried *lower* mean naked ($13.13 vs $15.97) on *more* committed capital.
+
+⚠ **Overall two-sided (ON 40.8% vs OFF 43.8%) is NOT the comparison** — it mixes regimes, and the
+arms spent very different fractions of time in reduce-only (14.6% vs 40.5%). Only the
+during-reduce-only column is controlled.
+
+#### ⚠ WHAT THIS DOES **NOT** ESTABLISH — and it is the whole economic question
+Per **R3**, snapshot exclusion is **MARKET-level**. Our own one-sidedness does **not** zero us in
+a market whose book is two-sided from other participants — and per **§M2** our 20 ct was never the
+marginal maker (0/304, both sides). So the plug-in's real benefit is **recovering our own side's
+normalised score** (up to half our snapshot score), **not** avoiding exclusion — which is a ~2×
+effect, not a wipeout-vs-not effect, and it is bought with an extra fillable resting order.
+**The A/B measures coverage. It cannot measure rewards per arm.** Task #7 (re-derive the EV)
+remains the open question; a coverage win is not automatically a reward win.
+
+⚠ **Time confound stands (§M6):** ON ran 01:38–04:38Z (deep overnight drought), OFF ran
+04:38–13:53Z (into US morning). Different liquidity regimes, and OFF got 2.8× the cycles.
+
+#### FREEZE INTEGRITY AT 13:53Z — HELD
+- quoter md5 `727ca7c59840a42b51c19e24c65a0982` — **unchanged**, still == branch HEAD blob.
+- `live.env` sha256 changed `8ebc0b76…` → `f192f033…`. **Diffed line-by-line: exactly ONE key
+  moved, `KALSHI_REDUCE_ONLY_KEEP_BOTH` 1 → 0** — the pre-scheduled timer flip documented in the
+  freeze file as the deliberate non-exception. Every other value identical. No STOP sentinel.
+  **The freeze held; the single change was predicted and recorded in advance.**
+
 ### §M3 — code-vs-rulebook conformance check
 
 | rule clause (S1) | implementation | verdict |
