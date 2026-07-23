@@ -607,6 +607,61 @@ email opt-in, not a contract, so it does not appear to carry the MM-agreement di
 **but confirm that with Kalshi before opting in**, since eligibility wording is what creates the
 DLP trap above.
 
+### §M10 — OFFICIAL FEE SCHEDULE OBTAINED. **MAKER FEES ARE ZERO BY DEFAULT.** ⚠ CORRECTS §M9
+
+Source: `kalshi.com/docs/kalshi-fee-schedule.pdf`, **"Last updated and effective: July 7, 2026"**,
+12 pages. Retrieved through the operator's authenticated browser session (the URL returns HTTP 429
+to this environment's egress — it is NOT bot-blocked, just rate-limited by IP). Archived in-repo at
+`docs/maker_handoffs/kalshi-fee-schedule-2026-07-07.pdf` so it never has to be re-fetched.
+
+#### The formulas, verbatim
+```
+Trading (taker) fees = round up(M x 0.07   x C x P x (1-P))    M = multiplier, DEFAULT 1
+Maker fees          = round up(M x 0.0175 x C x P x (1-P))    M = multiplier, DEFAULT 0
+```
+> "M = the multiplier for each contract (default is 1 unless otherwise indicated)" — taker
+> "M = the multiplier for each contract (**default is 0** unless otherwise indicated)" — maker
+
+**A default multiplier of ZERO means maker fees are NOT CHARGED exchange-wide unless a series is
+explicitly listed.** Also verbatim: **"There is no settlement fee."** and **"There is no
+membership fee."**
+
+#### ⚠ THIS CORRECTS §M9. I had it backwards.
+§M9 said *"maker fees are NOT universally zero on Kalshi. Our series are exempt."* That framing
+is **wrong**. The truth is the inverse: **maker fees are zero by default and only 86 explicitly
+listed series charge them.** Our series are not special — they are the norm. The ratio I quoted
+(maker = 25% of taker) is arithmetically right (0.0175/0.07 = 0.25) but describes a rate that is
+multiplied by zero for most of the exchange.
+
+#### The "Non-Standard Fees" table — 86 series carry explicit multipliers
+Checked programmatically against the extracted text:
+
+| series | in table? | maker fee |
+|---|---|---|
+| `KXAAAGASD` `KXAAAGASW` `KXTEMPDCH/AUSH/LAXH/NYCH/CHIH` (**all 7 of ours**) | **no** | **ZERO** ✅ |
+| `KXINTC` `KXPM` `KXRT` `KXFUNDRAISING` `KXCLAUDE` (**all §M5 candidates**) | **no** | **ZERO** ✅ |
+| `KXEARNINGSMENTION*` `KXWNBAMENTION` `KXMLBMENTION` `KXLIUKELIMINATION` | no | ZERO |
+| **`KXAAAGASM`** (monthly gas) | **YES** | **maker mult = 1 — CHARGES** ❌ |
+
+Most listed series are **sports** (NFL/NBA/MLB/NHL/NCAA/PGA/UEFA all at maker 1) plus macro
+(`KXCPI`, `KXFED`, `KXGDP`, `KXPAYROLLS`, `KXU3`) and awards (Emmys). A few carry 0/0.
+**Sports is expensive for a maker — factor that into any future widening.**
+
+#### CONSEQUENCES
+1. **The "fees unverified" HARD BLOCKER on widening is DISSOLVED.** Every §M5 candidate is
+   maker-fee-free. Fee status no longer gates admission — it is now a lookup against this table.
+2. **`KXAAAGASM` earns a SECOND, INDEPENDENT rejection.** Running tab §H recommended it; §M4a
+   withdrew it on the $/day unit error. It is *also* one of the ~86 series that charges maker
+   fees. Two unrelated reasons to leave it out.
+3. **Support-email question 2 is ANSWERED** — drop it, keep only the narrow ask about whether the
+   exemption is permanent (the table is dated and versioned, so even that is low value).
+4. Confirms §M9's receipt-side finding from the other direction: 71.7% of our trades paid zero
+   fees because maker fills on unlisted series are free; the $2.58 we did pay was taker activity.
+
+**Method note worth keeping:** the file was unreachable from this environment (HTTP 429 by IP) but
+trivially available in a signed-in browser. When a primary source 429s, that is a *rate limit*, not
+a wall — route through the operator's session rather than concluding the document is inaccessible.
+
 ### §M3 — code-vs-rulebook conformance check
 
 | rule clause (S1) | implementation | verdict |
