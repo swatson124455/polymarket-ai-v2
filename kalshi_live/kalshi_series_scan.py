@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""SECTOR SCAN — sandbox, READ-ONLY, NO KEYS, NO MONEY, NEVER TRADES.
+"""SERIES SCAN — sandbox, READ-ONLY, NO KEYS, NO MONEY, NEVER TRADES.
 
-THE QUESTION: which series are we NOT in where we could actually eat, or at least
+THE QUESTION: which SERIES are we NOT in where we could actually eat, or at least
 get scraps?
+
+NAMING (operator correction 2026-07-23, see KALSHI_LIP_RULE_CANON.md §T): this file was
+first shipped as `kalshi_sector_scan.py`, which was wrong — it scans SERIES, not sectors.
+A SECTOR (weather / gas / politics) is OUR thematic grouping and sits ABOVE series; a
+SERIES (`KXAAAGASD`) is the recurring question template. Renamed to match what it does.
 
 Pool size alone does NOT answer this and ranking by it is how you walk into a trap.
 What matters is what WE would capture if we joined at reference with our real deployed
@@ -33,7 +38,7 @@ WHAT THIS CANNOT TELL YOU (and it is most of the decision):
     strikes as if additive and MIS-FIRE (running tab §H, review finding B2).
   * Instantaneous snapshot; competitors requote; programs churn hourly.
 
-Run:  python kalshi_sector_scan.py [top_series] [markets_per_series]
+Run:  python kalshi_series_scan.py [top_series] [markets_per_series]
 """
 import json
 import os
@@ -45,7 +50,7 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PUB = "https://api.elections.kalshi.com/trade-api/v2"
-OUT = os.path.join(HERE, "sector_scan.json")
+OUT = os.path.join(HERE, "series_scan.json")
 
 JOIN_SIZE = float(os.environ.get("SCAN_JOIN_SIZE", 20))
 MAX_MARKET = float(os.environ.get("SCAN_MAX_MARKET", 15))

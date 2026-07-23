@@ -10,6 +10,51 @@ happens to hide the gap.
 
 **This file is now canon. Pull rules from here, not from memory, not from a handoff paraphrase.**
 
+## §T — TERMS (operator-agreed 2026-07-23). USE THESE EXACTLY.
+
+Counts verified live from `/incentive_programs?status=active`, 2026-07-23 ~03:20Z.
+
+| term | example | count | what ATTACHES at this level |
+|---|---|---|---|
+| **sector** | weather · gas · politics · sports | ~a dozen | **OURS, not Kalshi's** — thematic grouping for EV analysis (running tab §C). No API field. |
+| **series** | `KXAAAGASD` | **192** | maker-fee regime · toxicity · ladder-vs-categorical structure. **The level you switch ON or OFF** (`KALSHI_SERIES_ALLOW`). |
+| **event** | `KXAAAGASD-26JUL23` | **344** | **ONE CORRELATED RISK.** All strikes inside move together. Grouped by `"-".join(ticker.split("-")[:2])` (`maker_kalshi_quoter.py:1591`). |
+| **market** (= **contract**) | `KXAAAGASD-26JUL23-4.100` | **2,547** | the order book · YES/NO sides · **reward pool · $1 floor · Target Size · Discount Factor · two-sided test**. The smallest unit. |
+| **program** | the LIP schedule on that contract | **2,547** | one Time Period, one payout. Currently 1:1 with market — but the rulebook allows "a sequence of one or more Time Periods" and "Time Periods may overlap", so **do not hard-code 1:1**. |
+
+### The two traps this glossary exists to prevent
+
+1. **"market" is the SMALLEST unit, not a marketplace.** Everyday English says "the weather
+   market" meaning a whole space; Kalshi's API and every line of our code mean **one binary
+   contract**. `MAX_MARKET_CAPITAL=$15` read as "sector" is $15 across all of gas; read as the
+   code means it, it is $15 on **each of 24 strikes** — up to $360. **24× apart on the same
+   words.** Same trap for "$1 minimum per market" and "one bet per market".
+   **Mitigation: say "contract" whenever precision matters.**
+2. **"event" is ONE RISK but MANY trades.** A gas event holds 24 tradeable contracts. Our 8 live
+   positions sit inside just **2** events — so as risk we hold *two* bets, not eight.
+
+### Where reward and risk diverge — the structural tension
+
+**Reward accrues per CONTRACT** (24 strikes in a gas event = 24 separate pots, each with its own
+$1 floor) → this rewards spreading WIDE.
+**Risk accrues per EVENT** (those 24 contracts are one directional bet on gas) → spreading across
+them diversifies **NOTHING**.
+
+- A **threshold ladder** ("above X") is therefore unusually good: many pots, one risk, and
+  adjacent strikes partly offset — which is exactly what the ladder self-hedge exploits.
+- A **categorical event** (named/mutually-exclusive outcomes) breaks it: strikes are
+  ANTI-correlated, so the event-aggregate throttle would sum them as additive and **mis-fire**.
+
+⚠ **This limits §M1.** The concentration study asked "how many markets to spread $85 across" and
+treated contracts as independent. They are not. "Optimum K≈6–7" is a **reward-side** answer only.
+The real question is two-dimensional: how many **events** (risk units) and how many **contracts
+within each event** (reward pots). §M1 measured the second and silently assumed the first.
+
+### Naming defects corrected under this glossary
+- `kalshi_sector_scan.py` → **`kalshi_series_scan.py`** (+ `sector_scan.json` →
+  `series_scan.json`). It scans series, never sectors. Shipped mislabelled in `200222f`.
+- §M5's heading "SECTORS WE ARE NOT IN" → **SERIES we are not in**.
+
 ## SOURCES (ranked by authority)
 
 | # | source | what it settles |
@@ -250,11 +295,12 @@ standing recommendation, one session away from being acted on.** §H's widening 
   `KXRT` ($1,263/day).
 - Single point in time; programs churn hourly.
 
-### §M5 — SECTORS WE ARE NOT IN: where could we eat, or get scraps? (2026-07-23 ~03:10Z)
+### §M5 — SERIES WE ARE NOT IN: where could we eat, or get scraps? (2026-07-23 ~03:10Z)
+*(terminology corrected per §T — this scans SERIES, not sectors)*
 
-`kalshi_live/kalshi_sector_scan.py` — top 40 series by pool $/day, **4 markets sampled each**,
+`kalshi_live/kalshi_series_scan.py` — top 40 series by pool $/day, **4 markets sampled each**,
 scored at the deployed shape (join 20 ct/side, $15/market) with all four rulebook rules applied.
-Output `kalshi_live/sector_scan.json`.
+Output `kalshi_live/series_scan.json`.
 
 ⚠ **SCANNER BUG FOUND AND FIXED MID-RUN — the first output was inverted.** The initial version
 scored share without applying R3, and put `KXWNBAMENTION` at the **top** with $604/day capture
