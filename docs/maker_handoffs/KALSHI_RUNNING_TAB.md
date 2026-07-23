@@ -237,10 +237,13 @@ Census of ACTIVE LIP 2026-07-21 (2001 programs, 151 series):
 - **TEMP: nothing to add today** — only 5 cities have active programs (AUS/CHI/DC/LAX/NYC),
   all already in the allowlist. Temp is the #1 EV corner (~30×); re-census and add new cities
   the moment they get programs — always first choice.
-- **GAS candidate: `KXAAAGASM`** (monthly, 54 mkts, $5,400 pool = 5.4× daily gas). Same
-  threshold-ladder structure as GASD/GASW → event-aggregate SAFE. This is the recommended
-  slight widening available now. Verify it's "above X" laddered (it is by series family) then
-  append to `KALSHI_SERIES_ALLOW`.
+- ~~**GAS candidate: `KXAAAGASM`** (monthly, 54 mkts, $5,400 pool = 5.4× daily gas) … the
+  recommended slight widening available now.~~ **WITHDRAWN 2026-07-23 — THE COMPARISON WAS A
+  UNIT ERROR.** $5,400 is a **monthly** pool; per DAY `KXAAAGASM` = **$255/day (venue rank 39)**
+  vs `KXAAAGASD` = **$4,380/day (venue rank 3)** — GASM is ~**17× WORSE per day**, not 5.4×
+  better. See `KALSHI_LIP_RULE_CANON.md` §R1 (`period_reward` is the TOTAL for the Time
+  Period, not a rate) and §M4a. **Re-rank every widening candidate by $/day before proposing
+  it.** Structure note still stands: same threshold-ladder family as GASD/GASW.
 - **Sizing knob:** `MAX_MARKET_CAPITAL` $15→$20-25 rests deeper per market, but capture is
   POOL-capped not capital-capped (diminishing). Ceiling $90 ≈ the $100 funded max — raise
   ceiling only with more funding.
