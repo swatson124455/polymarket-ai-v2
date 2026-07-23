@@ -44,6 +44,18 @@ SCOPE / WHAT THIS DOES NOT COVER (standing operator directive, running tab §A0)
   * Ranking is by pool. The deployed bot ranks by usd_day, which is a different (and per
     the auditor, worse) ordering — so this measures the LEVER, not the current bot.
 
+SELECTION BIAS — FIXED 2026-07-23 (canon §M6b, defect D1). The sampler used to
+`continue` past any contract whose book was empty on a side. Those contracts never
+entered the dataset, which made every rate computed from it CONDITIONAL on both books
+being non-empty: §M2's "86.1% two-sided" had a pre-filtered denominator and §M1's
+capture figures covered only non-empty books. One-sided books are now RECORDED and
+SCORED AS R3 FAILURES (payout 0) — which is what they are: under R3 a snapshot without
+two-sided liquidity at Target Size is excluded and pays nobody, ours or anyone's.
+Set `CONC_KEEP_ONESIDED=0` to reproduce the old, filtered sampling.
+The committed dataset `concentration_samples.jsonl` is UNCHANGED (it is the evidence the
+committed numbers refer to); `--report` now states which kind of dataset it loaded and
+refuses to present its two-sided rate as unconditional.
+
 Run:     python kalshi_concentration_study.py [minutes]      # sample
 Report:  python kalshi_concentration_study.py --report
 """
@@ -64,6 +76,9 @@ TOTAL_CAPITAL = float(os.environ.get("CONC_TOTAL_CAPITAL", 85))   # frozen live.
 MAX_MARKET = float(os.environ.get("CONC_MAX_MARKET", 15))         # frozen live.env
 JOIN_SIZE = float(os.environ.get("CONC_JOIN_SIZE", 20))           # frozen live.env (contracts/side)
 MIN_PAYOUT = float(os.environ.get("CONC_MIN_PAYOUT", 1.00))       # LIP rule text
+# D1 (canon §M6b): keep contracts whose book is EMPTY on a side. They are real members
+# of the population and score as R3 failures; dropping them biases every rate upward.
+KEEP_ONESIDED = os.environ.get("CONC_KEEP_ONESIDED", "1").lower() not in ("0", "false", "no")
 TICK = 0.01
 SPACING_S = 0.35
 _last = [0.0]
@@ -130,8 +145,8 @@ def sample_once():
         except Exception:
             continue
         yl, nl = levels(ob.get("yes_dollars")), levels(ob.get("no_dollars"))
-        if not yl or not nl:
-            continue
+        if (not yl or not nl) and not KEEP_ONESIDED:
+            continue        # legacy pre-filter — produced the frozen dataset, see §M6b
         rows.append({"t": t, "target": target, "df": df, "pool": pool,
                      "start": p.get("start_date"), "end": p.get("end_date"),
                      "yl": yl, "nl": nl})
@@ -169,8 +184,15 @@ def score_market(row, dollars):
 
     Returns (payout_raw, our_contracts, yes_share, no_share, binding) where `binding`
     is 'size' if JOIN_SIZE bound on both sides, 'capital' if capital bound, else 'mixed'.
+
+    D1: a book that is EMPTY on a side scores 0 with binding 'r3_empty'. It is an R3
+    failure — the snapshot is excluded and pays nobody — NOT a row to drop. Pre-fix this
+    branch was unreachable only because the sampler had already discarded such rows, and
+    the `max()` below would have raised ValueError on the empty side.
     """
     yl, nl = [(p, s) for p, s in row["yl"]], [(p, s) for p, s in row["nl"]]
+    if not yl or not nl:
+        return 0.0, 0.0, 0.0, 0.0, "r3_empty"
     best_y = max(p for p, _ in yl)
     best_n = max(p for p, _ in nl)
     if best_y <= 0 or best_n <= 0:
@@ -186,6 +208,59 @@ def score_market(row, dollars):
     ns, _, _, _ = REC.side_share(nl, [(best_n, ct_n)], row["target"], row["df"], TICK)
     # pool splits evenly across the two sides; score = ys + ns, max 2.0
     return row["pool"] * (ys + ns) / 2.0, ct_y + ct_n, ys, ns, binding
+
+
+def two_sided_stats(snaps):
+    """R3 MARKET-level two-sided census over every market-snapshot in `snaps`.
+
+    Returns (ok, n, empty_side, thin) where
+        ok         = both books reach Target Size  -> the snapshot can pay
+        empty_side = at least one book is EMPTY
+        thin       = both books non-empty but at least one misses Target Size
+    R3 is a TARGET SIZE test, not a non-empty test, so `thin` is a failure too —
+    conflating the two is how a "two-sided" rate gets quoted too high.
+    Nothing about OUR orders enters this: per §M2 our 20 ct was the marginal maker in
+    0/304, so a book that misses Target Size without us misses it with us."""
+    ok = empty = thin = n = 0
+    for s in snaps:
+        for r in s.get("rows") or []:
+            n += 1
+            yl, nl = r.get("yl") or [], r.get("nl") or []
+            if not yl or not nl:
+                empty += 1
+            elif (REC.qualifying_walk(yl, r["target"])[0] is not None
+                  and REC.qualifying_walk(nl, r["target"])[0] is not None):
+                ok += 1
+            else:
+                thin += 1
+    return ok, n, empty, thin
+
+
+def dataset_provenance(snaps):
+    """Was this dataset sampled WITH or WITHOUT the one-sided filter? (D1/§M6b)
+
+    A rate computed from a filtered dataset is conditional on both books being
+    non-empty and must never be quoted as unconditional. Samples taken after the fix
+    carry an explicit `keep_onesided` stamp; older ones do not, and for those the only
+    honest answer is UNKNOWN — 'zero one-sided rows observed' is exactly what both a
+    pre-filtered sample and a genuinely two-sided venue look like."""
+    flags = {s.get("keep_onesided") for s in snaps}
+    onesided = sum(1 for s in snaps for r in (s.get("rows") or [])
+                   if not (r.get("yl") or []) or not (r.get("nl") or []))
+    if False in flags:
+        return ("PRE-FILTERED (sampler dropped one-sided books) — every rate below is "
+                "CONDITIONAL on both books being non-empty; the unconditional rate is "
+                "lower. Re-sample with CONC_KEEP_ONESIDED=1 for an unconditional read.")
+    if flags == {True} or (True in flags and None not in flags):
+        return (f"UNFILTERED (sampler kept one-sided books; {onesided} one-sided "
+                f"market-snapshots recorded) — rates below are UNCONDITIONAL.")
+    if onesided:
+        return (f"UNFILTERED by inference ({onesided} one-sided market-snapshots present, "
+                f"no provenance stamp) — rates below are unconditional.")
+    return ("UNKNOWN provenance — no `keep_onesided` stamp and zero one-sided books "
+            "recorded. That is exactly what the pre-2026-07-23 filter produced "
+            "(canon §M6b), so treat every rate below as CONDITIONAL on both books "
+            "being non-empty, NOT as a venue-wide rate.")
 
 
 def score_snapshot(rows, k, mode="oracle"):
@@ -205,9 +280,18 @@ def score_snapshot(rows, k, mode="oracle"):
         return None
     raw, floored, paying, used, shares, sizebound = 0.0, 0.0, 0, 0.0, [], 0
     perday, nowin = 0.0, 0
+    two_sided, empty_side = 0, 0
     for r in ranked:
         pay, ct, ys, ns, binding = score_market(r, per)
         raw += pay
+        # D1: R3 is MARKET-level and it is the denominator question. Count it here so the
+        # report can state the two-sided rate over the population that was actually
+        # sampled, instead of over a pre-filtered one.
+        if not r["yl"] or not r["nl"]:
+            empty_side += 1
+        elif (REC.qualifying_walk(r["yl"], r["target"])[0] is not None
+              and REC.qualifying_walk(r["nl"], r["target"])[0] is not None):
+            two_sided += 1
         # RULEBOOK: the $1 test applies to the TIME PERIOD payout (pay), but comparing
         # across markets requires the per-DAY rate. Both are tracked; never mix them.
         wd = window_days(r)
@@ -218,10 +302,13 @@ def score_snapshot(rows, k, mode="oracle"):
         shares += [ys, ns]
         if binding == "size":
             sizebound += 1
-        # capital ACTUALLY used, not capital allotted — JOIN_SIZE often binds first
-        by = max(p for p, _ in r["yl"])
-        bn = max(p for p, _ in r["nl"])
-        used += min(JOIN_SIZE, per / 2 / by) * by + min(JOIN_SIZE, per / 2 / bn) * bn
+        # capital ACTUALLY used, not capital allotted — JOIN_SIZE often binds first.
+        # D1: nothing is deployed into a one-sided book (we would be quoting into an
+        # excluded snapshot), so it contributes 0 used capital rather than raising.
+        if r["yl"] and r["nl"]:
+            by = max(p for p, _ in r["yl"])
+            bn = max(p for p, _ in r["nl"])
+            used += min(JOIN_SIZE, per / 2 / by) * by + min(JOIN_SIZE, per / 2 / bn) * bn
         if pay >= MIN_PAYOUT:
             floored += pay
             paying += 1
@@ -230,6 +317,7 @@ def score_snapshot(rows, k, mode="oracle"):
             "perday": perday, "nowin": nowin,
             "mean_share": sum(shares) / len(shares) if shares else 0.0,
             "sizebound": sizebound,
+            "scored": len(ranked), "two_sided": two_sided, "empty_side": empty_side,
             "capped": per >= MAX_MARKET - 1e-9}
 
 
@@ -246,9 +334,15 @@ def main(minutes):
         if rows:
             ts = datetime.now(timezone.utc).isoformat()
             with open(OUT, "a") as fh:
-                fh.write(json.dumps({"ts": ts, "rows": rows}, separators=(",", ":")) + "\n")
+                # D1: stamp the sampling provenance ON the snapshot. Inferring it later
+                # from "no one-sided rows present" is ambiguous — that is precisely why
+                # the frozen dataset's bias took a code read to find.
+                fh.write(json.dumps({"ts": ts, "keep_onesided": KEEP_ONESIDED,
+                                     "rows": rows}, separators=(",", ":")) + "\n")
             n += 1
+            one = sum(1 for r in rows if not r["yl"] or not r["nl"])
             print(f"{ts[11:19]} snapshot {n}: {len(rows)} markets "
+                  f"({one} one-sided) "
                   f"(pools ${min(r['pool'] for r in rows):.0f}-${max(r['pool'] for r in rows):.0f})")
         time.sleep(30)
     return 0
@@ -281,6 +375,14 @@ def report(MODE="oracle"):
     print(f"  window {snaps[0]['ts'][11:19]}..{snaps[-1]['ts'][11:19]}Z   "
           f"capital ${TOTAL_CAPITAL:.0f}, per-market cap ${MAX_MARKET:.0f}, "
           f"min payout ${MIN_PAYOUT:.2f}")
+    # D1 / canon §M6b — the denominator has to be declared before any rate is shown.
+    ok, n_ms, empty, thin = two_sided_stats(snaps)
+    print()
+    print("  SAMPLING: " + dataset_provenance(snaps))
+    if n_ms:
+        print(f"  R3 two-sided (MARKET-level, Target Size on BOTH books): "
+              f"{ok}/{n_ms} = {100.0 * ok / n_ms:.1f}%"
+              f"   [one side EMPTY {empty}, below Target {thin}]")
     print()
     print("  K = number of markets the SAME capital is spread across, top-K by pool")
     print()
