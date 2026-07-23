@@ -1,3 +1,10 @@
+> # ⛔ SUPERSEDED — THIS PLAN IS SCRAPPED (operator, 2026-07-23)
+> "scrap the plan but keep all data, we are breaking down and building up."
+> **Do not execute this file's QUEUE or WATCH ordering.** Start from
+> `WB_REBUILD_KICKOFF.md` instead. This file is kept as RECORD — its findings,
+> release stamps, rollback chains and landmines are still accurate and still
+> useful; only its forward plan is dead.
+
 # WB S235 KICKOFF PROMPT (S234 work 2026-07-21, ~20:1x–21:0xZ)
 
 Paste this into the next WB session. WB-scoped; standing rules bind (NEVER
