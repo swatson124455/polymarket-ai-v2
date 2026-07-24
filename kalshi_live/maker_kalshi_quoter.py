@@ -89,6 +89,17 @@ def _envf(name, default):
 
 FOOTPRINT_TOP = _envi("KALSHI_FOOTPRINT_TOP", 60)   # markets quoted per cycle
 PER_SERIES_CAP = _envi("KALSHI_PER_SERIES_CAP", 10)
+# PIVOT-SELECT (KALSHI_PIVOT_SELECT, default 0 = OFF, provable no-op). OFF => the legacy
+# egalitarian round-robin select_footprint AND the legacy quote loop run byte-for-byte. ON =>
+# select_footprint over-selects a density-weighted, near-money-ordered candidate pool (larger
+# than FOOTPRINT_TOP) and the quote loop PIVOTS past markets that gate out (return []) —
+# pulling the NEXT eligible market into the slot — until FOOTPRINT_TOP markets are actually
+# QUOTED or the pool is exhausted. The GATES are untouched: a gated (non-earning) market is
+# still skipped, never quoted; pivot means quoting a DIFFERENT earner, not relaxing a gate.
+PIVOT_SELECT = _envi("KALSHI_PIVOT_SELECT", 0)      # 0 = legacy select+quote (provable no-op)
+PIVOT_POOL_MULT = _envi("KALSHI_PIVOT_POOL_MULT", 2)   # candidate pool = MULT * FOOTPRINT_TOP
+PIVOT_COVERAGE = _envi("KALSHI_PIVOT_COVERAGE", 1)     # min slots/series before density fill
+PIVOT_READ_RESERVE = _envi("KALSHI_PIVOT_READ_RESERVE", 30)  # reads held back (strand/ladder/settle)
 JOIN_SIZE = _envi("KALSHI_JOIN_SIZE", 100)          # contracts/side on non-void markets
 # REWARDS ARE PAID FOR QUOTES ON THE BOOK, NOT INVENTORY HELD. So BOTH sides must stay live
 # every cycle — the throttle SHRINKS the accumulating side but never pulls it to zero (that
@@ -339,20 +350,65 @@ def select_footprint(progs, now):
     by_series = defaultdict(list)
     for r in rows:
         by_series[r["ticker"].split("-")[0]].append(r)
+    if not PIVOT_SELECT:
+        # ---- LEGACY egalitarian round-robin (bytes unchanged; provable flag-off no-op) ----
+        series_order = sorted(by_series, key=lambda s: (-by_series[s][0]["usd_day"], s))
+        picked, per_series = [], defaultdict(int)
+        progressed = True
+        while len(picked) < FOOTPRINT_TOP and progressed:
+            progressed = False
+            for s in series_order:
+                i = per_series[s]
+                if i >= PER_SERIES_CAP or i >= len(by_series[s]):
+                    continue
+                picked.append(by_series[s][i])
+                per_series[s] += 1
+                progressed = True
+                if len(picked) >= FOOTPRINT_TOP:
+                    break
+        return picked
+    # ---- PIVOT: density-weighted, over-selected, near-money-ordered candidate pool ----
+    # The pool is deliberately LARGER than FOOTPRINT_TOP so the quote loop can read PAST markets
+    # that gate out and still fill FOOTPRINT_TOP earners. Two ordering rules replace the
+    # egalitarian round-robin's failure modes:
+    #   (1) DENSITY: the remainder (after a small per-series coverage floor) is filled purely by
+    #       usd_day desc — a 150-usd/day gas strike outranks every 2.6-usd/day H100 strike, so the
+    #       best series takes the bulk of the pool (no egalitarian 5-cap). PER_SERIES_CAP still binds.
+    #   (2) NEAR-MONEY within a series: a price-free proxy (distance from the series' MEDIAN numeric
+    #       strike via the existing _strike_of) sorts deep-ITM/OTM extreme strikes LAST, so the
+    #       loop reaches the balanced near-money strikes that actually qualify before it runs dry.
+    # READ COST is bounded: pool_cap caps candidates and the loop stops at FOOTPRINT_TOP quoted;
+    # the pre-existing READ_BUDGET_PER_CYCLE RuntimeError is the hard ceiling regardless.
+    pool_cap = min(PIVOT_POOL_MULT * FOOTPRINT_TOP, len(rows),
+                   READ_BUDGET_PER_CYCLE - PIVOT_READ_RESERVE)   # bounded read cost
+    _med = {}                           # per-series median numeric strike (price-free proxy)
+    for s, rs in by_series.items():
+        ks = sorted(k for k in (_strike_of(r["ticker"]) for r in rs) if k is not None)
+        _med[s] = ks[len(ks) // 2] if ks else 0.0
+
+    def _prox(r):                       # near-money proxy: |strike - series median|
+        s = _strike_of(r["ticker"])
+        return abs(s - _med[r["ticker"].split("-")[0]]) if s is not None else 1e9
+    for s, rs in by_series.items():
+        rs.sort(key=lambda r: (_prox(r), r["ticker"]))          # near-money first, then ticker
     series_order = sorted(by_series, key=lambda s: (-by_series[s][0]["usd_day"], s))
     picked, per_series = [], defaultdict(int)
-    progressed = True
-    while len(picked) < FOOTPRINT_TOP and progressed:
-        progressed = False
-        for s in series_order:
-            i = per_series[s]
-            if i >= PER_SERIES_CAP or i >= len(by_series[s]):
-                continue
-            picked.append(by_series[s][i])
+    for s in series_order:              # 1) COVERAGE floor: >=PIVOT_COVERAGE per active series
+        for r in by_series[s][:PIVOT_COVERAGE]:
+            picked.append(r)
             per_series[s] += 1
-            progressed = True
-            if len(picked) >= FOOTPRINT_TOP:
-                break
+    dens = sorted(rows, key=lambda r: (-r["usd_day"], _prox(r), r["ticker"]))  # 2) REMAINDER by density
+    seen = {id(r) for r in picked}
+    for r in dens:
+        if id(r) in seen:
+            continue
+        s = r["ticker"].split("-")[0]
+        if per_series[s] >= PER_SERIES_CAP:
+            continue
+        picked.append(r)
+        per_series[s] += 1
+        if len(picked) >= pool_cap:
+            break
     return picked
 
 
@@ -1043,7 +1099,18 @@ def run_once():
 
         desired = {}
         book_refs = {}                                  # ticker -> (best_yes, best_no) this cycle
+        consumed = []                                   # PIVOT: markets actually TRIED this cycle
         for m in footprint:
+            # PIVOT/BACKFILL: stop once FOOTPRINT_TOP markets are actually QUOTED (earning). The
+            # pool is over-selected, so a gated market (desired_quotes -> []) simply falls through
+            # to the next candidate — the GATES are unchanged, we just keep reading down the pool
+            # until we have FOOTPRINT_TOP earners or the pool is exhausted. Flag-off: len(desired)
+            # can never reach FOOTPRINT_TOP faster than footprint ends, and the guard is skipped
+            # anyway (short-circuits False), so behavior is byte-identical.
+            if PIVOT_SELECT and len(desired) >= FOOTPRINT_TOP:
+                break                                   # enough EARNERS quoted -> stop reading
+            if PIVOT_SELECT:
+                consumed.append(m)                      # count every market we TRY (gated or not)
             t = m["ticker"]
             if t in flattened:
                 continue                                # just de-risked; leave it alone this cycle
@@ -1098,6 +1165,15 @@ def run_once():
             if q:
                 desired[t] = q
 
+        # PIVOT: collapse `footprint` to what we ACTUALLY tried (the over-selected pool tail we
+        # never reached is NOT part of this cycle's footprint). Every downstream consumer
+        # (fp_tickers below, gated_out at the plan block, the print line) then keeps its exact
+        # legacy meaning — footprint = markets tried, gated_out = tried-but-skipped = the pivots.
+        # A held ticker still sitting in the UN-consumed pool tail is picked up by strand-unwind
+        # exactly as legacy (it is absent from fp_tickers). Flag-off: consumed is [] and this line
+        # is skipped, so `footprint` object identity is unchanged.
+        if PIVOT_SELECT:
+            footprint = consumed
         # STRAND UNWIND (fix E): inventory on a held ticker NOT in this cycle's footprint
         # (dropped from selection — its program near-ended / usd_day fell off) gets no maker
         # unwind above. Rest the REDUCING side at reference so it still flattens passively;
@@ -1378,6 +1454,12 @@ def run_once():
             plan["funding_gate"] = 1
             plan["funding_committed_usd"] = round(funding_committed, 2)
             plan["free_cash_usd"] = round(free_cash, 2)
+        # pivot-select observability — emitted ONLY when the flag is on so a flag-OFF plan row is
+        # byte-identical to the legacy output (same discipline as the funding-gate block above).
+        if PIVOT_SELECT:
+            plan["pivot_select"] = 1
+            plan["pivot_pool"] = len(footprint)         # = len(consumed) after the reassign
+            plan["pivot_quoted"] = len(desired)
     finally:
         # bookkeeping ALWAYS runs, even if the cycle body raised
         append_plan(plan)
