@@ -143,6 +143,36 @@ STANDDOWN_VOID_MULT = _envf("KALSHI_STANDDOWN_VOID_MULT", 0.5)        # R3 disco
 MAX_ACTIVATE_CAPITAL = _envf("KALSHI_MAX_ACTIVATE_CAPITAL", 150.0)  # $/void market
 MAX_MARKET_CAPITAL = _envf("KALSHI_MAX_MARKET_CAPITAL", 250.0)  # $ cap per market (both sides)
 MAX_TOTAL_CAPITAL = _envf("KALSHI_MAX_TOTAL_CAPITAL", 10000.0)  # $ cap on the whole resting book
+# --- CAPTURE GATE (KALSHI_CAPTURE_GATE, default 0 = OFF, provable no-op) -------------------------
+# The market-quality BRAIN the unqualifiable/selection gates lack. Those two ask "can ANYONE earn
+# here?" (is the BOOK two-sided at Target Size). This asks "can WE earn here?" — our PROSPECTIVE R4
+# capture. LIP reward is pro-rata by DF^N-weighted qualifying score, so against a deep rival book
+# our own resting size is a rounding error -> our reward ~= $0 while we still carry adverse-fill
+# risk. Measured gap: KXTRUMPENDORSEMENTS-...-A15 holds capital with a two-sided book but our R4
+# qualifying share is ~0; saturated big pools (KXFUNDRAISING) fill Target with rival depth so our
+# 20-ct share ~= 0. The unqualifiable/selection gates PASS both; this gate SKIPS both.
+#
+# MECHANISM (per-market, JOIN/two-sided books only, no extra API read): compute our PROSPECTIVE
+# snapshot share if we rested our intended join size AT reference — our_size scored at ref /
+# (book qualifying score + our_size), R3 two-sided (both sides must qualify) — and multiply by the
+# R1 pool (m['usd_day']) already on the footprint row. Below CAPTURE_MIN_USD_DAY the market is POOR
+# FOR US: skip when FLAT, go reduce-only (rest only the reducing side, full |inv|) when HOLDING —
+# de-risk is NEVER blocked or down-sized. This is a MODEL (M7 over-predicts 2-6x) used as a RELATIVE
+# gate signal against a calibrated floor, NOT a ledgered EV.
+#
+# FLOOR (KALSHI_CAPTURE_MIN_USD_DAY=5.0 model $/day): a REGIME separator, not a fitted EV. On a
+# normal near-money GAS book we are a real fraction of a shallow qualifying set -> model capture
+# ~$10-40/day, several x above $5 (never starve the +EV gas lane). Where our size is a rounding
+# error vs a deep rival book -> model capture ~$1/day, below $5. M7 haircut baked in: a $5 model
+# floor ~= $0.8-2.5 real $/day. Calibrate against actual period-close credits via the
+# capture_min_pc_usd_day telemetry. Ships OFF -> the default only bites once the operator flips it.
+# vs STAND-DOWN (KALSHI_STANDDOWN, built, NOT deployed): that uses pool DENSITY only; THIS gate uses
+# our actual SHARE x pool and is the more complete signal — the PRIMARY market-quality gate.
+# Stand-down can stay OFF; the two compose harmlessly if both are on (stand-down shrinks size,
+# this skips/reduces).
+CAPTURE_GATE = _envi("KALSHI_CAPTURE_GATE", 0)                 # 0 = today's exact behavior, byte-for-byte
+CAPTURE_MIN_USD_DAY = _envf("KALSHI_CAPTURE_MIN_USD_DAY", 5.0)  # model $/day floor (see above)
+CAPTURE_DF_DEFAULT = _envf("KALSHI_CAPTURE_DF", 0.5)          # discount_factor_bps=5000 => 0.50 (live)
 # FUNDING GATE (KALSHI_FUNDING_GATE, default 0 = OFF, provable no-op). When OFF the accumulating
 # capital gate is the legacy `committed (= surviving resting notional + held_cost) vs
 # MAX_TOTAL_CAPITAL`, byte-for-byte. When ON it STOPS counting already-spent held_cost (that cash
@@ -373,6 +403,10 @@ def select_footprint(progs, now):
         # period_reward may be present-but-null (pending programs) -> `or 0`, not .get default
         rows.append({"ticker": t, "usd_day": ((p.get("period_reward") or 0) / 10000) / days,
                      "target": float(p["target_size_fp"]), "end": end.isoformat(),
+                     # discount factor for the CAPTURE GATE's R4 walk; discount_factor_bps is
+                     # guaranteed non-null by the guard above. Additive key read by nothing except
+                     # the capture gate (off by default) -> inert; sort keys/consumers all named.
+                     "df": (p["discount_factor_bps"] / 10000) or 0.5,
                      # per-market ramp window = min(global RAMP_MIN, a fraction of THIS market's own
                      # program lifetime) so short markets only ramp in their final stretch (C13).
                      "ramp_min": min(RAMP_MIN, RAMP_LIFE_FRAC * days * 1440.0)})
@@ -541,6 +575,53 @@ def _standdown_market(m, void):
     return eff < STANDDOWN_MIN_USD_DAY, eff
 
 
+def _qualifying_score(bids, our_price, our_size, target, df):
+    """R4 walk (a byte-equivalent replica of kalshi_market_scorecard.qualifying_share): reference =
+    highest bid (<1.0); walk bids desc accumulating size to Target; score = DF^N*size (N = ticks
+    below reference). Returns (our_score/book_total, side_qualifies) — book_total EXCLUDES our
+    not-yet-placed order (the reward denominator once we rest is book_total + our_score).
+
+    A LOCAL copy (not an import of the scorecard) keeps the ledger's credential-path/env-resolution
+    machinery out of the live quoter's import graph; test_capture_gate pins equivalence to the
+    scorecard on shared fixtures."""
+    bids = sorted(((p, s) for p, s in bids if s > 0), key=lambda x: -x[0])
+    if not bids or bids[0][0] >= 1.0:
+        return 0.0, False
+    ref = bids[0][0]
+    cum = total = 0.0
+    lowest_q = ref
+    for price, size in bids:
+        n = round((ref - price) / TICK)
+        total += (df ** n) * size
+        cum += size
+        lowest_q = price
+        if cum >= target:
+            break
+    if cum < target:
+        return 0.0, False                       # book can't reach Target on this side -> $0 for everyone
+    our = 0.0
+    if our_price is not None and our_price >= lowest_q - 1e-9:  # our order is inside the qualifying set
+        our = (df ** round((ref - our_price) / TICK)) * our_size
+    return (our / total if total > 0 else 0.0), True
+
+
+def _prospective_capture(m, yl, nl, best_y, best_n, target):
+    """Our PROSPECTIVE R4 capture $/day if we rested our intended JOIN size at reference on both
+    sides. Per side raw = our_score/book_total (book excludes our not-yet-placed order); the
+    reward denominator once we rest is book_total + our_score, so the prospective per-side share is
+    raw/(1+raw). R3 (both sides must qualify) two-sided snapshot = (share_yes + share_no)/2, times
+    the R1 pool (m['usd_day']). We join AT reference (N=0, DF^0=1) so our_score = our_size. Intended
+    size = _capped_join — the exact size the JOIN branch would rest — so the gate models the order
+    it is deciding whether to place. MODEL (M7 over-predicts 2-6x): a RELATIVE signal only."""
+    df = m.get("df", CAPTURE_DF_DEFAULT)
+    ry, qy = _qualifying_score(yl, best_y, _capped_join(best_y, best_n), target, df)
+    rn, qn = _qualifying_score(nl, best_n, _capped_join(best_n, best_y), target, df)
+    if not (qy and qn):
+        return 0.0
+    snap = (ry / (1.0 + ry) + rn / (1.0 + rn)) / 2.0
+    return snap * float(m.get("usd_day", 0.0) or 0.0)
+
+
 def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta=0.0, stats=None,
                    cost=0.0):
     """Desired resting orders for one market. Returns list of
@@ -612,6 +693,36 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if stats is not None:
             stats["unqualifiable"] = stats.get("unqualifiable", 0) + 1
         return []                                   # cannot reach two-sided Target Size -> $0 reward
+    # CAPTURE GATE (KALSHI_CAPTURE_GATE, default 0 = provable no-op) — the market-quality brain the
+    # unqualifiable/selection gates lack: they check the BOOK can pay; this checks WE get paid. On a
+    # two-sided JOIN book, compute our PROSPECTIVE R4 capture $/day (our_size scored at ref / (book
+    # qualifying score + our_size), R3 two-sided, x R1 pool). Below the floor the market is POOR FOR
+    # US:
+    #   FLAT     -> skip (never open — a $0-for-us book is pure adverse-fill risk).
+    #   HOLDING  -> REDUCE-ONLY: rest ONLY the reducing side at full |inv| (a line-for-line clone of
+    #              the wind_down reduce-only block) so de-risk is NEVER blocked or down-sized.
+    # Void/activate books are scoped OUT (we supply Target depth there -> high share; the existing
+    # activate economics govern). Uses only the in-cycle book + intended size — no extra API read.
+    if CAPTURE_GATE and not void:
+        pc = _prospective_capture(m, yl, nl, best_y, best_n, target)
+        if stats is not None:
+            stats["capture_min_pc"] = min(stats.get("capture_min_pc", 1e18), pc)
+        if pc < CAPTURE_MIN_USD_DAY:
+            if stats is not None:
+                stats["capture_skipped"] = stats.get("capture_skipped", 0) + 1
+            if abs(inv) < INV_TOLERANCE:
+                return []                           # FLAT + poor-for-us -> skip
+            if inv > 0:                             # HOLDING long yes -> rest reducing NO only
+                up = _unwind_price(best_n, cost)
+                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
+                    return []                       # loss-cap out of range -> ride to backstop
+                return [{"side": "no", "price_dollars": up,
+                         "count": _unwind_size(_capped_join(up, best_y), up, inv), "reason": "unwind"}]
+            up = _unwind_price(best_y, cost)        # HOLDING long no -> rest reducing YES only
+            if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
+                return []
+            return [{"side": "yes", "price_dollars": up,
+                     "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
     # SELECTION GATE (only when ~flat — if we hold inventory we must keep quoting to unwind):
     # skip WIDE or ONE-SIDED books. A balanced two-sided book is where the maker-unwind
     # reliably fills; a one-directional/wide book is the gas-ladder trap that adverse-selects
@@ -1542,6 +1653,17 @@ def run_once():
             plan["standdown_markets"] = qstats.get("standdown", 0)
             if qstats.get("standdown"):
                 plan["standdown_min_rho_usd_day"] = round(qstats.get("standdown_min_rho", 0.0), 2)
+        # capture-gate observability — emitted ONLY when the flag is on so a flag-OFF plan row is
+        # byte-identical to the legacy output (same discipline as the funding/pivot/standdown blocks).
+        # capture_skipped_markets = markets skipped/reduced this cycle because our prospective R4
+        # capture was below the floor; capture_min_pc_usd_day = the thinnest prospective capture that
+        # tripped it — the calibration signal to compare against actual period-close credits.
+        if CAPTURE_GATE:
+            plan["capture_gate"] = 1
+            plan["capture_floor_usd_day"] = CAPTURE_MIN_USD_DAY
+            plan["capture_skipped_markets"] = qstats.get("capture_skipped", 0)
+            if qstats.get("capture_skipped"):
+                plan["capture_min_pc_usd_day"] = round(qstats.get("capture_min_pc", 0.0), 3)
     finally:
         # bookkeeping ALWAYS runs, even if the cycle body raised
         append_plan(plan)
