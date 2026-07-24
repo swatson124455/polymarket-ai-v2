@@ -105,6 +105,41 @@ JOIN_SIZE = _envi("KALSHI_JOIN_SIZE", 100)          # contracts/side on non-void
 # every cycle — the throttle SHRINKS the accumulating side but never pulls it to zero (that
 # would kill the reward on that side). This is the floor it shrinks toward.
 MIN_QUOTE_CT = _envi("KALSHI_MIN_QUOTE_CT", 2)      # never quote a live side below this
+# --- STAND-DOWN (KALSHI_STANDDOWN, default 0 = OFF, provable no-op) -----------------------------
+# The bot has no "should I even be playing right now?" brain: it farms LIP mechanically, so on a
+# day when the flagship temp reward (~91% of reward income) is DARK it churns thin gas and every
+# gas fill is a small adverse-selection loss with no reward to cover it (measured ~-$9 on 07-23,
+# mostly ONE ATM gas strike run over by one-way flow). Our realized trading edge BEFORE rewards is
+# NEGATIVE (fingerprint ~-$0.011/ct on GAS, worse on temp); LIP rewards are the ONLY thing that
+# makes the book +EV. So when a market's reward is too thin to justify the expected fill loss, OPEN
+# LESS there instead of full-size — a dead day then costs ~$0 instead of bleeding.
+#
+# MECHANISM (per-market reward-density gate — the robust core of the operator's option A, without
+# the fragile "our-share" proxy): each footprint row already carries usd_day = period_reward/10000
+# /days = the R1-normalized LIP $/day pool for THAT market (select_footprint). No extra API read is
+# needed — the reward number and the void (one-sided) flag are already in-cycle. R3 (two-sidedness)
+# adjustment: a one-sided/void book scores at risk, so its effective density is discounted by
+# STANDDOWN_VOID_MULT. When the effective density is below STANDDOWN_MIN_USD_DAY the market is
+# "stood down":
+#   JOIN (two-sided) books  -> the ACCUMULATING side(s) are sized to MIN_QUOTE_CT (both sides stay
+#                              LIVE at reference so the snapshot still qualifies and still earns the
+#                              thin reward, but each fill is ~JOIN_SIZE/MIN_QUOTE_CT smaller => the
+#                              adverse loss shrinks in proportion). The REDUCING/unwind side is NOT
+#                              touched here — it is (re)sized by the unwind block below, so de-risk
+#                              is never blocked or down-sized.
+#   ACTIVATE (void) books    -> skipped entirely when FLAT (committing MAX_ACTIVATE_CAPITAL of Target
+#                              depth into a thin-reward book is the opposite of "open less"). Held
+#                              inventory on a void market still rests its reducing side (handled
+#                              above, before this gate) — de-risk always proceeds.
+# CALIBRATION: the floor is a REGIME SEPARATOR, not a fitted EV constant. Live reference densities
+# (code comments / ledger): flagship temp ~$1,920/day per strike, live gas ~$150/day, a dead day
+# leaves only sub-$10/day dregs. The default $20/day sits with a wide margin BELOW live gas (so a
+# normal reward-present day keeps quoting gas at full size — requirement: never forfeit the +EV gas
+# lane) and ABOVE the dead-day dregs (so a genuinely dark regime sizes down). Tune against the
+# ledger; because the flag ships OFF the default only takes effect once the operator flips it.
+STANDDOWN = _envi("KALSHI_STANDDOWN", 0)            # 0 = today exact behavior, byte-for-byte
+STANDDOWN_MIN_USD_DAY = _envf("KALSHI_STANDDOWN_MIN_USD_DAY", 20.0)   # reward-density floor ($/day)
+STANDDOWN_VOID_MULT = _envf("KALSHI_STANDDOWN_VOID_MULT", 0.5)        # R3 discount for one-sided books
 MAX_ACTIVATE_CAPITAL = _envf("KALSHI_MAX_ACTIVATE_CAPITAL", 150.0)  # $/void market
 MAX_MARKET_CAPITAL = _envf("KALSHI_MAX_MARKET_CAPITAL", 250.0)  # $ cap per market (both sides)
 MAX_TOTAL_CAPITAL = _envf("KALSHI_MAX_TOTAL_CAPITAL", 10000.0)  # $ cap on the whole resting book
@@ -490,6 +525,22 @@ def _throttled_quote(best, cnt, over, levels, target):
     return round(best - TICK * THROTTLE_STEP_TICKS, 4), shrunk
 
 
+def _standdown_market(m, void):
+    """(standdown_bool, eff_rho) for the STAND-DOWN gate. eff_rho = this market's R1-normalized
+    LIP reward density (m['usd_day'] = period_reward/10000/days), R3-discounted by
+    STANDDOWN_VOID_MULT on a one-sided/void book (a snapshot that scores at risk counts for less).
+    standdown is True when eff_rho is below the fingerprint-calibrated floor STANDDOWN_MIN_USD_DAY:
+    the reward is too thin to justify the expected adverse fill loss, so OPEN LESS here.
+
+    PURE + OBSERVABLE + BOUNDED: uses only the reward number already on the footprint row and the
+    in-cycle void flag — no extra API read, no state. Callers invoke it ONLY under `if STANDDOWN`,
+    so with the flag off it never runs and behavior is byte-for-byte legacy. A missing usd_day
+    defaults to 0.0 -> stands down (the conservative direction: open less when reward is unknown)."""
+    rho = float(m.get("usd_day", 0.0) or 0.0)
+    eff = rho * (STANDDOWN_VOID_MULT if void else 1.0)
+    return eff < STANDDOWN_MIN_USD_DAY, eff
+
+
 def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta=0.0, stats=None,
                    cost=0.0):
     """Desired resting orders for one market. Returns list of
@@ -596,6 +647,13 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                          "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
         if abs(ev) > INV_SOFT_CT:
             return []                               # event already directional -> don't ADD via activate
+        if STANDDOWN:                               # STAND-DOWN: don't commit activate depth into a
+            _sd, _eff = _standdown_market(m, True)  # thin-reward void book (flat here -> strands
+            if _sd:                                 # nothing). Held inventory unwinds above, untouched.
+                if stats is not None:
+                    stats["standdown"] = stats.get("standdown", 0) + 1
+                    stats["standdown_min_rho"] = min(stats.get("standdown_min_rho", 1e18), _eff)
+                return []                           # reward too thin to justify Target-size activate
         add_y = max(JOIN_SIZE, target - ext_y)
         add_n = max(JOIN_SIZE, target - ext_n)
         cap = best_y * add_y + best_n * add_n
@@ -610,6 +668,20 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # a quote: shrink+step-in the accumulating side, grow the reducing side. Both stay live.
         y_price, y_cnt, y_reason = best_y, _capped_join(best_y, best_n), "join"
         n_price, n_cnt, n_reason = best_n, _capped_join(best_n, best_y), "join"
+        # STAND-DOWN: on a thin-reward regime, size BOTH accumulating sides down to MIN_QUOTE_CT
+        # (price left AT reference so the snapshot still qualifies + earns the thin reward, only the
+        # SIZE shrinks -> each fill's adverse loss shrinks in proportion). Applied to the base join
+        # size BEFORE ramp/throttle/unwind: ramp/throttle only shrink further (fine), and the unwind
+        # block below RE-sizes the reducing side from |inv| (so de-risk is never capped by this).
+        # min() never INCREASES a side; when flat both sides rest at the floor -> a dead day ~$0.
+        if STANDDOWN:
+            _sd, _eff = _standdown_market(m, False)
+            if _sd:
+                y_cnt = min(y_cnt, MIN_QUOTE_CT)
+                n_cnt = min(n_cnt, MIN_QUOTE_CT)
+                if stats is not None:
+                    stats["standdown"] = stats.get("standdown", 0) + 1
+                    stats["standdown_min_rho"] = min(stats.get("standdown_min_rho", 1e18), _eff)
         # THROTTLE DIRECTION follows THIS ticker's own inventory (accumulating side = the one whose
         # fill grows our |inv|). When flat on the ticker, follow the EVENT aggregate (a flat ticker
         # in a directional event must not ADD to the drift). MAGNITUDE uses max(|inv|,|event|) so
@@ -1460,6 +1532,16 @@ def run_once():
             plan["pivot_select"] = 1
             plan["pivot_pool"] = len(footprint)         # = len(consumed) after the reassign
             plan["pivot_quoted"] = len(desired)
+        # stand-down observability — emitted ONLY when the flag is on so a flag-OFF plan row is
+        # byte-identical to the legacy output (same discipline as the funding-gate/pivot blocks).
+        # standdown_markets = books sized-down (join) or skipped (activate) this cycle; min_rho =
+        # the thinnest effective reward density that tripped it, against the floor that drove it.
+        if STANDDOWN:
+            plan["standdown"] = 1
+            plan["standdown_floor_usd_day"] = STANDDOWN_MIN_USD_DAY
+            plan["standdown_markets"] = qstats.get("standdown", 0)
+            if qstats.get("standdown"):
+                plan["standdown_min_rho_usd_day"] = round(qstats.get("standdown_min_rho", 0.0), 2)
     finally:
         # bookkeeping ALWAYS runs, even if the cycle body raised
         append_plan(plan)
