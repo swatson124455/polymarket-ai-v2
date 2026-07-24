@@ -377,6 +377,19 @@ if MAX_ENTRY_CUTOFF_MIN < WIND_DOWN_MIN:
 # offsets, wait, re-check, and taker-cross ONLY what is still material after the wait.
 STOP_ESCALATE_S = _envi("KALSHI_STOP_ESCALATE_S", 90)       # seconds passive offsets get to fill
 STOP_TAKER_MIN_CT = _envf("KALSHI_STOP_TAKER_MIN_CT", 5.0)  # escalate only if |pos| still >= this
+# --- PRE-CLOSE SETTLEMENT FLATTEN (2026-07-24 measured loss): a market CLOSES (trading ends) at
+# its close_time but SETTLES hours later; after close we CANNOT trade, so whatever NAKED (unpaired,
+# net-directional) ladder inventory we hold AT CLOSE rides to settlement and resolves against us
+# (gas-daily 26JUL24: -$34.98 across 7 strikes — a directional band-bet at the ATM). A properly
+# PAIRED ladder (yes-low / no-high) self-hedges to ~$1/pair and is SAFE to carry; only the NAKED
+# residual is the settlement gamble. This mechanism, within PRECLOSE_FLATTEN_MIN of MARKET CLOSE
+# (trading end, NOT the reward-period end), MAKER-FIRST rests the reducing quote (existing unwind
+# path) and, if the naked residual still exceeds STOP_TAKER_MIN_CT after a STOP_ESCALATE_S grace,
+# TAKER-crosses AT MOST |naked| contracts — NEVER a paired leg, NEVER cancelling the resting exit
+# (the taker is additive; a failed taker leaves the maker exit resting). SEPARATE from the general
+# TAKER_FLATTEN backstop (that stays as-is). DEFAULT 0 = OFF = byte-for-byte today's behavior.
+PRECLOSE_FLATTEN = _envi("KALSHI_PRECLOSE_FLATTEN", 0)          # 0 = OFF, provable no-op until flipped
+PRECLOSE_FLATTEN_MIN = _envf("KALSHI_PRECLOSE_FLATTEN_MIN", 15.0)  # act within N min of MARKET CLOSE
 # --- selection: prefer BALANCED books (maker-unwind fills) over one-sided drift traps ---
 MAX_SPREAD_TICKS = _envi("KALSHI_MAX_SPREAD_TICKS", 8)      # skip wide/illiquid books
 MIN_DEPTH_SYM = _envf("KALSHI_MIN_DEPTH_SYM", 0.25)         # min(depth)/max(depth) both sides
@@ -1695,6 +1708,21 @@ def run_once():
             new_ids = [oid for (_c, oid) in created_ok if not str(oid).startswith("sim-")]
             st["last_oids"] = survivors + new_ids
 
+        # PRE-CLOSE SETTLEMENT FLATTEN (KALSHI_PRECLOSE_FLATTEN, default 0 = OFF). Runs AFTER the
+        # order-apply block so the reducing MAKER quote is already resting this cycle (maker-first);
+        # then, within PRECLOSE_FLATTEN_MIN of MARKET CLOSE, it taker-crosses ONLY the naked residual
+        # (>= STOP_TAKER_MIN_CT after a STOP_ESCALATE_S grace) so it never rides into settlement —
+        # cancelling nothing, so a failed taker leaves the maker exit resting. Flag-OFF: this block
+        # is skipped entirely (no st key, no plan key) -> the cycle is byte-for-byte legacy.
+        if PRECLOSE_FLATTEN:
+            grace_state = st.get("preclose_grace", {})
+            try:
+                _preclose_naked_flatten(client, held_by, now, plan, grace_state)
+            except Exception as e:                          # a backstop bug must never abort the cycle
+                plan["preclose_error"] = f"{e!r}"[:160]
+                print(f"WARNING preclose flatten pass RAISED: {e!r} — cycle continues")
+            st["preclose_grace"] = grace_state
+
         plan.update({
             "footprint": len(footprint), "quoted_markets": len(desired),
             "cancels": len(cancels), "creates": len(creates),
@@ -1965,6 +1993,148 @@ def _flatten_all(client):
         ok, c = flatten_to_zero(client, t, oids)
         print(f"flatten: ESCALATED {t} pos={pos:+.2f} -> taker residual "
               f"{'FLAT' if ok else 'RESIDUAL (check manually)'} ({c} crosses)")
+
+
+def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4):
+    """Cross AT MOST cap_ct contracts to the REDUCING side with marketable IOC orders, WITHOUT
+    cancelling ANY resting order — the taker is ADDITIVE (pre-close settlement flatten, reason 3).
+
+    Contrast with flatten_to_zero, which (a) reads the ticker's FULL venue position and crosses
+    ALL of it — including a paired leg — and (b) cancels our resting orders FIRST. Here the caller
+    passes cap_ct = |naked| (the UNPAIRED residual only, from ladder_pairing), and NOTHING is
+    cancelled. Crossing is HARD-CAPPED at cap_ct and decremented by the venue's CONFIRMED
+    fill_count each pass (never a lagging positions re-read), so cumulative crossing can PROVABLY
+    never exceed |naked| — a paired leg is never touched (reason 1).
+
+    NO SELF-TRADE despite the un-cancelled resting exit: our reducing maker quote sits on the
+    COMPLEMENTARY book side (long-yes -> a resting NO bid == a YES ask at 1-bn, ABOVE the YES bid
+    we hit), so a same-side IOC never matches it; and if Kalshi's self-match prevention ever did
+    fire, the taker simply fails to fill and the resting exit REMAINS — which is exactly the
+    desired never-strand outcome. Returns (flat_bool, n_contracts_crossed)."""
+    remaining = int(round(abs(cap_ct)))
+    if remaining < max(1, int(INV_TOLERANCE)):
+        return True, 0
+    crossed = 0
+    for _ in range(tries):
+        if remaining < max(1, int(INV_TOLERANCE)):
+            break
+        try:
+            ob = public_get(f"/trade-api/v2/markets/{ticker}/orderbook").get("orderbook_fp") or {}
+        except Exception:
+            break
+        yb, ya = _touch(ob)
+        price, side = (yb, "ask") if long_yes else (ya, "bid")   # long yes->sell yes; long no->buy yes
+        if price is None or not (0.01 <= price <= 0.99):
+            break
+        try:
+            resp = client.create_order_v2(ticker, side, remaining, price,
+                                          time_in_force="immediate_or_cancel", post_only=False)
+            o = resp.get("order") if isinstance(resp.get("order"), dict) else resp
+            o = o or {}
+            fill = float(o.get("fill_count") or 0)             # CONFIRMED fill (venue-authoritative)
+            # IOC must never rest; if the venue left it open (didn't honor IOC), cancel THAT order
+            # (never our resting maker exit) so a naked non-post_only taker can't linger (fix G).
+            if str(o.get("status") or "").lower() in ("resting", "open", "active"):
+                try:
+                    client.cancel_order(o.get("order_id"))
+                except Exception:
+                    pass
+            remaining -= int(round(fill))
+            crossed += int(round(fill))
+            if fill <= 0:
+                break                                          # nothing at the touch; don't spin
+        except Exception:
+            break
+    return remaining < max(1, int(INV_TOLERANCE)), crossed
+
+
+def _default_preclose_close_time(ticker):
+    """MARKET close_time (trading END) for the pre-close flatten window — NOT the reward-period
+    end_date carried in the footprint program (they can differ: gas-daily trades until 03:59Z but
+    the reward period / settlement is separate). Read straight off the market, like the settle
+    backstop. Returns the ISO string or None (unknown clock -> caller must NOT taker)."""
+    try:
+        return public_get(f"/trade-api/v2/markets/{ticker}").get("market", {}).get("close_time")
+    except Exception:
+        return None
+
+
+def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
+                            close_time_of=_default_preclose_close_time):
+    """NAKED-ONLY PRE-CLOSE SETTLEMENT FLATTEN (2026-07-24). For each event, exit ONLY the naked
+    (unpaired, net-directional) ladder residual before the MARKET CLOSES, so it never rides into
+    settlement; leave the FLOORED pairs (risk ~ strike gap) to self-hedge. This is the missing
+    ACTIVE flatten — WIND_DOWN only STOPS quoting and the late-life gate only blocks ENTRY; nothing
+    today crosses the naked residual before close, it just rides.
+
+    Composition & the three reasons TAKER_FLATTEN was disabled (KALSHI_HANDOFF_2026-07-23 §2):
+      1. CROSSES-NAKED-ONLY: the naked residual is ladder_pairing(held_by); the taker is capped at
+         |naked| via _taker_cross_capped, so a paired leg is provably never crossed (the GASW-4.140
+         bug: naked +6 of a +40 hold must cross <= 6, never 40).
+      2. NAKED + NEAR-CLOSE ONLY: fires only WITHIN PRECLOSE_FLATTEN_MIN of MARKET CLOSE and only on
+         a real naked residual (>= STOP_TAKER_MIN_CT after grace) — not the always-on whole-position
+         de-hedge that paid ~8% spread on live pairs.
+      3. NEVER-STRANDS-THE-EXIT: MAKER-FIRST (the reducing quote is rested by the unwind path this
+         same cycle) + a STOP_ESCALATE_S grace; the taker is ADDITIVE and cancels NOTHING, so a
+         taker that cannot fill on a one-sided book leaves the resting maker exit in place.
+
+    grace_state: {ticker: iso_first_seen_naked_in_window}, persisted in quoter_state across cycles
+    (a per-cycle process; the clock cannot live in memory). Cleared when a ticker leaves the window
+    or goes flat. Mutated in place. Guarded by PRECLOSE_FLATTEN + non-dry_run at the call site;
+    telemetry (plan keys) is written ONLY when the mechanism actually engages, so a flag-OFF plan
+    row is byte-identical to legacy."""
+    if not held_by:
+        return
+    naked_by = ladder_pairing(held_by)
+    for t, npos in naked_by.items():
+        if abs(npos) < INV_TOLERANCE:
+            grace_state.pop(t, None)                       # flat/paired -> forget any grace clock
+            continue
+        try:
+            close = close_time_of(t)
+            mins = (parse_iso(close) - now).total_seconds() / 60.0 if close else None
+        except Exception:
+            mins = None
+        if mins is None:
+            # the ONLY arming signal (the market clock) is unknown -> do NOT taker on a blind
+            # clock (mirror the settle backstop); count it so a persistent blind spot is visible.
+            plan["preclose_check_failed"] = plan.get("preclose_check_failed", 0) + 1
+            continue
+        if mins > PRECLOSE_FLATTEN_MIN:
+            grace_state.pop(t, None)                       # not in the window yet -> reset the clock
+            continue
+        # --- in the pre-close window WITH a naked residual ---
+        plan["preclose_flatten"] = 1
+        plan["preclose_naked_ct"] = round(plan.get("preclose_naked_ct", 0.0) + abs(npos), 2)
+        # MAKER-FIRST grace: the reducing maker quote is (re)rested every cycle by the unwind path;
+        # record when we FIRST saw this ticker naked-in-window and give the passive offset
+        # STOP_ESCALATE_S to fill before crossing. Taker only AFTER the grace AND still material.
+        first = grace_state.setdefault(t, now.isoformat())
+        try:
+            grace_elapsed = (now - parse_iso(first)).total_seconds()
+        except Exception:
+            grace_state[t] = now.isoformat()               # unparseable stamp -> restart the clock
+            grace_elapsed = 0.0
+        if grace_elapsed < STOP_ESCALATE_S:
+            continue                                       # maker grace still running -> no taker
+        if abs(npos) < STOP_TAKER_MIN_CT:
+            continue                                       # residue below taker threshold -> leave resting
+        # TAKER: cross AT MOST |naked|, additive, cancelling nothing (reasons 1 & 3).
+        if client.mode == "dry_run":
+            continue                                       # never taker in plan-only mode
+        try:
+            flat, nc = _taker_cross_capped(client, t, int(round(abs(npos))), npos > 0)
+        except Exception as e:
+            plan["preclose_taker_failed"] = plan.get("preclose_taker_failed", 0) + 1
+            print(f"WARNING preclose flatten RAISED on {t} (naked {npos:+.2f}): {e!r}")
+            continue
+        plan["preclose_taker_ct"] = round(plan.get("preclose_taker_ct", 0.0) + nc, 2)
+        print(f"preclose flatten {t}: naked {npos:+.2f}, {mins:.1f}min to close -> taker crossed "
+              f"{nc} ct ({'FLAT' if flat else 'RESIDUAL — maker exit remains resting'})")
+        if flat:
+            grace_state.pop(t, None)                       # naked cleared -> forget the clock
+        else:
+            plan["preclose_taker_failed"] = plan.get("preclose_taker_failed", 0) + 1
 
 
 def naked_held_cost(held_by, cost_by):
