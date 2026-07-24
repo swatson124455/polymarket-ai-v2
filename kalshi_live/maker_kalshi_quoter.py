@@ -173,6 +173,57 @@ MAX_TOTAL_CAPITAL = _envf("KALSHI_MAX_TOTAL_CAPITAL", 10000.0)  # $ cap on the w
 CAPTURE_GATE = _envi("KALSHI_CAPTURE_GATE", 0)                 # 0 = today's exact behavior, byte-for-byte
 CAPTURE_MIN_USD_DAY = _envf("KALSHI_CAPTURE_MIN_USD_DAY", 5.0)  # model $/day floor (see above)
 CAPTURE_DF_DEFAULT = _envf("KALSHI_CAPTURE_DF", 0.5)          # discount_factor_bps=5000 => 0.50 (live)
+# --- NET-EV GATE (KALSHI_NETEV_GATE, default 0 = OFF, provable no-op) ----------------------------
+# The RECEIPT-CALIBRATED market-quality brain. Every gate above (unqualifiable, selection, capture,
+# stand-down) asks a REWARD question — "can the book pay / can WE capture a slice". None asks the
+# NET question: a family can capture reward and STILL lose money if its adverse-fill bleed exceeds
+# the reward. This gate answers it from ACTUAL RECEIPTS: kalshi_netev_calibrate turns the transaction
+# CSV (credits) + per-trade fill P&L (fees included) into a per-FAMILY realized NET % of notional
+# (canon §M8: GAS +1.1% ✅, TEMP −9.2% ❌), refreshed offline each export. Loaded from disk at
+# startup -> NO extra per-cycle API read.
+#   FLAT + family net < NETEV_MIN_MARGIN_PCT  -> SKIP (a net-negative family is money-losing to open).
+#   HOLDING                                   -> REDUCE-ONLY (rest ONLY the reducing side at full |inv|,
+#                                                a clone of the capture/wind-down reduce-only path) —
+#                                                de-risk is NEVER blocked or down-sized.
+#   UNPROVEN family (no receipt credits)      -> conservative R4 model fallback (§M7 haircut): open
+#                                                only if prospective_capture/HAIRCUT − fill-fingerprint
+#                                                > 0, else unproven-skip. Labelled model-not-receipt.
+# Void/activate books are scoped OUT (as in the capture gate). This SUPERSEDES the pool-only
+# KALSHI_STANDDOWN (density only) and the reward-only KALSHI_CAPTURE_GATE (model capture only): both
+# answer a strictly weaker question. They compose harmlessly if co-enabled (each only skips/shrinks
+# further), but net-EV is the complete signal. Ships OFF -> the default only bites once flipped.
+NETEV_GATE = _envi("KALSHI_NETEV_GATE", 0)                     # 0 = today's exact behavior, byte-for-byte
+NETEV_MIN_MARGIN_PCT = _envf("KALSHI_NETEV_MIN_MARGIN_PCT", 0.0)  # family net% floor (0 => skip net-negative)
+NETEV_MODEL_HAIRCUT = _envf("KALSHI_NETEV_MODEL_HAIRCUT", 3.0)    # §M7 model over-prediction haircut (unproven)
+NETEV_FINGERPRINT_USD_DAY = _envf("KALSHI_NETEV_FINGERPRINT_USD_DAY", 5.0)  # conservative fill cost, unproven series
+NETEV_TABLE_PATH = os.environ.get("KALSHI_NETEV_TABLE",
+                                  os.path.join(DATA_DIR, "kalshi_netev_table.json"))
+# family rules kept LOCAL (byte-equal to kalshi_netev_calibrate.family_of, pinned in test_netev_gate)
+# so the calibration module stays out of the live quoter's import graph (same discipline as the
+# _qualifying_score replica).
+NETEV_FAMILY_RULES = (("KXAAAGAS", "gas"), ("KXTEMP", "temp"))
+
+
+def _netev_family(ticker):
+    """Family bucket for the net-EV gate. Byte-equivalent to kalshi_netev_calibrate.family_of."""
+    t = ticker or ""
+    for prefix, fam in NETEV_FAMILY_RULES:
+        if t.startswith(prefix):
+            return fam
+    return t.split("-")[0]
+
+
+def _load_netev_table():
+    """Load the calibration table from disk (fail-OPEN to {} -> every family unproven, never blocks)."""
+    try:
+        import kalshi_netev_calibrate
+        return kalshi_netev_calibrate.load_table(NETEV_TABLE_PATH)
+    except Exception:
+        return {}
+
+
+# loaded ONCE at import, and ONLY when the flag is on (flag-off does zero file IO -> provable no-op)
+NETEV_TABLE = _load_netev_table() if NETEV_GATE else {}
 # FUNDING GATE (KALSHI_FUNDING_GATE, default 0 = OFF, provable no-op). When OFF the accumulating
 # capital gate is the legacy `committed (= surviving resting notional + held_cost) vs
 # MAX_TOTAL_CAPITAL`, byte-for-byte. When ON it STOPS counting already-spent held_cost (that cash
@@ -693,6 +744,44 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if stats is not None:
             stats["unqualifiable"] = stats.get("unqualifiable", 0) + 1
         return []                                   # cannot reach two-sided Target Size -> $0 reward
+    # NET-EV GATE (KALSHI_NETEV_GATE, default 0 = provable no-op) — the RECEIPT-CALIBRATED brain, and
+    # the COMPLETE signal that supersedes the reward-only capture gate + pool-only stand-down. Look up
+    # this market's FAMILY net-EV (credits − fill P&L − fees, per kalshi_netev_calibrate). A family
+    # calibrated NET-NEGATIVE (net% below NETEV_MIN_MARGIN_PCT) is POOR FOR US -> FLAT skip / HOLDING
+    # reduce-only (clone of the capture reduce-only block; de-risk never blocked). An UNPROVEN family
+    # (no receipt credits) falls back to the conservative R4 model (prospective capture / haircut minus
+    # the fill fingerprint) -> open only if positive, else unproven-skip. Void books scoped OUT.
+    if NETEV_GATE and not void:
+        fam = _netev_family(m["ticker"])
+        ent = NETEV_TABLE.get(fam)
+        if ent is not None and ent.get("confidence") not in (None, "unproven"):
+            net_pct = ent.get("net_pct_notional")           # RECEIPT signal (net % of notional)
+            poor = net_pct is not None and net_pct < NETEV_MIN_MARGIN_PCT
+            signal = net_pct if net_pct is not None else 0.0
+        else:                                               # UNPROVEN: conservative model fallback
+            pc = _prospective_capture(m, yl, nl, best_y, best_n, target)
+            signal = pc / NETEV_MODEL_HAIRCUT - NETEV_FINGERPRINT_USD_DAY
+            poor = signal <= 0.0                            # model-not-receipt: open only if +ve
+        if stats is not None:
+            stats["netev_min_signal"] = min(stats.get("netev_min_signal", 1e18), signal)
+        if poor:
+            if stats is not None:
+                stats["netev_skipped"] = stats.get("netev_skipped", 0) + 1
+                _nf = stats.setdefault("netev_families", {})
+                _nf[fam] = _nf.get(fam, 0) + 1
+            if abs(inv) < INV_TOLERANCE:
+                return []                                   # FLAT + net-negative-for-us -> skip
+            if inv > 0:                                     # HOLDING long yes -> rest reducing NO only
+                up = _unwind_price(best_n, cost)
+                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
+                    return []                               # loss-cap out of range -> ride to backstop
+                return [{"side": "no", "price_dollars": up,
+                         "count": _unwind_size(_capped_join(up, best_y), up, inv), "reason": "unwind"}]
+            up = _unwind_price(best_y, cost)                # HOLDING long no -> rest reducing YES only
+            if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
+                return []
+            return [{"side": "yes", "price_dollars": up,
+                     "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
     # CAPTURE GATE (KALSHI_CAPTURE_GATE, default 0 = provable no-op) — the market-quality brain the
     # unqualifiable/selection gates lack: they check the BOOK can pay; this checks WE get paid. On a
     # two-sided JOIN book, compute our PROSPECTIVE R4 capture $/day (our_size scored at ref / (book
@@ -1664,6 +1753,18 @@ def run_once():
             plan["capture_skipped_markets"] = qstats.get("capture_skipped", 0)
             if qstats.get("capture_skipped"):
                 plan["capture_min_pc_usd_day"] = round(qstats.get("capture_min_pc", 0.0), 3)
+        # net-EV observability — emitted ONLY when the flag is on so a flag-OFF plan row is
+        # byte-identical to the legacy output (same discipline as the funding/pivot/standdown/capture
+        # blocks). netev_skipped_markets = markets skipped/reduced this cycle because their FAMILY is
+        # calibrated net-negative (or the unproven model was <=0); netev_skipped_families = the
+        # per-family breakdown; netev_min_signal = the worst net% (receipt) or model $/day that tripped.
+        if NETEV_GATE:
+            plan["netev_gate"] = 1
+            plan["netev_min_margin_pct"] = NETEV_MIN_MARGIN_PCT
+            plan["netev_skipped_markets"] = qstats.get("netev_skipped", 0)
+            if qstats.get("netev_skipped"):
+                plan["netev_min_signal"] = round(qstats.get("netev_min_signal", 0.0), 4)
+                plan["netev_skipped_families"] = qstats.get("netev_families", {})
     finally:
         # bookkeeping ALWAYS runs, even if the cycle body raised
         append_plan(plan)
