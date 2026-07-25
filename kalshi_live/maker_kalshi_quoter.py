@@ -218,11 +218,30 @@ MKT_TELEMETRY = _envi("KALSHI_MKT_TELEMETRY", 1)
 #
 # THE FLOOR IS ECONOMIC, NOT A PREFERENCE: Kalshi documents "Minimum payout: $1.00 (rounded down to
 # nearest cent)". Below a dollar the credit is ZERO while the fill risk is unchanged — so quoting
-# a market that cannot clear $1 for the remaining window is paying for a lottery ticket with no
+# a market that cannot clear it for the remaining window is paying for a lottery ticket with no
 # prize. Scope caveat: the help text does not state $1.00 per WHAT; our 31 reward rows are
 # consistent with per market per period and the gate assumes that reading.
+#
+# WHY THE GATE SITS AT $1.20, NOT $1.00 (operator decision 2026-07-25): the estimate feeding this
+# gate is a MODEL — it is known to over-predict, the presence factor is measured off a small sample,
+# and the venue floor is a CLIFF (a cent short pays zero, not 99 cents). Setting the gate at the
+# cliff edge means every modelling error lands on the wrong side of it. A 20% margin buys room to
+# be imprecise, and what it gives up is worth pennies against the fill risk of holding a position
+# in a market that was never going to pay.
+# --- AMEND-ON-DECREASE (KALSHI_AMEND_DECREASE, default 0 = OFF, provable no-op) -----------------
+# diff_orders survives an order only on an exact (side, price, count) match, so trimming a resting
+# order by ONE contract cancels it and rebuilds it at the BACK of the queue. Kalshi preserves queue
+# position for a size DECREASE and nothing else, so routing just that case through amend is free
+# time-on-book with no behavioural trade-off. Increases and reprices forfeit queue either way and
+# deliberately keep the existing path.
+# ⚠ The amend endpoint is UNVERIFIED against the live venue (exercising it would mutate real
+# resting orders on a parked account), which is why this ships OFF and its first live cycle needs
+# watching.
+AMEND_DECREASE = _envi("KALSHI_AMEND_DECREASE", 0)
+
 PRESENCE_GATE = _envi("KALSHI_PRESENCE_GATE", 0)              # 0 = today's exact behavior
-MIN_CREDIT_USD = _envf("KALSHI_MIN_CREDIT_USD", 1.00)         # the documented payout floor
+VENUE_PAYOUT_FLOOR_USD = 1.00                                 # Kalshi's documented minimum payout
+MIN_CREDIT_USD = _envf("KALSHI_MIN_CREDIT_USD", 1.20)         # venue floor + 20% modelling margin
 PRESENCE_DEFAULT = _envf("KALSHI_PRESENCE_DEFAULT", 1.0)      # no table -> assume perfect execution
 PRESENCE_TABLE_PATH = os.environ.get(
     "KALSHI_PRESENCE_TABLE", os.path.join(DATA_DIR, "kalshi_presence_table.json"))
@@ -1194,6 +1213,53 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     return quotes
 
 
+def split_amends(standing, desired):
+    """Pull out the (ticker, side, price) pairs where the ONLY change is a SMALLER count, and
+    return (amends, standing_left, desired_left) with those pairs removed from both sides.
+
+    WHY: diff_orders survives an order only on an exact (side, price, count) match, so changing a
+    resting order's size by a single contract cancels it and rebuilds it at the BACK of the queue.
+    Measured over the clean slice of our own order history (478 zero-fill cancels, 2026-07-23T20:05Z
+    onward): 100 were same-price-different-size, of which 44 were DECREASES — queue position thrown
+    away for nothing. Kalshi's amend preserves queue position for exactly that case and no other:
+      "Amending a resting order preserves queue position only when the amendment decreases size.
+       All other amendments — like increasing size or changing price forfeit queue position and
+       place the order at the back of the queue."
+    So increases and reprices are deliberately NOT routed here — amend would buy nothing and the
+    existing cancel+create path is already correct for them.
+
+    Pure function, no I/O. Caller runs diff_orders on what is left, so with the flag off the
+    behaviour is byte-for-byte unchanged."""
+    amends = []
+    s_left = {t: list(v) for t, v in standing.items()}
+    d_left = {t: list(v) for t, v in desired.items()}
+    for t in set(standing) & set(desired):
+        # index the desired book by (side, price); a duplicate side+price is ambiguous -> skip the
+        # whole ticker rather than guess which resting order a given target refers to.
+        want = {}
+        ambiguous = set()
+        for w in desired.get(t, []):
+            k = (w["side"], round(w["price_dollars"], 4))
+            if k in want:
+                ambiguous.add(k)
+            want[k] = w
+        for o in list(s_left.get(t, [])):
+            k = (o["side"], round(o["price_dollars"], 4))
+            w = want.get(k)
+            if w is None or k in ambiguous:
+                continue
+            if not (0 < w["count"] < o["count"]):
+                continue                      # only a strict DECREASE preserves queue position
+            amends.append({"order_id": o["order_id"], "ticker": t, "side": o["side"],
+                           "price_dollars": o["price_dollars"], "count": w["count"],
+                           "from_count": o["count"], "reason": w.get("reason")})
+            s_left[t] = [x for x in s_left[t] if x is not o]
+            d_left[t] = [x for x in d_left[t] if x is not w]
+    s_left = {t: v for t, v in s_left.items() if v}
+    d_left = {t: v for t, v in d_left.items() if v}
+    return amends, s_left, d_left
+
+
 def diff_orders(standing, desired):
     """standing: {ticker: [{side, price_dollars, count, order_id}]};
     desired:  {ticker: [{side, price_dollars, count, reason}]}.
@@ -1858,11 +1924,33 @@ def run_once():
         plan["at_ref_pct"] = round(100 * at_ref / max(at_ref + off_ref, 1e-9), 1)
 
         desired, capped_markets = cap_desired(desired, usd_day)     # aggregate $ cap
-        cancels, creates = diff_orders(standing, desired)
+        # AMEND-ON-DECREASE: pull out same-price size REDUCTIONS so they keep their queue position
+        # instead of being cancelled and rebuilt at the back. `standing` itself is deliberately NOT
+        # rebound — everything downstream (committed capital, failed-cancel deferral, the blackout
+        # guard) keeps counting the amended order at its ORIGINAL, LARGER size. That over-counts
+        # committed capital by the trimmed amount for one cycle, which is the safe direction.
+        amends = []
+        _std, _des = standing, desired
+        if AMEND_DECREASE:
+            amends, _std, _des = split_amends(standing, desired)
+        cancels, creates = diff_orders(_std, _des)
         creates, budget_dropped = bound_creates(creates, cancels, usd_day)  # whole-ticker
 
         # execute — each order isolated; one failure never aborts the rest
         cancel_fail = create_fail = create_skipped = 0
+        # AMENDS FIRST: a decrease only ever frees exposure, so it can never over-commit and must
+        # not be starved by the write budget behind a queue of accumulating creates. A failure here
+        # is benign — the order simply keeps resting at its old, LARGER size, which is the size
+        # every capital check above already assumed.
+        amend_fail = 0
+        for _a in amends:
+            try:
+                client.amend_quote(_a["order_id"], _a["ticker"], _a["side"],
+                                   _a["price_dollars"], _a["count"])
+            except Exception as e:
+                amend_fail += 1
+                if first_create_err is None:
+                    first_create_err = f"amend {_a['ticker']}: {e!r}"
         oid_ticker = {o["order_id"]: t for t, ol in standing.items() for o in ol}
         cancelled_ok = set()
         for oid in cancels:
@@ -2034,6 +2122,12 @@ def run_once():
         # PRESENCE GATE telemetry. presence_skipped_execution_only is the one to watch: markets that
         # WOULD have cleared the $1 floor at perfect execution and were skipped only because our
         # measured presence dragged them under. That is our defect, not the market's economics.
+        # amends_ct = contracts of queue position PRESERVED this cycle that the legacy path would
+        # have cancelled and rebuilt at the back of the book.
+        if AMEND_DECREASE:
+            plan["amends"] = len(amends)
+            plan["amend_fail"] = amend_fail
+            plan["amends_ct"] = sum(a["from_count"] - a["count"] for a in amends)
         if PRESENCE_GATE:
             plan["presence_gate"] = 1
             plan["presence_floor_usd"] = MIN_CREDIT_USD

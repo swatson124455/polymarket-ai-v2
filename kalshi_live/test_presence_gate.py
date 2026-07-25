@@ -163,6 +163,30 @@ def test_window_fraction_is_clamped_to_zero_one():
     assert q._window_frac_left({"end": now.isoformat(), "life_min": 0}, now) == 1.0
 
 
+def test_the_margin_band_between_venue_floor_and_gate_is_rejected(monkeypatch):
+    """The whole point of the 20% margin: a market modelled at $1.05 clears the VENUE floor but is
+    inside our error bars, so the gate must still refuse it. Pinning the band explicitly — a floor
+    set at exactly $1.00 would let this through and it would be the first thing to pay zero."""
+    _cfg_gate(monkeypatch, on=True, floor=q.MIN_CREDIT_USD)      # the SHIPPED floor, not 1.0
+    now = q.utcnow()
+    yl, nl = _levels(_THIN)
+    # tune hours-left so the expected credit lands between $1.00 and $1.20
+    band = None
+    for hours in [h / 4.0 for h in range(40, 120)]:
+        m = _late(now, hours_left=hours)
+        exp, _, _ = q._expected_credit_usd(m, yl, nl, 0.50, 0.49, 1000, now)
+        if q.VENUE_PAYOUT_FLOOR_USD < exp < q.MIN_CREDIT_USD:
+            band = (m, exp)
+            break
+    assert band, "fixture must produce a credit inside the margin band"
+    m, exp = band
+    stats = {}
+    assert q.desired_quotes(m, _THIN["yes_dollars"], _THIN["no_dollars"], now,
+                            inv=0.0, stats=stats) == []
+    assert stats["presence_skipped"] == 1
+    assert q.VENUE_PAYOUT_FLOOR_USD < exp < q.MIN_CREDIT_USD
+
+
 def test_absent_table_is_neutral_not_pessimistic(monkeypatch):
     """A missing calibration must NOT make the bot cautious — only a measured number may."""
     _cfg_gate(monkeypatch, on=True, floor=1.0, table={})
@@ -176,7 +200,13 @@ def test_shipped_defaults_are_the_safe_ones():
     PRESENCE_GATE must ship OFF so installing this changes nothing until it is switched on."""
     assert q.PRESENCE_DEFAULT == 1.0
     assert q.PRESENCE_GATE == 0
-    assert q.MIN_CREDIT_USD == 1.00
+    # The gate sits ABOVE the venue's $1.00 floor on purpose (operator decision 2026-07-25): the
+    # estimate is a model and the floor is a cliff, so quoting right at the edge puts every
+    # modelling error on the losing side of it. The 20% margin is worth pennies against the fill
+    # risk of a market that was never going to pay.
+    assert q.VENUE_PAYOUT_FLOOR_USD == 1.00
+    assert q.MIN_CREDIT_USD == 1.20
+    assert q.MIN_CREDIT_USD > q.VENUE_PAYOUT_FLOOR_USD, "margin must be above the cliff, never at it"
 
 
 def test_measured_presence_lowers_the_estimate_and_is_counted_as_our_fault(monkeypatch):

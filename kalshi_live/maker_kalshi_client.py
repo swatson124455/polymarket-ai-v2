@@ -243,6 +243,41 @@ class KalshiOrderClient:
         return self._write("POST", f"{API_ROOT}/portfolio/events/orders/batched",
                            {"orders": orders})
 
+    def amend_order_v2(self, order_id, ticker, book_side, count, price_dollars,
+                       client_order_id=None):
+        """POST /portfolio/events/orders/{order_id}/amend — update price and/or max fillable count.
+
+        WHY IT EXISTS HERE — Kalshi docs, Amend Order (V2), verbatim:
+          "Amending a resting order preserves queue position only when the amendment decreases
+           size. All other amendments — like increasing size or changing price forfeit queue
+           position and place the order at the back of the queue."
+        So this is worth calling INSTEAD of cancel+create in exactly one case: an unchanged price
+        with a SMALLER count. Anywhere else it is equivalent to what we already do, and the
+        existing path stays.
+
+        ⚠ NOT VERIFIED AGAINST THE LIVE VENUE. Exercising it would mutate real resting orders on a
+        parked real-money account, so it is unit-tested only and its caller ships behind
+        KALSHI_AMEND_DECREASE (default 0). The body mirrors create_order_v2's proven encoding
+        (yes-scale decimal price, integer-string count); confirm on the first live cycle."""
+        body = {"ticker": ticker, "side": book_side, "count": str(int(count)),
+                "price": f"{price_dollars:.4f}"}
+        if client_order_id:
+            body["client_order_id"] = client_order_id
+        return self._write("POST", f"{API_ROOT}/portfolio/events/orders/{order_id}/amend", body)
+
+    def amend_quote(self, order_id, ticker, outcome, price_dollars, count, client_order_id=None):
+        """Maker-friendly wrapper mirroring create_quote's outcome->book_side mapping EXACTLY
+        (no @p -> ask @ 1-p). Getting this mapping wrong would amend the opposite side of the book,
+        so it is a deliberate copy of the proven create path rather than a re-derivation."""
+        if outcome == "yes":
+            return self.amend_order_v2(order_id, ticker, "bid", count, price_dollars,
+                                       client_order_id=client_order_id)
+        if outcome == "no":
+            return self.amend_order_v2(order_id, ticker, "ask", count,
+                                       round(1.0 - price_dollars, 4),
+                                       client_order_id=client_order_id)
+        raise ValueError(f"outcome must be 'yes'|'no', got {outcome!r}")
+
     def cancel_order(self, order_id):
         """DELETE /portfolio/events/orders/{id} — V2, verified demo 2026-07-19."""
         return self._write("DELETE", f"{API_ROOT}/portfolio/events/orders/{order_id}", None)
