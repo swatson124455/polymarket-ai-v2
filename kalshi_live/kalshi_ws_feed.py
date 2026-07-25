@@ -62,14 +62,18 @@ def _norm_price(p):
 
 
 def _norm_rows(raw):
-    """[[price, size], ...] in either dialect -> {price_dollars: size_ct}."""
+    """[[price, size], ...] in either dialect -> {price_dollars: size_ct}.
+    Row hygiene (review 07-25): drop non-positive prices/sizes and off-range
+    prices — a garbage row must never become a phantom level (best()=0.0)."""
     out = {}
     for row in raw or []:
         try:
             pr, sz = row[0], row[1]
         except (TypeError, IndexError):
             continue
-        out[round(_norm_price(pr), 4)] = _f(sz)
+        p, s = round(_norm_price(pr), 4), _f(sz)
+        if 0 < p < 1 and s > 0:
+            out[p] = s
     return out
 
 
@@ -99,8 +103,15 @@ class BookMirror:
         self.last_update_mono = 0.0
 
     def apply_snapshot(self, msg, seq=None):
-        self.yes = _norm_rows(_side_rows(msg, "yes"))
-        self.no = _norm_rows(_side_rows(msg, "no"))
+        yr, nr = _side_rows(msg, "yes"), _side_rows(msg, "no")
+        if yr is None and nr is None:
+            # NO recognized side key at all (next dialect migration): this is a
+            # book we cannot read, not an empty book — refuse to claim clean.
+            # (One-sided books legitimately send only one key — live-verified.)
+            self.dirty = True
+            return
+        self.yes = _norm_rows(yr)
+        self.no = _norm_rows(nr)
         self.seq = seq
         self.dirty = False
         self.last_update_mono = time.monotonic()
@@ -147,9 +158,28 @@ def _auth_headers():
     return KalshiAuth(key_id, pem).headers("GET", WS_PATH)
 
 
-async def _recv(ws):
-    """recv with a hard timeout on every await (ship discipline)."""
-    return await asyncio.wait_for(ws.recv(), timeout=RECV_TIMEOUT_S)
+async def _recv_or_stop(ws, stop_event):
+    """recv raced against stop_event so shutdown is ~instant even on an idle
+    book (review 07-25: a bare wait_for(recv, 300) made stop wait up to 300s).
+    Returns ("msg", raw) | ("stopped", None); raises TimeoutError on true idle."""
+    recv_f = asyncio.ensure_future(ws.recv())
+    if stop_event is None:
+        try:
+            return "msg", await asyncio.wait_for(recv_f, timeout=RECV_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            recv_f.cancel()
+            raise
+    stop_f = asyncio.ensure_future(stop_event.wait())
+    done, _ = await asyncio.wait({recv_f, stop_f}, timeout=RECV_TIMEOUT_S,
+                                 return_when=asyncio.FIRST_COMPLETED)
+    if stop_f in done and recv_f not in done:
+        recv_f.cancel()
+        return "stopped", None
+    stop_f.cancel()
+    if recv_f in done:
+        return "msg", recv_f.result()
+    recv_f.cancel()
+    raise asyncio.TimeoutError()
 
 
 class Feed:
@@ -168,6 +198,15 @@ class Feed:
         self.last_msg_mono = 0.0
         self._sub_seq = None                          # GLOBAL per-subscription seq (live-verified)
         self.feed_lat_ms = []                         # recv-time - exchange ts_ms (feed latency)
+        self.confirmed_channels = set()               # "subscribed" acks seen this connection
+        self.error_frames = 0
+
+    @property
+    def fills_confirmed(self):
+        """True only when the venue ACKed the fill channel THIS connection.
+        Review 07-25 BLOCKER: the fill channel is the hot path's only staleness
+        invalidation — an unacked subscription must gate hot writes OFF."""
+        return "fill" in self.confirmed_channels
 
     async def _connect(self):
         last_err = None
@@ -200,10 +239,23 @@ class Feed:
             d = json.loads(raw)
         except (ValueError, TypeError):
             return True
+        if not isinstance(d, dict):
+            return True                               # valid-JSON non-dict frame: ignore, never die
         self.msg_count += 1
         self.last_msg_mono = time.monotonic()
         typ = d.get("type") or ""
-        msg = d.get("msg") or {}
+        if typ == "subscribed":
+            ch = (d.get("msg") or {}).get("channel")
+            if ch:
+                self.confirmed_channels.add(ch)
+            return True
+        if typ == "error":
+            self.error_frames += 1
+            print(f"WS error frame: {str(d)[:200]}")
+            return False                              # reconnect; repeated errors back off in run()
+        msg = d.get("msg")
+        if not isinstance(msg, dict):
+            msg = {}
         seq = d.get("seq")
         if typ in ("orderbook_snapshot", "orderbook_delta") and seq is not None:
             if self._sub_seq is not None and seq != self._sub_seq + 1:
@@ -234,6 +286,7 @@ class Feed:
         """Connect/subscribe/dispatch until stop_event set or max_seconds up.
         Reconnects (fresh snapshots re-seed mirrors) on any socket error."""
         deadline = time.monotonic() + max_seconds if max_seconds else None
+        fails = 0                                     # consecutive failures -> escalating backoff
         while True:
             if stop_event is not None and stop_event.is_set():
                 return
@@ -241,6 +294,7 @@ class Feed:
                 return
             try:
                 ws = await self._connect()
+                self.confirmed_channels = set()       # acks are per-connection
                 try:
                     await self._subscribe(ws)
                     while True:
@@ -248,18 +302,27 @@ class Feed:
                             return
                         if deadline and time.monotonic() >= deadline:
                             return
-                        if not self._dispatch(await _recv(ws)):
-                            print("WS seq gap — reconnecting for fresh snapshots")
+                        kind, raw = await _recv_or_stop(ws, stop_event)
+                        if kind == "stopped":
+                            return
+                        fails = 0                     # a delivered frame = healthy connection
+                        if not self._dispatch(raw):
+                            print("WS seq gap/error — reconnecting for fresh snapshots")
                             break                     # reconnect loop re-subscribes
                 finally:
                     self._sub_seq = None
+                    self.confirmed_channels = set()
                     await ws.close()
-            except (websockets.exceptions.WebSocketException,
-                    ConnectionError, OSError, asyncio.TimeoutError) as e:
+            # BROAD except is deliberate (review 07-25 HIGH): a dispatch bug on one
+            # malformed frame must cost ONE reconnect, never silently kill the feed
+            # task (the daemon would degrade to a dumb timer with no signal).
+            except Exception as e:
+                fails += 1
                 for m in self.mirrors.values():
                     m.dirty = True                   # stale on disconnect — never trust across gaps
-                print(f"WS reconnect after {e!r}")
-                await asyncio.sleep(2.0)
+                backoff = min(2.0 * (2 ** min(fails - 1, 5)), 60.0)
+                print(f"WS reconnect after {e!r} (fail #{fails}, backoff {backoff:.0f}s)")
+                await asyncio.sleep(backoff)
 
 
 def smoke(seconds, tickers):

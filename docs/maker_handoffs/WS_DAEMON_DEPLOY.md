@@ -50,10 +50,22 @@ Rollback: stop the service, re-enable the timer. STOP file semantics unchanged
 `hot_reprice` rows with `reaction_ms` (Stage B only); any `*_error` rows;
 `foreign_writer` (means the timer is still alive — stop it).
 
-## Open items before Stage B arming
-1. Adversarial review of the hot path (reprice-only diff, standing-view drift,
-   breaker recompute parity with run_once).
-2. Fill-channel payload shape unverified (no fill occurred during smokes) —
-   verify the first live fill row before trusting `on_fill`.
-3. Kalshi WS docs for the `fill` channel name/params were not confirmed —
-   subscribe may need `fills` on prod; check the subscribe ack when armed.
+## Adversarial review status (2026-07-25)
+4-lens review ran (order-path, staleness/partial-fills, risk-parity, feed/async):
+verdict was unanimous DO-NOT-ARM as originally built — 4 BLOCKERs + 4 HIGHs, all
+mandatory findings now FIXED in the same-day pass (see commit): cancel-failure
+abort, cold/hot mutual exclusion (`in_cold` + ctx kill), reduce-side
+untouchable, mirror-depth precondition, fill-ack gate, notional headroom,
+unique client ids, dual-shape response parse, off-loop writes with worker
+re-validation, feed crash/liveness/ack hardening, STOP heartbeat widening.
+49 WS tests incl. one killing test per review finding; suite 259+2xf.
+
+## Still owed before Stage B arming (KALSHI_WS_HOT=1)
+1. RE-REVIEW of the fixed hot path (every reviewer conditioned arming on a
+   re-review after fixes — the fixes themselves are unreviewed code).
+2. Fill-channel LIVE verification: the "fill" channel name/payload was never
+   observed on prod (no fill occurred during smokes). The ack gate means an
+   unacked subscription now fails SAFE (hot stays off), but arming needs one
+   observed live fill row to confirm the payload shape `on_fill` parses.
+3. Note: demo-mode rehearsal is INVALID for Stage B (WS candidates point at
+   prod hosts; demo fills would come from the wrong account).
