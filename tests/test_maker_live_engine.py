@@ -2094,6 +2094,13 @@ def test_scan_targets_on_full_pass_conditions():
     # full-pass interval elapsed -> full pass
     scan, is_full = mle._scan_targets(True, u, {"a1"}, 101.5, 100.0, 1.0)
     assert is_full is True and scan is u
+    # EXACT boundary diff==full_s must be a full pass (>= not >), else a
+    # `>=`->`>` mutant survives (adversarial-review minor #2)
+    scan, is_full = mle._scan_targets(True, u, {"a1"}, 101.0, 100.0, 1.0)
+    assert is_full is True and scan is u
+    # just under the boundary -> sub-pass
+    scan, is_full = mle._scan_targets(True, u, {"a1"}, 100.999, 100.0, 1.0)
+    assert is_full is False
 
 
 def test_scan_targets_on_sub_pass_only_dirty_markets():

@@ -616,7 +616,9 @@ _WS_TICK = threading.Event()
 # markets holding a dirty asset (skipping the clean majority) so passes are
 # O(dirty) not O(universe) — the scale efficiency win. A FULL pass still runs on
 # the ws_full_s cadence (<=~1s) so freshness/gate/stale-cancel cover ALL markets
-# and nothing is starved. Accessed under BOOKS_LOCK. Empty/unused when flag OFF.
+# and nothing is starved. Accessed under BOOKS_LOCK. When the flag is OFF it is
+# still filled by the appliers and then snapshot-and-cleared every pass (a tiny
+# set add/copy, no behavioral effect) — the trading path is identical either way.
 _DIRTY = set()
 
 
@@ -640,7 +642,7 @@ def _apply_book_snapshot(asset, msg):
     if bids or asks:
         with BOOKS_LOCK:
             BOOKS[asset] = {"bids": bids, "asks": asks, "ts": time.time()}
-            _DIRTY.add(asset)   # mark for targeted reprice (Stage B; unused OFF)
+            _DIRTY.add(asset)   # mark for targeted reprice (Stage B; discarded each pass when OFF)
         _WS_TICK.set()          # wake the ws-hot loop (no-op when flag OFF)
 
 
@@ -661,7 +663,7 @@ def _apply_price_change(asset, msg):
             elif 0 < p < 1:
                 levels[p] = s
         book["ts"] = time.time()
-        _DIRTY.add(asset)       # mark for targeted reprice (Stage B; unused OFF)
+        _DIRTY.add(asset)       # mark for targeted reprice (Stage B; discarded each pass when OFF)
     _WS_TICK.set()              # wake the ws-hot loop (no-op when flag OFF)
 
 
@@ -686,7 +688,7 @@ def _apply_price_change_batched(msg):
             elif 0 < p < 1:
                 levels[p] = s
             book["ts"] = time.time()
-            _DIRTY.add(aid)    # mark for targeted reprice (Stage B; unused OFF)
+            _DIRTY.add(aid)    # mark for targeted reprice (Stage B; discarded each pass when OFF)
             changed = True
     if changed:                # wake only on a REAL tracked-book update
         _WS_TICK.set()         # (no-op when flag OFF); matches _apply_price_change
@@ -726,10 +728,15 @@ def _scan_targets(ws_targeted, universe, dirty_assets, now, last_full, full_s):
     in between can never starve a market of its safety checks.
 
     Hot sub-pass (is_full=False) scans ONLY markets holding a dirty (ticked)
-    asset — a clean market's book is unchanged, so its desired quote is unchanged
-    and the requote hysteresis would no-op it anyway; skipping it is behavior-
-    neutral for that pass. Pure function so the selection is unit/mutation
-    testable apart from the loop (extract-to-test, the codebase pattern)."""
+    asset — a clean market's book is unchanged, so its desired REQUOTE would
+    no-op on hysteresis anyway. NOT fully behavior-neutral, though: the fast
+    loop's per-market SAFETY CANCELS (stale-book cancel, newly-gated/halted/
+    rotation cancel) are deferred for a clean market until the next full pass,
+    i.e. at most ws_full_s (≤1s default) — the same bound as the pre-hot 1 Hz
+    loop, and independent of any tick (a market that STOPS ticking is clean, so
+    only the periodic full pass catches its staleness; keep ws_full_s tight).
+    Pure function so the selection is unit/mutation testable apart from the loop
+    (extract-to-test, the codebase pattern)."""
     if (not ws_targeted) or last_full <= 0.0 or (now - last_full >= full_s):
         return universe, True
     scan = [m for m in universe
@@ -2101,8 +2108,9 @@ def run(base, cfg):
 
         # ── fast loop: gates -> desired quotes -> gateway -> submit ─────────
         # Stage B: a hot sub-pass reprices only markets whose book ticked; a
-        # full pass (flag OFF, or every ws_full_s) still covers all markets so
-        # freshness/gates/stale-cancel are never starved. Dirty assets consumed
+        # full pass (flag OFF, or every ws_full_s) covers all markets, so a clean
+        # market's stale-book / gate cancel is deferred at most ws_full_s (≤1s
+        # default = the pre-hot 1 Hz bound), never starved. Dirty assets consumed
         # here; ticks arriving mid-pass survive to the next pass (snapshot diff).
         with BOOKS_LOCK:
             _dirty_snap = set(_DIRTY)
