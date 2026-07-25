@@ -9,9 +9,31 @@ must be added for the bot to see them return.
 
 ---
 
-## §1 — THE FINDING THAT CHANGES THE CONFIG
+## §0 — RETRACTION (same session, operator-caught)
 
-**Temp is the biggest earner by TOTAL, but it is the WORSE book per window.**
+**RETRACTED: "temp is the worse book per window."** That was a CAUSAL claim about temp-the-family
+built on a comparison that does not isolate the family. Temp and gas were quoted in **different
+eras**:
+
+| family | activity dates | share of its own reward |
+|---|---|---|
+| TEMP | 07-20 → 07-22 | **41.9%** ($23.06 of $55.03) on **07-20/07-21** |
+| GAS | 07-21, then 07-23 → 07-25 | **91.9%** ($30.89 of $33.04) on **07-23 onward** |
+
+07-20/07-21 is the launch-day defect window (taker crossing / aggressive entries, ~−$43.86, AGENT
+DEFECT). So the temp-vs-gas fill-cost split (−6.12¢/ct vs −1.55¢/ct) compares the **buggy era to
+the fixed era**, not two families — and I used it as load-bearing for the sizing recommendation.
+Per RULE SEVEN that is laundering an agent defect into a family property. The $/event comparison
+carries the same confound.
+
+**What survives** (arithmetic over `rewards_ui.tsv`, ESTABLISHED): the totals and counts in §1.
+**What does NOT survive**: any claim that temp is intrinsically a worse or better book. That is
+**unmeasured**, and the Stage-0 telemetry in §2 is what would measure it.
+
+## §1 — THE ARITHMETIC (totals hold; the causal reading in §0 does not)
+
+**Temp is the biggest earner by TOTAL.** Per-event it is smaller than gas — but see §0: the two
+families were not quoted in the same era, so this is NOT evidence about the families.
 
 Source: `rewards_ui.tsv`, the 31 canonical operator-UI reward rows summing to $88.07.
 ESTABLISHED.
@@ -35,14 +57,11 @@ Two robustness checks, both of which weaken temp further:
   of temp income; the **top 2 are 53.5%**. Leave-two-out leaves **$25.61 over 10 events, median
   $2.09**. The typical temp window pays ~$2, not ~$4.59 (the mean).
 
-Set against the handoff's measured fill cost — temp maker round trips **−6.12¢/ct** vs gas
-**−1.55¢/ct** (INFERRED: handoff-stated, **not re-derived this session**) — the shape is:
+The fill-cost split (temp −6.12¢/ct vs gas −1.55¢/ct) is **RETRACTED as family evidence** — see
+§0. It is era-confounded and cannot carry a sizing recommendation.
 
-> **Temp's edge is the NUMBER of windows. Temp's cost is per CONTRACT, and it is ~4x gas.**
-> ⇒ The correct temp configuration harvests MANY windows with the SMALLEST viable footprint each.
-> It is the opposite of sizing up.
-
-The ledger's own controlled triple already says this, and it is the only clean natural experiment
+What *does* still argue for a small footprint is a within-temp, same-hour comparison, which the
+era confound does not touch (all three events are in the same window):
 we have (same hour closing 2026-07-22T10:00Z, same pool, behaviourally identical):
 
 | event | footprint | paid |
@@ -76,6 +95,49 @@ the recommended path.** The 12-event history cannot settle it — its top 2 even
 income.
 
 ---
+
+## §2b — TEMP AND GAS ARE NOT WHERE THE MONEY IS
+
+Temp and gas are simply the two families we happened to quote. Live scan
+(`scratchpad/venue_scan.py`, 2026-07-25 ~21:4xZ, 90 orderbook reads, READ-ONLY):
+**venue = $182,503/day across 150 series / 2,271 active liquidity programs.** We quote 8 series.
+
+Ranked the top 30 series *by pool* by what a **20ct join at reference** would capture (same R4 walk
+the quoter uses; MODEL — known to over-predict 2–6x, so use it to RANK, never as a $ forecast):
+
+| modelled capture | pool | series | ours? |
+|--:|--:|---|---|
+| **$42.03/d** | $1,800/d | `KXVOGUECOVER` | no |
+| **$36.06/d** | $1,900/d | `KXMEDIACOVERSI` | no |
+| $7.05/d | $3,000/d | `KXMLBDEBUT` | no |
+| $6.16/d | $1,810/d | `KXVOTEPRIMARY` | no |
+| $5.65/d | **$10,470/d** | `KXFUNDRAISING` (biggest pool on the venue) | no |
+| … | | | |
+| **$0.00/d** | $5,400/d | **`KXAAAGASM`** — open decision #4 | no |
+| $0.00/d | $2,600/d | `KXMUSKNW` | **yes** |
+
+Three findings, all ESTABLISHED for this snapshot:
+
+1. **Pool is uncorrelated with capture.** Spearman rho(pool, modelled capture) over the 30 scanned
+   series = **+0.01**. This generalises the handoff's n=26 "pool does not separate paid from zero"
+   to the venue. **Ranking or selecting series by pool size is close to ranking at random.**
+2. **`KXAAAGASM` (open decision #4) scores ZERO** on its sampled strikes — R3 fails, i.e. one side
+   cannot reach Target Size, so the snapshot pays nobody. Rank 3 by pool, worthless on this
+   measure. That is an answer to the open question, and it is the opposite of "worth a look."
+3. **Only 1 of our 8 series appears in the top-30-by-pool set at all** (`KXMUSKNW`, and it scores
+   $0.00). None of our series is in the top 20 by capture.
+
+The two leaders share a signature: a **modest pool with almost no rival depth at the touch**
+(`KXVOGUECOVER-27-KEN`: y_book_df 31.7 / n_book_df 12.4 against Target 1000). We would own the
+DF-weighted denominator there.
+
+**CAVEATS — do not trade on this yet.** The model scores REWARD CAPTURE ONLY. It says nothing about
+fill cost or exit risk, and a book that thin at the touch is exactly where an adverse fill is
+hardest to exit — which is the shape behind the naked/one-sided settlement tail (AGENT DEFECT).
+It is a single instant, 3 sampled strikes per series, and — critically — **the scan selected the
+top 30 BY POOL, and pool is uncorrelated with capture, so its own selection criterion is nearly
+arbitrary.** The correct follow-up is a full 150-series sweep ranked by capture, then a fill-cost
+and exit-liquidity screen on the leaders.
 
 ## §3 — THE CONFIGURATION, READY TO APPLY (NOT APPLIED)
 
