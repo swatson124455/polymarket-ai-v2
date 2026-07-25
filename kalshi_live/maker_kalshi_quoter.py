@@ -173,6 +173,27 @@ MAX_TOTAL_CAPITAL = _envf("KALSHI_MAX_TOTAL_CAPITAL", 10000.0)  # $ cap on the w
 CAPTURE_GATE = _envi("KALSHI_CAPTURE_GATE", 0)                 # 0 = today's exact behavior, byte-for-byte
 CAPTURE_MIN_USD_DAY = _envf("KALSHI_CAPTURE_MIN_USD_DAY", 5.0)  # model $/day floor (see above)
 CAPTURE_DF_DEFAULT = _envf("KALSHI_CAPTURE_DF", 0.5)          # discount_factor_bps=5000 => 0.50 (live)
+
+# --- PER-MARKET REWARD TELEMETRY (KALSHI_MKT_TELEMETRY, default 1 = ON) --------------------------
+# WHY: "what actually pays" is currently unanswerable, and the blocker is telemetry, not analysis.
+# Plan rows are per-CYCLE, so the three events in the hour closing 2026-07-22T10:00Z that paid
+# $12.94 / $1.51 / $0.00 shared the same cycles and therefore share ONE at_ref_pct — the log cannot
+# discriminate the events it needs to. Pool size does not separate them either (975 vs 942 $/day).
+# R4 pays pro-rata by DF^N-weighted qualifying score, so the variable that separates paid from zero
+# is the COMPETING QUALIFYING DEPTH (the score denominator) — which nothing records today. This
+# emits ONE ROW PER MARKET PER CYCLE to quotes-YYYYMMDD.jsonl: our intended size, our price vs the
+# reference, and the rival qualifying book. Those are the three columns a reward model needs.
+#
+# COSTS NOTHING, RISKS NOTHING: pure observation over the orderbook the cycle ALREADY fetched — zero
+# extra API reads, zero write tokens — and it never feeds a gate. Every call site is wrapped so a
+# telemetry fault can never break a trading cycle.
+#
+# IT ALSO RUNS WHILE PARKED. The book is fetched and desired_quotes is evaluated for every footprint
+# market BEFORE the capital cap gates the create, so at KALSHI_MAX_TOTAL_CAPITAL=1 every column is
+# still measured, with our resting size honestly recorded as 0. That makes the competition
+# denominator observable on markets we have NEVER quoted — including KXTEMP* the moment its hourly
+# programs return — without resting a single contract.
+MKT_TELEMETRY = _envi("KALSHI_MKT_TELEMETRY", 1)
 # --- NET-EV GATE (KALSHI_NETEV_GATE, default 0 = OFF, provable no-op) ----------------------------
 # The RECEIPT-CALIBRATED market-quality brain. Every gate above (unqualifiable, selection, capture,
 # stand-down) asks a REWARD question — "can the book pay / can WE capture a slice". None asks the
@@ -692,6 +713,71 @@ def _prospective_capture(m, yl, nl, best_y, best_n, target):
         return 0.0
     snap = (ry / (1.0 + ry) + rn / (1.0 + rn)) / 2.0
     return snap * float(m.get("usd_day", 0.0) or 0.0)
+
+
+def _qualifying_breakdown(bids, target, df):
+    """OBSERVATION-ONLY companion to _qualifying_score: the SAME R4 walk, but it returns the BOOK
+    side of it (the reward DENOMINATOR) instead of our share. Returns
+    (df_total, cum_ct, ref, lowest_q, qualifies), where df_total = sum(DF^N * size) over the
+    qualifying set = the competing score our own order is diluted by.
+
+    Deliberately a SEPARATE function, not a new return value on _qualifying_score: that signature is
+    consumed by the capture gate and the net-EV gate and is pinned byte-equivalent to
+    kalshi_market_scorecard.qualifying_share, so it is not touched. test_market_telemetry pins this
+    walk against _qualifying_score so the two can never drift."""
+    bids = sorted(((p, s) for p, s in bids if s > 0), key=lambda x: -x[0])
+    if not bids or bids[0][0] >= 1.0:
+        return 0.0, 0.0, None, None, False
+    ref = bids[0][0]
+    cum = total = 0.0
+    lowest_q = ref
+    for price, size in bids:
+        n = round((ref - price) / TICK)
+        total += (df ** n) * size
+        cum += size
+        lowest_q = price
+        if cum >= target:
+            break
+    return total, cum, ref, lowest_q, (cum >= target)
+
+
+def _market_telemetry_row(cyc, now, m, yl, nl, quotes, own_side, inv, gates):
+    """Build ONE per-market-per-cycle telemetry row. Pure function (no I/O) so it is testable."""
+    t = m["ticker"]
+    target = float(m.get("target") or 0.0)
+    df = float(m.get("df", CAPTURE_DF_DEFAULT))
+    own_side = own_side or {}
+    row = {"ts": now.isoformat(), "cyc": cyc, "ticker": t, "series": t.split("-")[0],
+           "usd_day": round(float(m.get("usd_day") or 0.0), 4),
+           "target": target, "df": df, "inv": round(float(inv), 2)}
+    if gates:
+        row["gates"] = gates
+    shares = []
+    for tag, levels, side in (("y", yl, "yes"), ("n", nl, "no")):
+        df_total, cum, ref, low_q, qual = _qualifying_breakdown(levels, target, df)
+        oq = next((x for x in quotes if x.get("side") == side), None)
+        our_px = oq["price_dollars"] if oq else None
+        our_ct = float(oq["count"]) if oq else 0.0
+        score = 0.0
+        if qual and our_px is not None and low_q is not None and our_px >= low_q - 1e-9:
+            score = (df ** round((ref - our_px) / TICK)) * our_ct
+        share = score / (df_total + score) if (df_total + score) > 0 else 0.0
+        row[tag + "_ref"] = ref
+        row[tag + "_book_df"] = round(df_total, 2)      # INCLUDES our own resting order (public
+        row[tag + "_cum_ct"] = round(cum, 1)            # depth); *_rest_ct below makes the
+        row[tag + "_qual"] = bool(qual)                 # rival-only denominator recoverable.
+        row[tag + "_lowq"] = low_q
+        row[tag + "_px"] = our_px                       # our INTENDED price (None while gated)
+        row[tag + "_ct"] = our_ct                       # our INTENDED size (0 while gated/parked)
+        row[tag + "_rest_ct"] = float(own_side.get(side, 0.0) or 0.0)   # what is ACTUALLY resting
+        row[tag + "_score"] = round(score, 3)
+        row[tag + "_share"] = round(share, 6)
+        shares.append(share if qual else 0.0)
+    # R3: a snapshot pays only if BOTH sides qualify -> otherwise the market pays $0 to everyone.
+    two_sided = row["y_qual"] and row["n_qual"]
+    row["capture_usd_day"] = (round((sum(shares) / 2.0) * float(m.get("usd_day") or 0.0), 4)
+                              if two_sided else 0.0)
+    return row
 
 
 def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta=0.0, stats=None,
@@ -1443,6 +1529,11 @@ def run_once():
             _bn_best = max((p for p, _ in _bnl), default=None)
             if _by_best is not None and _bn_best is not None:
                 book_refs[t] = (_by_best, _bn_best)
+            # Snapshot the gate counters so THIS market's skip reason is attributable by diffing
+            # them after the call — desired_quotes returns a bare [] and its signature is a contract
+            # (Rule 2), so the reason is recovered without touching it.
+            _pre_stats = ({k: v for k, v in qstats.items() if type(v) is int}
+                          if MKT_TELEMETRY else {})
             try:
                 q = desired_quotes(m, ob.get("yes_dollars") or [], ob.get("no_dollars") or [],
                                    now, own=own.get(t), inv=naked_by.get(t, 0.0),
@@ -1457,6 +1548,20 @@ def run_once():
                     first_quote_err = f"{t}: {e!r}"
             if q:
                 desired[t] = q
+            # PER-MARKET REWARD TELEMETRY — observation only, and deliberately the LAST thing in the
+            # loop body: it reads state, writes one line, and can never alter `desired`. Wrapped so a
+            # telemetry fault (bad row, full disk) can never break a live trading cycle.
+            if MKT_TELEMETRY:
+                try:
+                    _gates = {k: v - _pre_stats.get(k, 0) for k, v in qstats.items()
+                              if type(v) is int and v - _pre_stats.get(k, 0) > 0}
+                    _row = _market_telemetry_row(cyc, now, m, _byl, _bnl, q,
+                                                 own.get(t), naked_by.get(t, 0.0), _gates)
+                    with open(os.path.join(DATA_DIR,
+                                           f"quotes-{now.strftime('%Y%m%d')}.jsonl"), "a") as _fh:
+                        _fh.write(json.dumps(_row, separators=(",", ":")) + "\n")
+                except Exception:
+                    pass
 
         # PIVOT: collapse `footprint` to what we ACTUALLY tried (the over-selected pool tail we
         # never reached is NOT part of this cycle's footprint). Every downstream consumer
