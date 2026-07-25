@@ -187,6 +187,13 @@ def load_config(env=None):
         "ws_hot": (env.get("MAKER_WS_HOT", "0")
                    .strip().lower() not in ("0", "false", "no", "off", "")),
         "ws_min_s": f("MAKER_WS_MIN_MS", 250.0) / 1000.0,
+        # Stage B targeted reprice: on hot sub-passes scan ONLY markets whose
+        # book ticked (skip the clean majority). Default OFF = every pass is a
+        # full universe pass (unchanged). ws_full_s bounds the full-pass cadence
+        # so freshness/gate/stale-cancel still cover all markets.
+        "ws_targeted": (env.get("MAKER_WS_TARGETED", "0")
+                        .strip().lower() not in ("0", "false", "no", "off", "")),
+        "ws_full_s": f("MAKER_WS_FULL_MS", 1000.0) / 1000.0,
     }
     # bounds validation — a nonsense knob must fail LOUD at start, not
     # corrupt the money path at runtime (review finding 15: negative
@@ -211,6 +218,8 @@ def load_config(env=None):
         raise ValueError("market count knobs must be > 0")
     if not (0.0 < out["ws_min_s"] < 1.0):
         raise ValueError("MAKER_WS_MIN_MS must be in (0, 1000)")
+    if not (0.0 < out["ws_full_s"] <= 10.0):
+        raise ValueError("MAKER_WS_FULL_MS must be in (0, 10000]")
     return out
 
 
@@ -602,6 +611,13 @@ GEN = {"n": 0}
 # into one wake; the min-interval floor (ws_min_s) bounds the cycle rate. With
 # the flag OFF the loop ignores this entirely and paces at exactly 1 Hz.
 _WS_TICK = threading.Event()
+# Stage B (MAKER_WS_TARGETED, default OFF): the set of ASSET ids whose book has
+# ticked since the last scan. On a hot sub-pass the fast loop reprices ONLY the
+# markets holding a dirty asset (skipping the clean majority) so passes are
+# O(dirty) not O(universe) — the scale efficiency win. A FULL pass still runs on
+# the ws_full_s cadence (<=~1s) so freshness/gate/stale-cancel cover ALL markets
+# and nothing is starved. Accessed under BOOKS_LOCK. Empty/unused when flag OFF.
+_DIRTY = set()
 
 
 def _apply_book_snapshot(asset, msg):
@@ -624,6 +640,7 @@ def _apply_book_snapshot(asset, msg):
     if bids or asks:
         with BOOKS_LOCK:
             BOOKS[asset] = {"bids": bids, "asks": asks, "ts": time.time()}
+            _DIRTY.add(asset)   # mark for targeted reprice (Stage B; unused OFF)
         _WS_TICK.set()          # wake the ws-hot loop (no-op when flag OFF)
 
 
@@ -644,6 +661,7 @@ def _apply_price_change(asset, msg):
             elif 0 < p < 1:
                 levels[p] = s
         book["ts"] = time.time()
+        _DIRTY.add(asset)       # mark for targeted reprice (Stage B; unused OFF)
     _WS_TICK.set()              # wake the ws-hot loop (no-op when flag OFF)
 
 
@@ -653,7 +671,8 @@ def _apply_price_change_batched(msg):
         for ch in msg.get("price_changes") or []:
             if not isinstance(ch, dict):
                 continue
-            book = BOOKS.get(str(ch.get("asset_id") or ""))
+            aid = str(ch.get("asset_id") or "")
+            book = BOOKS.get(aid)
             if not book:
                 continue
             try:
@@ -667,6 +686,7 @@ def _apply_price_change_batched(msg):
             elif 0 < p < 1:
                 levels[p] = s
             book["ts"] = time.time()
+            _DIRTY.add(aid)    # mark for targeted reprice (Stage B; unused OFF)
             changed = True
     if changed:                # wake only on a REAL tracked-book update
         _WS_TICK.set()         # (no-op when flag OFF); matches _apply_price_change
@@ -694,6 +714,27 @@ def _next_wait_plan(ws_hot, ws_min_s, elapsed):
     floor = max(0.0, ws_min_s - e)
     remaining = max(0.0, 1.0 - max(e, ws_min_s))
     return (floor, remaining)
+
+
+def _scan_targets(ws_targeted, universe, dirty_assets, now, last_full, full_s):
+    """Which markets the fast loop processes THIS pass. Returns (markets, is_full).
+
+    Full pass (is_full=True) scans ALL markets and is chosen when targeting is
+    OFF, or the full-pass interval elapsed, or there has been no full pass yet
+    (last_full==0). A full pass keeps freshness/gate/stale-cancel covering every
+    market on the ws_full_s cadence, so skipping clean markets on the sub-passes
+    in between can never starve a market of its safety checks.
+
+    Hot sub-pass (is_full=False) scans ONLY markets holding a dirty (ticked)
+    asset — a clean market's book is unchanged, so its desired quote is unchanged
+    and the requote hysteresis would no-op it anyway; skipping it is behavior-
+    neutral for that pass. Pure function so the selection is unit/mutation
+    testable apart from the loop (extract-to-test, the codebase pattern)."""
+    if (not ws_targeted) or last_full <= 0.0 or (now - last_full >= full_s):
+        return universe, True
+    scan = [m for m in universe
+            if m["yes"] in dirty_assets or m["no"] in dirty_assets]
+    return scan, False
 
 
 def _wait_next(cfg, cycle_started_at):
@@ -1821,7 +1862,9 @@ def run(base, cfg):
           f"allowlist={sorted(cfg['sector_allowlist']) or 'off'} "
           f"floor=${cfg['day_loss_floor']:.0f} halted={meta.get('halted', False)} "
           f"ws_hot={cfg['ws_hot']}"
-          + (f"(min={cfg['ws_min_s']*1000:.0f}ms)" if cfg['ws_hot'] else ""),
+          + (f"(min={cfg['ws_min_s']*1000:.0f}ms)" if cfg['ws_hot'] else "")
+          + (f" ws_targeted=True(full={cfg['ws_full_s']*1000:.0f}ms)"
+             if cfg['ws_targeted'] else ""),
           flush=True)
     if execc.live:
         # restart discipline: unknown standing orders are cancelled before
@@ -1886,6 +1929,7 @@ def run(base, cfg):
     last_discovery = 0.0
     last_minute = 0.0
     last_disk = 0.0
+    last_full = 0.0          # Stage B: last full-universe fast-loop pass
     hb = time.time()
     minute_n = 0
 
@@ -2056,9 +2100,24 @@ def run(base, cfg):
         rot_skip = set(meta.get("rot_skip") or [])
 
         # ── fast loop: gates -> desired quotes -> gateway -> submit ─────────
+        # Stage B: a hot sub-pass reprices only markets whose book ticked; a
+        # full pass (flag OFF, or every ws_full_s) still covers all markets so
+        # freshness/gates/stale-cancel are never starved. Dirty assets consumed
+        # here; ticks arriving mid-pass survive to the next pass (snapshot diff).
+        with BOOKS_LOCK:
+            _dirty_snap = set(_DIRTY)
+        scan, _is_full = _scan_targets(cfg["ws_targeted"], universe, _dirty_snap,
+                                       now, last_full, cfg["ws_full_s"])
+        if _is_full:
+            last_full = now
+            with BOOKS_LOCK:
+                _DIRTY.clear()
+        else:
+            with BOOKS_LOCK:
+                _DIRTY -= _dirty_snap
         placements = []
         pl_meta = []
-        for m in universe:
+        for m in scan:
             key = str(m["id"])
             st = st_of(key)
             st["gid"] = key

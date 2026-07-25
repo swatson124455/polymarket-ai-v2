@@ -2050,3 +2050,77 @@ def test_ws_tick_not_set_on_empty_or_missing_book():
     mle._apply_price_change_batched({"price_changes": [
         {"asset_id": "Y", "price": "0.41", "size": "3", "side": "BUY"}]})
     assert mle._WS_TICK.is_set()
+
+
+# ── WS hot path Stage B (targeted reprice): config + scan selection + dirty ──
+def test_ws_targeted_config_defaults_and_bounds():
+    c = mle.load_config(env={})
+    assert c["ws_targeted"] is False
+    assert c["ws_full_s"] == 1.0
+    assert mle.load_config(env={"MAKER_WS_TARGETED": "1"})["ws_targeted"] is True
+    for off in ("0", "false", "no", "off", "OFF", ""):
+        assert mle.load_config(env={"MAKER_WS_TARGETED": off})["ws_targeted"] is False
+    assert mle.load_config(env={"MAKER_WS_FULL_MS": "500"})["ws_full_s"] == 0.5
+    with pytest.raises(ValueError):
+        mle.load_config(env={"MAKER_WS_FULL_MS": "0"})
+    with pytest.raises(ValueError):
+        mle.load_config(env={"MAKER_WS_FULL_MS": "10001"})
+    assert mle.load_config(env={"MAKER_WS_FULL_MS": "10000"})["ws_full_s"] == 10.0
+
+
+def _uni():
+    return [mk(id="1", yes="a1", no="b1"), mk(id="2", yes="a2", no="b2"),
+            mk(id="3", yes="a3", no="b3")]
+
+
+def test_scan_targets_off_is_always_full_universe_identity():
+    u = _uni()
+    # OFF: every pass is the FULL universe, same object, is_full True — the
+    # rollback. True regardless of dirty/now/last_full. Kills any mutant that
+    # makes OFF targeted.
+    for now, lf, dirty in ((100.0, 99.9, {"a1"}), (100.0, 0.0, set()),
+                           (100.0, 50.0, {"a1", "a2", "a3"})):
+        scan, is_full = mle._scan_targets(False, u, dirty, now, lf, 1.0)
+        assert is_full is True and scan is u
+
+
+def test_scan_targets_on_full_pass_conditions():
+    u = _uni()
+    # no prior full pass (last_full==0) -> safety full pass. Use now < full_s so
+    # ONLY the last_full<=0 guard can force it (the interval check does NOT trip)
+    # — otherwise the case passes for the wrong reason and the guard is unpinned.
+    scan, is_full = mle._scan_targets(True, u, {"a1"}, 0.5, 0.0, 1.0)
+    assert is_full is True and scan is u
+    # full-pass interval elapsed -> full pass
+    scan, is_full = mle._scan_targets(True, u, {"a1"}, 101.5, 100.0, 1.0)
+    assert is_full is True and scan is u
+
+
+def test_scan_targets_on_sub_pass_only_dirty_markets():
+    u = _uni()
+    # within the full interval -> sub-pass -> only markets whose yes/no is dirty
+    scan, is_full = mle._scan_targets(True, u, {"a1", "b3"}, 100.2, 100.0, 1.0)
+    assert is_full is False
+    assert [m["id"] for m in scan] == ["1", "3"]     # 2 is clean -> skipped
+    # empty dirty on a sub-pass -> nothing to reprice
+    scan, is_full = mle._scan_targets(True, u, set(), 100.2, 100.0, 1.0)
+    assert is_full is False and scan == []
+
+
+def test_dirty_set_populated_by_book_appliers():
+    with mle.BOOKS_LOCK:
+        mle._DIRTY.clear()
+    mle._apply_book_snapshot("a1", {"bids": [{"price": "0.4", "size": "5"}],
+                                    "asks": [{"price": "0.6", "size": "5"}]})
+    mle._apply_price_change("a1", {"changes": [{"price": "0.41", "size": "3",
+                                                "side": "BUY"}]})
+    with mle.BOOKS_LOCK:
+        assert "a1" in mle._DIRTY
+    # batched: only tracked assets that actually changed become dirty
+    with mle.BOOKS_LOCK:
+        mle._DIRTY.clear()
+    mle._apply_price_change_batched({"price_changes": [
+        {"asset_id": "a1", "price": "0.42", "size": "2", "side": "BUY"},
+        {"asset_id": "untracked", "price": "0.5", "size": "1", "side": "SELL"}]})
+    with mle.BOOKS_LOCK:
+        assert mle._DIRTY == {"a1"}          # untracked never entered BOOKS
