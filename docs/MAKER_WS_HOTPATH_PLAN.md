@@ -97,16 +97,18 @@ From the independent adversarial review of Stage A (`920a633`, verdict
 SHIP-WITH-FIXES; #1/#3/#4 fixed in `a38a0d3`). The following is NOT a code fix —
 it is an operator decision to make before flipping the flag on with real money:
 
-- **#2 — order-rate amplification (OPERATOR ACK REQUIRED).** ON drops the
-  cycle-start interval from `cycle_dur + 1s` to `max(cycle_dur, ws_min_s)`
-  (default 250 ms) → up to ~4× more `place_batch`/`cancel` calls when the book
-  is moving past `REQUOTE_TICKS`. The `_http_window`/`HTTP_BUDGET_PER_HOUR`
-  governor only counts `get()` fetches, NOT the CLOB order path (via `execc`),
-  so this churn is invisible to the only rate limiter in the engine. Requote
-  hysteresis blunts it (no requote unless the quote actually moved), but before
-  ON rides a live cutover: (a) confirm the CLOB order rate limit won't trip, or
-  (b) raise `ws_min_s` to throttle, or (c) add an order-path rate counter. Watch
-  `http_hr` AND observed order rate in the paper smoke with the flag ON.
+- **#2 — order-rate amplification (MEASURED in paper smoke 07-25; ack lighter).**
+  ON drops the cycle-start interval to `max(cycle_dur, ws_min_s)` (250 ms) → more
+  full cycles. The `_http_window`/`HTTP_BUDGET_PER_HOUR` governor only counts
+  `get()` fetches, NOT the CLOB order path. **A/B paper smoke (20 mkts, 4 min ea):
+  cycle rate ON ≈ 3.7/s vs OFF ≈ 1.0/s (~3.7×, near the 250 ms floor) — BUT the
+  ORDER-path churn rose only ~1.3× (ON 18 place/3 cancel vs OFF 14/2), because
+  requote hysteresis absorbs the extra cycles.** So the ~4× is CYCLES; ORDERS
+  scale with real price MOVEMENT, not cycle frequency. `http_hr` was 121/36000
+  (huge headroom) both. **Residual ack before ON in live:** the smoke was moderate
+  movement / 20 mkts; on a busier book or the full pilot set, confirm the CLOB
+  ORDER rate limit won't trip (or raise `ws_min_s`, or add an order-path counter).
+  The amplification is bounded and modest in practice, not the 4× worst case.
 
 - **Pre-existing latent footgun (SEPARATE, not in this commit's scope):**
   `MAKER_ONESIDED_DERISK` uses the same disable-token set that was missing `off`
