@@ -92,6 +92,28 @@ Optional ~200ms sub-path that ONLY adjusts price of a resting two-sided quote:
 3. first-output cross-check on the paper arm (isolated scratch instance, prod arm untouched).
 4. bundle with the cutover deploy (decision 3) — never a standalone live push.
 
+## PRE-LIVE-ENABLE CHECKLIST (before MAKER_WS_HOT is EVER set ON in live)
+From the independent adversarial review of Stage A (`920a633`, verdict
+SHIP-WITH-FIXES; #1/#3/#4 fixed in `a38a0d3`). The following is NOT a code fix —
+it is an operator decision to make before flipping the flag on with real money:
+
+- **#2 — order-rate amplification (OPERATOR ACK REQUIRED).** ON drops the
+  cycle-start interval from `cycle_dur + 1s` to `max(cycle_dur, ws_min_s)`
+  (default 250 ms) → up to ~4× more `place_batch`/`cancel` calls when the book
+  is moving past `REQUOTE_TICKS`. The `_http_window`/`HTTP_BUDGET_PER_HOUR`
+  governor only counts `get()` fetches, NOT the CLOB order path (via `execc`),
+  so this churn is invisible to the only rate limiter in the engine. Requote
+  hysteresis blunts it (no requote unless the quote actually moved), but before
+  ON rides a live cutover: (a) confirm the CLOB order rate limit won't trip, or
+  (b) raise `ws_min_s` to throttle, or (c) add an order-path rate counter. Watch
+  `http_hr` AND observed order rate in the paper smoke with the flag ON.
+
+- **Pre-existing latent footgun (SEPARATE, not in this commit's scope):**
+  `MAKER_ONESIDED_DERISK` uses the same disable-token set that was missing `off`
+  (`load_config`), so `MAKER_ONESIDED_DERISK=off` would FAIL to disable it (it
+  defaults ON, so today's state is unaffected). Fix in its own commit with
+  operator signoff — do NOT silently bundle it here.
+
 ## Non-goals / guardrails
 - No taker path — repricing is post-only maker BUYs only (unchanged).
 - No behavior change with the flag OFF, ever — that is the rollback.
