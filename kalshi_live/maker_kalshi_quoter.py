@@ -492,9 +492,18 @@ def select_footprint(progs, now):
         if end < now + timedelta(minutes=cutoff_min):
             drops["drop_late_life"] = drops.get("drop_late_life", 0) + 1
             continue
+        # window length in days — still needed for the per-market ramp below (NOT for usd_day).
         days = max((end - start).total_seconds() / 86400, 1 / 24)
+        # R1 POOL — DO NOT DIVIDE BY WINDOW LENGTH. `period_reward / 10000` IS ALREADY the DAILY,
+        # PER-MARKET pool. The old `/ days` form was refuted by a blind audit: across the active set
+        # the raw value lands 147/147 series inside Kalshi's documented "$10-$1,000 per day per
+        # market" band, while the divided form put 56% BELOW the $10/day floor and never reached the
+        # ceiling. The bias is SYSTEMATIC and it is a SELECTION bias, not just a display one: usd_day
+        # orders the footprint (:506), the series rotation (:517, :556, :562), cap_desired (:1129)
+        # and bound_creates (:1154), so dividing by window length flattered short-window (hourly)
+        # programs ~24x and buried long-window ones by their length in days.
         # period_reward may be present-but-null (pending programs) -> `or 0`, not .get default
-        rows.append({"ticker": t, "usd_day": ((p.get("period_reward") or 0) / 10000) / days,
+        rows.append({"ticker": t, "usd_day": (p.get("period_reward") or 0) / 10000,
                      "target": float(p["target_size_fp"]), "end": end.isoformat(),
                      # discount factor for the CAPTURE GATE's R4 walk; discount_factor_bps is
                      # guaranteed non-null by the guard above. Additive key read by nothing except
@@ -654,7 +663,7 @@ def _throttled_quote(best, cnt, over, levels, target):
 
 def _standdown_market(m, void):
     """(standdown_bool, eff_rho) for the STAND-DOWN gate. eff_rho = this market's R1-normalized
-    LIP reward density (m['usd_day'] = period_reward/10000/days), R3-discounted by
+    LIP reward density (m['usd_day'] = period_reward/10000, ALREADY daily), R3-discounted by
     STANDDOWN_VOID_MULT on a one-sided/void book (a snapshot that scores at risk counts for less).
     standdown is True when eff_rho is below the fingerprint-calibrated floor STANDDOWN_MIN_USD_DAY:
     the reward is too thin to justify the expected adverse fill loss, so OPEN LESS here.
