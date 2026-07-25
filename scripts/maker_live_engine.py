@@ -2122,7 +2122,13 @@ def run(base, cfg):
                 _DIRTY.clear()
         else:
             with BOOKS_LOCK:
-                _DIRTY -= _dirty_snap
+                # in-place difference, NOT `_DIRTY -= snap`: augmented assignment
+                # rebinds the name, which would make _DIRTY a run()-LOCAL for the
+                # whole function (Python scoping) and UnboundLocalError the
+                # `set(_DIRTY)` above on the first iteration. Caught by the paper
+                # smoke — run() has no unit harness, so the co_varnames test below
+                # is the regression guard.
+                _DIRTY.difference_update(_dirty_snap)
         placements = []
         pl_meta = []
         for m in scan:

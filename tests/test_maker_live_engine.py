@@ -2131,3 +2131,16 @@ def test_dirty_set_populated_by_book_appliers():
         {"asset_id": "untracked", "price": "0.5", "size": "1", "side": "SELL"}]})
     with mle.BOOKS_LOCK:
         assert mle._DIRTY == {"a1"}          # untracked never entered BOOKS
+
+
+def test_run_never_rebinds_module_singletons():
+    """run() must MUTATE the shared module singletons in place, never rebind
+    them. An augmented assignment (e.g. `_DIRTY -= x`) rebinds the name, making
+    it a run()-LOCAL for the whole function -> UnboundLocalError on the first
+    read. py_compile can't see it and run() has no unit harness, so this
+    co_varnames guard is the regression test for the Stage B smoke crash."""
+    locals_ = set(mle.run.__code__.co_varnames)
+    for name in ("_DIRTY", "_WS_TICK", "BOOKS", "GEN"):
+        assert name not in locals_, (
+            f"{name} is a local in run() -> it is REBOUND somewhere (must be "
+            f"mutated in place); this shadows the module global and crashes")
