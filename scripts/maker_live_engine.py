@@ -185,7 +185,7 @@ def load_config(env=None):
         # fixed 1 s timer. Default OFF = the unchanged 1 Hz loop (the rollback).
         # ws_min_s (from MAKER_WS_MIN_MS) is the spin-guard floor between cycles.
         "ws_hot": (env.get("MAKER_WS_HOT", "0")
-                   .strip().lower() not in ("0", "false", "no", "")),
+                   .strip().lower() not in ("0", "false", "no", "off", "")),
         "ws_min_s": f("MAKER_WS_MIN_MS", 250.0) / 1000.0,
     }
     # bounds validation — a nonsense knob must fail LOUD at start, not
@@ -648,6 +648,7 @@ def _apply_price_change(asset, msg):
 
 
 def _apply_price_change_batched(msg):
+    changed = False
     with BOOKS_LOCK:
         for ch in msg.get("price_changes") or []:
             if not isinstance(ch, dict):
@@ -666,7 +667,9 @@ def _apply_price_change_batched(msg):
             elif 0 < p < 1:
                 levels[p] = s
             book["ts"] = time.time()
-    _WS_TICK.set()              # wake the ws-hot loop (no-op when flag OFF)
+            changed = True
+    if changed:                # wake only on a REAL tracked-book update
+        _WS_TICK.set()         # (no-op when flag OFF); matches _apply_price_change
 
 
 def _next_wait_plan(ws_hot, ws_min_s, elapsed):

@@ -1961,8 +1961,9 @@ def test_ws_hot_env_on_and_min_ms():
     c = mle.load_config(env={"MAKER_WS_HOT": "1", "MAKER_WS_MIN_MS": "100"})
     assert c["ws_hot"] is True
     assert abs(c["ws_min_s"] - 0.1) < 1e-9
-    # explicit off tokens
-    for off in ("0", "false", "no", ""):
+    # explicit off tokens — "off" MUST disable (adversarial-review finding #1:
+    # the natural disable word must not silently ENABLE the hot path in live)
+    for off in ("0", "false", "no", "off", "OFF", "Off", ""):
         assert mle.load_config(env={"MAKER_WS_HOT": off})["ws_hot"] is False
 
 
@@ -2003,7 +2004,12 @@ def test_next_wait_plan_on_never_spins_below_min_or_exceeds_1s():
         for elapsed in (0.0, 0.01, 0.2, 0.5, 0.9, 1.0, 2.0):
             floor, rem = mle._next_wait_plan(True, min_s, elapsed)
             assert floor >= 0.0 and rem >= 0.0
-            next_at = max(elapsed, 0.0) + floor + rem   # wall time since start
+            # SPIN BOUND (earliest next cycle): the tick wait can return
+            # immediately, so the earliest the next cycle can start is
+            # elapsed+floor — that alone must be >= ws_min_s (the real guard).
+            earliest = max(elapsed, 0.0) + floor
+            assert earliest >= min_s - 1e-9
+            next_at = max(elapsed, 0.0) + floor + rem   # latest (no tick)
             assert next_at >= min_s - 1e-9              # never faster than min
             # never later than 1s after start UNLESS the cycle itself already
             # ran past 1s (then the next starts immediately — can't rewind time)
@@ -2032,3 +2038,15 @@ def test_ws_tick_not_set_on_empty_or_missing_book():
     mle._apply_price_change("no-such-asset", {"changes": [{"price": "0.5",
                                               "size": "1", "side": "BUY"}]})
     assert not mle._WS_TICK.is_set()
+    # batched change for ONLY untracked assets -> no tracked book changed ->
+    # no wake (adversarial-review finding #3: don't spuriously wake)
+    mle._WS_TICK.clear()
+    mle._apply_price_change_batched({"price_changes": [
+        {"asset_id": "untracked", "price": "0.5", "size": "1", "side": "BUY"}]})
+    assert not mle._WS_TICK.is_set()
+    # batched change hitting a tracked book DOES wake
+    put_book("Y", {0.4: 10}, {0.6: 10})
+    mle._WS_TICK.clear()
+    mle._apply_price_change_batched({"price_changes": [
+        {"asset_id": "Y", "price": "0.41", "size": "3", "side": "BUY"}]})
+    assert mle._WS_TICK.is_set()
