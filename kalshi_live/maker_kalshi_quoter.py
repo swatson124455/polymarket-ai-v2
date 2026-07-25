@@ -194,6 +194,100 @@ CAPTURE_DF_DEFAULT = _envf("KALSHI_CAPTURE_DF", 0.5)          # discount_factor_
 # denominator observable on markets we have NEVER quoted — including KXTEMP* the moment its hourly
 # programs return — without resting a single contract.
 MKT_TELEMETRY = _envi("KALSHI_MKT_TELEMETRY", 1)
+
+# --- PRESENCE GATE (KALSHI_PRESENCE_GATE, default 0 = OFF, provable no-op) -----------------------
+# THE DEFECT IT CORRECTS: LIP snapshots the book every second and SUMS the scores, so reward is an
+# INTEGRAL over the window — proportional to size x SECONDS RESTING. `_prospective_capture` returns
+# an INSTANTANEOUS $/day, i.e. it assumes we rest the whole window at that share. Measured from the
+# venue's own order history (980 orders / 91 markets, 2026-07-20..07-25): MEDIAN presence 5.7%,
+# mean 11.9%. So the instantaneous number can overstate the real credit by better than an order of
+# magnitude, and it does so WORST exactly where it is most tempting — long-window markets, where
+# the daily pool looks generous and our coverage is 1-2%.
+#
+# TWO MULTIPLIERS, DELIBERATELY SEPARATE (they are not the same kind of number):
+#   window fraction left  STRUCTURAL, exact, known from the program's own clock. Entering a window
+#                         80% through caps the score near 20% however well we execute.
+#   presence factor       EMPIRICAL, from the calibration table, and partly a record of OUR OWN
+#                         defects (42% of historical orders died inside one 120s cycle). DEFAULTS
+#                         TO 1.0 — an ABSENT table must never make the bot pessimistic; only a
+#                         MEASURED number may lower the estimate.
+# Because the empirical half can encode our own bugs, a skip driven by it is a potential death
+# spiral (never re-enter -> never improve). So the gate ALSO records what it would have decided at
+# presence=1.0 (`presence_skipped_execution_only`): the difference is the part that is US, not the
+# market, and it is the number to watch after any fill/uptime fix.
+#
+# THE FLOOR IS ECONOMIC, NOT A PREFERENCE: Kalshi documents "Minimum payout: $1.00 (rounded down to
+# nearest cent)". Below a dollar the credit is ZERO while the fill risk is unchanged — so quoting
+# a market that cannot clear $1 for the remaining window is paying for a lottery ticket with no
+# prize. Scope caveat: the help text does not state $1.00 per WHAT; our 31 reward rows are
+# consistent with per market per period and the gate assumes that reading.
+PRESENCE_GATE = _envi("KALSHI_PRESENCE_GATE", 0)              # 0 = today's exact behavior
+MIN_CREDIT_USD = _envf("KALSHI_MIN_CREDIT_USD", 1.00)         # the documented payout floor
+PRESENCE_DEFAULT = _envf("KALSHI_PRESENCE_DEFAULT", 1.0)      # no table -> assume perfect execution
+PRESENCE_TABLE_PATH = os.environ.get(
+    "KALSHI_PRESENCE_TABLE", os.path.join(DATA_DIR, "kalshi_presence_table.json"))
+# Bucketing kept LOCAL (byte-equal to kalshi_presence_calibrate) so the calibration module stays out
+# of the live quoter's import graph — same discipline as the _qualifying_score and net-EV replicas.
+PRESENCE_LIFE_BUCKETS = ((0, 6, "0-6h"), (6, 24, "6-24h"), (24, 96, "1-4d"),
+                         (96, 336, "4-14d"), (336, 1e9, "14d+"))
+
+
+def _life_bucket(life_hours):
+    for lo, hi, name in PRESENCE_LIFE_BUCKETS:
+        if lo <= life_hours < hi:
+            return name
+    return "14d+"
+
+
+def _load_presence_table():
+    """Fail-OPEN to {} -> every market uncalibrated -> presence defaults to 1.0 and the gate can
+    only ever be blocked by the STRUCTURAL half. A bad file never blocks trading."""
+    try:
+        import kalshi_presence_calibrate
+        return kalshi_presence_calibrate.load_table(PRESENCE_TABLE_PATH)
+    except Exception:
+        return {}
+
+
+# loaded ONCE at import and ONLY when the flag is on (flag-off does zero file IO -> provable no-op)
+PRESENCE_TABLE = _load_presence_table() if PRESENCE_GATE else {}
+
+
+def _presence_factor(ticker, life_min):
+    """Measured share of the window we actually stay resting. 1.0 when uncalibrated."""
+    if not PRESENCE_TABLE or not life_min:
+        return PRESENCE_DEFAULT
+    fam = _netev_family(ticker)                      # same family buckets as the net-EV gate
+    row = (PRESENCE_TABLE.get(f"{fam}|{_life_bucket(life_min / 60.0)}")
+           or PRESENCE_TABLE.get(f"*|{_life_bucket(life_min / 60.0)}"))
+    if not row:
+        return PRESENCE_DEFAULT
+    v = row.get("presence_median")
+    return float(v) if isinstance(v, (int, float)) and v > 0 else PRESENCE_DEFAULT
+
+
+def _window_frac_left(m, now):
+    """Fraction of THIS program's window still ahead of us, in [0,1]. Structural and exact."""
+    life_min = float(m.get("life_min") or 0.0)
+    if life_min <= 0 or not m.get("end"):
+        return 1.0                                   # unknown -> do not penalise
+    try:
+        left_min = (parse_iso(m["end"]) - now).total_seconds() / 60.0
+    except Exception:
+        return 1.0
+    return max(0.0, min(1.0, left_min / life_min))
+
+
+def _expected_credit_usd(m, yl, nl, best_y, best_n, target, now):
+    """Credit we can still earn HERE for the REST of the window, in dollars.
+
+    pc is $/day at full presence; scale it by the days actually remaining and by the measured
+    presence factor. Returns (expected_usd, expected_usd_at_perfect_execution, frac_left)."""
+    pc = _prospective_capture(m, yl, nl, best_y, best_n, target)     # $/day, instantaneous
+    frac = _window_frac_left(m, now)
+    days_left = (float(m.get("life_min") or 0.0) / 1440.0) * frac
+    ideal = pc * days_left
+    return ideal * _presence_factor(m.get("ticker"), m.get("life_min")), ideal, frac
 # --- NET-EV GATE (KALSHI_NETEV_GATE, default 0 = OFF, provable no-op) ----------------------------
 # The RECEIPT-CALIBRATED market-quality brain. Every gate above (unqualifiable, selection, capture,
 # stand-down) asks a REWARD question — "can the book pay / can WE capture a slice". None asks the
@@ -511,7 +605,11 @@ def select_footprint(progs, now):
                      "df": (p["discount_factor_bps"] / 10000) or 0.5,
                      # per-market ramp window = min(global RAMP_MIN, a fraction of THIS market's own
                      # program lifetime) so short markets only ramp in their final stretch (C13).
-                     "ramp_min": min(RAMP_MIN, RAMP_LIFE_FRAC * days * 1440.0)})
+                     "ramp_min": min(RAMP_MIN, RAMP_LIFE_FRAC * days * 1440.0),
+                     # THIS program's own window length. Additive key, read only by the presence
+                     # gate (off by default) -> inert. Needed because reward is an INTEGRAL over the
+                     # window: entering 80% through caps the score at ~20% however well we execute.
+                     "life_min": life_min})
     rows.sort(key=lambda r: (-r["usd_day"], r["ticker"]))
     # ROUND-ROBIN across series (review C18): a single high-pot series (50 concurrent hourly temp
     # strikes ~ $1,920/day each) would otherwise fill the whole FOOTPRINT_TOP by usd_day and starve
@@ -860,6 +958,42 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if stats is not None:
             stats["unqualifiable"] = stats.get("unqualifiable", 0) + 1
         return []                                   # cannot reach two-sided Target Size -> $0 reward
+    # PRESENCE / $1-FLOOR GATE (KALSHI_PRESENCE_GATE, default 0 = provable no-op). The most basic
+    # economic test there is, and the one nothing else asks: CAN THIS MARKET STILL PAY US AT ALL for
+    # the time that is actually left? Reward is an integral over the window, and Kalshi pays $0 below
+    # a $1.00 credit — so a market whose remaining-window credit cannot clear a dollar pays exactly
+    # nothing while the fill risk is unchanged. Held inventory is NEVER blocked (reduce-only, full
+    # size), identical to the capture-gate clone below.
+    if PRESENCE_GATE and not void:
+        _exp, _ideal, _frac = _expected_credit_usd(m, yl, nl, best_y, best_n, target, now)
+        if stats is not None:
+            stats["presence_min_credit"] = min(stats.get("presence_min_credit", 1e18), _exp)
+        if _exp < MIN_CREDIT_USD:
+            if stats is not None:
+                stats["presence_skipped"] = stats.get("presence_skipped", 0) + 1
+                # THE DEATH-SPIRAL COUNTER: would this market have cleared the floor if we executed
+                # perfectly? If yes, the skip is OUR fault, not the market's. Watch this after any
+                # uptime fix — it is the part that should shrink.
+                if _ideal >= MIN_CREDIT_USD:
+                    stats["presence_skipped_execution_only"] = \
+                        stats.get("presence_skipped_execution_only", 0) + 1
+                if _frac < 0.5:
+                    stats["presence_skipped_late_entry"] = \
+                        stats.get("presence_skipped_late_entry", 0) + 1
+            if abs(inv) < INV_TOLERANCE:
+                return []                           # FLAT + cannot clear $1 -> never open
+            if inv > 0:                             # HOLDING long yes -> rest reducing NO only
+                up = _unwind_price(best_n, cost)
+                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
+                    return []
+                return [{"side": "no", "price_dollars": up,
+                         "count": _unwind_size(_capped_join(up, best_y), up, inv),
+                         "reason": "unwind"}]
+            up = _unwind_price(best_y, cost)        # HOLDING long no -> rest reducing YES only
+            if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
+                return []
+            return [{"side": "yes", "price_dollars": up,
+                     "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
     # NET-EV GATE (KALSHI_NETEV_GATE, default 0 = provable no-op) — the RECEIPT-CALIBRATED brain, and
     # the COMPLETE signal that supersedes the reward-only capture gate + pool-only stand-down. Look up
     # this market's FAMILY net-EV (credits − fill P&L − fees, per kalshi_netev_calibrate). A family
@@ -1897,6 +2031,18 @@ def run_once():
         # capture_skipped_markets = markets skipped/reduced this cycle because our prospective R4
         # capture was below the floor; capture_min_pc_usd_day = the thinnest prospective capture that
         # tripped it — the calibration signal to compare against actual period-close credits.
+        # PRESENCE GATE telemetry. presence_skipped_execution_only is the one to watch: markets that
+        # WOULD have cleared the $1 floor at perfect execution and were skipped only because our
+        # measured presence dragged them under. That is our defect, not the market's economics.
+        if PRESENCE_GATE:
+            plan["presence_gate"] = 1
+            plan["presence_floor_usd"] = MIN_CREDIT_USD
+            plan["presence_skipped_markets"] = qstats.get("presence_skipped", 0)
+            plan["presence_skipped_execution_only"] = qstats.get(
+                "presence_skipped_execution_only", 0)
+            plan["presence_skipped_late_entry"] = qstats.get("presence_skipped_late_entry", 0)
+            if qstats.get("presence_min_credit") is not None and qstats.get("presence_skipped"):
+                plan["presence_min_credit_usd"] = round(qstats.get("presence_min_credit", 0.0), 4)
         if CAPTURE_GATE:
             plan["capture_gate"] = 1
             plan["capture_floor_usd_day"] = CAPTURE_MIN_USD_DAY
