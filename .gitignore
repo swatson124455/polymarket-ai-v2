@@ -173,4 +173,5 @@ PLAN_*.md
 audit_artifacts/
 
 # Archives
-*.tar.gz
+*.tar.gzkalshi_live/kalshi_ledger_state.json
+kalshi_live/kalshi_ledger_snapshots.jsonl
