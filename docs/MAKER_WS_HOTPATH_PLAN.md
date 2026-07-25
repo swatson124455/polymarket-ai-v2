@@ -15,7 +15,38 @@ feed). Ships in the CUTOVER BUNDLE (decision 3), default OFF, review-gated.
   (`:361`), `discovery_suspect` (`:572`), `collect_owned_assets` (`:1033`) are already
   module-level + tested. The heavy placement/capital/de-risk logic is ALREADY out.
 
-## The extraction contract (Stage 0 — identity refactor, ships nothing behavioral)
+## ⚠ DESIGN DEVIATION (2026-07-25, S7) — Stage 0 run_once() reindent DROPPED, and why
+
+The original plan (below) called for extracting run()'s ~500-line loop body into
+`run_once()`. **On reading the actual code, that turned out to be unnecessary and
+higher-risk than the goal warrants** — the exact "re-derive against Poly's own
+structures, don't transcribe Kalshi" principle:
+
+- Poly's `run()` loop body is ALREADY a full guarded cycle that re-runs every
+  iteration. The ONLY thing pacing it to 1 Hz is `time.sleep(1)`.
+- The existing tests never drive `run()`; they test extracted helpers. `run()` is
+  a thin orchestrator. A 500-line reindent would relocate a large untested surface
+  into a live-capital engine for zero behavioral gain.
+- Kalshi needed a `run_once()` because THEIR engine wasn't a per-iteration full
+  cycle. Poly already is. Copying their structure would have been transcription.
+
+**What SHIPPED instead (commit 920a633, Stage A) — change only the WAIT:**
+- `_WS_TICK` (threading.Event) set by the 3 book appliers on any book update.
+- `_next_wait_plan(ws_hot, ws_min_s, elapsed)` — PURE, unit+mutation tested:
+  OFF => `(1.0, None)` = unconditional `time.sleep(1)`, byte-identical rollback;
+  ON  => floor to `ws_min_s` (spin guard), then wake on a tick up to the rest of a
+  1 s window (so the <=1 s minute/heartbeat cadence is preserved on a silent book).
+- `_wait_next` executes the plan; replaces `time.sleep(1)`.
+- Result: with the flag ON the SAME full guarded cycle re-runs on a book tick
+  (= Kalshi "Stage A: ws-triggered full guarded cycle") with a ~60-line diff and
+  no body reindent. Existing requote hysteresis makes frequent cycling cheap (it
+  no-ops when the desired quote hasn't moved).
+
+Stage B (reprice-only sub-cycle) is unchanged in intent and, if built, will be a
+SEPARATE tested helper — not a run_once() dependency. The contract below is kept
+for history; the "run_once()" framing is superseded by the wait-only seam.
+
+## (SUPERSEDED) The extraction contract (Stage 0 — identity refactor, ships nothing behavioral)
 Wrap the per-scan orchestration (the `while True` body, `:1857`→just before `:2384`)
 into `run_once(ctx, now)` where `ctx` is a small holder of the currently-closed-over
 mutable state:
