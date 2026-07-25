@@ -305,10 +305,20 @@ class Feed:
                         kind, raw = await _recv_or_stop(ws, stop_event)
                         if kind == "stopped":
                             return
-                        fails = 0                     # a delivered frame = healthy connection
-                        if not self._dispatch(raw):
-                            print("WS seq gap/error — reconnecting for fresh snapshots")
+                        ok = self._dispatch(raw)
+                        # fails resets only AFTER a frame dispatches cleanly (re-review:
+                        # resetting before dispatch pinned backoff at 2s forever when a
+                        # CALLBACK raised on every frame).
+                        if not ok:
+                            # BACKOFF ON THIS PATH TOO (re-review: the break path had no
+                            # sleep -> a persistent error frame produced ~19k connects/s).
+                            fails += 1
+                            backoff = min(2.0 * (2 ** min(fails - 1, 5)), 60.0)
+                            print(f"WS seq gap/error — reconnect (fail #{fails}, "
+                                  f"backoff {backoff:.0f}s)")
+                            await asyncio.sleep(backoff)
                             break                     # reconnect loop re-subscribes
+                        fails = 0                     # clean dispatch = healthy connection
                 finally:
                     self._sub_seq = None
                     self.confirmed_channels = set()

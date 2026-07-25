@@ -59,7 +59,13 @@ from kalshi_ws_feed import Feed                      # noqa: E402
 
 # ---- knobs (env-overridable; defaults are the safe ones) ----
 WS_COLD_S = M._envi("KALSHI_WS_COLD_S", 60)           # heartbeat full cycle
-WS_STOP_COLD_S = M._envi("KALSHI_WS_STOP_COLD_S", 300)  # heartbeat while STOP present
+# STOP heartbeat is the SAME as normal (re-review REGRESSION): widening this to
+# 300s delayed the first flatten pass of an operator-written STOP from <=60s to
+# <=300s — strictly worse than both the original build and the 2-min timer.
+# Offset churn is the lesser evil; getting flat fast is the point of STOP.
+WS_STOP_COLD_S = M._envi("KALSHI_WS_STOP_COLD_S", 60)
+WS_FILL_COOLDOWN_S = M._envf("KALSHI_WS_FILL_COOLDOWN_S", 3.0)  # hot stand-down after a fill
+_INV_MARGIN = M._envf("KALSHI_WS_INV_MARGIN_CT", 0.0)   # extra conservatism below INV_TOLERANCE
 WS_CYCLE_MIN_GAP_S = M._envi("KALSHI_WS_CYCLE_MIN_GAP_S", 5)   # full-cycle debounce
 WS_HOT = M._envi("KALSHI_WS_HOT", 0)                  # Stage B flag — DEFAULT OFF
 WS_HOT_DEBOUNCE_MS = M._envi("KALSHI_WS_HOT_DEBOUNCE_MS", 250)
@@ -118,15 +124,24 @@ class HotContext:
     (rejected) context, never a half-built accepted one."""
 
     def __init__(self):
-        self.built_mono = 0.0
+        self.built_mono = None                        # None = never built / invalidated
         self.by_ticker = {}                           # t -> dict(m, own, inv, ev, cost)
+        self.event_inv = {}                           # event_key -> max |inv| in that event
         self.standing = {}                            # t -> [order dicts] (live view)
         self.breaker = False
         self.plan_sig = ("", 0)
         self.headroom_total = 0.0                     # $ resting-notional headroom vs caps
         self.headroom_mkt = {}                        # t -> $ headroom vs per-market cap
 
+    def invalidate(self):
+        """Mark the context unusable. Uses None, NOT 0.0 (re-review SENTINEL):
+        CLOCK_MONOTONIC is boot-relative on Linux, so 0.0 reads as 'fresh' for
+        the first WS_STALE_S seconds of a boot-time systemd start."""
+        self.built_mono = None
+
     def stale(self):
+        if self.built_mono is None:
+            return True
         return (time.monotonic() - self.built_mono) > WS_STALE_S
 
     def build(self, client, programs, std_lock):
@@ -155,9 +170,21 @@ class HotContext:
         mkt_cost = {t: sum(_order_cost(o["side"], o["price_dollars"], o["count"])
                            for o in ol) for t, ol in standing.items()}
         total_cost = sum(mkt_cost.values())
+        # per-EVENT max |inv| — hot refuses any ticker whose EVENT carries
+        # inventory (re-review: covers BOTH the stale-inv reduce_side race AND
+        # the ladder self-hedge hatch, which fires on ladder events with naked
+        # legs and appends orders hot can never regenerate).
+        event_inv = {}
+        for t, v in naked_by.items():
+            k = M._event_key(t)
+            event_inv[k] = max(event_inv.get(k, 0.0), abs(v))
+        for t, v in held_by.items():
+            k = M._event_key(t)
+            event_inv[k] = max(event_inv.get(k, 0.0), abs(v))
         with std_lock:
             self.breaker = breaker
             self.by_ticker = by_ticker
+            self.event_inv = event_inv
             self.standing = standing
             self.headroom_mkt = {t: max(0.0, M.MAX_MARKET_CAPITAL - c)
                                  for t, c in mkt_cost.items()}
@@ -168,14 +195,27 @@ class HotContext:
 
 
 def hot_reprice_ops(desired_t, standing_t, reduce_side=None):
-    """REPRICE-ONLY diff for one ticker.
-    Returns (cancels:[order_id], creates:[{side,price_dollars,count}]).
-    Rules: same-side same-count price change -> cancel+create; standing side
-    absent from desired -> cancel-only; desired side absent from standing or
-    count mismatch -> NO ACTION (resize is cold-cycle work).
-    reduce_side (review F3/F4): that side is UNTOUCHABLE — no cancels, no
-    creates; the guarded cold cycle owns all unwind management."""
-    cancels, creates = [], []
+    """STRICT REPRICE-PAIR diff for one ticker.
+    Returns (ops:[{order_id, side, price_dollars, want_count}]) — each op is a
+    cancel PAIRED with the replacement it authorizes. There is no standalone
+    cancel and no standalone create.
+
+    Rules:
+      - same side, same count, different price -> reprice pair
+      - anything else (side absent from desired, count mismatch, multi-level,
+        unwind-tagged) -> NO ACTION, the guarded cold cycle owns it
+      - reduce_side is UNTOUCHABLE
+
+    NO STANDALONE SIDE-PULL (re-review LADDER-HATCH): run_once appends a
+    `reason='ladder'` self-hedge to desired AFTER desired_quotes returns, so a
+    hot recompute can never reproduce it — pulling "a side hot sees no desired
+    for" would strip the floored-pair hedge off a sibling strike and convert a
+    safe pair into naked settlement risk. Pulls stay a cold-cycle action.
+
+    want_count is only the UPPER BOUND for the replacement; the executor must
+    clamp it to the count the venue's cancel response confirms was still
+    resting (BLOCKER B3-1: book depth cannot reveal our own remaining size)."""
+    ops = []
     by_side_std = {}
     for o in standing_t or []:
         by_side_std.setdefault(o["side"], []).append(o)
@@ -186,20 +226,18 @@ def hot_reprice_ops(desired_t, standing_t, reduce_side=None):
         if side == reduce_side:
             continue                                   # reducing side: hands off
         des = by_side_des.get(side, [])
-        if not des:
-            cancels.extend(o["order_id"] for o in std)     # pull the side (shrink-only)
-            continue
-        if len(std) == 1 and len(des) == 1:
-            o, q = std[0], des[0]
-            if q.get("reason") == "unwind":
-                continue                               # never hot-manage unwind quotes
-            if (abs(float(o["count"]) - float(q["count"])) < 1e-9
-                    and abs(float(o["price_dollars"]) - float(q["price_dollars"])) >= 1e-9):
-                cancels.append(o["order_id"])
-                creates.append({"side": side, "price_dollars": q["price_dollars"],
-                                "count": q["count"]})
-        # multi-level or count-changed: leave for the cold cycle (guarded path)
-    return cancels, creates
+        if len(std) != 1 or len(des) != 1:
+            continue                                   # incl. des == [] -> no pull
+        o, q = std[0], des[0]
+        if q.get("reason") == "unwind":
+            continue                                   # never hot-manage unwind quotes
+        if (abs(float(o["count"]) - float(q["count"])) < 1e-9
+                and abs(float(o["price_dollars"]) - float(q["price_dollars"])) >= 1e-9):
+            ops.append({"order_id": o["order_id"], "side": side,
+                        "price_dollars": q["price_dollars"],
+                        "want_count": float(q["count"]),
+                        "old_price": float(o["price_dollars"])})
+    return ops
 
 
 class Daemon:
@@ -217,6 +255,8 @@ class Daemon:
         self.feed = None                              # current Feed (fill-ack gate reads it)
         self.in_cold = False                          # cold cycle in flight -> hot dead
         self.std_lock = threading.Lock()              # guards ctx.standing/headroom mutation
+        self.cold_lock = threading.Lock()             # SERIALIZES hot writes vs run_once
+        self.last_fill_mono = {}                      # event_key -> mono of last fill frame
         self._writer = ThreadPoolExecutor(max_workers=1)   # single ordered write worker
         self._coid = 0                                # process-unique client_order_id counter
 
@@ -237,20 +277,26 @@ class Daemon:
 
     # ---------------- cold path ----------------
     def cold_cycle(self):
-        """The full guarded cycle — the quoter, verbatim — then rebuild hot ctx."""
+        """The full guarded cycle — the quoter, verbatim — then rebuild hot ctx.
+        Holds cold_lock for the WHOLE cycle so an already-submitted hot write can
+        never interleave with run_once's read->diff->write (re-review B2-1: the
+        in_cold flag alone did not JOIN the write worker, so a create landing
+        after run_once's standing read was invisible to its diff = same-side
+        stacking, the exact class the cancel-failure guard exists to prevent)."""
         t0 = time.monotonic()
-        try:
-            M.run_once()
-        except Exception as e:                        # cycle errors are loud, not fatal
-            _log({"ev": "cold_cycle_error", "err": repr(e)[:200]})
-        self.last_cycle_mono = time.monotonic()
-        tickers = None
-        if not os.path.exists(M.STOP_FILE) and self.client.mode != "dry_run":
+        with self.cold_lock:
             try:
-                tickers = self.ctx.build(self.client, self._programs(), self.std_lock)
-            except Exception as e:
-                self.ctx.built_mono = 0.0             # ctx unusable -> hot disabled
-                _log({"ev": "ctx_build_error", "err": repr(e)[:200]})
+                M.run_once()
+            except Exception as e:                    # cycle errors are loud, not fatal
+                _log({"ev": "cold_cycle_error", "err": repr(e)[:200]})
+            self.last_cycle_mono = time.monotonic()
+            tickers = None
+            if not os.path.exists(M.STOP_FILE) and self.client.mode != "dry_run":
+                try:
+                    tickers = self.ctx.build(self.client, self._programs(), self.std_lock)
+                except Exception as e:
+                    self.ctx.invalidate()             # ctx unusable -> hot disabled
+                    _log({"ev": "ctx_build_error", "err": repr(e)[:200]})
         _log({"ev": "cold_cycle", "secs": round(time.monotonic() - t0, 2),
               "hot_ctx": bool(tickers)})
         return tickers
@@ -289,6 +335,21 @@ class Daemon:
         reason = self._hot_precheck(ticker, mirror)
         if reason:
             return reason
+        # EVENT-INVENTORY GATE (re-review B3-3 + LADDER-HATCH): if ANY ticker in
+        # this event carries inventory near the tolerance, stand down entirely.
+        # ctx inv is up to WS_STALE_S old, so a fill we have not processed could
+        # (a) invert reduce_side, or (b) mean run_once attached a ladder hedge we
+        # cannot regenerate. One conservative gate closes both.
+        ev_key = M._event_key(ticker)
+        # floored at 1ct so a mis-set margin can never drive the threshold to or
+        # below zero and silently disable the whole hot path.
+        _inv_thresh = max(1.0, M.INV_TOLERANCE - _INV_MARGIN)
+        if self.ctx.event_inv.get(ev_key, 0.0) >= _inv_thresh:
+            return "event_has_inventory"
+        # POST-FILL COOLDOWN: a fill anywhere in this event makes every cached
+        # count suspect for a beat, even after ctx rebuild.
+        if (time.monotonic() - self.last_fill_mono.get(ev_key, 0.0)) < WS_FILL_COOLDOWN_S:
+            return "fill_cooldown"
         c = self.ctx.by_ticker[ticker]
         ys, ns = mirror.rows()
         try:
@@ -303,101 +364,138 @@ class Daemon:
             reduce_side = "no" if inv > 0 else "yes"
         with self.std_lock:
             standing_t = list(self.ctx.standing.get(ticker) or [])
-        cancels, creates = hot_reprice_ops(q, standing_t, reduce_side=reduce_side)
-        if not cancels and not creates:
+        ops = hot_reprice_ops(q, standing_t, reduce_side=reduce_side)
+        if not ops:
             return "no_op"
-        # DEPTH PRECONDITION (review F2-partial-fills): every order we are about
-        # to touch must still be fully visible at its level in the mirror; a
-        # shrunk level means "possibly just filled" -> full guarded cycle.
-        cancel_set = set(cancels)
+        # DEPTH PRECONDITION over ALL standing orders on this ticker (re-review
+        # B3-2: scoping it to the touched orders discarded direct evidence that
+        # our inventory just changed). NOTE this is only corroborating evidence —
+        # it CANNOT see our own remaining size when other makers share the level;
+        # the authoritative clamp is the cancel response in _exec_hot.
         for o in standing_t:
-            if o["order_id"] not in cancel_set:
-                continue
             book = mirror.yes if o["side"] == "yes" else mirror.no
             if book.get(round(float(o["price_dollars"]), 4), 0.0) < float(o["count"]) - 1e-9:
-                self.ctx.built_mono = 0.0
+                self.ctx.invalidate()
                 self.cycle_req.set()
                 return "possible_fill"
-        # NOTIONAL HEADROOM (review F5): repricing may not raise resting notional
-        # beyond the capital headroom the cold guards evaluated.
-        old_cost = sum(_order_cost(o["side"], o["price_dollars"], o["count"])
-                       for o in standing_t if o["order_id"] in cancel_set)
-        new_cost = sum(_order_cost(cr["side"], cr["price_dollars"], cr["count"])
-                       for cr in creates)
-        delta = new_cost - old_cost
-        if delta > 0 and (delta > self.ctx.headroom_mkt.get(ticker, 0.0) + 1e-9
-                          or delta > self.ctx.headroom_total + 1e-9):
-            return "notional_cap"
-        if not self.bucket.take(len(cancels) + len(creates)):
+        # NOTIONAL HEADROOM — RESERVED here, in ONE critical section with the
+        # check (re-review H7-1b: reading on the loop thread and decrementing at
+        # execution let N tickers pass the same total). Reservation is released
+        # by the executor if the write does not happen.
+        delta = 0.0
+        for op in ops:
+            delta += (_order_cost(op["side"], op["price_dollars"], op["want_count"])
+                      - _order_cost(op["side"], op["old_price"], op["want_count"]))
+        if delta > 0:
+            with self.std_lock:
+                if (delta > self.ctx.headroom_mkt.get(ticker, 0.0) + 1e-9
+                        or delta > self.ctx.headroom_total + 1e-9):
+                    return "notional_cap"
+                self.ctx.headroom_total -= delta
+                self.ctx.headroom_mkt[ticker] = self.ctx.headroom_mkt.get(ticker, 0.0) - delta
+        if not self.bucket.take(2 * len(ops)):
+            if delta > 0:
+                with self.std_lock:                    # release the reservation
+                    self.ctx.headroom_total += delta
+                    self.ctx.headroom_mkt[ticker] = \
+                        self.ctx.headroom_mkt.get(ticker, 0.0) + delta
             return "budget"
         self.last_hot_mono[ticker] = time.monotonic()
         built_snapshot = self.ctx.built_mono
-        self._writer.submit(self._exec_hot, ticker, cancels, creates, delta,
+        self._writer.submit(self._exec_hot, ticker, ops, delta,
                             t_event_mono, built_snapshot)
         return "submitted"
 
-    def _exec_hot(self, ticker, cancels, creates, delta_cost, t_event_mono, built_snapshot):
-        """Write-worker half: re-validate, then execute. Runs OFF the event loop."""
-        # RE-VALIDATION at execution time (review F6): the world may have moved
-        # between submit and run — a cold cycle starting, STOP appearing, or the
-        # ctx being invalidated all abort the write.
-        if (self.stopping.is_set() or self.in_cold or os.path.exists(M.STOP_FILE)
-                or self.ctx.built_mono != built_snapshot):
-            _log({"ev": "hot_abort_stale", "ticker": ticker})
-            return
+    def _abort_ok(self, built_snapshot):
+        """Every precondition that must STILL hold at write time. Re-checked
+        before EACH venue write, not once at entry (re-review B2-2: a fill or a
+        cold cycle starting during a 15s-timeout cancel could not stop the
+        follow-on create)."""
+        if self.stopping.is_set() or self.in_cold or os.path.exists(M.STOP_FILE):
+            return False
+        if self.ctx.built_mono != built_snapshot:
+            return False
+        if self.feed is not None and not self.feed.fills_confirmed:
+            return False                              # re-review FILL-ACK-2
+        return True
+
+    def _exec_hot(self, ticker, ops, reserved_cost, t_event_mono, built_snapshot):
+        """Write-worker half. Runs OFF the event loop, holding cold_lock so a
+        cold cycle can never interleave (re-review B2-1).
+
+        For each op: cancel, read the venue's CONFIRMED remaining count from the
+        cancel response, and re-create AT MOST that many. If the venue does not
+        state the remaining count, we do NOT re-create — the order is simply
+        gone (shrink direction) and the cold cycle replaces it. This makes the
+        partial-fill refill (B3-1) structurally impossible: we can never place
+        more than the venue just told us was unfilled."""
         ok_c = ok_n = 0
-        try:
-            if cancels:
-                res = self.client.batch_cancel(cancels)
-                done = {c.get("order", {}).get("order_id") if isinstance(c, dict) else None
-                        for c in (res.get("cancelled") or [])}
-                failed = res.get("failed") or []
-                ok_c = len(cancels) - len(failed)
-                with self.std_lock:
-                    kept = [o for o in (self.ctx.standing.get(ticker) or [])
-                            if o["order_id"] not in set(cancels) or
-                            any(f.get("order_id") == o["order_id"] for f in failed)]
-                    self.ctx.standing[ticker] = kept
-                if failed:
-                    # CANCEL FAILURE (review F1/C7): the order may still rest OR
-                    # may have just filled — either way our view is fiction.
-                    # NO creates. Force the guarded cycle to reconcile.
-                    self.ctx.built_mono = 0.0
-                    self.cycle_req.set()
-                    _log({"ev": "hot_cancel_fail", "ticker": ticker,
-                          "failed": len(failed), "ok": ok_c})
-                    return
-            for cr in creates:
-                self._coid += 1
-                r = self.client.create_quote(
-                    ticker, cr["side"], cr["price_dollars"], cr["count"],
-                    client_order_id=f"ws-{time.time_ns()}-{self._coid}-{cr['side']}")
-                # dual-shape response parse (review F4): nested or top-level
-                o = r.get("order") if isinstance(r, dict) and isinstance(r.get("order"), dict) \
-                    else (r if isinstance(r, dict) else {})
-                oid = o.get("order_id")
-                if not oid:
-                    # the order MAY exist server-side — never invent a placeholder
-                    # id; invalidate and let the cold standing read reconcile.
-                    self.ctx.built_mono = 0.0
-                    self.cycle_req.set()
-                    _log({"ev": "hot_create_no_id", "ticker": ticker})
-                    return
-                with self.std_lock:
-                    self.ctx.standing.setdefault(ticker, []).append(
-                        {"order_id": oid, "side": cr["side"],
-                         "price_dollars": cr["price_dollars"], "count": cr["count"]})
-                ok_n += 1
-            if delta_cost > 0:
-                with self.std_lock:
-                    self.ctx.headroom_total = max(0.0, self.ctx.headroom_total - delta_cost)
-                    self.ctx.headroom_mkt[ticker] = max(
-                        0.0, self.ctx.headroom_mkt.get(ticker, 0.0) - delta_cost)
-        except Exception as e:
-            _log({"ev": "hot_write_error", "ticker": ticker, "err": repr(e)[:160]})
-            self.ctx.built_mono = 0.0                 # view now uncertain -> force cold rebuild
-            self.cycle_req.set()
-            return
+        spent = 0.0
+        with self.cold_lock:
+            try:
+                for op in ops:
+                    if not self._abort_ok(built_snapshot):
+                        _log({"ev": "hot_abort_stale", "ticker": ticker})
+                        break
+                    oid = op["order_id"]
+                    resp = self.client.cancel_order(oid)
+                    remaining = self.client.cancel_remaining_ct(resp)
+                    ok_c += 1
+                    with self.std_lock:               # the order is gone either way
+                        self.ctx.standing[ticker] = [
+                            o for o in (self.ctx.standing.get(ticker) or [])
+                            if o["order_id"] != oid]
+                    if remaining is None:
+                        # UNKNOWN remaining -> never re-create blind.
+                        _log({"ev": "hot_cancel_no_remaining", "ticker": ticker})
+                        self.ctx.invalidate()
+                        self.cycle_req.set()
+                        break
+                    place = min(float(op["want_count"]), float(remaining))
+                    if place <= 0:
+                        # fully filled while resting: nothing to replace, and our
+                        # inventory just changed -> hand to the guarded cycle.
+                        _log({"ev": "hot_was_filled", "ticker": ticker})
+                        self.ctx.invalidate()
+                        self.cycle_req.set()
+                        break
+                    if not self._abort_ok(built_snapshot):
+                        _log({"ev": "hot_abort_stale_precreate", "ticker": ticker})
+                        self.ctx.invalidate()
+                        self.cycle_req.set()
+                        break
+                    self._coid += 1
+                    r = self.client.create_quote(
+                        ticker, op["side"], op["price_dollars"], place,
+                        client_order_id=f"ws-{time.time_ns()}-{self._coid}-{op['side']}")
+                    o = r.get("order") if isinstance(r, dict) and \
+                        isinstance(r.get("order"), dict) else (r if isinstance(r, dict) else {})
+                    new_oid = o.get("order_id")
+                    if not new_oid:
+                        # the order MAY exist server-side — never invent an id.
+                        self.ctx.invalidate()
+                        self.cycle_req.set()
+                        _log({"ev": "hot_create_no_id", "ticker": ticker})
+                        break
+                    with self.std_lock:
+                        self.ctx.standing.setdefault(ticker, []).append(
+                            {"order_id": new_oid, "side": op["side"],
+                             "price_dollars": op["price_dollars"], "count": place})
+                    spent += max(0.0, _order_cost(op["side"], op["price_dollars"], place)
+                                 - _order_cost(op["side"], op["old_price"], place))
+                    ok_n += 1
+            except Exception as e:
+                _log({"ev": "hot_write_error", "ticker": ticker, "err": repr(e)[:160]})
+                self.ctx.invalidate()                 # view uncertain -> force cold rebuild
+                self.cycle_req.set()
+            finally:
+                # release any reservation we did not actually spend
+                unspent = reserved_cost - spent
+                if abs(unspent) > 1e-9:
+                    with self.std_lock:
+                        self.ctx.headroom_total += unspent
+                        self.ctx.headroom_mkt[ticker] = \
+                            self.ctx.headroom_mkt.get(ticker, 0.0) + unspent
         ms = round((time.monotonic() - t_event_mono) * 1000)
         _log({"ev": "hot_reprice", "ticker": ticker, "cancels": ok_c, "creates": ok_n,
               "reaction_ms": ms})
@@ -418,13 +516,18 @@ class Daemon:
         out = self.hot_event(ticker, mirror, t_event) if WS_HOT else "stage_a"
         if out in ("stage_a", "flag_off", "ctx_stale", "mirror_dirty", "not_in_ctx",
                    "quote_error", "budget", "foreign_writer", "dry_run", "breaker",
-                   "fills_unconfirmed", "stop_file", "cold_running", "notional_cap"):
+                   "fills_unconfirmed", "stop_file", "cold_running", "notional_cap",
+                   "event_has_inventory", "fill_cooldown", "possible_fill"):
             self.cycle_req.set()                      # fall back to a full guarded cycle
 
     def on_fill(self, msg):
-        _log({"ev": "fill", "ticker": msg.get("market_ticker", ""),
-              "count": msg.get("count")})
-        self.ctx.built_mono = 0.0                     # inventory changed: ctx is stale NOW
+        t = msg.get("market_ticker", "") or msg.get("ticker", "")
+        _log({"ev": "fill", "ticker": t, "count": msg.get("count")})
+        if t:
+            # stand hot down for the whole EVENT for a beat — sibling strikes'
+            # cached counts are suspect too (re-review B3-3).
+            self.last_fill_mono[M._event_key(t)] = time.monotonic()
+        self.ctx.invalidate()                         # inventory changed: ctx stale NOW
         self.cycle_req.set()                          # full guard pass immediately
 
     def _new_feed(self, watch):
@@ -438,7 +541,7 @@ class Daemon:
         and raise the in_cold flag BEFORE the worker starts; both are set on
         the event-loop thread, the same thread that runs hot_event."""
         self.in_cold = True
-        self.ctx.built_mono = 0.0
+        self.ctx.invalidate()
         try:
             return await asyncio.to_thread(self.cold_cycle)
         finally:
@@ -456,7 +559,10 @@ class Daemon:
             while not self.stopping.is_set():
                 stopped = os.path.exists(M.STOP_FILE)
                 interval = WS_STOP_COLD_S if stopped else WS_COLD_S
-                triggered = self.cycle_req.is_set() and not stopped
+                # cycle_req is honored under STOP TOO (re-review REGRESSION):
+                # suppressing it delayed the flatten pass; run_once under STOP
+                # maker-flattens, which is exactly what we want to happen sooner.
+                triggered = self.cycle_req.is_set()
                 due = (time.monotonic() - self.last_cycle_mono) >= interval
                 gap_ok = (time.monotonic() - self.last_cycle_mono) >= WS_CYCLE_MIN_GAP_S
                 if (triggered and gap_ok) or due:

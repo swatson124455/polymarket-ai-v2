@@ -158,66 +158,66 @@ def _std(oid, side, price, count):
     return {"order_id": oid, "side": side, "price_dollars": price, "count": count}
 
 
-def test_reprice_same_count_new_price():
-    cancels, creates = D.hot_reprice_ops(
+def test_reprice_pair_same_count_new_price():
+    ops = D.hot_reprice_ops(
         [{"side": "yes", "price_dollars": 0.37, "count": 20}],
         [_std("o1", "yes", 0.36, 20)])
-    assert cancels == ["o1"]
-    assert creates == [{"side": "yes", "price_dollars": 0.37, "count": 20}]
+    assert len(ops) == 1
+    assert ops[0]["order_id"] == "o1" and ops[0]["want_count"] == 20.0
+    assert ops[0]["price_dollars"] == 0.37 and ops[0]["old_price"] == 0.36
 
 
-def test_side_pull_is_cancel_only():
-    cancels, creates = D.hot_reprice_ops([], [_std("o1", "yes", 0.36, 20)])
-    assert cancels == ["o1"] and creates == []
+def test_no_standalone_side_pull_kills_broken_variant():
+    """re-review LADDER-HATCH: hot must NEVER pull a side it sees no desired for
+    — run_once appends a ladder self-hedge hot cannot regenerate, so a pull would
+    strip a floored pair into naked settlement risk."""
+    ops = D.hot_reprice_ops([], [_std("o1", "yes", 0.36, 20)])
+    assert ops == []
 
 
 def test_count_change_is_left_for_cold_cycle():
-    cancels, creates = D.hot_reprice_ops(
+    ops = D.hot_reprice_ops(
         [{"side": "yes", "price_dollars": 0.37, "count": 40}],
         [_std("o1", "yes", 0.36, 20)])
-    assert cancels == [] and creates == []
+    assert ops == []
 
 
 def test_new_side_expansion_is_forbidden():
-    cancels, creates = D.hot_reprice_ops(
+    ops = D.hot_reprice_ops(
         [{"side": "yes", "price_dollars": 0.37, "count": 20},
          {"side": "no", "price_dollars": 0.60, "count": 20}],
         [_std("o1", "yes", 0.36, 20)])
-    assert creates == [{"side": "yes", "price_dollars": 0.37, "count": 20}]
-    assert cancels == ["o1"]
+    assert [o["side"] for o in ops] == ["yes"]          # NO side never created
 
 
 def test_reduce_side_untouchable_kills_broken_variant():
-    """Review F3/F4: the reducing side is never cancelled OR created hot —
-    no unwind overshoot, no stranding, no KEEP_BOTH parity gap."""
-    cancels, creates = D.hot_reprice_ops(
+    ops = D.hot_reprice_ops(
         [{"side": "no", "price_dollars": 0.65, "count": 10, "reason": "unwind"},
          {"side": "yes", "price_dollars": 0.37, "count": 20}],
         [_std("u1", "no", 0.63, 10), _std("o1", "yes", 0.36, 20)],
         reduce_side="no")
-    assert cancels == ["o1"]                          # only the accumulating side
-    assert creates == [{"side": "yes", "price_dollars": 0.37, "count": 20}]
+    assert [o["order_id"] for o in ops] == ["o1"]
 
 
-def test_unwind_tagged_desired_never_created():
-    cancels, creates = D.hot_reprice_ops(
+def test_unwind_tagged_desired_never_repriced():
+    ops = D.hot_reprice_ops(
         [{"side": "no", "price_dollars": 0.65, "count": 10, "reason": "unwind"}],
         [_std("u1", "no", 0.63, 10)])
-    assert cancels == [] and creates == []            # unwind reprice = cold-cycle work
+    assert ops == []
 
 
 def test_multi_level_left_for_cold_cycle():
-    cancels, creates = D.hot_reprice_ops(
+    ops = D.hot_reprice_ops(
         [{"side": "yes", "price_dollars": 0.37, "count": 20}],
         [_std("o1", "yes", 0.36, 10), _std("o2", "yes", 0.35, 10)])
-    assert cancels == [] and creates == []
+    assert ops == []
 
 
 def test_same_price_is_no_op():
-    cancels, creates = D.hot_reprice_ops(
+    ops = D.hot_reprice_ops(
         [{"side": "yes", "price_dollars": 0.36, "count": 20}],
         [_std("o1", "yes", 0.36, 20)])
-    assert cancels == [] and creates == []
+    assert ops == []
 
 
 # ---------------- TokenBucket ----------------
@@ -230,37 +230,44 @@ def test_token_bucket_caps_burst():
 # ---------------- Daemon hot path ----------------
 
 class MockClient:
-    """Hostile-configurable client: failing cancels, response shapes."""
+    """Hostile-configurable client. remaining_map lets a test say how much the
+    venue reports STILL RESTING at cancel time (None = venue did not say)."""
     mode = "live"
 
-    def __init__(self, fail_cancel_ids=(), response_shape="nested"):
+    def __init__(self, fail_cancel_ids=(), response_shape="nested",
+                 remaining_map=None, remaining_default=20.0):
         self.calls = []
         self.coids = []
         self.fail_cancel_ids = set(fail_cancel_ids)
         self.response_shape = response_shape
+        self.remaining_map = remaining_map or {}
+        self.remaining_default = remaining_default
 
-    def batch_cancel(self, oids):
-        self.calls.append(("batch_cancel", list(oids)))
-        ok = [{"order": {"order_id": o}} for o in oids if o not in self.fail_cancel_ids]
-        failed = [{"order_id": o, "error": "429"} for o in oids if o in self.fail_cancel_ids]
-        return {"cancelled": ok, "failed": failed}
+    cancel_remaining_ct = staticmethod(D.M.KalshiOrderClient.cancel_remaining_ct)
+
+    def cancel_order(self, oid):
+        self.calls.append(("cancel_order", oid))
+        if oid in self.fail_cancel_ids:
+            raise RuntimeError("429 cancel rejected")
+        rem = self.remaining_map.get(oid, self.remaining_default)
+        if rem is None:
+            return {"order": {"order_id": oid}}          # venue did not state it
+        return {"order": {"order_id": oid, "remaining_count_fp": str(rem)}}
 
     def create_quote(self, ticker, outcome, price, count, post_only=True,
                      client_order_id=None):
         assert post_only, "hot path must never send a crossing order"
         self.calls.append(("create_quote", ticker, outcome, price, count))
         self.coids.append(client_order_id)
-        oid = f"new-{len(self.calls)}"
+        oid = "new-%d" % len(self.calls)
         if self.response_shape == "nested":
             return {"order": {"order_id": oid}}
         if self.response_shape == "toplevel":
             return {"order_id": oid, "status": "resting"}
-        return {"status": "accepted"}                 # no id at all
+        return {"status": "accepted"}
 
 
 class InlineExec:
-    """Executes submitted work synchronously so tests see effects immediately."""
-
     def submit(self, fn, *a, **k):
         fn(*a, **k)
 
@@ -286,13 +293,15 @@ def daemon(tmp_path, monkeypatch):
     d.last_cycle_mono = time.monotonic()
     d.last_refs = {}
     d.ctx = D.HotContext()
-    d.bucket = D.TokenBucket(100.0, 10)
+    d.bucket = D.TokenBucket(100.0, 20)
     d.last_hot_mono = {}
+    d.last_fill_mono = {}
     d.programs = []
     d.programs_mono = 0.0
-    d.feed = FakeFeed(fills_confirmed=True)
+    d.feed = FakeFeed(True)
     d.in_cold = False
     d.std_lock = D.threading.Lock()
+    d.cold_lock = D.threading.Lock()
     d._writer = InlineExec()
     d._coid = 0
     d.ctx.built_mono = time.monotonic()
@@ -300,15 +309,16 @@ def daemon(tmp_path, monkeypatch):
     d.ctx.breaker = False
     d.ctx.by_ticker = {"T": {"m": {"ticker": "T"}, "own": None, "inv": 0.0,
                              "ev": 0.0, "cost": 0.0}}
+    d.ctx.event_inv = {}
     d.ctx.standing = {"T": [_std("o1", "yes", 0.36, 20)]}
     d.ctx.headroom_total = 1000.0
     d.ctx.headroom_mkt = {"T": 100.0}
     return d
 
 
-def _mirror(yes_depth=100):
+def _mirror(yes_depth=100, yes_px=36):
     m = F.BookMirror("T")
-    m.apply_snapshot({"yes": [[36, yes_depth]], "no": [[63, 80]]}, seq=1)
+    m.apply_snapshot({"yes": [[yes_px, yes_depth]], "no": [[63, 80]]}, seq=1)
     return m
 
 
@@ -319,38 +329,134 @@ def _patch_quotes(monkeypatch, quotes):
 
 def test_hot_reprice_executes(daemon, monkeypatch):
     _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
-    out = daemon.hot_event("T", _mirror(), time.monotonic())
-    assert out == "submitted"
-    kinds = [c[0] for c in daemon.client.calls]
-    assert kinds == ["batch_cancel", "create_quote"]
-    std = daemon.ctx.standing["T"]
-    assert all(o["order_id"] != "o1" for o in std)
-    assert any(abs(o["price_dollars"] - 0.37) < 1e-9 for o in std)
+    assert daemon.hot_event("T", _mirror(), time.monotonic()) == "submitted"
+    assert [c[0] for c in daemon.client.calls] == ["cancel_order", "create_quote"]
+    assert daemon.client.calls[1][4] == 20.0            # full count still resting
+    assert all(o["order_id"] != "o1" for o in daemon.ctx.standing["T"])
 
 
-def test_hot_cancel_fail_blocks_create_kills_broken_variant(daemon, monkeypatch):
-    """Review F1 BLOCKER: a failed cancel must abort creates + force a cycle."""
+def test_partial_fill_clamps_create_to_venue_remaining_kills_broken_variant(
+        daemon, monkeypatch):
+    """THE round-2 BLOCKER (B3-1). Venue says only 12 of our 20 was still
+    resting -> we may re-place AT MOST 12. The old code re-placed 20 (a +8ct
+    adverse refill); the depth precondition could not see it because other
+    makers' size covered the level."""
+    daemon.client = MockClient(remaining_map={"o1": 12.0})
+    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
+    assert daemon.hot_event("T", _mirror(yes_depth=100), time.monotonic()) == "submitted"
+    creates = [c for c in daemon.client.calls if c[0] == "create_quote"]
+    assert len(creates) == 1
+    assert creates[0][4] == 12.0, "must clamp to venue-confirmed remaining, not 20"
+
+
+def _log_events(daemon_log_path):
+    out = []
+    try:
+        with open(daemon_log_path, encoding="utf-8") as fh:
+            for ln in fh:
+                try:
+                    out.append(json.loads(ln).get("ev"))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return out
+
+
+def test_unknown_remaining_never_recreates_kills_broken_variant(daemon, monkeypatch):
+    """Venue did not state remaining size -> re-creating would be a guess.
+    Asserts the DELIBERATE guard ran (hot_cancel_no_remaining), not an
+    incidental crash into the catch-all: removing the `is None` check makes
+    float(None) raise, which fails safe but is NOT the same code path, and a
+    test that cannot tell them apart does not pin the guard."""
+    daemon.client = MockClient(remaining_map={"o1": None})
+    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
+    daemon.hot_event("T", _mirror(), time.monotonic())
+    assert [c[0] for c in daemon.client.calls] == ["cancel_order"]   # no create
+    assert daemon.ctx.stale() and daemon.cycle_req.is_set()
+    evs = _log_events(D.LOG_PATH)
+    assert "hot_cancel_no_remaining" in evs, evs
+    assert "hot_write_error" not in evs, "must be a clean guard, not an exception"
+
+
+def test_fully_filled_order_never_recreated_kills_broken_variant(daemon, monkeypatch):
+    daemon.client = MockClient(remaining_map={"o1": 0.0})
+    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
+    daemon.hot_event("T", _mirror(), time.monotonic())
+    assert [c[0] for c in daemon.client.calls] == ["cancel_order"]
+    assert daemon.ctx.stale() and daemon.cycle_req.is_set()
+
+
+def test_cancel_exception_blocks_create_kills_broken_variant(daemon, monkeypatch):
     daemon.client = MockClient(fail_cancel_ids={"o1"})
     _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
-    out = daemon.hot_event("T", _mirror(), time.monotonic())
-    assert out == "submitted"
-    kinds = [c[0] for c in daemon.client.calls]
-    assert kinds == ["batch_cancel"]                  # NO create after failed cancel
-    assert any(o["order_id"] == "o1" for o in daemon.ctx.standing["T"])   # kept in view
-    assert daemon.ctx.stale()                         # invalidated
-    assert daemon.cycle_req.is_set()                  # guarded cycle forced
+    daemon.hot_event("T", _mirror(), time.monotonic())
+    assert not any(c[0] == "create_quote" for c in daemon.client.calls)
+    assert daemon.ctx.stale() and daemon.cycle_req.is_set()
 
 
-def test_hot_toplevel_response_shape_parsed(daemon, monkeypatch):
-    """Review F4: V2 create may return top-level order fields."""
+def test_event_inventory_gate_kills_broken_variant(daemon, monkeypatch):
+    """re-review B3-3 + LADDER-HATCH: inventory anywhere in the event -> stand
+    down (covers both the stale-inv reduce_side race and the ladder hedge hot
+    cannot regenerate)."""
+    daemon.ctx.event_inv = {D.M._event_key("T"): D.M.INV_TOLERANCE + 5}
+    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
+    assert daemon.hot_event("T", _mirror(), time.monotonic()) == "event_has_inventory"
+    assert daemon.client.calls == []
+
+
+def test_reduce_side_caller_derivation_kills_mutant3(daemon, monkeypatch):
+    """MUTANT-3 (delete the reduce_side derivation in hot_event) passed all 49
+    tests last round. This pins the CALLER: long YES inventory means the NO side
+    is the reducing side and must never be hot-touched."""
+    daemon.ctx.by_ticker["T"]["inv"] = +20.0
+    daemon.ctx.event_inv = {}                            # gate open on purpose
+    daemon.ctx.standing["T"] = [_std("u1", "no", 0.63, 10),
+                                _std("o1", "yes", 0.36, 20)]
+    _patch_quotes(monkeypatch, [{"side": "no", "price_dollars": 0.65, "count": 10},
+                                {"side": "yes", "price_dollars": 0.37, "count": 20}])
+    daemon.hot_event("T", _mirror(), time.monotonic())
+    touched = [c[1] for c in daemon.client.calls if c[0] == "cancel_order"]
+    assert "u1" not in touched, "reducing (NO) side must never be hot-touched"
+    assert touched == ["o1"]
+
+
+def test_reduce_side_caller_derivation_short_yes_kills_mutant8(daemon, monkeypatch):
+    """MUTANT-8 (delete the ban in hot_reprice_ops) also passed all 49 tests."""
+    daemon.ctx.by_ticker["T"]["inv"] = -20.0            # short YES -> YES reduces
+    daemon.ctx.event_inv = {}
+    daemon.ctx.standing["T"] = [_std("o1", "yes", 0.36, 20)]
+    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
+    daemon.hot_event("T", _mirror(), time.monotonic())
+    assert daemon.client.calls == [], "YES is the reducing side when short YES"
+
+
+def test_fill_cooldown_blocks_hot(daemon, monkeypatch):
+    daemon.last_fill_mono[D.M._event_key("T")] = time.monotonic()
+    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
+    assert daemon.hot_event("T", _mirror(), time.monotonic()) == "fill_cooldown"
+    assert daemon.client.calls == []
+
+
+def test_depth_precondition_covers_untouched_orders_kills_broken_variant(
+        daemon, monkeypatch):
+    """re-review B3-2: a collapsed level on ANY standing order in the ticker is
+    evidence our inventory changed, not just the one being repriced."""
+    daemon.ctx.standing["T"] = [_std("o1", "yes", 0.36, 20),
+                                _std("o9", "no", 0.63, 999)]   # 999 > book 80
+    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
+    assert daemon.hot_event("T", _mirror(), time.monotonic()) == "possible_fill"
+    assert daemon.client.calls == []
+
+
+def test_toplevel_response_shape_parsed(daemon, monkeypatch):
     daemon.client = MockClient(response_shape="toplevel")
     _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
     daemon.hot_event("T", _mirror(), time.monotonic())
     assert any(o["order_id"].startswith("new-") for o in daemon.ctx.standing["T"])
 
 
-def test_hot_no_order_id_invalidates_kills_broken_variant(daemon, monkeypatch):
-    """Review F4: a create ack without an id must invalidate, never invent one."""
+def test_create_no_id_invalidates_kills_broken_variant(daemon, monkeypatch):
     daemon.client = MockClient(response_shape="no_id")
     _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
     daemon.hot_event("T", _mirror(), time.monotonic())
@@ -359,81 +465,122 @@ def test_hot_no_order_id_invalidates_kills_broken_variant(daemon, monkeypatch):
     assert daemon.ctx.stale() and daemon.cycle_req.is_set()
 
 
-def test_hot_client_order_ids_unique_kills_broken_variant(daemon, monkeypatch):
-    """Review F3: same-second reprices must never reuse a client_order_id."""
+def test_client_order_ids_unique(daemon, monkeypatch):
     _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
     daemon.hot_event("T", _mirror(), time.monotonic())
-    daemon.ctx.built_mono = time.monotonic()          # refresh ctx (was consumed)
+    daemon.ctx.built_mono = time.monotonic()
     daemon.ctx.standing["T"] = [_std("o2", "yes", 0.37, 20)]
     daemon.last_hot_mono = {}
     _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.38, "count": 20}])
-    m2 = F.BookMirror("T")                            # mirror must show our 0.37 level
-    m2.apply_snapshot({"yes": [[37, 100]], "no": [[63, 80]]}, seq=1)
-    daemon.hot_event("T", m2, time.monotonic())
+    daemon.hot_event("T", _mirror(yes_px=37), time.monotonic())
     ids = daemon.client.coids
     assert len(ids) == 2 and ids[0] != ids[1]
 
 
+def test_invalidate_uses_none_not_zero_kills_broken_variant():
+    """re-review SENTINEL: 0.0 reads as FRESH for the first WS_STALE_S seconds
+    of a boot-relative monotonic clock."""
+    c = D.HotContext()
+    c.built_mono = 0.0
+    assert c.stale(), "0.0 must not be treated as a fresh context"
+    c.built_mono = time.monotonic()
+    assert not c.stale()
+    c.invalidate()
+    assert c.built_mono is None and c.stale()
+
+
 def test_hot_blocked_cold_running_kills_broken_variant(daemon):
-    """Review F2 BLOCKER (all reviewers): hot is dead while run_once runs."""
     daemon.in_cold = True
     assert daemon.hot_event("T", _mirror(), time.monotonic()) == "cold_running"
     assert daemon.client.calls == []
 
 
+def test_cold_lock_serializes_writes_kills_broken_variant(daemon, monkeypatch):
+    """re-review B2-1: an already-submitted write must not interleave with
+    run_once — the executor must take cold_lock, not just check a flag."""
+    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
+    daemon.cold_lock.acquire()                          # cold cycle holds it
+    done = []
+
+    def run():
+        daemon._exec_hot("T", [{"order_id": "o1", "side": "yes",
+                                "price_dollars": 0.37, "want_count": 20.0,
+                                "old_price": 0.36}],
+                         0.0, time.monotonic(), daemon.ctx.built_mono)
+        done.append(True)
+    th = D.threading.Thread(target=run, daemon=True)
+    th.start()
+    th.join(timeout=0.5)
+    assert not done, "executor must BLOCK while the cold cycle holds cold_lock"
+    assert daemon.client.calls == []
+    daemon.cold_lock.release()
+    th.join(timeout=2.0)
+    assert done
+
+
+def test_abort_ok_rechecked_before_create_kills_mutant4(daemon, monkeypatch):
+    """MUTANT-4 (drop the built_snapshot term) passed last round. A fill landing
+    DURING the cancel must stop the follow-on create."""
+    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
+    snap = daemon.ctx.built_mono
+    orig = daemon.client.cancel_order
+
+    def cancel_then_fill(oid):
+        r = orig(oid)
+        daemon.on_fill({"market_ticker": "T", "count": 8})   # fill mid-sequence
+        return r
+    daemon.client.cancel_order = cancel_then_fill
+    daemon._exec_hot("T", [{"order_id": "o1", "side": "yes", "price_dollars": 0.37,
+                            "want_count": 20.0, "old_price": 0.36}],
+                     0.0, time.monotonic(), snap)
+    assert not any(c[0] == "create_quote" for c in daemon.client.calls)
+
+
 def test_hot_blocked_breaker(daemon):
-    """Review F4: under breaker the cold cycle owns all shaping — hot stands down."""
     daemon.ctx.breaker = True
     assert daemon.hot_event("T", _mirror(), time.monotonic()) == "breaker"
-    assert daemon.client.calls == []
 
 
 def test_hot_blocked_fills_unconfirmed_kills_broken_variant(daemon):
-    """Review F3 BLOCKER: no venue ack for the fill channel -> no hot writes."""
-    daemon.feed = FakeFeed(fills_confirmed=False)
+    daemon.feed = FakeFeed(False)
     assert daemon.hot_event("T", _mirror(), time.monotonic()) == "fills_unconfirmed"
     assert daemon.client.calls == []
 
 
-def test_hot_depth_precondition_kills_broken_variant(daemon, monkeypatch):
-    """Review F2-partial-fills: level shrunk below our count = possible fill ->
-    invalidate + cycle, never a refill."""
-    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
-    out = daemon.hot_event("T", _mirror(yes_depth=8), time.monotonic())   # 8 < our 20
-    assert out == "possible_fill"
-    assert daemon.client.calls == []
-    assert daemon.ctx.stale() and daemon.cycle_req.is_set()
-
-
-def test_hot_notional_cap_kills_broken_variant(daemon, monkeypatch):
-    """Review F5: repricing may not raise resting notional past headroom."""
-    daemon.ctx.headroom_mkt["T"] = 0.05               # 5c of room
-    daemon.ctx.headroom_total = 0.05
-    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.40, "count": 20}])
-    out = daemon.hot_event("T", _mirror(), time.monotonic())   # +0.04*20 = $0.80 > 5c
-    assert out == "notional_cap"
+def test_exec_rechecks_fills_confirmed_kills_broken_variant(daemon):
+    """re-review FILL-ACK-2: a disconnect between submit and execute aborts."""
+    snap = daemon.ctx.built_mono
+    daemon.feed = FakeFeed(False)
+    daemon._exec_hot("T", [{"order_id": "o1", "side": "yes", "price_dollars": 0.37,
+                            "want_count": 20.0, "old_price": 0.36}],
+                     0.0, time.monotonic(), snap)
     assert daemon.client.calls == []
 
 
-def test_hot_notional_decrease_allowed(daemon, monkeypatch):
+def test_notional_headroom_reserved_atomically_kills_broken_variant(daemon, monkeypatch):
+    """re-review H7-1b: N tickers must not all pass the SAME total check —
+    reservation happens under the lock at check time."""
+    daemon.ctx.headroom_total = 0.60
+    daemon.ctx.headroom_mkt = {"T": 100.0, "U": 100.0, "V": 100.0}
+    for t in ("U", "V"):
+        daemon.ctx.by_ticker[t] = {"m": {"ticker": t}, "own": None, "inv": 0.0,
+                                   "ev": 0.0, "cost": 0.0}
+        daemon.ctx.standing[t] = [_std(t + "1", "yes", 0.36, 20)]
+    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.38, "count": 20}])
+    outs = []
+    for t in ("T", "U", "V"):
+        mm = F.BookMirror(t)
+        mm.apply_snapshot({"yes": [[36, 100]], "no": [[63, 80]]}, seq=1)
+        daemon.ctx.built_mono = time.monotonic()
+        outs.append(daemon.hot_event(t, mm, time.monotonic()))
+    assert outs.count("notional_cap") >= 2, "only one $0.40 reprice fits in $0.60"
+
+
+def test_notional_decrease_allowed(daemon, monkeypatch):
     daemon.ctx.headroom_mkt["T"] = 0.0
     daemon.ctx.headroom_total = 0.0
     _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.30, "count": 20}])
-    out = daemon.hot_event("T", _mirror(), time.monotonic())   # repricing DOWN
-    assert out == "submitted"
-
-
-def test_hot_worker_revalidates_kills_broken_variant(daemon, monkeypatch):
-    """Review F6: the worker must abort if the world changed after submit."""
-    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
-
-    class LateColdExec(InlineExec):
-        def submit(self, fn, *a, **k):
-            daemon.in_cold = True                     # cold cycle starts before exec
-            fn(*a, **k)
-    daemon._writer = LateColdExec()
-    daemon.hot_event("T", _mirror(), time.monotonic())
-    assert daemon.client.calls == []                  # aborted, no venue writes
+    assert daemon.hot_event("T", _mirror(), time.monotonic()) == "submitted"
 
 
 def test_hot_blocked_flag_off(daemon, monkeypatch):
@@ -474,20 +621,18 @@ def test_hot_blocked_debounce(daemon, monkeypatch):
     assert daemon.hot_event("T", _mirror(), time.monotonic()) == "debounce"
 
 
-def test_hot_write_exception_invalidates(daemon, monkeypatch):
-    _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.37, "count": 20}])
-
-    def boom(oids):
-        raise RuntimeError("venue 500")
-    daemon.client.batch_cancel = boom
-    daemon.hot_event("T", _mirror(), time.monotonic())
-    assert daemon.ctx.stale()
-    assert daemon.cycle_req.is_set()
-
-
-def test_hot_no_op_when_book_already_matches(daemon, monkeypatch):
+def test_no_op_when_book_already_matches(daemon, monkeypatch):
     _patch_quotes(monkeypatch, [{"side": "yes", "price_dollars": 0.36, "count": 20}])
     assert daemon.hot_event("T", _mirror(), time.monotonic()) == "no_op"
+
+
+def test_cancel_remaining_ct_parser():
+    P = D.M.KalshiOrderClient.cancel_remaining_ct
+    assert P({"order": {"remaining_count_fp": "12.5"}}) == 12.5
+    assert P({"remaining_count": 7}) == 7.0
+    assert P({"order": {"order_id": "x"}}) is None
+    assert P({"order": {"remaining_count_fp": "junk"}}) is None
+    assert P(None) is None
 
 
 # ---------------- Stage A wiring ----------------
@@ -519,7 +664,14 @@ def test_on_book_blocked_hot_falls_back_to_cycle(daemon):
     assert daemon.cycle_req.is_set()
 
 
-def test_on_fill_forces_ctx_stale_and_cycle(daemon):
+def test_on_fill_forces_ctx_stale_cycle_and_event_cooldown(daemon):
     daemon.on_fill({"market_ticker": "T", "count": 5})
     assert daemon.ctx.stale()
     assert daemon.cycle_req.is_set()
+    assert D.M._event_key("T") in daemon.last_fill_mono
+
+
+def test_stop_heartbeat_not_widened_kills_regression():
+    """re-review REGRESSION: widening the STOP heartbeat to 300s delayed the
+    first flatten pass of an operator-written STOP. It must stay <= WS_COLD_S."""
+    assert D.WS_STOP_COLD_S <= D.WS_COLD_S

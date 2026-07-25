@@ -204,6 +204,25 @@ class KalshiOrderClient:
         """DELETE /portfolio/events/orders/{id} — V2, verified demo 2026-07-19."""
         return self._write("DELETE", f"{API_ROOT}/portfolio/events/orders/{order_id}", None)
 
+    @staticmethod
+    def cancel_remaining_ct(resp):
+        """Contracts STILL RESTING at cancel time, per the venue's own cancel
+        response — ground truth for how much of an order was UNFILLED.
+        Returns None when the response does not state it (caller must then
+        treat the remaining size as UNKNOWN and never re-create blind).
+        Added for the WS hot path (re-review BLOCKER B3-1): inferring remaining
+        size from book depth is wrong whenever other makers share our level."""
+        if not isinstance(resp, dict):
+            return None
+        o = resp.get("order") if isinstance(resp.get("order"), dict) else resp
+        for k in ("remaining_count_fp", "remaining_count"):
+            if k in o and o[k] is not None:
+                try:
+                    return float(o[k])
+                except (TypeError, ValueError):
+                    return None
+        return None
+
     def batch_cancel(self, order_ids):
         """Cancel many orders. The legacy /portfolio/orders/batched path is DEAD
         (410); the V2 batched-cancel shape is not demo-verified, so cancel one at
