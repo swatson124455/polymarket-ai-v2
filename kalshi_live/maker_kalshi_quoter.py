@@ -393,8 +393,16 @@ PRECLOSE_FLATTEN_MIN = _envf("KALSHI_PRECLOSE_FLATTEN_MIN", 15.0)  # act within 
 # --- selection: prefer BALANCED books (maker-unwind fills) over one-sided drift traps ---
 MAX_SPREAD_TICKS = _envi("KALSHI_MAX_SPREAD_TICKS", 8)      # skip wide/illiquid books
 MIN_DEPTH_SYM = _envf("KALSHI_MIN_DEPTH_SYM", 0.25)         # min(depth)/max(depth) both sides
-REQ_SPACING_S = 0.55
-READ_BUDGET_PER_CYCLE = 200
+# READ spacing. Env-overridable (default UNCHANGED at 0.55 => provable no-op).
+# The knob exists because 0.55s is the single largest contributor to cycle time:
+# a 40-market cycle spends ~22s sleeping here vs ~5-10s on actual network, i.e.
+# our own throttle is ~2x the entire round trip and is applied 40-200x/cycle.
+# Token math (Basic tier, ~100 tok/s): reads bill far less than the create=10
+# tok writes, and 0.55s is only ~1.8 reads/s, so there is large headroom — but
+# the exact read token cost is NOT documented anywhere we have verified, so
+# LOWERING THIS IS AN OPERATOR DECISION, not a default. Measure 429s if changed.
+REQ_SPACING_S = _envf("KALSHI_REQ_SPACING_S", 0.55)
+READ_BUDGET_PER_CYCLE = _envi("KALSHI_READ_BUDGET", 200)
 
 _last_req = [0.0]
 _reads = [0]

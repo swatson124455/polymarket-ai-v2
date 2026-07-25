@@ -568,3 +568,36 @@ def test_revenue_pins_fail_if_counts_are_read_as_net(monkeypatch):
     assert _count_failures(REVENUE_PINS) == 0
     monkeypatch.setattr(SP, "net_position", lambda r: SP._f(r.get("yes_count_fp")))
     assert _count_failures(REVENUE_PINS) == 5
+
+
+# ---- SIGN CONVENTION REGRESSION (added 2026-07-25 after a real analysis bug) ----
+# An analysis script inverted (action='sell', side='no') to +1 signed-YES and
+# produced a false conclusion. The venue labels our resting NO bid's fill as
+# "sell no" (our client submits NO bids as ASKS on the yes-scale) even though we
+# are ACQUIRING NO = SHORT yes. Correct sign is ACTION-ONLY. Validated against
+# /portfolio/positions (21/21 tickers reconciled). This pins it forever.
+
+def test_fill_signed_qty_is_action_only_all_four_cases():
+    import kalshi_settlement_pnl as S
+
+    def venue_validated(action, side):
+        if side == "yes":
+            return +1.0 if action == "buy" else -1.0
+        return -1.0 if action == "sell" else +1.0
+
+    for action in ("buy", "sell"):
+        for side in ("yes", "no"):
+            got = S.fill_signed_qty({"action": action, "side": side,
+                                     "count_fp": "1"})
+            assert got == venue_validated(action, side), (action, side, got)
+
+
+def test_sell_no_is_negative_yes_signed():
+    """The exact case that was inverted. ('buy','yes') and ('sell','no') are the
+    only two shapes this bot produces, so getting this wrong corrupts ~half of
+    every fill-derived number."""
+    import kalshi_settlement_pnl as S
+    assert S.fill_signed_qty({"action": "sell", "side": "no",
+                              "count_fp": "20"}) == -20.0
+    assert S.fill_signed_qty({"action": "buy", "side": "yes",
+                              "count_fp": "20"}) == +20.0
