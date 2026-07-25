@@ -61,15 +61,18 @@ def pool(p):
 
 
 def target_of(p):
-    for k in ("target_size", "target", "target_contracts"):
-        if p.get(k):
-            return float(p[k])
-    return 1000.0
+    # THE FIELD IS target_size_fp. Plain `target_size` is None on 100% of 2,271 active programs —
+    # the documented *_fp footgun. Reading the wrong key silently defaults every market to 1000 and
+    # makes the 52 Target-300 programs (2.3%) look harder to qualify than they are.
+    v = p.get("target_size_fp")
+    if v is None:
+        raise KeyError(f"no target_size_fp on {p.get('market_ticker')}")
+    return float(v)
 
 
 def df_of(p):
     b = p.get("discount_factor_bps")
-    return (float(b) / 10000.0) if b else 0.5
+    return (float(b) / 10000.0) if b else 0.5      # measured: 5000 bps on 100% of active programs
 
 
 def capture(yl, nl, target, df, usd_day):
@@ -122,10 +125,15 @@ def main():
                          "y_book_df": round(ty, 1), "n_book_df": round(tn, 1),
                          "r3_ok": ok, "capture_usd_day": round(c, 3)})
         med = st.median(caps) if caps else 0.0
+        # THE $1.00 FLOOR (Kalshi LIP help, "Minimum payout: $1.00, rounded down to nearest cent"):
+        # a modelled capture below $1.00 pays ZERO while still carrying full fill risk. It is a hard
+        # threshold, not a small number — so flag it rather than let a $0.60 rank above a $0.00.
         results.append({"series": ser, "series_pool_usd_day": round(ser_pool, 1),
                         "n_markets": len(plist), "quoted_by_us": ser in ALLOW,
                         "median_capture_usd_day": round(med, 3),
                         "max_capture_usd_day": round(max(caps), 3) if caps else 0.0,
+                        "clears_1usd_floor": med >= 1.0,
+                        "targets": sorted({r.get("target") for r in rows if r.get("target")}),
                         "samples": rows})
         print(f"[{si+1:2d}/{TOP_SERIES}] {ser:24s} pool=${ser_pool:8,.0f}/d "
               f"n={len(plist):4d} med_capture=${med:7.3f}/d "
