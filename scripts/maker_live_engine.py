@@ -181,6 +181,12 @@ def load_config(env=None):
         # produces silence, and it is risk-reducing by construction.
         "onesided_derisk": (env.get("MAKER_ONESIDED_DERISK", "1")
                             .strip().lower() not in ("0", "false", "no")),
+        # WS hot path: re-run the guarded cycle ON a book tick instead of a
+        # fixed 1 s timer. Default OFF = the unchanged 1 Hz loop (the rollback).
+        # ws_min_s (from MAKER_WS_MIN_MS) is the spin-guard floor between cycles.
+        "ws_hot": (env.get("MAKER_WS_HOT", "0")
+                   .strip().lower() not in ("0", "false", "no", "")),
+        "ws_min_s": f("MAKER_WS_MIN_MS", 250.0) / 1000.0,
     }
     # bounds validation — a nonsense knob must fail LOUD at start, not
     # corrupt the money path at runtime (review finding 15: negative
@@ -203,6 +209,8 @@ def load_config(env=None):
                          "(exclude a sector via MAKER_EXCLUDED_SECTORS)")
     if out["max_markets"] <= 0 or out["max_per_sector"] <= 0:
         raise ValueError("market count knobs must be > 0")
+    if not (0.0 < out["ws_min_s"] < 1.0):
+        raise ValueError("MAKER_WS_MIN_MS must be in (0, 1000)")
     return out
 
 
@@ -588,6 +596,12 @@ def discovery_suspect(new_n, old_n, allowlisted):
 BOOKS = {}
 BOOKS_LOCK = threading.Lock()
 GEN = {"n": 0}
+# WS hot path (MAKER_WS_HOT, default OFF): ws_worker sets this on any book
+# apply so the main loop can re-run its full guarded cycle ON a book tick
+# instead of always sleeping a fixed 1 s. The event coalesces a burst of ticks
+# into one wake; the min-interval floor (ws_min_s) bounds the cycle rate. With
+# the flag OFF the loop ignores this entirely and paces at exactly 1 Hz.
+_WS_TICK = threading.Event()
 
 
 def _apply_book_snapshot(asset, msg):
@@ -610,6 +624,7 @@ def _apply_book_snapshot(asset, msg):
     if bids or asks:
         with BOOKS_LOCK:
             BOOKS[asset] = {"bids": bids, "asks": asks, "ts": time.time()}
+        _WS_TICK.set()          # wake the ws-hot loop (no-op when flag OFF)
 
 
 def _apply_price_change(asset, msg):
@@ -629,6 +644,7 @@ def _apply_price_change(asset, msg):
             elif 0 < p < 1:
                 levels[p] = s
         book["ts"] = time.time()
+    _WS_TICK.set()              # wake the ws-hot loop (no-op when flag OFF)
 
 
 def _apply_price_change_batched(msg):
@@ -650,6 +666,46 @@ def _apply_price_change_batched(msg):
             elif 0 < p < 1:
                 levels[p] = s
             book["ts"] = time.time()
+    _WS_TICK.set()              # wake the ws-hot loop (no-op when flag OFF)
+
+
+def _next_wait_plan(ws_hot, ws_min_s, elapsed):
+    """Pure pacing decision for the main loop's inter-cycle wait. Returns
+    (floor_sleep_s, tick_timeout_s):
+      floor_sleep_s  — an unconditional sleep (the min-interval spin guard)
+      tick_timeout_s — then how long to wait for a book tick; None => do NOT
+                       wait on the tick event at all (fixed-sleep only)
+
+    Flag OFF is the exact legacy 1 Hz timer: (1.0, None) => an unconditional
+    time.sleep(1) with no event involvement — the byte-identical rollback.
+
+    Flag ON: floor the cycle to ws_min_s since it STARTED (so a tick storm
+    cannot spin the full cycle faster than that), then wait for a tick up to
+    the remainder of a 1 s window, so the minute/heartbeat cadence (which keys
+    on <=1 s wall time) is preserved even through a silent, tickless stretch.
+    Extracted as a pure function so the pacing is unit- and mutation-testable
+    apart from any real sleeping (the codebase's extract-to-test pattern)."""
+    if not ws_hot:
+        return (1.0, None)
+    e = max(0.0, elapsed)
+    floor = max(0.0, ws_min_s - e)
+    remaining = max(0.0, 1.0 - max(e, ws_min_s))
+    return (floor, remaining)
+
+
+def _wait_next(cfg, cycle_started_at):
+    """Execute the pacing plan. `cycle_started_at` is the loop iteration's own
+    start `now`, so elapsed = how long the cycle just took."""
+    floor, tick_timeout = _next_wait_plan(
+        cfg.get("ws_hot", False), cfg.get("ws_min_s", 0.25),
+        time.time() - cycle_started_at)
+    if floor > 0:
+        time.sleep(floor)
+    if tick_timeout is None:
+        return
+    if tick_timeout > 0:
+        _WS_TICK.wait(timeout=tick_timeout)
+    _WS_TICK.clear()
 
 
 def ws_worker(assets, gen):
@@ -1760,7 +1816,9 @@ def run(base, cfg):
           f"style={cfg['style']} max_mkts={cfg['max_markets']} "
           f"excluded={sorted(cfg['excluded_sectors'])} "
           f"allowlist={sorted(cfg['sector_allowlist']) or 'off'} "
-          f"floor=${cfg['day_loss_floor']:.0f} halted={meta.get('halted', False)}",
+          f"floor=${cfg['day_loss_floor']:.0f} halted={meta.get('halted', False)} "
+          f"ws_hot={cfg['ws_hot']}"
+          + (f"(min={cfg['ws_min_s']*1000:.0f}ms)" if cfg['ws_hot'] else ""),
           flush=True)
     if execc.live:
         # restart discipline: unknown standing orders are cancelled before
@@ -2381,7 +2439,9 @@ def run(base, cfg):
                       f"nobook={nobook} http_hr={len(_http_window)}/{HTTP_BUDGET_PER_HOUR}",
                       flush=True)
 
-        time.sleep(1)
+        # inter-cycle wait: flag OFF => exactly time.sleep(1) (unchanged);
+        # flag ON => wake on a book tick, min-interval floored (Stage A)
+        _wait_next(cfg, now)
 
 
 def _trade_ts(tr):

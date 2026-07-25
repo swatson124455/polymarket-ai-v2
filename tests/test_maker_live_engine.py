@@ -1948,3 +1948,87 @@ def test_sector_of_substring_false_positives_REGRESSION():
     assert sec("nato-expands-membership") == "geopolitical"
     assert sec("premier-league-winner") == "sports"
     assert sec("epl-top-scorer-2026") == "sports"
+
+
+# ── WS hot path (Stage A): config + pure pacing plan + tick wiring ───────────
+def test_ws_hot_defaults_off():
+    c = mle.load_config(env={})
+    assert c["ws_hot"] is False
+    assert c["ws_min_s"] == 0.25          # MAKER_WS_MIN_MS default 250
+
+
+def test_ws_hot_env_on_and_min_ms():
+    c = mle.load_config(env={"MAKER_WS_HOT": "1", "MAKER_WS_MIN_MS": "100"})
+    assert c["ws_hot"] is True
+    assert abs(c["ws_min_s"] - 0.1) < 1e-9
+    # explicit off tokens
+    for off in ("0", "false", "no", ""):
+        assert mle.load_config(env={"MAKER_WS_HOT": off})["ws_hot"] is False
+
+
+def test_ws_min_ms_bounds_fail_loud():
+    with pytest.raises(ValueError):
+        mle.load_config(env={"MAKER_WS_MIN_MS": "0"})       # -> 0.0, not > 0
+    with pytest.raises(ValueError):
+        mle.load_config(env={"MAKER_WS_MIN_MS": "1000"})    # -> 1.0, not < 1
+    assert mle.load_config(env={"MAKER_WS_MIN_MS": "999"})["ws_min_s"] == 0.999
+
+
+def test_next_wait_plan_flag_off_is_exact_unconditional_1s():
+    # the rollback guarantee: OFF is ALWAYS (1.0, None) regardless of elapsed —
+    # an unconditional time.sleep(1) with no event involvement, byte-identical
+    # to the pre-change loop. Kills any mutant that makes OFF elapsed-aware.
+    for elapsed in (-5.0, 0.0, 0.3, 0.999, 1.0, 37.0):
+        assert mle._next_wait_plan(False, 0.25, elapsed) == (1.0, None)
+
+
+def test_next_wait_plan_flag_on_floor_and_remaining():
+    # elapsed 0: floor the full min-interval, then wait the rest of the 1s window
+    assert mle._next_wait_plan(True, 0.25, 0.0) == (0.25, 0.75)
+    # elapsed within the floor: floor shrinks, remaining measured from min
+    assert mle._next_wait_plan(True, 0.25, 0.10) == (pytest.approx(0.15),
+                                                     pytest.approx(0.75))
+    # elapsed past the floor but under 1s: no floor, remaining = rest of 1s
+    assert mle._next_wait_plan(True, 0.25, 0.40) == (0.0, pytest.approx(0.60))
+    # cycle already exceeded 1s: no floor, no wait -> run again immediately
+    assert mle._next_wait_plan(True, 0.25, 1.50) == (0.0, 0.0)
+    # negative elapsed (clock skew) clamps to 0 -> full floor
+    assert mle._next_wait_plan(True, 0.25, -3.0) == (0.25, 0.75)
+
+
+def test_next_wait_plan_on_never_spins_below_min_or_exceeds_1s():
+    # property: floor+remaining schedules the NEXT cycle no sooner than ws_min_s
+    # and no later than 1s after this cycle started, for any elapsed
+    for min_s in (0.05, 0.25, 0.5):
+        for elapsed in (0.0, 0.01, 0.2, 0.5, 0.9, 1.0, 2.0):
+            floor, rem = mle._next_wait_plan(True, min_s, elapsed)
+            assert floor >= 0.0 and rem >= 0.0
+            next_at = max(elapsed, 0.0) + floor + rem   # wall time since start
+            assert next_at >= min_s - 1e-9              # never faster than min
+            # never later than 1s after start UNLESS the cycle itself already
+            # ran past 1s (then the next starts immediately — can't rewind time)
+            assert next_at <= max(1.0, max(elapsed, 0.0)) + 1e-9
+
+
+def test_ws_tick_set_on_book_snapshot_and_change():
+    mle._WS_TICK.clear()
+    mle._apply_book_snapshot("Y", {"bids": [{"price": "0.4", "size": "10"}],
+                                   "asks": [{"price": "0.6", "size": "10"}]})
+    assert mle._WS_TICK.is_set()                         # snapshot woke the loop
+    # a price_change on an existing book also wakes it
+    mle._WS_TICK.clear()
+    mle._apply_price_change("Y", {"changes": [{"price": "0.41", "size": "5",
+                                               "side": "BUY"}]})
+    assert mle._WS_TICK.is_set()
+
+
+def test_ws_tick_not_set_on_empty_or_missing_book():
+    # empty snapshot (no levels) -> no book write -> no wake
+    mle._WS_TICK.clear()
+    mle._apply_book_snapshot("Z", {"bids": [], "asks": []})
+    assert not mle._WS_TICK.is_set()
+    # price_change on an asset with no existing book -> early return -> no wake
+    mle._WS_TICK.clear()
+    mle._apply_price_change("no-such-asset", {"changes": [{"price": "0.5",
+                                              "size": "1", "side": "BUY"}]})
+    assert not mle._WS_TICK.is_set()
