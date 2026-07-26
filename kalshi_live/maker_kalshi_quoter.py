@@ -88,7 +88,25 @@ def _release_lock(fd):
             pass
 
 # ---- config (calibration dials — readouts tune these; env-overridable) ----
+# EVERY KALSHI_* knob this module reads, registered AS IT IS READ. A knob absent from
+# live.env silently takes its code default and nothing logged it — that is how
+# KALSHI_THROTTLE_SMART sat OFF in production unnoticed, and how KALSHI_PRECLOSE_FLATTEN
+# (the purpose-built defence against riding naked inventory into settlement) was built,
+# tested and never switched on. Audited 2026-07-26: the module read 67 knobs, live.env set
+# 34 — 37 (55%) were on defaults nobody had chosen. Registering inside the accessors means
+# the list cannot drift from the code the way a hand-maintained one would.
+_ENV_DECLARED = {}                      # name -> default as passed at the call site
+
+# Absence of these specific knobs means a PROTECTION IS OFF, so they are named in the log
+# rather than only counted. Everything else lands in the plan row's `env_absent`.
+_SAFETY_KNOBS = ("KALSHI_PRECLOSE_FLATTEN", "KALSHI_TAKER_FLATTEN", "KALSHI_THROTTLE_SMART",
+                 "KALSHI_CAPTURE_GATE", "KALSHI_STANDDOWN", "KALSHI_NETEV_GATE",
+                 "KALSHI_MAX_UNWIND_LOSS", "KALSHI_HELD_MAX_USD",
+                 "KALSHI_DAILY_LOSS_HALT_USD", "KALSHI_DAILY_DOWN_HALT_USD")
+
+
 def _envi(name, default):
+    _ENV_DECLARED[name] = default
     try:
         return int(os.environ.get(name, default))
     except (TypeError, ValueError):
@@ -96,10 +114,26 @@ def _envi(name, default):
 
 
 def _envf(name, default):
+    _ENV_DECLARED[name] = default
     try:
         return float(os.environ.get(name, default))
     except (TypeError, ValueError):
         return default
+
+
+def _envb(name, default_on=False):
+    """Register a boolean flag and evaluate it with the module's EXISTING semantics:
+    present-and-'1' is ON. `default_on=True` mirrors the call sites that passed a default
+    of "1" to os.environ.get; `default_on=False` mirrors the bare
+    `os.environ.get(name) == "1"` (absent -> None -> False). Byte-identical behaviour to
+    the inline expressions this replaces — the ONLY addition is registration."""
+    _ENV_DECLARED[name] = "1" if default_on else "0"
+    return os.environ.get(name, "1" if default_on else None) == "1"
+
+
+def env_absent():
+    """KALSHI_* knobs the code reads that the environment does NOT set (-> code default)."""
+    return sorted(k for k in _ENV_DECLARED if k not in os.environ)
 
 
 FOOTPRINT_TOP = _envi("KALSHI_FOOTPRINT_TOP", 60)   # markets quoted per cycle
@@ -465,7 +499,7 @@ MAX_PRICE_DOLLARS = _envf("KALSHI_MAX_PRICE_DOLLARS", 0.97)  # never rest a bid 
 MIN_PRICE_DOLLARS = _envf("KALSHI_MIN_PRICE_DOLLARS", 0.01)  # never rest a bid at/below this
 WIND_DOWN_MIN = _envi("KALSHI_WIND_DOWN_MIN", 45)   # pull quotes N min before end
 WRITE_BUDGET_PER_CYCLE = _envi("KALSHI_WRITE_BUDGET", 400)  # order-ops ceiling/cycle
-JOIN_ALWAYS = os.environ.get("KALSHI_JOIN_ALWAYS") == "1"   # drill switch (default off)
+JOIN_ALWAYS = _envb("KALSHI_JOIN_ALWAYS")   # drill switch (default off)
 # series allowlist: if set, ONLY quote markets whose series (ticker before the first
 # '-') is listed. The pilot scopes to the weather/temp slice; empty = no filter (legacy).
 SERIES_ALLOW = [s for s in os.environ.get("KALSHI_SERIES_ALLOW", "").split(",") if s.strip()]
@@ -493,7 +527,7 @@ THROTTLE_STEP_TICKS = _envi("KALSHI_THROTTLE_STEP_TICKS", 1)
 # DEFAULT OFF ON PURPOSE: it puts the accumulating side back AT reference, which is exactly the
 # placement the live A/B measured as ~tripling naked-inventory build. The reward gain is
 # measured; the risk cost of THIS narrower version is NOT. Enable only to run that test.
-THROTTLE_SMART = os.environ.get("KALSHI_THROTTLE_SMART") == "1"
+THROTTLE_SMART = _envb("KALSHI_THROTTLE_SMART")
 # --- REDUCE-ONLY KEEPS BOTH SIDES (plug-in; instant off via env, no deploy needed) ---
 # The CFTC Feb-2026 amendment EXCLUDES any snapshot without two-sided qualifying liquidity. The
 # breaker's reduce-only mode drops the accumulating side, which makes us ONE-SIDED — so while
@@ -504,7 +538,7 @@ THROTTLE_SMART = os.environ.get("KALSHI_THROTTLE_SMART") == "1"
 # pulled: the market stays qualifying (both quotes earn) while added risk is ~10x smaller than a
 # normal join. NOT zero added risk — a floor quote can still fill; that is the trade.
 # TAP OUT: set KALSHI_REDUCE_ONLY_KEEP_BOTH=0 in live.env and the next cycle reverts exactly.
-REDUCE_ONLY_KEEP_BOTH = os.environ.get("KALSHI_REDUCE_ONLY_KEEP_BOTH", "1") == "1"
+REDUCE_ONLY_KEEP_BOTH = _envb("KALSHI_REDUCE_ONLY_KEEP_BOTH", True)
 INV_SOFT_CT = _envf("KALSHI_INV_SOFT_CT", 30.0)
 INV_HARD_CT = _envf("KALSHI_INV_HARD_CT", 80.0)
 # INVARIANT (fix H): a single JOIN fill must not by itself breach the hard cap, or one fill
@@ -534,7 +568,7 @@ if SETTLE_UNWIND_MIN > WIND_DOWN_MIN:
     print(f"WARNING SETTLE_UNWIND_MIN({SETTLE_UNWIND_MIN}) > WIND_DOWN_MIN({WIND_DOWN_MIN}); "
           f"clamping settle-taker to {WIND_DOWN_MIN}min to preserve maker-first ordering")
     SETTLE_UNWIND_MIN = _clamp_settle_window(SETTLE_UNWIND_MIN, WIND_DOWN_MIN)
-TAKER_FLATTEN = os.environ.get("KALSHI_TAKER_FLATTEN", "1") == "1"   # last-resort enabled (set 0 = never)
+TAKER_FLATTEN = _envb("KALSHI_TAKER_FLATTEN", True)   # last-resort enabled (set 0 = never)
 TAKER_MAX_MKTS = _envi("KALSHI_TAKER_MAX_MKTS", 8)         # cap taker-flattens per cycle (rate/cost guard)
 # --- SETTLEMENT RAMP (audit HIGH-2): the settlement taker fires into the WORST liquidity, so
 # the design goal is to BE SMALL at settlement, making that taker a rare backstop. Within
@@ -1602,6 +1636,20 @@ def run_once():
     cyc = int(now.timestamp())            # per-cycle nonce for unique order ids
     st = load_state()
     plan = {"ts": now.isoformat(), "mode": client.mode}
+    # CONFIG VISIBILITY (2026-07-26): a knob absent from live.env takes its code default
+    # silently. That class of defect hid KALSHI_THROTTLE_SMART (OFF in production) and
+    # KALSHI_PRECLOSE_FLATTEN (built + tested, never switched on) while every cycle
+    # printed "cycle ok". Full list into the plan row; the protection-bearing ones are
+    # NAMED in the log, because a bare count is exactly as ignorable as silence was.
+    _absent = env_absent()
+    plan["env_absent_n"] = len(_absent)
+    plan["env_absent"] = _absent
+    _unset_safety = [k for k in _SAFETY_KNOBS if k in _absent]
+    if _unset_safety:
+        plan["env_absent_safety"] = _unset_safety
+        print(f"WARNING {len(_unset_safety)} PROTECTION knob(s) unset in live.env -> code "
+              f"default: {', '.join(_unset_safety)} "
+              f"(set each explicitly — even to its default — to confirm it is a CHOICE)")
     created_ok = []
     cancels, creates = [], []
     fetch_failed = 0
