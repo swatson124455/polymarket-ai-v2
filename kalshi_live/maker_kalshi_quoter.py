@@ -977,7 +977,7 @@ def _market_telemetry_row(cyc, now, m, yl, nl, quotes, own_side, inv, gates):
         share = score / (df_total + score) if (df_total + score) > 0 else 0.0
         row[tag + "_ref"] = ref
         row[tag + "_book_df"] = round(df_total, 2)      # INCLUDES our own resting order (public
-        row[tag + "_cum_ct"] = round(cum, 1)            # depth); *_rest_ct below makes the
+        row[tag + "_cum_ct"] = round(cum, 2)            # depth); *_rest_ct below makes the
         row[tag + "_qual"] = bool(qual)                 # rival-only denominator recoverable.
         row[tag + "_lowq"] = low_q
         row[tag + "_px"] = our_px                       # our INTENDED price (None while gated)
