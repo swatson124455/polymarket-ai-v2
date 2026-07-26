@@ -602,6 +602,10 @@ HELD_MAX_USD = _envf("KALSHI_HELD_MAX_USD", 20.0)
 # the baseline stood still, so the room to lose grew all day (measured 07-23: $76.42 of effective
 # room against a $40 nominal quota, on an $85 account). See the meter in run_once.
 DAILY_LOSS_HALT_USD = _envf("KALSHI_DAILY_LOSS_HALT_USD", 20.0)
+# Separate limit for the RATCHETING cumulative-down measure. Defaults to DAILY_LOSS_HALT_USD so
+# behaviour is unchanged when unset; set it higher to let true-drawdown be the tight limit without
+# ordinary mark noise tripping the halt. See the halt block for why these are not the same number.
+DAILY_DOWN_HALT_USD = _envf("KALSHI_DAILY_DOWN_HALT_USD", 0.0) or DAILY_LOSS_HALT_USD
 # --- config-coherence clamps (review 07-22): foot-gun envs must not silently disable trading
 # or the gate ordering. LATE_LIFE_FRAC >= 1 would exclude every short-lived market entirely;
 # MAX_ENTRY_CUTOFF below WIND_DOWN would violate the always-at-least-wind-down guarantee.
@@ -1744,8 +1748,19 @@ def run_once():
                     _dd = _peak - _equity
                     plan["daily_dd"] = round(_dd, 2)
                     plan["daily_down"] = round(_down, 2)
+                    # TWO DIFFERENT MEASURES, TWO DIFFERENT LIMITS (2026-07-26). These were both
+                    # compared against DAILY_LOSS_HALT_USD via max(), which makes the tighter of
+                    # the two the effective limit for BOTH — and they are not the same quantity:
+                    #   _dd    TRUE DRAWDOWN from the day's peak. Falls back when equity recovers.
+                    #          This is what an operator means by "stop if I'm down $X".
+                    #   _down  CUMULATIVE sum of every per-cycle DECREASE. It RATCHETS and never
+                    #          resets on recovery, so ordinary mark noise walks it upward all day
+                    #          regardless of whether we are actually losing.
+                    # Setting the halt to $10 tripped INSTANTLY on a _down of $21.72 that had been
+                    # accumulating for hours while true drawdown was $4.76 — a mechanically correct
+                    # halt that meant nothing economically.
                     drop = max(_dd, _down)
-                    if drop > DAILY_LOSS_HALT_USD:
+                    if _dd > DAILY_LOSS_HALT_USD or _down > DAILY_DOWN_HALT_USD:
                         plan["daily_loss_halt"] = round(drop, 2)
                         with open(STOP_FILE, "w") as fh:
                             fh.write(f"auto daily-loss halt {now.isoformat()} drop=${drop:.2f} "
