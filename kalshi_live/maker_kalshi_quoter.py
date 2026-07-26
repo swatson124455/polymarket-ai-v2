@@ -239,6 +239,45 @@ MKT_TELEMETRY = _envi("KALSHI_MKT_TELEMETRY", 1)
 # watching.
 AMEND_DECREASE = _envi("KALSHI_AMEND_DECREASE", 0)
 
+# --- SCORE-BASED RANKING (KALSHI_SCORE_RANK, default 0 = OFF, provable no-op) --------------------
+# Selection ranks by usd_day, the reward POOL — and pool ALONE is the wrong key. Stated precisely,
+# because it is easy to get backwards: the pool MATTERS DIRECTLY. It is a LINEAR MULTIPLIER in the
+# reward (reward = share x pool), so doubling it doubles the money. It is never dropped.
+# What makes it a poor RANK key is that it is one of TWO terms and the one that varies LESS.
+# Measured over 30 series / 165 book-side depth readings (venue_scan.json 2026-07-25): pool spans
+# 6x ($1,750-$10,470/day); rival qualifying depth, which sets `share`, spans 71,330x (1-71,330).
+# Sorting on the 6x term while ignoring the 71,330x term gets the order wrong — KXFUNDRAISING, the
+# venue's biggest pool at $10,470/day, models to $5.65/day because it is crowded, while
+# KXVOGUECOVER at $1,800/day models to $42.03/day because it is nearly empty.
+# So the key used here is the PRODUCT (capture = share x pool), at full pool weight.
+#
+# Capture needs the orderbook and ranking happens BEFORE books are read, so the score is carried
+# ACROSS CYCLES: every cycle scores the books it already read (free — same numbers the per-market
+# telemetry emits) and the next cycle ranks on them. EXPLORE reserves slots for never-seen markets
+# so the venue keeps being swept; without it the bot converges on whatever it read first and never
+# discovers anything better. Scores DECAY toward the pool prior so a stale winner cannot pin it.
+#
+# SWING PENALTY: a market whose reference price moves between cycles fills us adversely — that is
+# how a maker hands the rewards back. ref_move discounts the score and costs nothing to collect.
+SCORE_RANK = _envi("KALSHI_SCORE_RANK", 0)
+SCORE_EXPLORE = _envi("KALSHI_SCORE_EXPLORE", 10)     # slots/cycle reserved for unscored markets
+SCORE_SWING_PENALTY = _envf("KALSHI_SCORE_SWING_PENALTY", 1.0)
+SCORE_UNKNOWN_BONUS = _envf("KALSHI_SCORE_UNKNOWN_BONUS", 1.0)
+SCORE_PATH = os.environ.get("KALSHI_SCORE_PATH", os.path.join(DATA_DIR, "kalshi_market_scores.json"))
+
+
+def _load_scores():
+    """Fail-OPEN to {} -> every market unscored -> ranking is byte-for-byte the legacy pool order."""
+    try:
+        import kalshi_market_scores
+        return kalshi_market_scores.load(SCORE_PATH)
+    except Exception:
+        return {}
+
+
+# loaded ONCE at import and ONLY when the flag is on (flag-off does zero file IO -> provable no-op)
+SCORES = _load_scores() if SCORE_RANK else {}
+
 PRESENCE_GATE = _envi("KALSHI_PRESENCE_GATE", 0)              # 0 = today's exact behavior
 VENUE_PAYOUT_FLOOR_USD = 1.00                                 # Kalshi's documented minimum payout
 MIN_CREDIT_USD = _envf("KALSHI_MIN_CREDIT_USD", 1.20)         # venue floor + 20% modelling margin
@@ -651,6 +690,18 @@ def select_footprint(progs, now):
                      # window: entering 80% through caps the score at ~20% however well we execute.
                      "life_min": life_min})
     rows.sort(key=lambda r: (-r["usd_day"], r["ticker"]))
+    # SCORE-BASED RANKING: replace the pool ordering with measured capture carried across cycles.
+    # Falls back to exactly the pool order above for any market with no score yet, so a cold cache
+    # (or a flag-off run) is byte-for-byte legacy. Wrapped — a ranking fault must never stop a cycle.
+    if SCORE_RANK and rows:
+        try:
+            import kalshi_market_scores
+            rows = kalshi_market_scores.rank(
+                SCORES, rows, now=now.timestamp(),
+                swing_penalty=SCORE_SWING_PENALTY, unknown_bonus=SCORE_UNKNOWN_BONUS,
+                explore=SCORE_EXPLORE)
+        except Exception:
+            pass
     # ROUND-ROBIN across series (review C18): a single high-pot series (50 concurrent hourly temp
     # strikes ~ $1,920/day each) would otherwise fill the whole FOOTPRINT_TOP by usd_day and starve
     # every other allowlisted series — the fee-free gas lane got ZERO slots. Take one market per
@@ -1790,6 +1841,13 @@ def run_once():
                     with open(os.path.join(DATA_DIR,
                                            f"quotes-{now.strftime('%Y%m%d')}.jsonl"), "a") as _fh:
                         _fh.write(json.dumps(_row, separators=(",", ":")) + "\n")
+                    # SCORE CACHE: fold this book into the rolling rank. Free — capture_usd_day and
+                    # the reference price are already computed above. This is what lets the NEXT
+                    # cycle rank on measured capture instead of pool size.
+                    if SCORE_RANK:
+                        import kalshi_market_scores as _kms
+                        _kms.update(SCORES, t, _row.get("capture_usd_day"),
+                                    _row.get("y_ref"), now=now.timestamp())
                 except Exception:
                     pass
 
@@ -2145,6 +2203,16 @@ def run_once():
         # measured presence dragged them under. That is our defect, not the market's economics.
         # amends_ct = contracts of queue position PRESERVED this cycle that the legacy path would
         # have cancelled and rebuilt at the back of the book.
+        # SCORE CACHE persisted ONCE per cycle (not per market) — scored = markets with a measured
+        # capture carried forward; the rest still rank on the pool prior.
+        if SCORE_RANK:
+            try:
+                import kalshi_market_scores as _kms
+                _kms.save(SCORE_PATH, SCORES)
+                plan["scored_markets"] = len(SCORES)
+                plan["score_explore"] = SCORE_EXPLORE
+            except Exception:
+                pass
         if AMEND_DECREASE:
             plan["amends"] = len(amends)
             plan["amend_fail"] = amend_fail
