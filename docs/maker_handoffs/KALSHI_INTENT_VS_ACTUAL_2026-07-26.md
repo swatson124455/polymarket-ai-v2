@@ -179,7 +179,54 @@ re-open the blanket launch-day crossing. It is naked-only, near-close-only, hard
 audit. So the strand fix and the config-visibility log are **deployed and unit-tested but
 not yet exercised live.** They will run on the first cycle after the STOP clears.
 
-## §5c — A FIFTH CLOSED EXIT PATH, FOUND WHILE FIXING THE OTHERS  ⚠ NOT FIXED
+## §5c-FIXED — THE FIFTH PATH IS OPEN, AND VERIFIED LIVE (commit `b1ee877`)
+
+**Live proof, cycle 2026-07-26T15:59:48Z — both had been "unpriceable" all session:**
+
+```
+flatten: KXAAAGASW-26JUL27-4.080 pos=-20.00 -> rested MAKER offset yes 15@0.99 (passive)
+flatten: KXAAAGASW-26JUL27-4.140 pos=+37.00 -> rested MAKER offset no  27@0.55 (passive)
+```
+
+They behave **differently and both correctly**: `4.080` rests at the 0.99 touch because venue
+bounds allow it; `4.140` is pulled to 0.55 by `MAX_UNWIND_LOSS` rather than paying 0.99 for a
+0.5426 basis. Band opens the exit, cap decides whether it is worth taking — exactly the split
+the fix is built on. `N_RESTING_ORDERS` 0 → 2 (API 16:00Z).
+
+The fix is a ROOT fix, not fifteen edits: `_ok_entry_price` / `_ok_exit_price`, and **one
+`_reducing_quotes` builder replacing FIVE byte-identical copies** inside `desired_quotes`
+(wind-down, presence, net-EV, capture, void) — each of which repeated the same bug. It also
+closed a second root: two entry gates returned `[]` for the WHOLE market on a one-sided or
+out-of-band book, discarding the reducing quote built further down.
+
+### RE-REVIEW — did the fixes hide anything? Three findings, one reversed a fix of mine
+
+| | finding | outcome |
+|---|---|---|
+| **A** | `_reducing_quotes` called FLAT would **open** risk — `_unwind_size` floors at 1, so `inv==0` rests a 1ct order from a reducing helper. All callers guarded; the helper did not. | guarded + pinned |
+| **B** | **Ordering.** The new fall-throughs ran *before* the crossed-book check, so crossed+extreme books began receiving exits — while the strand path refuses crossed books outright. | crossed now checked first, refuses both directions; the two paths agree |
+| **C** | I added a pair-loss cap to the ladder hatch's cross leg. `test_ladder_escape_hatch_splits_parked_unwind` failed — **and the test was right.** | **reverted**, absence of the cap now pinned with its reasoning |
+
+**C is worth stating plainly because I got it wrong.** The cross leg buys at the *adjacent*
+book's own reference, priced consistently with the held leg: +20 YES on 4.050 at basis 0.62
+while the book marks yes-bid 0.13, hedged with NO on 4.060 at 0.92 — $9.20 converts an asset
+worth ~$1.30 into one worth ≥$10.00. It removes **variance**, not expected value.
+`_unwind_price` bounds loss against **cost basis**, so capping there charges an already-sunk
+mark-to-market loss to a fresh hedge and refuses it precisely when the position has moved
+most — *the same sunk-cost error this session diagnosed in the unwind cap itself*. The suite
+caught it; that is what the suite is for.
+
+Suite 532 → **554 passed + 2 xfailed** (23 new tests). The exit widening was verified not to
+reach entries: FLAT opens nothing on any of the four widened shapes, and no exit ever rests
+more than `|inv|`.
+
+**Updated settlement figures (API 2026-07-26T16:00Z, 75 settlements / 4,733.1 ct — a LARGER
+denominator than the 70 / 4,522.1 quoted earlier):** all-in **−$0.03111/ct**; the naked tail
+(an agent-defect class, not strategy) **−$0.14596/ct over 361.0 ct across 16 settlements**.
+Naked cost has moved further ABOVE the $0.0999 break-even, so the "sit at the touch"
+conclusion is unchanged and slightly strengthened.
+
+## §5c-ORIGINAL — how it was found (kept for the record)
 
 `MAX_PRICE_DOLLARS=0.96` / `MIN_PRICE_DOLLARS=0.04` is an **entry** band, and it is applied
 to **reducing** orders too. Live 15:31:46Z, with `MAX_UNWIND_LOSS` already raised to 0.10:
@@ -197,7 +244,7 @@ has an exit price near 1.00**, so the entry band blocks precisely the exits that
 most. It is the same family as the standing rule that the YES/NO mandate governs ENTRIES
 only — a guard written for entering being applied to leaving.
 
-**Why it is not fixed here:** ~15 call sites gate a reducing order on this band
+**Why it was not fixed in the first pass:** ~15 call sites gate a reducing order on this band
 (`maker_kalshi_quoter.py` lines 1108, 1113, 1188, 1194, 1227, 1232, 1257, 1262, 1289, 1295,
 2081, 2084, 2120, 2628, 2630). Rewriting all of them in one pass at the end of a long
 session, in a money path, is the shotgun fix this repo forbids — and getting it wrong in the
