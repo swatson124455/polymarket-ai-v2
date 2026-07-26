@@ -239,6 +239,21 @@ MKT_TELEMETRY = _envi("KALSHI_MKT_TELEMETRY", 1)
 # watching.
 AMEND_DECREASE = _envi("KALSHI_AMEND_DECREASE", 0)
 
+# --- DROP HYSTERESIS (KALSHI_DROP_GRACE, default 0 = OFF, provable no-op) ------------------------
+# ROOT of the "identical churn" the order forensics found: 17 of 478 zero-fill cancels on the clean
+# slice were followed by a re-create at the SAME price AND size. diff_orders cannot do that — an
+# exact (side, price, count) match survives. It happens when a ticker falls out of `desired`
+# ENTIRELY for one cycle and returns the next: the diff cancels its whole book, then rebuilds it.
+# The common benign cause is FOOTPRINT ROTATION — the pool-ordered top-N shuffles and a market drops
+# out for a cycle with nothing about it having changed. We pay a full teardown and lose queue
+# position for a market we still want.
+#
+# NARROW BY DESIGN — grace applies ONLY when the ticker is absent from this cycle's FOOTPRINT (we
+# never looked at it). It does NOT apply when the market WAS looked at and something rejected it:
+# a gate, the capital cap, the breaker, wind-down. Those are decisions, and retaining through a
+# decision would defeat the cap that made it. Grace is for "we didn't check", never for "we said no".
+DROP_GRACE = _envi("KALSHI_DROP_GRACE", 0)          # cycles a rotated-out ticker keeps its book
+
 # --- SCORE-BASED RANKING (KALSHI_SCORE_RANK, default 0 = OFF, provable no-op) --------------------
 # Selection ranks by usd_day, the reward POOL — and pool ALONE is the wrong key. Stated precisely,
 # because it is easy to get backwards: the pool MATTERS DIRECTLY. It is a LINEAR MULTIPLIER in the
@@ -1285,6 +1300,39 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     return quotes
 
 
+def apply_drop_grace(standing, desired, footprint_tickers, prev_grace, grace_cycles):
+    """Retain a ticker's existing book for a few cycles when it merely ROTATED OUT of the footprint.
+
+    Returns (desired, new_grace) where new_grace maps ticker -> cycles used so far.
+
+    A ticker qualifies ONLY if all of:
+      - it has standing orders (something to protect),
+      - it is absent from `desired` (the diff would otherwise cancel it), AND
+      - it is absent from THIS CYCLE'S FOOTPRINT — i.e. we never looked at it.
+    A ticker that WAS looked at and rejected (gate, capital cap, breaker, wind-down) is in the
+    footprint but not in desired, so it is NOT granted grace. That distinction is the whole safety
+    argument: grace covers "we didn't check", never "we said no". Retaining through a decision would
+    defeat the cap or gate that made it.
+
+    Retained orders are copied VERBATIM from standing, so the diff sees an exact match and emits
+    neither a cancel nor a create — the book simply stays, keeping its queue position and its
+    time-on-book. Pure function, no I/O."""
+    new_grace = {}
+    if grace_cycles <= 0:
+        return desired, new_grace
+    out = dict(desired)
+    for t, orders in standing.items():
+        if not orders or t in out or t in footprint_tickers:
+            continue                       # nothing to keep / still wanted / actively rejected
+        used = int(prev_grace.get(t, 0))
+        if used >= grace_cycles:
+            continue                       # grace exhausted -> let the diff cancel it
+        new_grace[t] = used + 1
+        out[t] = [{"side": o["side"], "price_dollars": o["price_dollars"], "count": o["count"]}
+                  for o in orders]
+    return out, new_grace
+
+
 def split_amends(standing, desired):
     """Pull out the (ticker, side, price) pairs where the ONLY change is a SMALLER count, and
     return (amends, standing_left, desired_left) with those pairs removed from both sides.
@@ -2002,6 +2050,19 @@ def run_once():
         plan["off_ref_usd"] = round(off_ref, 2)
         plan["at_ref_pct"] = round(100 * at_ref / max(at_ref + off_ref, 1e-9), 1)
 
+        # DROP HYSTERESIS — before the diff, give a ROTATED-OUT ticker (absent from this cycle's
+        # footprint, i.e. never looked at) a few cycles to come back instead of tearing its book
+        # down and rebuilding it identically. Runs BEFORE cap_desired so a retained book is still
+        # subject to the capital cap like anything else.
+        grace_used = {}
+        if DROP_GRACE > 0:
+            try:
+                _fp_now = {m["ticker"] for m in footprint}
+                desired, grace_used = apply_drop_grace(
+                    standing, desired, _fp_now,
+                    (load_state().get("drop_grace") or {}), DROP_GRACE)
+            except Exception:
+                grace_used = {}
         desired, capped_markets = cap_desired(desired, usd_day)     # aggregate $ cap
         # AMEND-ON-DECREASE: pull out same-price size REDUCTIONS so they keep their queue position
         # instead of being cancelled and rebuilt at the back. `standing` itself is deliberately NOT
@@ -2213,6 +2274,12 @@ def run_once():
                 plan["score_explore"] = SCORE_EXPLORE
             except Exception:
                 pass
+        # DROP GRACE: carry the per-ticker counter into the next cycle. Tickers absent from
+        # grace_used are simply not written back, which RESETS them — correct, because they either
+        # came back into the footprint or their grace ran out and the diff cancelled them.
+        if DROP_GRACE > 0:
+            st["drop_grace"] = grace_used
+            plan["grace_retained"] = len(grace_used)
         if AMEND_DECREASE:
             plan["amends"] = len(amends)
             plan["amend_fail"] = amend_fail
