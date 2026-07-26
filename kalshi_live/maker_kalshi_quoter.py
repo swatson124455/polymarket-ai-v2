@@ -616,6 +616,12 @@ MAX_DAYS_TO_CLOSE = _envf("KALSHI_MAX_DAYS_TO_CLOSE", 3.0)
 # that it rests AT the cap (deeper in the book) and the residual waits for the backstop.
 # Bounded realized loss per pair, accepted trade: delta may ride longer.
 MAX_UNWIND_LOSS = _envf("KALSHI_MAX_UNWIND_LOSS", 0.10)
+# HOLD BOTH SIDES (2026-07-26). The block's own design comment is "shrink the accumulating
+# side, grow the reducing side, both stay live" — but the reducing side was sized min(|inv|,
+# room) off the NOMINAL join, so at inventory below INV_SOFT_CT (where the throttle never
+# fires) it rested ADD=100 vs RED=8 and a double fill left us +100. Measured across regimes.
+# 0 restores that legacy sizing exactly.
+PAIR_BOTH_SIDES = _envb("KALSHI_PAIR_BOTH_SIDES", True)
 # --- VELOCITY CIRCUIT BREAKER (2026-07-22 live loss): held-$ grew $0->$28 in 3 cycles of
 # 'cycle ok' — adverse accumulation is invisible to plumbing telemetry. If held cost grows
 # more than BREAKER_HELD_GROWTH_USD within BREAKER_WINDOW_S, the WHOLE book goes REDUCE-ONLY
@@ -966,6 +972,29 @@ def _reducing_quotes(best_y, best_n, inv, cost):
         return []
     return [{"side": "yes", "price_dollars": up,
              "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
+
+
+def _offset_size(add_cnt, price, inv):
+    """Size the REDUCING HALF OF A TWO-SIDED QUOTE so a double fill lands exactly PAIRED.
+
+    NOT a pure unwind. `_unwind_size` caps at |inv| so a pure exit can never cross flat —
+    right for the strand path, the wind-down exit and `_flatten_all`, which have stopped
+    quoting and are only leaving. At the two-sided call site it was wrong twice over: it
+    capped at |inv| AND measured against the NOMINAL join rather than the post-throttle
+    adding size, so the reducing side ignored whatever shaping had already happened.
+
+    `add_cnt` is the accumulating side's count AFTER stand-down, ramp and throttle. Setting
+    RED = add_cnt + |inv| makes net delta after a double fill exactly zero in EVERY regime
+    (measured: below-SOFT, above-SOFT, stand-down, hard-stop, flat, short). The hard-stop
+    case is unchanged, because add_cnt is 0 there and the result is |inv| as before.
+
+    `room` (MAX_MARKET_CAPITAL/price) still bounds it, so the dollar envelope is untouched.
+    The caller clamps the ADDING side to RED - |inv| for the case where room binds, which it
+    does in production (MAX_MARKET_CAPITAL=15 -> room ~23), otherwise the imbalance could
+    still grow. KALSHI_PAIR_BOTH_SIDES=0 restores the legacy min(|inv|, room)."""
+    room = int(MAX_MARKET_CAPITAL / price) if price > 0 else int(abs(inv))
+    want = (int(add_cnt) + int(abs(inv))) if PAIR_BOTH_SIDES else int(abs(inv))
+    return max(1, min(want, room))
 
 
 def _unwind_price(best, cost):
@@ -1403,12 +1432,20 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # capital cap; capped at |inv| so it can't overshoot past flat). This does NOT bloat into a
         # held pair — it only sizes enough to cancel what we already hold.
         if abs(inv) >= INV_TOLERANCE:
+            # RED = ADD + |inv| (ADD = the count AFTER stand-down/ramp/throttle), then clamp
+            # ADD to RED - |inv| for when `room` caps RED. Together these hold the invariant
+            # "a double fill lands paired" in every regime, instead of only at hard-stop.
+            _iv = int(abs(inv))
             if inv > 0:                             # long yes -> grow NO (reduces), at ref BUT
                 n_price, n_reason = _unwind_price(best_n, cost), "unwind"   # loss-capped
-                n_cnt = _unwind_size(_capped_join(n_price, best_y), n_price, inv)
+                n_cnt = _offset_size(y_cnt, n_price, inv)
+                if PAIR_BOTH_SIDES:                 # clamp is part of the fix, not of legacy
+                    y_cnt = min(y_cnt, max(0, n_cnt - _iv))
             else:                                   # long no -> grow YES (reduces)
                 y_price, y_reason = _unwind_price(best_y, cost), "unwind"
-                y_cnt = _unwind_size(_capped_join(y_price, best_n), y_price, inv)
+                y_cnt = _offset_size(n_cnt, y_price, inv)
+                if PAIR_BOTH_SIDES:
+                    n_cnt = min(n_cnt, max(0, y_cnt - _iv))
         # FINAL EMIT — the band depends on WHAT the quote is, not merely on its price. A leg
         # re-priced to "unwind" above is REDUCING risk and takes venue bounds; anything else is
         # OPENING risk and takes the strategy band. Applying the entry band here undid the
@@ -2162,7 +2199,13 @@ def run_once():
             # size is bounded by MAX_MARKET_CAPITAL and by keep+cross <= |naked| below.
             if not _ok_exit_price(price2):
                 continue
-            c0 = uws[0]["count"]
+            # CAP AT |naked| BEFORE SPLITTING. The hatch's whole safety argument is
+            # keep+cross <= |naked| so no fill combination can flip the sign. The two-sided
+            # offset now sizes the reducing quote at ADD+|inv| (larger than |naked|), so the
+            # split must be taken from |naked|, not from the quote's own count.
+            c0 = min(int(uws[0]["count"]), int(abs(qn)))
+            if c0 < 2:
+                continue                                # nothing meaningful to split
             keep = max(1, c0 // 2)
             cross = min(c0 - keep, int(MAX_MARKET_CAPITAL / price2))
             if cross < 1:

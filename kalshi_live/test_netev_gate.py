@@ -209,7 +209,11 @@ def test_exit_size_matches_legacy_unwind(monkeypatch):
     off = _sides(q.desired_quotes(_mkt(_TEMP_TKR), _YL, _NL, q.utcnow(), inv=40.0))
     _netev_cfg(monkeypatch, on=True)
     on = _sides(q.desired_quotes(_mkt(_TEMP_TKR), _YL, _NL, q.utcnow(), inv=40.0))
-    assert on["no"]["count"] == off["no"]["count"]
+    # INVARIANT CHANGED 2026-07-26 (hold-both-sides): gate path = pure unwind capped at |inv|;
+    # flag-OFF path = two-sided quote whose reducing half is ADD+|inv|. Not equal by design.
+    # The safety property stands: the gate never invents a smaller exit than the position.
+    assert on["no"]["count"] >= 40
+    assert off["no"]["count"] >= on["no"]["count"]
     assert on["no"]["price_dollars"] == off["no"]["price_dollars"]
 
 

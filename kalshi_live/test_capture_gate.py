@@ -182,7 +182,13 @@ def test_capture_gate_exit_matches_legacy_unwind_size(monkeypatch):
     off = _sides(q.desired_quotes(_mkt(usd_day=50.0), _YL_POOR, _NL_POOR, q.utcnow(), inv=40.0))
     _cap_cfg(monkeypatch, on=True)
     on = _sides(q.desired_quotes(_mkt(usd_day=50.0), _YL_POOR, _NL_POOR, q.utcnow(), inv=40.0))
-    assert on["no"]["count"] == off["no"]["count"]            # identical reducing-side size
+    # INVARIANT CHANGED 2026-07-26 (hold-both-sides): the GATE path is a PURE unwind — it has
+    # stopped quoting and only leaves, so it stays capped at |inv|. The flag-OFF path is a
+    # TWO-SIDED quote whose reducing half is now ADD+|inv| so a double fill lands paired.
+    # They are no longer equal by design. What must still hold is the safety property this
+    # test was written for: the gate never invents a SMALLER exit than the position.
+    assert on["no"]["count"] >= 40                           # covers |inv|, not down-sized
+    assert off["no"]["count"] >= on["no"]["count"]           # two-sided half is the larger one
     assert on["no"]["price_dollars"] == off["no"]["price_dollars"]
 
 

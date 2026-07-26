@@ -288,7 +288,9 @@ def test_settlement_ramp_shrinks_join_not_unwind(monkeypatch):
     assert near["yes"]["count"] >= 2 and near["no"]["count"] >= 2   # both still LIVE
     # unwind side not ramped: with a position, the reducing quote still sizes toward |inv|
     nearu = {x["side"]: x for x in q.desired_quotes(m_near, _YL, _NL, q.utcnow(), inv=20.0)}
-    assert nearu["no"]["reason"] == "unwind" and nearu["no"]["count"] == 20
+    # >= |inv| rather than == |inv| since 2026-07-26: the reducing half of a two-sided quote is
+    # ADD+|inv| (ADD already ramped), so de-risk capacity is preserved MORE strongly than before.
+    assert nearu["no"]["reason"] == "unwind" and nearu["no"]["count"] >= 20
 
 def test_long_no_mirror(monkeypatch):
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
@@ -457,8 +459,13 @@ def test_unwind_size_never_overshoots_inventory(monkeypatch):
     assert q._unwind_size(80, 0.50, 200) == 200        # |inv| within room -> exactly the position
     # end-to-end: a +5 long-yes ticker rests a NO unwind of exactly 5 (no overshoot)
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    # The _unwind_size assertions above still pin PURE unwinds (strand / wind-down /
+    # _flatten_all) at <= |inv| — unchanged. End-to-end, though, the reducing half of a
+    # TWO-SIDED quote is deliberately ADD+|inv| so a double fill lands paired, so it is no
+    # longer == |inv| here. It must still COVER the position.
     qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=5.0)}
-    assert qs["no"]["count"] == 5 and qs["no"]["reason"] == "unwind"
+    assert qs["no"]["count"] >= 5 and qs["no"]["reason"] == "unwind"
+    assert 5 + qs["yes"]["count"] - qs["no"]["count"] == 0     # double fill lands PAIRED
 
 def test_event_deltas_aggregates_correlated_strikes():
     # SERIES-EVENT-STRIKE: the first two dash-fields identify the event; strikes aggregate.

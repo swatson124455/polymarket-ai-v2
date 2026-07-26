@@ -145,12 +145,17 @@ def test_standdown_never_blocks_exits(monkeypatch):
     _std_cfg(monkeypatch, on=True)
     on = _sides(q.desired_quotes(_mkt(usd_day=5.0), _YL, _NL, q.utcnow(), inv=40.0))
     assert "no" in on and on["no"]["reason"] == "unwind"
-    assert on["no"]["count"] == 40                             # sized to |inv|, NOT floored by stand-down
+    # >= |inv| since 2026-07-26: the reducing half is ADD+|inv| (ADD=2 under stand-down -> 42),
+    # so de-risk is still never blocked or down-sized — it is slightly LARGER, which is what
+    # makes a double fill land exactly paired.
+    assert on["no"]["count"] >= 40                             # covers |inv|, not floored by stand-down
     assert on["yes"]["count"] <= 2                             # the ACCUMULATING side is what shrinks
-    # exit sizing is identical with the flag OFF (stand-down never touches the reducing side)
+    assert 40 + on["yes"]["count"] - on["no"]["count"] == 0    # double fill lands PAIRED
+    # Exit sizing is no longer IDENTICAL across the flag, by design: the reducing half depends
+    # on the adding half, and stand-down shrinks the adding half. Both must still cover |inv|.
     _std_cfg(monkeypatch, on=False)
     off = _sides(q.desired_quotes(_mkt(usd_day=5.0), _YL, _NL, q.utcnow(), inv=40.0))
-    assert off["no"]["count"] == on["no"]["count"]
+    assert off["no"]["count"] >= 40 and on["no"]["count"] >= 40
 
 
 def test_standdown_skips_thin_activate_but_never_a_held_exit(monkeypatch):
