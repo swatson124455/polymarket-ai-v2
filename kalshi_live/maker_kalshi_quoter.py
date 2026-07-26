@@ -940,7 +940,7 @@ def _prospective_capture(m, yl, nl, best_y, best_n, target):
     the R1 pool (m['usd_day']). We join AT reference (N=0, DF^0=1) so our_score = our_size. Intended
     size = _capped_join — the exact size the JOIN branch would rest — so the gate models the order
     it is deciding whether to place. MODEL (M7 over-predicts 2-6x): a RELATIVE signal only."""
-    df = m.get("df", CAPTURE_DF_DEFAULT)
+    df = m.get("df") or CAPTURE_DF_DEFAULT     # present-but-None / 0 -> default (stress: "no df")
     ry, qy = _qualifying_score(yl, best_y, _capped_join(best_y, best_n), target, df)
     rn, qn = _qualifying_score(nl, best_n, _capped_join(best_n, best_y), target, df)
     if not (qy and qn):
@@ -979,7 +979,7 @@ def _market_telemetry_row(cyc, now, m, yl, nl, quotes, own_side, inv, gates):
     """Build ONE per-market-per-cycle telemetry row. Pure function (no I/O) so it is testable."""
     t = m["ticker"]
     target = float(m.get("target") or 0.0)
-    df = float(m.get("df", CAPTURE_DF_DEFAULT))
+    df = float(m.get("df") or CAPTURE_DF_DEFAULT)   # see above
     own_side = own_side or {}
     row = {"ts": now.isoformat(), "cyc": cyc, "ticker": t, "series": t.split("-")[0],
            "usd_day": round(float(m.get("usd_day") or 0.0), 4),
@@ -1035,7 +1035,12 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         stats["dropped_book_rows"] = stats.get("dropped_book_rows", 0) + bad_y + bad_n
     best_y = max((p for p, _ in yl), default=None)
     best_n = max((p for p, _ in nl), default=None)
-    end = parse_iso(m["end"])
+    try:
+        end = parse_iso(m["end"])
+    except Exception:
+        return []            # unusable clock -> quote nothing here (stress: "garbage end").
+                             # select_footprint already drops unparseable dates, so this is
+                             # defence in depth, not the primary guard.
     _priceable = (best_y is not None and best_n is not None
                   and MIN_PRICE_DOLLARS < best_y <= MAX_PRICE_DOLLARS
                   and MIN_PRICE_DOLLARS < best_n <= MAX_PRICE_DOLLARS
