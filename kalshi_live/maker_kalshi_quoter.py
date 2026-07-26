@@ -1115,7 +1115,23 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         _exp, _ideal, _frac = _expected_credit_usd(m, yl, nl, best_y, best_n, target, now)
         if stats is not None:
             stats["presence_min_credit"] = min(stats.get("presence_min_credit", 1e18), _exp)
-        if _exp < MIN_CREDIT_USD:
+        # ENTRY GATE, NOT AN EXIT GATE. The floor asks "could this market earn MIN_CREDIT_USD from
+        # scratch?" — the right question when DECIDING TO OPEN, and the wrong one once we are
+        # already resting here. Reward accrues continuously over the window, so for a market we are
+        # in, the remaining accrual is ADDITIVE on top of what we have already banked: it does not
+        # have to clear the floor again, it only has to beat the marginal fill risk. Measured
+        # profile of the bug this fixes (pool $100/day, join 20ct, floor $1.20): flat-entry
+        # coverage of a 1-DAY market was 51% — the gate pulled our resting quotes at the halfway
+        # point and walked away from the afternoon's accrual. Holding INVENTORY already bypassed
+        # this (de-risk is never gated); resting ORDERS with no fills did not, and that is the hole.
+        # Continuation is still bounded by the ordinary late-life / wind-down gates, so this cannot
+        # pin us in a market to settlement.
+        _resting_here = (float((own or {}).get("yes") or 0.0)
+                         + float((own or {}).get("no") or 0.0)) > 0.0
+        if _resting_here and _exp < MIN_CREDIT_USD and stats is not None:
+            stats["presence_continued_under_floor"] = \
+                stats.get("presence_continued_under_floor", 0) + 1
+        if _exp < MIN_CREDIT_USD and not _resting_here:
             if stats is not None:
                 stats["presence_skipped"] = stats.get("presence_skipped", 0) + 1
                 # THE DEATH-SPIRAL COUNTER: would this market have cleared the floor if we executed
@@ -2334,6 +2350,10 @@ def run_once():
             plan["presence_skipped_execution_only"] = qstats.get(
                 "presence_skipped_execution_only", 0)
             plan["presence_skipped_late_entry"] = qstats.get("presence_skipped_late_entry", 0)
+            # markets we KEPT quoting though they no longer clear the floor — the accrual we would
+            # have walked away from before the entry/continuation split
+            plan["presence_continued_under_floor"] = qstats.get(
+                "presence_continued_under_floor", 0)
             if qstats.get("presence_min_credit") is not None and qstats.get("presence_skipped"):
                 plan["presence_min_credit_usd"] = round(qstats.get("presence_min_credit", 0.0), 4)
         if CAPTURE_GATE:

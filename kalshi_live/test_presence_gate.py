@@ -221,6 +221,49 @@ def test_sub_day_window_is_judged_on_the_whole_window_not_a_day(monkeypatch):
     assert abs(ideal - pc * (58.0 / 1440.0) * frac) < 1e-9, "whole window, not clipped to a day"
 
 
+def test_floor_gates_ENTRY_not_CONTINUATION(monkeypatch):
+    """THE 51% BUG. The floor asks 'could this earn $1.20 from scratch?' — right when deciding to
+    OPEN, wrong once we are already resting. Reward accrues continuously, so for a market we are in
+    the remaining accrual is ADDITIVE and does not have to clear the floor again.
+
+    Measured before the fix (pool $100/day, 20ct, floor $1.20): a 1-DAY market was quoted for only
+    51% of its life while FLAT — the gate pulled our resting quotes at halfway and abandoned the
+    afternoon's accrual. Holding inventory already bypassed the gate; resting ORDERS did not."""
+    _cfg_gate(monkeypatch, on=True, floor=q.MIN_CREDIT_USD)
+    now = q.utcnow()
+    late = _late(now)                       # too little window left to earn the floor from scratch
+    yl, nl = _levels(_THIN)
+    exp, _, _ = q._expected_credit_usd(late, yl, nl, 0.50, 0.49, 1000, now)
+    assert exp < q.MIN_CREDIT_USD, "fixture must be under the floor"
+
+    # FLAT and not resting -> do not OPEN. Unchanged.
+    s_flat = {}
+    assert q.desired_quotes(late, _THIN["yes_dollars"], _THIN["no_dollars"], now,
+                            inv=0.0, own=None, stats=s_flat) == []
+    assert s_flat["presence_skipped"] == 1
+
+    # ALREADY RESTING (orders out, no fills, inv still 0) -> KEEP QUOTING.
+    s_rest = {}
+    kept = q.desired_quotes(late, _THIN["yes_dollars"], _THIN["no_dollars"], now,
+                            inv=0.0, own={"yes": 20.0, "no": 20.0}, stats=s_rest)
+    assert kept, "already resting here — must not walk away from accrual"
+    assert "presence_skipped" not in s_rest
+    assert s_rest["presence_continued_under_floor"] == 1, "the continuation must be counted"
+
+
+def test_continuation_needs_actual_resting_size_not_just_a_dict(monkeypatch):
+    """An `own` entry of zero is NOT resting — it must still be gated, or a stale/empty own map
+    would silently disable the floor everywhere."""
+    _cfg_gate(monkeypatch, on=True, floor=q.MIN_CREDIT_USD)
+    now = q.utcnow()
+    late = _late(now)
+    for own in ({"yes": 0.0, "no": 0.0}, {}, None):
+        s = {}
+        assert q.desired_quotes(late, _THIN["yes_dollars"], _THIN["no_dollars"], now,
+                                inv=0.0, own=own, stats=s) == [], f"own={own} must still gate"
+        assert s.get("presence_skipped") == 1
+
+
 def test_absent_table_is_neutral_not_pessimistic(monkeypatch):
     """A missing calibration must NOT make the bot cautious — only a measured number may."""
     _cfg_gate(monkeypatch, on=True, floor=1.0, table={})
