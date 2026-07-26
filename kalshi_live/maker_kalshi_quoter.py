@@ -1998,16 +1998,31 @@ def run_once():
             snl, _ = _levels(ob.get("no_dollars") or [])
             sby = max((p for p, _ in syl), default=None)
             sbn = max((p for p, _ in snl), default=None)
-            if sby is None or sbn is None or sby + sbn >= 1.0:
-                continue                                # unpriceable/crossed — taker handles it
-            up_n = _unwind_price(sbn, cost_by.get(t, 0.0))
-            up_y = _unwind_price(sby, cost_by.get(t, 0.0))
-            if pos > 0 and MIN_PRICE_DOLLARS < up_n <= MAX_PRICE_DOLLARS:
+            # ONE-SIDED BOOK (2026-07-26): a reducing quote rests on exactly ONE side — a long-YES
+            # exit is a NO bid (needs sbn only) and a long-NO exit is a YES bid (needs sby only).
+            # Demanding BOTH sides blocked a PLACEABLE exit whenever the book went one-sided, which
+            # is precisely the state a losing position ends in. Measured live 2026-07-26T14:27:46Z:
+            # 3 of 6 held positions had the side they needed and were skipped anyway. The old guard
+            # also deferred to "taker handles it" — TAKER_FLATTEN=0, so nothing did, and the
+            # position rode to settlement with no exit order resting at all.
+            # (_capped_join ignores its second arg, so a None `other` there is inert.)
+            need = sbn if pos > 0 else sby
+            if need is None:
+                plan["strand_no_exit_side"] = plan.get("strand_no_exit_side", 0) + 1
+                continue                                # the side we must rest ON has no book
+            if sby is not None and sbn is not None and sby + sbn >= 1.0:
+                plan["strand_crossed_book"] = plan.get("strand_crossed_book", 0) + 1
+                continue                                # crossed/stale book — do not chase it
+            up_n = _unwind_price(sbn, cost_by.get(t, 0.0)) if sbn is not None else None
+            up_y = _unwind_price(sby, cost_by.get(t, 0.0)) if sby is not None else None
+            if pos > 0 and up_n is not None and MIN_PRICE_DOLLARS < up_n <= MAX_PRICE_DOLLARS:
                 desired[t] = [{"side": "no", "price_dollars": up_n,
                                "count": _unwind_size(_capped_join(up_n, sby), up_n, pos), "reason": "unwind"}]
-            elif pos < 0 and MIN_PRICE_DOLLARS < up_y <= MAX_PRICE_DOLLARS:
+            elif pos < 0 and up_y is not None and MIN_PRICE_DOLLARS < up_y <= MAX_PRICE_DOLLARS:
                 desired[t] = [{"side": "yes", "price_dollars": up_y,
                                "count": _unwind_size(_capped_join(up_y, sbn), up_y, pos), "reason": "unwind"}]
+            else:
+                plan["strand_unpriceable"] = plan.get("strand_unpriceable", 0) + 1
 
         # LADDER ESCAPE HATCH (operator 2026-07-22): a PARKED same-strike unwind (loss cap holds
         # it below the touch) may never fill in a trended market — the exact regime where the
