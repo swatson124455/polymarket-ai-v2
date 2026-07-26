@@ -1808,16 +1808,31 @@ def run_once():
                     # accumulating for hours while true drawdown was $4.76 — a mechanically correct
                     # halt that meant nothing economically.
                     drop = max(_dd, _down)
-                    if _dd > DAILY_LOSS_HALT_USD or _down > DAILY_DOWN_HALT_USD:
+                    # NAME THE LIMB THAT ACTUALLY BREACHED (2026-07-26). The message used to
+                    # render `cumulative-down $X > $DAILY_LOSS_HALT_USD` unconditionally — the
+                    # wrong quantity against the wrong limit. Live at 14:54:08Z it printed
+                    # "cumulative-down $8.98 > $10", which is not even true; the real trigger was
+                    # drawdown $13.74 > $10. Misreading WHICH measure halted the bot is the single
+                    # most expensive diagnostic error this lane has made, so the halt must say so
+                    # itself rather than leave it to be re-derived from two similar numbers.
+                    _breaches = []
+                    if _dd > DAILY_LOSS_HALT_USD:
+                        _breaches.append(f"DRAWDOWN ${_dd:.2f} > ${DAILY_LOSS_HALT_USD:.2f} "
+                                         f"(from day-peak ${_peak:.2f})")
+                    if _down > DAILY_DOWN_HALT_USD:
+                        _breaches.append(f"CUMULATIVE-DOWN ${_down:.2f} > ${DAILY_DOWN_HALT_USD:.2f} "
+                                         f"(ratcheting sum, never resets)")
+                    if _breaches:
+                        _why = " AND ".join(_breaches)
                         plan["daily_loss_halt"] = round(drop, 2)
+                        plan["daily_halt_reason"] = _why
                         with open(STOP_FILE, "w") as fh:
                             fh.write(f"auto daily-loss halt {now.isoformat()} drop=${drop:.2f} "
+                                     f"TRIGGER: {_why} "
                                      f"(equity ${_equity:.2f} vs day-peak ${_peak:.2f}; "
                                      f"dd ${_dd:.2f} / cumulative-down ${_down:.2f}; "
                                      f"day-start ${_start:.2f})\n")
-                        print(f"WARNING DAILY LOSS HALT: equity down ${drop:.2f} today "
-                              f"(dd ${_dd:.2f} from peak ${_peak:.2f}, cumulative-down "
-                              f"${_down:.2f} > ${DAILY_LOSS_HALT_USD:.0f}) — STOP written, "
+                        print(f"WARNING DAILY LOSS HALT: {_why} — STOP written, "
                               f"maker-flattening")
                         _flatten_all(client)
                         return 0
