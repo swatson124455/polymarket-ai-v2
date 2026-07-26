@@ -143,6 +143,93 @@ Nothing below should be applied while parked except where noted — several real
 
 ---
 
+## §5b — WHAT WAS ACTUALLY DONE (2026-07-26, all verified)
+
+**Code — deployed to `/opt/pa2-maker-kalshi-live/maker_kalshi_quoter.py`, md5
+`ac5b86d145c0010d64891f6e56ba77ff`, backups `*.bak-strandfix-20260726_*`:**
+
+| commit | fix |
+|---|---|
+| `447c271` | strand unwind no longer requires BOTH book sides; 3 plan counters so a position with no exit is counted, not silent |
+| `7ca30e3` | every `KALSHI_*` knob registers itself inside its accessor; absent set → plan row, unset protection knobs NAMED in the log |
+| `a903d30` | the daily halt names WHICH measure breached (it printed `cumulative-down $8.98 > $10`, which is not even true — the trigger was drawdown $13.74 > $10) |
+
+Suite 509 → **532 passed + 2 xfailed**. Every new test was verified adversarially against
+the old implementation (`git stash`) and fails there.
+
+**Config — `live.env`, backups `live.env.bak-throttlesmart-*` / `live.env.bak-allfixes-*`:**
+
+| knob | was | now |
+|---|---|---|
+| `KALSHI_THROTTLE_SMART` | absent (OFF) | `1` |
+| `KALSHI_PRECLOSE_FLATTEN` | absent (OFF) | `1` |
+| `KALSHI_MAX_UNWIND_LOSS` | `0.02` | `0.10` |
+| `KALSHI_CAPTURE_GATE` / `STANDDOWN` / `NETEV_GATE` | absent | `0` explicitly — unchanged in VALUE, written so the audit records a CHOICE |
+
+Unset protection knobs: **10 → 0**. Absent knobs overall: 37 → 33.
+`MAX_TOTAL_CAPITAL=1` and `TAKER_FLATTEN=0` **unchanged — still parked.**
+
+`PRECLOSE_FLATTEN` is safe to enable independently: `_preclose_naked_flatten` calls
+`_taker_cross_capped` directly and does **not** read `TAKER_FLATTEN`, so it does not
+re-open the blanket launch-day crossing. It is naked-only, near-close-only, hard-capped at
+`|naked|` and decremented by confirmed fills.
+
+**VERIFICATION LIMIT, stated plainly:** a STOP sentinel has been present since
+2026-07-26T14:54:08Z, and `run_once` returns before reaching the strand block and the env
+audit. So the strand fix and the config-visibility log are **deployed and unit-tested but
+not yet exercised live.** They will run on the first cycle after the STOP clears.
+
+## §5c — A FIFTH CLOSED EXIT PATH, FOUND WHILE FIXING THE OTHERS  ⚠ NOT FIXED
+
+`MAX_PRICE_DOLLARS=0.96` / `MIN_PRICE_DOLLARS=0.04` is an **entry** band, and it is applied
+to **reducing** orders too. Live 15:31:46Z, with `MAX_UNWIND_LOSS` already raised to 0.10:
+
+```
+flatten: KXAAAGASW-26JUL27-4.080 pos=-20.00 — reducing side unpriceable, will re-check at escalation
+```
+
+The exit for that long-NO position is a YES bid at the 0.99 touch. `_unwind_price` returns
+0.99 (the cap, 1.05, does not bind), then `MIN_PRICE_DOLLARS < 0.99 <= MAX_PRICE_DOLLARS`
+is **False** — so the exit is refused as "unpriceable".
+
+This is systematic, not incidental: **a position that has moved deep against us necessarily
+has an exit price near 1.00**, so the entry band blocks precisely the exits that matter
+most. It is the same family as the standing rule that the YES/NO mandate governs ENTRIES
+only — a guard written for entering being applied to leaving.
+
+**Why it is not fixed here:** ~15 call sites gate a reducing order on this band
+(`maker_kalshi_quoter.py` lines 1108, 1113, 1188, 1194, 1227, 1232, 1257, 1262, 1289, 1295,
+2081, 2084, 2120, 2628, 2630). Rewriting all of them in one pass at the end of a long
+session, in a money path, is the shotgun fix this repo forbids — and getting it wrong in the
+`desired_quotes` sites, where entry and unwind branches sit side by side, would let ENTRIES
+rest at 0.99. That is a far worse failure than the one being fixed.
+
+**Design for the next session:** give reducing orders their own bounds — the VENUE limits
+(0.01–0.99) rather than the strategy band — leaving `MAX_UNWIND_LOSS` as the sole economic
+governor of whether an exit is worth taking. Do the `_flatten_all` and strand sites first
+(unambiguously exit-only), then `desired_quotes` with a test that pins entries still
+respecting 0.04/0.96.
+
+**Current cost of leaving it:** exactly one position, `4.080`, 20 ct — exiting realizes
+−$0.80 versus −$1.00 at settlement. $0.20. It is a structural defect with a trivial
+immediate price tag, which is why it can wait for a careful fix.
+
+## §5d — THE BOT IS HALTED, AND THE LIMIT MAY BE TOO TIGHT
+
+STOP written 2026-07-26T14:54:08Z: `drop=$13.74 (equity $316.02 vs day-peak $329.76)`.
+Legitimate — true drawdown $13.74 against `DAILY_LOSS_HALT_USD=10`. **Not** the ratcheting
+counter, and **not** caused by this session's deploy (which came 26 minutes later).
+
+Two observations for the operator, both decisions rather than defects:
+
+1. **$10 on a ~$316 book is 3.2%.** Equity here is cash + held COST basis, so it moves when
+   positions settle or fill — meaning the limit trips on ordinary de-risking. It halted
+   twice today.
+2. **Clearing the STOP would not resume quoting.** With `MAX_TOTAL_CAPITAL=1` the footprint
+   gates out entirely (`gated_out: 40`, `quoted_markets: 0`). Clearing it would only let the
+   *exit* paths run — which is the direction we want. **I did not clear it: that is an
+   un-park-adjacent action on real money and it is the operator's call.**
+
 ## §6 — WHAT IS ALREADY CORRECT (do not "fix" these)
 
 - **Resting at the touch** — measured optimal, 6 of 6 configurations. See the measurement doc.
