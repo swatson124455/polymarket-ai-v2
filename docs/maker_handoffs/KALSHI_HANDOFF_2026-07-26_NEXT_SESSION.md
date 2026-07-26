@@ -5,6 +5,86 @@ SESSION IS DEPLOYED.** Deployed build is still md5 `727ca7c59840a42b51c19e24c65a
 
 ---
 
+## §00 — THE THESIS IS TABLED. DO NOT TURN ON THE RANKER.
+
+**The capture model has never been checked against money actually received, and it cannot be on
+existing data.** Attempted 2026-07-26: correlate modelled capture vs the 31 reward receipts.
+
+- 16 distinct rewarded events, $88.07 total (`rewards_ui.tsv`).
+- **15 of 16 fall before 2026-07-23T20:05Z**, where Kalshi has purged zero-fill order history.
+- Usable pairs (receipt + complete order history): **n=1**. No correlation is computable.
+- ⚠ **Do NOT "fix" this by including the pruned events.** Only orders that FILLED survive from that
+  era, and fills track activity which tracks reward — it would manufacture a correlation out of
+  survivorship bias and look like confirmation.
+
+**Consequences, binding:**
+- `KALSHI_SCORE_RANK` **stays OFF.** It ranks on modelled capture. Unvalidated.
+- `KALSHI_PRESENCE_GATE` is **also model-dependent** — its $1.20 floor is documented by Kalshi, but
+  the estimate it compares against comes from the same model. Same caveat.
+- **Survives independently of the model:** the R1 division fix (a defect regardless), the per-market
+  telemetry (pure observation), the far-close cap (rests on MEASURED presence, not the model).
+
+**Validation requires spending money.** Prediction is available while parked; payment is not. There
+is no read-only path. So: deploy telemetry parked → un-park at minimum size → collect ≥20 matched
+pairs → then judge the ranker.
+
+**TABLED BY OPERATOR (2026-07-26): P&L of the inventory that presence creates.** Revisit once live.
+Fees are measured at $0.0000; the adverse-selection cost is not isolable without matched round
+trips, and those need live fills.
+
+## §01 — WHAT AN HOUR ON THE BOOK COSTS (measured, replaces a guessed threshold)
+
+Unpruned slice only (orders created ≥ 2026-07-23T20:05Z): **443 orders, 5,043 contracts placed,
+5,476.3 contract-hours resting.**
+
+| | |
+|---|--:|
+| fees paid | **$0.0000** — maker resting is free |
+| contracts filled | 1,423 = 28.2% of contracts placed |
+| fill rate | **0.26 contracts per contract-hour rested** |
+| inventory taken on by resting 20ct for 1h | **~5.2 contracts** |
+| median life, FILLED order | 238s |
+| median life, UNFILLED order | 245s |
+
+The last two being near-identical matters: **fill risk does not accelerate with time on book.**
+Presence is roughly linear in risk, not compounding. Since fees are zero, the cost of presence is
+inventory — and inventory is already capped (`INV_HARD_CT=60`). At 5.2 ct/hour that is ~11.5 hours
+of continuous one-sided resting before the cap binds.
+
+⇒ **There is no measured reason to hold presence below the inventory cap.** An earlier "20%
+presence" threshold in my audit tree was invented and has been struck.
+
+## §02 — AUDIT TREE (v2)
+
+**0 · Deploy telemetry, still parked** — rows/cycle > 0 and = footprint size → pass; any cycle
+exception → rollback.
+**1 · Un-park small** — $25 cap · 20ct · **12–16 markets** (capital-bound: $248.68 ÷ $15/market) ·
+≤3d. Nothing rests after 3 cycles → stop, bot is broken.
+**2 · Plumbing** — `create_skipped` ÷ intended > 30% → capital too tight. `amend_fail` > 0 → turn
+amend off. Venue resting ≠ bot's intended for 3 cycles → stop (the bot has lost track of its own
+book; 3 cycles so one dropped request doesn't trip it).
+**3 · Presence** — bounded by the inventory cap, not a percentage. Fill rate ≫ 0.26 ct/ct-hr → book
+turned toxic. Gaps > 1h → find the cause (79% of lost time was 5 long gaps).
+**4 · Model** — matched pairs < 20 → keep collecting, ranker OFF. rho < 0.3 → model dead, rank by
+pool, delete the ranker. rho ≥ 0.5 → ranker ON. 0.3–0.5 → collect more.
+**5 · Profitable?** — rewards − realised fill P&L < 0 over 7d → stop.
+**6 · Scale** — only after 4 and 5 pass. Cap 2× → re-run 3, 4, 5. Any regression → revert.
+
+**Kill switches:** equity −$40/day auto-halt (live); resting ≠ intended 3 cycles; $0 rewards for 48h
+while resting > 0.
+
+## §03 — COUNT DISCIPLINE (operator correction)
+
+"2,291 reward markets" is misleading. Same universe, three levels — **151 series / 297 events /
+2,291 market strikes** (median 7 strikes per event, max 43). There are ~297 reward markets in any
+human sense. 2,291 only matters because the bot reads one orderbook per STRIKE.
+
+**Cheap fix available, untested at scale:** `/markets?limit=1000` returns **1,000 markets in 1.7s**
+carrying best bid/ask, size at the touch, and 24h volume (verified against a known-deep market:
+bid 0.95 / size 304 / ask 0.96 / vol24 5,359). That is a pre-filter for the whole universe in ~3
+calls, instead of 2,291 orderbook reads. It gives the TOUCH only, not depth to Target Size, so it
+narrows the field for the 200-read budget rather than replacing it.
+
 ## §0 — REVIEW FIRST (operator directive 2026-07-25)
 
 **The horizon cap is temporary and deliberately conservative. Review it next session.**
