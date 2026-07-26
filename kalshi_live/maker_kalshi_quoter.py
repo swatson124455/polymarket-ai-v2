@@ -352,14 +352,35 @@ def _window_frac_left(m, now):
 
 
 def _expected_credit_usd(m, yl, nl, best_y, best_n, target, now):
-    """Credit we can still earn HERE for the REST of the window, in dollars.
+    """Credit we can still earn HERE in ONE PAYOUT PERIOD, in dollars.
 
-    pc is $/day at full presence; scale it by the days actually remaining and by the measured
-    presence factor. Returns (expected_usd, expected_usd_at_perfect_execution, frac_left)."""
+    ⚠ WHY ONE PAYOUT PERIOD AND NOT THE WHOLE REMAINING WINDOW — the conservative reading.
+    Kalshi's LIP page states the floor ("Minimum payout: $1.00, rounded down to nearest cent") but
+    NEVER states what unit it applies to. Two readings are live and they disagree for multi-day
+    programs:
+      per PERIOD : score is "the Sum of all your snapshot scores during the time period" and
+                   "Time periods: Up to 31 days each" -> one payout per window.
+      per DAY    : Kalshi help elsewhere says "your daily payout equals your score divided by the
+                   total scores, multiplied by THAT DAY'S reward pool for that specific market".
+    Under the per-DAY reading, scaling by the FULL remaining window is wrong in the DANGEROUS
+    direction: a 7-day market earning $0.30/day shows $2.10, clears the floor, and then pays ZERO
+    every single day. That is exactly the long, thin market an 8-day horizon makes visible.
+
+    So the payout unit is taken as min(ONE DAY, remaining window). That is the smaller of the two
+    readings, so a market clearing it clears under EITHER — and it collapses to the whole-window
+    amount for sub-day programs (temp's ~58-minute windows), which is correct there.
+
+    Every reward receipt we hold came from a period of a day or less (temp hourly, gas daily), so
+    our own data cannot discriminate. `KXAAAGASW-26JUL27` is a ~6.5-day program crediting ~07-28;
+    that one payout settles it, and this conservatism can be relaxed then.
+
+    Returns (expected_usd, expected_usd_at_perfect_execution, frac_left) — both dollar figures are
+    now PER PAYOUT PERIOD."""
     pc = _prospective_capture(m, yl, nl, best_y, best_n, target)     # $/day, instantaneous
     frac = _window_frac_left(m, now)
     days_left = (float(m.get("life_min") or 0.0) / 1440.0) * frac
-    ideal = pc * days_left
+    payout_days = min(1.0, days_left)               # the conservative unit — see above
+    ideal = pc * payout_days
     return ideal * _presence_factor(m.get("ticker"), m.get("life_min")), ideal, frac
 # --- NET-EV GATE (KALSHI_NETEV_GATE, default 0 = OFF, provable no-op) ----------------------------
 # The RECEIPT-CALIBRATED market-quality brain. Every gate above (unqualifiable, selection, capture,

@@ -187,6 +187,40 @@ def test_the_margin_band_between_venue_floor_and_gate_is_rejected(monkeypatch):
     assert q.VENUE_PAYOUT_FLOOR_USD < exp < q.MIN_CREDIT_USD
 
 
+def test_long_thin_market_cannot_pass_by_multiplying_days(monkeypatch):
+    """THE HOLE THIS CLOSES. Kalshi never states whether the $1 floor is per DAY or per PERIOD.
+    Scaling by the full remaining window fails in the dangerous direction under the per-day
+    reading: a long market earning well under the floor each day accumulates to a number that
+    clears it, then pays ZERO every single day. Gate on min(one day, remaining window) so a market
+    must clear under EITHER reading."""
+    _cfg_gate(monkeypatch, on=True, floor=q.MIN_CREDIT_USD)
+    now = q.utcnow()
+    yl, nl = _levels(_THIN)
+    # 30-day window, tiny pool: the per-day take is far below the floor...
+    thin_long = _mkt((now + dt.timedelta(days=29)).isoformat(), _LIFE_30D, usd_day=2.0)
+    exp, ideal, frac = q._expected_credit_usd(thin_long, yl, nl, 0.50, 0.49, 1000, now)
+    assert frac > 0.9, "almost the whole window remains"
+    # ...and the naive full-window figure WOULD have cleared the floor many times over
+    pc = q._prospective_capture(thin_long, yl, nl, 0.50, 0.49, 1000)
+    naive_whole_window = pc * (_LIFE_30D / 1440.0) * frac
+    assert naive_whole_window > q.MIN_CREDIT_USD, "fixture must be one the old maths passed"
+    assert exp < q.MIN_CREDIT_USD, "but one payout period cannot clear it -> rejected"
+    assert q.desired_quotes(thin_long, _THIN["yes_dollars"], _THIN["no_dollars"], now,
+                            inv=0.0) == []
+
+
+def test_sub_day_window_is_judged_on_the_whole_window_not_a_day(monkeypatch):
+    """For a program shorter than a day (temp's ~58-minute windows) the payout IS the window, so
+    capping at one day must not shrink it — min(1 day, window) collapses to the window."""
+    _cfg_gate(monkeypatch, on=True, floor=1.0)
+    now = q.utcnow()
+    yl, nl = _levels(_THIN)
+    hourly = _mkt((now + dt.timedelta(minutes=58)).isoformat(), 58.0, usd_day=975.0)
+    exp, ideal, frac = q._expected_credit_usd(hourly, yl, nl, 0.50, 0.49, 1000, now)
+    pc = q._prospective_capture(hourly, yl, nl, 0.50, 0.49, 1000)
+    assert abs(ideal - pc * (58.0 / 1440.0) * frac) < 1e-9, "whole window, not clipped to a day"
+
+
 def test_absent_table_is_neutral_not_pessimistic(monkeypatch):
     """A missing calibration must NOT make the bot cautious — only a measured number may."""
     _cfg_gate(monkeypatch, on=True, floor=1.0, table={})
