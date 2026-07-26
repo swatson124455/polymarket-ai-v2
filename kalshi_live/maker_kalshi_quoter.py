@@ -495,8 +495,13 @@ NETEV_TABLE = _load_netev_table() if NETEV_GATE else {}
 # kalshi_attribution_ledger.py:436). Rootfix design:
 # docs/maker_handoffs/KALSHI_CAPITAL_ACCOUNTING_ROOTFIX_2026-07-23.md.
 FUNDING_GATE = _envi("KALSHI_FUNDING_GATE", 0)  # 0 = legacy gross+held gate; 1 = free-cash funding gate
-MAX_PRICE_DOLLARS = _envf("KALSHI_MAX_PRICE_DOLLARS", 0.97)  # never rest a bid above this
-MIN_PRICE_DOLLARS = _envf("KALSHI_MIN_PRICE_DOLLARS", 0.01)  # never rest a bid at/below this
+MAX_PRICE_DOLLARS = _envf("KALSHI_MAX_PRICE_DOLLARS", 0.97)  # never OPEN a bid above this
+MIN_PRICE_DOLLARS = _envf("KALSHI_MIN_PRICE_DOLLARS", 0.01)  # never OPEN a bid at/below this
+# EXIT bounds are the VENUE's, not the strategy's (see _ok_exit_price). A reducing order must
+# not be refused for being expensive — that is MAX_UNWIND_LOSS's job — only for being
+# unacceptable to Kalshi (valid range 0.01-0.99 inclusive).
+EXIT_MAX_PRICE_DOLLARS = _envf("KALSHI_EXIT_MAX_PRICE_DOLLARS", 0.99)
+EXIT_MIN_PRICE_DOLLARS = _envf("KALSHI_EXIT_MIN_PRICE_DOLLARS", 0.01)
 WIND_DOWN_MIN = _envi("KALSHI_WIND_DOWN_MIN", 45)   # pull quotes N min before end
 WRITE_BUDGET_PER_CYCLE = _envi("KALSHI_WRITE_BUDGET", 400)  # order-ops ceiling/cycle
 JOIN_ALWAYS = _envb("KALSHI_JOIN_ALWAYS")   # drill switch (default off)
@@ -906,6 +911,63 @@ def _unwind_size(base, price, inv):
     return max(1, min(int(abs(inv)), room))
 
 
+def _ok_entry_price(p):
+    """Strategy band — governs OPENING risk. Unchanged semantics (exclusive lower bound)."""
+    return p is not None and MIN_PRICE_DOLLARS < p <= MAX_PRICE_DOLLARS
+
+
+def _ok_exit_price(p):
+    """VENUE bounds — governs REDUCING risk.
+
+    The strategy band (MIN/MAX_PRICE_DOLLARS, live 0.04/0.96) exists so we never OPEN at
+    extreme prices. Applying it to an EXIT refuses to close a position precisely when it has
+    moved deep against us, because its exit price is then near 1.00 — the reducing side of a
+    position whose book sits at 0.99 is a 0.99 bid, and 0.99 > 0.96 was rejected as
+    "unpriceable" (live KXAAAGASW-26JUL27-4.080, 2026-07-26T15:31:46Z). That is an entry
+    guard applied to leaving, the same family as the standing rule that the YES/NO mandate
+    governs ENTRIES only.
+
+    MAX_UNWIND_LOSS remains the SOLE economic governor of whether an exit is worth taking;
+    this bound is only "can the venue accept the order at all"."""
+    return p is not None and EXIT_MIN_PRICE_DOLLARS <= p <= EXIT_MAX_PRICE_DOLLARS
+
+
+def _reducing_quotes(best_y, best_n, inv, cost):
+    """THE reducing-side quote builder — long yes -> a NO bid, long no -> a YES bid,
+    loss-capped by _unwind_price and never larger than |inv| (_unwind_size).
+
+    Extracted 2026-07-26. This block existed in FIVE byte-identical copies inside
+    desired_quotes (wind-down, presence gate, net-EV gate, capture gate, void/activate), and
+    every copy repeated the same entry-band bug. Five copies meant five places for the defect
+    to live and five places a future fix could miss; the root fix is that there is now one.
+
+    Returns [] when the exit is unpriceable at VENUE bounds, or when the book side we would
+    have to rest ON is absent — a one-sided book must not raise (the callers previously
+    passed None straight into _unwind_price).
+
+    FLAT GUARD: _unwind_size floors at 1, so calling this with inv==0 would rest a
+    1-contract order — OPENING risk from a reducing helper. Every caller guards on
+    INV_TOLERANCE today; this makes the helper safe on its own terms so a future caller
+    cannot reintroduce it. A reducing quote with nothing to reduce is meaningless."""
+    if abs(inv) < INV_TOLERANCE:
+        return []
+    if inv > 0:
+        if best_n is None:
+            return []
+        up = _unwind_price(best_n, cost)
+        if not _ok_exit_price(up):
+            return []
+        return [{"side": "no", "price_dollars": up,
+                 "count": _unwind_size(_capped_join(up, best_y), up, inv), "reason": "unwind"}]
+    if best_y is None:
+        return []
+    up = _unwind_price(best_y, cost)
+    if not _ok_exit_price(up):
+        return []
+    return [{"side": "yes", "price_dollars": up,
+             "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
+
+
 def _unwind_price(best, cost):
     """Price for a reducing (unwind) quote: the book reference, CAPPED so a fill can never lock
     in more than MAX_UNWIND_LOSS per pair vs our cost basis (pair realized loss = held-side cost
@@ -1094,36 +1156,37 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         return []            # unusable clock -> quote nothing here (stress: "garbage end").
                              # select_footprint already drops unparseable dates, so this is
                              # defence in depth, not the primary guard.
-    _priceable = (best_y is not None and best_n is not None
-                  and MIN_PRICE_DOLLARS < best_y <= MAX_PRICE_DOLLARS
-                  and MIN_PRICE_DOLLARS < best_n <= MAX_PRICE_DOLLARS
-                  and best_y + best_n < 1.0)
+    # (`_priceable` lived here and gated the wind-down EXIT on the ENTRY band. Its only caller
+    # now uses _reducing_quotes, which checks the one side it rests on at venue bounds, so the
+    # variable is dead and is removed rather than left to be re-used by mistake.)
     if end < now + timedelta(minutes=WIND_DOWN_MIN):
         # wind_down: pull the two-sided quotes. But if we still HOLD inventory here, keep
         # resting the REDUCING side (passive $0 maker unwind) until the settlement taker
         # backstop takes over — never abandon an open position into resolution (fix F).
-        if abs(inv) >= INV_TOLERANCE and _priceable:
-            if inv > 0:
-                up = _unwind_price(best_n, cost)
-                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
-                    return []                       # loss-cap out of range -> ride to backstop
-                return [{"side": "no", "price_dollars": up,
-                         "count": _unwind_size(_capped_join(up, best_y), up, inv), "reason": "unwind"}]
-            up = _unwind_price(best_y, cost)
-            if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
-                return []
-            return [{"side": "yes", "price_dollars": up,
-                     "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
+        # `_priceable` was the ENTRY band (both sides inside 0.04-0.96 and sum < 1.0). Gating
+        # the EXIT on it meant a position could not be unwound into wind-down on exactly the
+        # books where it most needed to be. _reducing_quotes checks the ONE side it rests on,
+        # at venue bounds.
+        if abs(inv) >= INV_TOLERANCE:
+            return _reducing_quotes(best_y, best_n, inv, cost)
         return []                                   # wind_down (flat -> pull entirely)
-    if best_y is None or best_n is None:
-        return []                                   # unpriceable side
-    if not (MIN_PRICE_DOLLARS < best_y <= MAX_PRICE_DOLLARS) or \
-       not (MIN_PRICE_DOLLARS < best_n <= MAX_PRICE_DOLLARS):
-        return []                                   # spread_sanity (both bounds)
-    if best_y + best_n >= 1.0:
-        return []                                   # crossed/degenerate book — a yes
-        # bid @best_y and no bid @best_n would cross (yes_bid >= yes_ask); skip so a
-        # stale-book quote can never take even if post_only were silently ignored.
+    # CROSSED BOOK IS CHECKED FIRST, and refuses BOTH entry and exit. A crossed book
+    # (yes_bid + no_bid >= 1.0) is a stale/degenerate quote, not a price — a yes bid @best_y
+    # and a no bid @best_n would cross, so it must never be rested even if post_only were
+    # silently ignored. It is ordered ahead of the entry gates below because those now fall
+    # through to a reducing quote when we hold inventory: leaving it last would have started
+    # resting exits onto crossed books, which the strand path explicitly refuses
+    # ("crossed/stale — do not chase"). Both paths now agree.
+    if best_y is not None and best_n is not None and best_y + best_n >= 1.0:
+        return []
+    # THE NEXT TWO GATES REJECT AN *ENTRY*. Each used to `return []`, which also discarded
+    # the reducing quote built further down — so a held position on a one-sided or extreme
+    # book got NO exit order at all, which is precisely the book a losing position ends on.
+    # Flat -> still nothing. Holding -> rest the reducing side and stop.
+    if best_y is None or best_n is None:            # one-sided: cannot JOIN, can still EXIT
+        return _reducing_quotes(best_y, best_n, inv, cost) if abs(inv) >= INV_TOLERANCE else []
+    if not (_ok_entry_price(best_y) and _ok_entry_price(best_n)):
+        return _reducing_quotes(best_y, best_n, inv, cost) if abs(inv) >= INV_TOLERANCE else []
     # external depth = public depth minus our own resting order on that side
     ext_y = max(0.0, sum(s for _, s in yl) - float(own.get("yes", 0)))
     ext_n = max(0.0, sum(s for _, s in nl) - float(own.get("no", 0)))
@@ -1183,18 +1246,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                         stats.get("presence_skipped_late_entry", 0) + 1
             if abs(inv) < INV_TOLERANCE:
                 return []                           # FLAT + cannot clear $1 -> never open
-            if inv > 0:                             # HOLDING long yes -> rest reducing NO only
-                up = _unwind_price(best_n, cost)
-                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
-                    return []
-                return [{"side": "no", "price_dollars": up,
-                         "count": _unwind_size(_capped_join(up, best_y), up, inv),
-                         "reason": "unwind"}]
-            up = _unwind_price(best_y, cost)        # HOLDING long no -> rest reducing YES only
-            if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
-                return []
-            return [{"side": "yes", "price_dollars": up,
-                     "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
+            return _reducing_quotes(best_y, best_n, inv, cost)
     # NET-EV GATE (KALSHI_NETEV_GATE, default 0 = provable no-op) — the RECEIPT-CALIBRATED brain, and
     # the COMPLETE signal that supersedes the reward-only capture gate + pool-only stand-down. Look up
     # this market's FAMILY net-EV (credits − fill P&L − fees, per kalshi_netev_calibrate). A family
@@ -1222,17 +1274,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                 _nf[fam] = _nf.get(fam, 0) + 1
             if abs(inv) < INV_TOLERANCE:
                 return []                                   # FLAT + net-negative-for-us -> skip
-            if inv > 0:                                     # HOLDING long yes -> rest reducing NO only
-                up = _unwind_price(best_n, cost)
-                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
-                    return []                               # loss-cap out of range -> ride to backstop
-                return [{"side": "no", "price_dollars": up,
-                         "count": _unwind_size(_capped_join(up, best_y), up, inv), "reason": "unwind"}]
-            up = _unwind_price(best_y, cost)                # HOLDING long no -> rest reducing YES only
-            if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
-                return []
-            return [{"side": "yes", "price_dollars": up,
-                     "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
+            return _reducing_quotes(best_y, best_n, inv, cost)
     # CAPTURE GATE (KALSHI_CAPTURE_GATE, default 0 = provable no-op) — the market-quality brain the
     # unqualifiable/selection gates lack: they check the BOOK can pay; this checks WE get paid. On a
     # two-sided JOIN book, compute our PROSPECTIVE R4 capture $/day (our_size scored at ref / (book
@@ -1252,17 +1294,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                 stats["capture_skipped"] = stats.get("capture_skipped", 0) + 1
             if abs(inv) < INV_TOLERANCE:
                 return []                           # FLAT + poor-for-us -> skip
-            if inv > 0:                             # HOLDING long yes -> rest reducing NO only
-                up = _unwind_price(best_n, cost)
-                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
-                    return []                       # loss-cap out of range -> ride to backstop
-                return [{"side": "no", "price_dollars": up,
-                         "count": _unwind_size(_capped_join(up, best_y), up, inv), "reason": "unwind"}]
-            up = _unwind_price(best_y, cost)        # HOLDING long no -> rest reducing YES only
-            if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
-                return []
-            return [{"side": "yes", "price_dollars": up,
-                     "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
+            return _reducing_quotes(best_y, best_n, inv, cost)
     # SELECTION GATE (only when ~flat — if we hold inventory we must keep quoting to unwind):
     # skip WIDE or ONE-SIDED books. A balanced two-sided book is where the maker-unwind
     # reliably fills; a one-directional/wide book is the gas-ladder trap that adverse-selects
@@ -1284,18 +1316,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # blanket-pull (that removes the $0 maker unwind AND leaves the taker unreachable while
         # inv is frozen) — rest ONLY the reducing side to unwind passively.
         if abs(inv) >= INV_TOLERANCE:
-            if inv > 0:      # long yes -> rest a reducing NO bid
-                up = _unwind_price(best_n, cost)
-                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
-                    return []                       # loss-cap out of range -> ride to backstop
-                return [{"side": "no", "price_dollars": up,
-                         "count": _unwind_size(_capped_join(up, best_y), up, inv), "reason": "unwind"}]
-            else:            # long no -> rest a reducing YES bid
-                up = _unwind_price(best_y, cost)
-                if not (MIN_PRICE_DOLLARS < up <= MAX_PRICE_DOLLARS):
-                    return []
-                return [{"side": "yes", "price_dollars": up,
-                         "count": _unwind_size(_capped_join(up, best_n), up, inv), "reason": "unwind"}]
+            return _reducing_quotes(best_y, best_n, inv, cost)
         if abs(ev) > INV_SOFT_CT:
             return []                               # event already directional -> don't ADD via activate
         if STANDDOWN:                               # STAND-DOWN: don't commit activate depth into a
@@ -1388,9 +1409,15 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
             else:                                   # long no -> grow YES (reduces)
                 y_price, y_reason = _unwind_price(best_y, cost), "unwind"
                 y_cnt = _unwind_size(_capped_join(y_price, best_n), y_price, inv)
-        if y_cnt > 0 and MIN_PRICE_DOLLARS < y_price <= MAX_PRICE_DOLLARS:
+        # FINAL EMIT — the band depends on WHAT the quote is, not merely on its price. A leg
+        # re-priced to "unwind" above is REDUCING risk and takes venue bounds; anything else is
+        # OPENING risk and takes the strategy band. Applying the entry band here undid the
+        # reducing-side fixes further up, because this is the last gate every quote passes.
+        _ok_y = _ok_exit_price(y_price) if y_reason == "unwind" else _ok_entry_price(y_price)
+        _ok_n = _ok_exit_price(n_price) if n_reason == "unwind" else _ok_entry_price(n_price)
+        if y_cnt > 0 and _ok_y:
             quotes.append({"side": "yes", "price_dollars": y_price, "count": y_cnt, "reason": y_reason})
-        if n_cnt > 0 and MIN_PRICE_DOLLARS < n_price <= MAX_PRICE_DOLLARS:
+        if n_cnt > 0 and _ok_n:
             quotes.append({"side": "no", "price_dollars": n_price, "count": n_cnt, "reason": n_reason})
     return quotes
 
@@ -2078,10 +2105,10 @@ def run_once():
                 continue                                # crossed/stale book — do not chase it
             up_n = _unwind_price(sbn, cost_by.get(t, 0.0)) if sbn is not None else None
             up_y = _unwind_price(sby, cost_by.get(t, 0.0)) if sby is not None else None
-            if pos > 0 and up_n is not None and MIN_PRICE_DOLLARS < up_n <= MAX_PRICE_DOLLARS:
+            if pos > 0 and _ok_exit_price(up_n):
                 desired[t] = [{"side": "no", "price_dollars": up_n,
                                "count": _unwind_size(_capped_join(up_n, sby), up_n, pos), "reason": "unwind"}]
-            elif pos < 0 and up_y is not None and MIN_PRICE_DOLLARS < up_y <= MAX_PRICE_DOLLARS:
+            elif pos < 0 and _ok_exit_price(up_y):
                 desired[t] = [{"side": "yes", "price_dollars": up_y,
                                "count": _unwind_size(_capped_join(up_y, sbn), up_y, pos), "reason": "unwind"}]
             else:
@@ -2117,7 +2144,23 @@ def run_once():
             _s2, t2 = min(cands) if qn > 0 else max(cands)   # NEAREST adjacent strike
             r2 = book_refs[t2]
             price2 = r2[1] if qn > 0 else r2[0]         # buy NO on higher / YES on lower, at ref
-            if not (MIN_PRICE_DOLLARS < price2 <= MAX_PRICE_DOLLARS):
+            # NO _unwind_price CAP HERE, DELIBERATELY (re-reviewed 2026-07-26). It is tempting:
+            # this leg OPENS a position, the resulting pair always pays >= $1, so
+            # (held_cost + price2 - 1) looks like a locked loss the cap should bound. Applying
+            # it broke test_ladder_escape_hatch_splits_parked_unwind, and the TEST WAS RIGHT.
+            #
+            # The cross leg is bought at the ADJACENT book's own reference, which is priced
+            # consistently with the held leg's. Worked example from that test: +20 YES on 4.050
+            # at basis 0.62 while the book marks yes-bid 0.13, hedged with NO on 4.060 at 0.92.
+            # Spending $9.20 converts an asset worth ~$1.30 into one worth >= $10.00 — roughly
+            # neutral at market prices. It removes VARIANCE, not expected value.
+            #
+            # _unwind_price bounds loss against COST BASIS, so applying it here charges an
+            # ALREADY-SUNK mark-to-market loss against a fresh hedge and refuses the hedge
+            # precisely when the position has moved most — the same sunk-cost error this
+            # session diagnosed in the unwind cap itself. The venue bound is the right guard;
+            # size is bounded by MAX_MARKET_CAPITAL and by keep+cross <= |naked| below.
+            if not _ok_exit_price(price2):
                 continue
             c0 = uws[0]["count"]
             keep = max(1, c0 // 2)
@@ -2625,15 +2668,15 @@ def _flatten_all(client):
         by = max((p for p, _ in _levels(ob.get("yes_dollars") or [])[0]), default=None)
         bn = max((p for p, _ in _levels(ob.get("no_dollars") or [])[0]), default=None)
         # reducing side (maker): long yes -> rest a NO bid; long no -> rest a YES bid.
-        if pos > 0 and bn is not None and MIN_PRICE_DOLLARS < bn <= MAX_PRICE_DOLLARS:
+        if pos > 0 and _ok_exit_price(bn):
             side, price, other = "no", bn, (by or bn)
-        elif pos < 0 and by is not None and MIN_PRICE_DOLLARS < by <= MAX_PRICE_DOLLARS:
+        elif pos < 0 and _ok_exit_price(by):
             side, price, other = "yes", by, (bn or by)
         else:
             print(f"flatten: {t} pos={pos:+.2f} — reducing side unpriceable, will re-check at escalation")
             continue
         price = _unwind_price(price, _costs.get(t, 0.0))             # loss-capped offset
-        if price <= MIN_PRICE_DOLLARS:
+        if not _ok_exit_price(price):
             print(f"flatten: {t} pos={pos:+.2f} — loss-cap leaves no priceable offset, "
                   f"will re-check at escalation")
             continue
