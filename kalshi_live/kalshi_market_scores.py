@@ -44,6 +44,12 @@ import time
 SCHEMA = 1
 HALF_LIFE_S = 3600.0        # a score decays to half its weight after an hour
 EWMA_ALPHA = 0.3            # ref_move smoothing
+# A score older than this is STALE and becomes eligible for an exploration slot again. Without it,
+# a market scored once is never re-sampled: `score()` would keep calling it "scored" forever, so it
+# could only crawl back through decay toward its pool prior. A cheap market that was crowded an hour
+# ago and is empty now is exactly the opportunity we want, and it would have been invisible.
+# Books move; a score is a snapshot, not a verdict.
+STALE_S = 1800.0
 
 
 def _now():
@@ -103,6 +109,10 @@ def score(markets, ticker, pool_usd_day, now=None, swing_penalty=1.0, unknown_bo
     if not row or row.get("ts") is None:
         return float(pool_usd_day or 0.0) * unknown_bonus, "unknown"
     age = max(0.0, now - float(row["ts"]))
+    if age >= STALE_S:
+        # Old enough that the book has probably moved. Report it as STALE so the exploration quota
+        # picks it up again — a market that was crowded an hour ago may be empty now.
+        return float(pool_usd_day or 0.0) * unknown_bonus, "stale"
     decay = 0.5 ** (age / HALF_LIFE_S)
     cap = float(row.get("capture") or 0.0)
     # blend toward the pool prior as the score ages out, so a stale winner cannot pin the bot
@@ -126,11 +136,18 @@ def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,
     scored.sort(key=lambda x: (-x[0], str(x[2].get(ticker_key))))
     if explore <= 0:
         return [r for _, _, r in scored]
+    # Exploration covers BOTH never-seen and STALE markets. Never-seen first (we know nothing at
+    # all about them), then the oldest stale ones — a market whose book has had time to change is
+    # a genuine re-look, not a re-run. Restricting this to never-seen would mean a market is judged
+    # once and then effectively retired.
     unseen = [t for t in scored if t[1] == "unknown"]
-    if not unseen:
+    stale = sorted((t for t in scored if t[1] == "stale"),
+                   key=lambda t: float((markets.get(t[2].get(ticker_key)) or {}).get("ts") or 0.0))
+    pool_of_candidates = unseen + stale
+    if not pool_of_candidates:
         return [r for _, _, r in scored]
     picked, seen_ids = [], set()
-    for t in unseen[:explore]:
+    for t in pool_of_candidates[:explore]:
         picked.append(t[2])
         seen_ids.add(id(t[2]))
     rest = [r for _, _, r in scored if id(r) not in seen_ids]

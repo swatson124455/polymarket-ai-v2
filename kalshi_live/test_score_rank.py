@@ -67,6 +67,42 @@ def test_exploration_guarantees_unscored_markets_get_sampled():
     assert len(out) == 3 and len({id(r) for r in out}) == 3, "no market duplicated or dropped"
 
 
+def test_a_market_judged_once_is_not_retired_forever():
+    """THE RE-LOOK PIN. A market scored badly must become eligible for sampling again once its
+    score is stale — books move, and a market that was crowded an hour ago may be empty now.
+    Without this, `score()` reports it "scored" forever, it never wins an exploration slot, and the
+    only way back is decay toward its pool prior — so a cheap market that later empties out would
+    be invisible. That is a permanent loss of a real opportunity."""
+    m = {}
+    ks.update(m, "WASBAD", 0.01, 0.50, now=1000.0)          # looked terrible when we saw it
+    ks.update(m, "GOOD", 500.0, 0.50, now=1000.0)
+    rows = [_row("WASBAD", 50), _row("GOOD", 50)]
+
+    # immediately after: WASBAD is fresh, so it is NOT re-explored (we just looked)
+    fresh = ks.rank(m, rows, now=1000.0 + 60, explore=1)
+    assert fresh[0]["ticker"] == "GOOD", "no point re-reading a book we just read"
+
+    # once WASBAD is stale — and GOOD is NOT (re-observed since) — WASBAD gets a slot back.
+    # Both must not be stale together or the comparison proves nothing.
+    t_late = 1000.0 + ks.STALE_S + 1
+    ks.update(m, "GOOD", 500.0, 0.50, now=t_late)           # GOOD seen again, so it is fresh
+    assert ks.score(m, "WASBAD", 50, now=t_late)[1] == "stale"
+    assert ks.score(m, "GOOD", 50, now=t_late)[1] == "scored"
+    aged = ks.rank(m, rows, now=t_late, explore=1)
+    assert aged[0]["ticker"] == "WASBAD", "a stale market must be re-looked, not retired"
+    assert len(aged) == 2 and {r["ticker"] for r in aged} == {"WASBAD", "GOOD"}
+
+
+def test_never_seen_markets_are_explored_before_merely_stale_ones():
+    """We know nothing about an unseen market and something about a stale one, so unseen goes
+    first when slots are scarce."""
+    m = {}
+    ks.update(m, "STALE", 1.0, 0.50, now=1000.0)
+    rows = [_row("STALE", 50), _row("NEVERSEEN", 50)]
+    out = ks.rank(m, rows, now=1000.0 + ks.STALE_S + 1, explore=1)
+    assert out[0]["ticker"] == "NEVERSEEN"
+
+
 def test_stale_scores_decay_back_toward_the_pool_prior():
     m = {}
     ks.update(m, "OLD", 500.0, 0.50, now=1000.0)
