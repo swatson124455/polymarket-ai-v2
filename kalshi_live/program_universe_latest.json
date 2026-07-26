@@ -1,0 +1,12 @@
+{
+  "fetched_at": "2026-07-23T15:25:15.740626+00:00",
+  "file": "program_universe_20260723T152450Z.jsonl",
+  "n_unique_programs": 118731,
+  "n_scheduled_rows": 118731,
+  "scheduled_pages": 12,
+  "n_control_rows": 118731,
+  "control_pages": 12,
+  "n_active_rows": 2329,
+  "scheduled_filter_honoured": false,
+  "page_limit": 10000
+}

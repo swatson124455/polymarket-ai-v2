@@ -1,0 +1,34 @@
+positions with usable timeline: 67 / 67
+
+GROUPS
+  POSITIVES (run over)            n= 22  pnl   -49.89
+    of which RUNOVER (entry>0.2)  n=  6  pnl   -27.64
+    of which TAIL     (entry<=0.2) n= 16  pnl   -22.25
+  NEG strict  (gas, profitable)   n=  5  pnl     2.94
+  NEG broad   (all gas, survived) n= 18  pnl    -4.20
+  TEMP control(temp, survived)    n= 27  pnl   -25.90
+
+WINDOW LENGTHS (min) median [min,max] and decision points/position
+  POS            36 [   2,  599]   points   18
+  NEG_strict    434 [ 175,  577]   points  157
+  NEG_broad     203 [  18,  634]   points   56
+  TEMP_ctrl      12 [   0,   45]   points    6
+
+======================================================================================================================
+DETECTOR RESULTS  (fire = detector ON at >=1 two-minute decision point inside the position's window)
+======================================================================================================================
+detector                    POSall  RUNOVR    TAIL  NEGstr  NEGbrd  TEMPctl   lead(RUNOVR) med[min,max]  dutycyc
+----------------------------------------------------------------------------------------------------------------------
+D1 adverse_mid_drift          0.73    1.00    0.62    0.60    0.39     0.48            28m [  22,   42]     0.06
+D2 adverse_exit_drift         0.59    1.00    0.44    0.60    0.39     0.52            28m [  22,   42]     0.06
+D3 tape_adverse_share         0.95    0.83    1.00    1.00    1.00     0.70            24m [   6,   46]     0.31
+D4 tape_adverse_net           0.95    1.00    0.94    1.00    0.94     0.74            28m [   6,   36]     0.29
+D5 own_fill_onesided          0.55    0.33    0.62    0.60    0.72     0.59            27m [  18,   36]     0.07
+D5c own_fill_any(ctrl)        0.59    0.50    0.62    0.60    0.72     0.63            36m [  18,   46]     0.08
+D6 run_persistence            0.18    0.50    0.06    0.40    0.22     0.07            14m [   2,   20]     0.01
+D7 value_floor                1.00    1.00    1.00    0.40    0.39     0.44             8m [   0,   29]     0.28
+D8 spread_widen               0.68    1.00    0.56    0.80    0.44     0.33            14m [   2,   29]     0.04
+D9 vol_surge_adverse          0.64    0.83    0.56    0.60    0.44     0.19             4m [   0,   27]     0.03
+N0 always(null)               1.00    1.00    1.00    1.00    1.00     0.96            36m [  24,   46]     1.00
+
+wrote C:\Users\samwa\AppData\Local\Temp\claude\C--lockes-picks-polymarket-ai-v2\02f270fe-27ab-42e6-8906-2ebc25f6df3b\scratchpad\kalshi-wt\kalshi_live\kalshi_drift_detect.json

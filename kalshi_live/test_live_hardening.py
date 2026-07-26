@@ -117,6 +117,10 @@ def test_series_allowlist_filters_to_temp(monkeypatch):
          "target_size_fp": 1000, "discount_factor_bps": 5000, "period_reward": 9000000,
          "start_date": "2026-07-20T17:00:00Z", "end_date": "2099-01-01T00:00:00Z"},
     ]
+    # These fixtures end in 2099; the far-close cap (KALSHI_MAX_DAYS_TO_CLOSE, added 2026-07-25)
+    # would reject both on horizon before the allowlist is ever consulted. This test pins the
+    # ALLOWLIST, so the horizon gate is disabled here rather than the fixtures being re-dated.
+    monkeypatch.setattr(q, "MAX_DAYS_TO_CLOSE", 0.0)
     monkeypatch.setattr(q, "SERIES_ALLOW", ["KXTEMPNYCH", "KXTEMPDCH"])
     picked = q.select_footprint(progs, q.utcnow())
     assert [m["ticker"] for m in picked] == ["KXTEMPNYCH-26JUL2014-T81.99"]  # DXY excluded

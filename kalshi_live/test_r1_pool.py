@@ -31,6 +31,9 @@ def _prog(ticker, reward_cents, hours):
 def test_usd_day_is_the_raw_daily_pool_regardless_of_window_length(monkeypatch):
     """Same period_reward, wildly different window lengths -> IDENTICAL usd_day."""
     monkeypatch.setattr(q, "SERIES_ALLOW", set())        # no allowlist filtering
+    # The far-close cap is an unrelated gate that would reject these long-window fixtures outright.
+    # Disable it here: this file pins the POOL FORMULA, which must hold at every window length.
+    monkeypatch.setattr(q, "MAX_DAYS_TO_CLOSE", 0.0)
     now = q.utcnow()
     # 1,000,000 / 10000 = $100.00/day per market
     progs = [_prog("HOURLY-X", 1000000, 1),              # ~1h window
@@ -47,6 +50,7 @@ def test_usd_day_lands_inside_kalshis_documented_10_to_1000_band(monkeypatch):
     """The check that caught the original error: Kalshi documents daily pools of $10-$1,000 per
     market. The raw form respects that band at both extremes; the divided form did not."""
     monkeypatch.setattr(q, "SERIES_ALLOW", set())
+    monkeypatch.setattr(q, "MAX_DAYS_TO_CLOSE", 0.0)   # unrelated gate; see above
     now = q.utcnow()
     progs = [_prog("FLOOR-X", 100000, 1),        # $10/day, shortest window
              _prog("CEIL-X", 10000000, 24 * 31)]  # $1,000/day, longest window
@@ -61,6 +65,7 @@ def test_ramp_min_still_scales_with_window_length(monkeypatch):
     """The `days` variable is still needed for the per-market ramp — removing it with the division
     would have been a NameError. Short windows must ramp sooner than long ones."""
     monkeypatch.setattr(q, "SERIES_ALLOW", set())
+    monkeypatch.setattr(q, "MAX_DAYS_TO_CLOSE", 0.0)   # unrelated gate; see above
     monkeypatch.setattr(q, "RAMP_MIN", 10_000.0)         # keep the global out of the way
     now = q.utcnow()
     rows = {r["ticker"]: r for r in q.select_footprint(

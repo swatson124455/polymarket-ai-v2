@@ -1,0 +1,54 @@
+{
+  "caveats": [
+    "Credits LAG a Time Period (\u00a7M13): trading is scored only over the credit-settled window [2026-07-21..2026-07-22] = the span of this export's credit-posting dates.",
+    "Per-FAMILY credit attribution is operator-UI screenshot-derived (credit rows carry an EMPTY market_ticker, \u00a7M11); only the CSV credit TOTAL is exact. Per-SERIES credits are NOT available. The engine cross-checks the attribution sum against the CSV total.",
+    "Taker (fee-bearing) rows excluded as one-off forced exits (\u00a7M13 exclusion 1).",
+    "credit_lag families (period may be open at export -> credits under-counted, net biased pessimistic): gas."
+  ],
+  "credit_attribution_ok": true,
+  "credit_total_attributed": 25.21,
+  "credit_total_csv": 25.21,
+  "csv_path": "kalshi_transactions_2026-07-23.csv",
+  "exclude_taker": true,
+  "families": {
+    "gas": {
+      "confidence": "receipt",
+      "credit_attributed": true,
+      "credit_lag": true,
+      "credits": 2.15,
+      "excluded_taker_pnl": 0.0,
+      "excluded_taker_trades": 0,
+      "fees": 0.0,
+      "n_trades": 99,
+      "net": 2.4028,
+      "net_pct_notional": 0.011184,
+      "net_per_day": 1.2014,
+      "notional": 214.8476,
+      "out_of_window_trades": 31,
+      "trading_pnl": 0.2528
+    },
+    "temp": {
+      "confidence": "receipt",
+      "credit_attributed": true,
+      "credit_lag": false,
+      "credits": 23.06,
+      "excluded_taker_pnl": 0.0,
+      "excluded_taker_trades": 0,
+      "fees": 0.0,
+      "n_trades": 60,
+      "net": -13.0578,
+      "net_pct_notional": -0.091523,
+      "net_per_day": -6.5289,
+      "notional": 142.672,
+      "out_of_window_trades": 54,
+      "trading_pnl": -36.1178
+    }
+  },
+  "generated_at": "2026-07-24T14:07:21.502840+00:00",
+  "min_receipt_trades": 20,
+  "window": {
+    "days": 2,
+    "end": "2026-07-22",
+    "start": "2026-07-21"
+  }
+}

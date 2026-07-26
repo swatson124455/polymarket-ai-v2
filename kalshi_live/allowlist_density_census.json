@@ -1,0 +1,1306 @@
+{
+ "generated_utc": "2026-07-23T19:15:50.225776+00:00",
+ "venue_programs": 2345,
+ "gate": {
+  "wind_down_min": 45,
+  "late_life_frac": 0.6,
+  "max_entry_cutoff_min": 120
+ },
+ "rows": [
+  {
+   "series": "KXTEMPDCH",
+   "active_progs": 0,
+   "raw_progs": 0,
+   "dropped_late_life": 0,
+   "best_usd_day": 0.0,
+   "series_usd_day": 0.0,
+   "median_usd_day": 0.0,
+   "n_books": 0,
+   "two_sided_ct": 0,
+   "two_sided_pct": null,
+   "earnable_usd_day": 0.0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "dark",
+   "mutually_exclusive": null,
+   "strike_types": [],
+   "category": null,
+   "dark": true,
+   "book_err": 0,
+   "two_detail": []
+  },
+  {
+   "series": "KXTEMPAUSH",
+   "active_progs": 0,
+   "raw_progs": 0,
+   "dropped_late_life": 0,
+   "best_usd_day": 0.0,
+   "series_usd_day": 0.0,
+   "median_usd_day": 0.0,
+   "n_books": 0,
+   "two_sided_ct": 0,
+   "two_sided_pct": null,
+   "earnable_usd_day": 0.0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "dark",
+   "mutually_exclusive": null,
+   "strike_types": [],
+   "category": null,
+   "dark": true,
+   "book_err": 0,
+   "two_detail": []
+  },
+  {
+   "series": "KXTEMPLAXH",
+   "active_progs": 0,
+   "raw_progs": 0,
+   "dropped_late_life": 0,
+   "best_usd_day": 0.0,
+   "series_usd_day": 0.0,
+   "median_usd_day": 0.0,
+   "n_books": 0,
+   "two_sided_ct": 0,
+   "two_sided_pct": null,
+   "earnable_usd_day": 0.0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "dark",
+   "mutually_exclusive": null,
+   "strike_types": [],
+   "category": null,
+   "dark": true,
+   "book_err": 0,
+   "two_detail": []
+  },
+  {
+   "series": "KXTEMPNYCH",
+   "active_progs": 0,
+   "raw_progs": 0,
+   "dropped_late_life": 0,
+   "best_usd_day": 0.0,
+   "series_usd_day": 0.0,
+   "median_usd_day": 0.0,
+   "n_books": 0,
+   "two_sided_ct": 0,
+   "two_sided_pct": null,
+   "earnable_usd_day": 0.0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "dark",
+   "mutually_exclusive": null,
+   "strike_types": [],
+   "category": null,
+   "dark": true,
+   "book_err": 0,
+   "two_detail": []
+  },
+  {
+   "series": "KXTEMPCHIH",
+   "active_progs": 0,
+   "raw_progs": 0,
+   "dropped_late_life": 0,
+   "best_usd_day": 0.0,
+   "series_usd_day": 0.0,
+   "median_usd_day": 0.0,
+   "n_books": 0,
+   "two_sided_ct": 0,
+   "two_sided_pct": null,
+   "earnable_usd_day": 0.0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "dark",
+   "mutually_exclusive": null,
+   "strike_types": [],
+   "category": null,
+   "dark": true,
+   "book_err": 0,
+   "two_detail": []
+  },
+  {
+   "series": "KXAAAGASD",
+   "active_progs": 7,
+   "raw_progs": 7,
+   "dropped_late_life": 0,
+   "best_usd_day": 188.23529411764707,
+   "series_usd_day": 1317.6470588235295,
+   "median_usd_day": 188.23529411764707,
+   "n_books": 7,
+   "two_sided_ct": 5,
+   "two_sided_pct": 71.42857142857143,
+   "earnable_usd_day": 941.176,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "ladder",
+   "mutually_exclusive": false,
+   "strike_types": [
+    "greater"
+   ],
+   "category": "Economics",
+   "dark": false,
+   "book_err": 0,
+   "two_detail": [
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.120",
+     "usd_day": 188.235,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.110",
+     "usd_day": 188.235,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.105",
+     "usd_day": 188.235,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.100",
+     "usd_day": 188.235,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.115",
+     "usd_day": 188.235,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.130",
+     "usd_day": 188.235,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": false,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.125",
+     "usd_day": 188.235,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    }
+   ]
+  },
+  {
+   "series": "KXAAAGASW",
+   "active_progs": 15,
+   "raw_progs": 15,
+   "dropped_late_life": 0,
+   "best_usd_day": 15.376401494927922,
+   "series_usd_day": 230.64602242391882,
+   "median_usd_day": 15.376401494927922,
+   "n_books": 15,
+   "two_sided_ct": 4,
+   "two_sided_pct": 26.666666666666668,
+   "earnable_usd_day": 61.506,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "ladder",
+   "mutually_exclusive": false,
+   "strike_types": [
+    "greater"
+   ],
+   "category": "Economics",
+   "dark": false,
+   "book_err": 0,
+   "two_detail": [
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.200",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": false,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.180",
+     "usd_day": 15.376,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.260",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": false,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-3.980",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.060",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.220",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": false,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.140",
+     "usd_day": 15.376,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.000",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.080",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.120",
+     "usd_day": 15.376,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.020",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.240",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": false,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.160",
+     "usd_day": 15.376,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.100",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.040",
+     "usd_day": 15.376,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    }
+   ]
+  },
+  {
+   "series": "KXB200MON",
+   "active_progs": 40,
+   "raw_progs": 40,
+   "dropped_late_life": 0,
+   "best_usd_day": 2.6350461133069825,
+   "series_usd_day": 105.4018445322793,
+   "median_usd_day": 2.6350461133069825,
+   "n_books": 40,
+   "two_sided_ct": 37,
+   "two_sided_pct": 92.5,
+   "earnable_usd_day": 97.497,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "ladder",
+   "mutually_exclusive": false,
+   "strike_types": [
+    "greater"
+   ],
+   "category": "Science and Technology",
+   "dark": false,
+   "book_err": 0,
+   "two_detail": [
+    {
+     "ticker": "KXB200MON-26JUL31-3.860",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-7.360",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.960",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.960",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-3.660",
+     "usd_day": 2.635,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.460",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.660",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.360",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.260",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-7.260",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-3.760",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-4.160",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.060",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-4.960",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.260",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-4.060",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-3.960",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.860",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-3.560",
+     "usd_day": 2.635,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-7.160",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.560",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-4.260",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.360",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-4.760",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.560",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-4.560",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.460",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-4.660",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.160",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-7.060",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-4.860",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.760",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.760",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.160",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-3.460",
+     "usd_day": 2.635,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-4.460",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.860",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.060",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.660",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-4.360",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    }
+   ]
+  },
+  {
+   "series": "KXAMSAVO",
+   "active_progs": 11,
+   "raw_progs": 11,
+   "dropped_late_life": 0,
+   "best_usd_day": 16.41212673808981,
+   "series_usd_day": 180.53339411898793,
+   "median_usd_day": 16.41212673808981,
+   "n_books": 11,
+   "two_sided_ct": 11,
+   "two_sided_pct": 100.0,
+   "earnable_usd_day": 180.533,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "ladder",
+   "mutually_exclusive": false,
+   "strike_types": [
+    "greater"
+   ],
+   "category": "Economics",
+   "dark": false,
+   "book_err": 0,
+   "two_detail": [
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.60",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.20",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.70",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.00",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.40",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.30",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.10",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.50",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T0.90",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T0.80",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.80",
+     "usd_day": 16.412,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    }
+   ]
+  },
+  {
+   "series": "KXH100MON",
+   "active_progs": 20,
+   "raw_progs": 20,
+   "dropped_late_life": 0,
+   "best_usd_day": 2.6350461133069825,
+   "series_usd_day": 52.70092226613965,
+   "median_usd_day": 2.6350461133069825,
+   "n_books": 20,
+   "two_sided_ct": 14,
+   "two_sided_pct": 70.0,
+   "earnable_usd_day": 36.891,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "ladder",
+   "mutually_exclusive": false,
+   "strike_types": [
+    "greater"
+   ],
+   "category": "Science and Technology",
+   "dark": false,
+   "book_err": 0,
+   "two_detail": [
+    {
+     "ticker": "KXH100MON-26JUL31-2.860",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.610",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.360",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.410",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.160",
+     "usd_day": 2.635,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.310",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.460",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.910",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.510",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.010",
+     "usd_day": 2.635,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.210",
+     "usd_day": 2.635,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.260",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.660",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.560",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.760",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-1.960",
+     "usd_day": 2.635,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.810",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.060",
+     "usd_day": 2.635,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.710",
+     "usd_day": 2.635,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.110",
+     "usd_day": 2.635,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": false
+    }
+   ]
+  },
+  {
+   "series": "KXMUSKNW",
+   "active_progs": 13,
+   "raw_progs": 13,
+   "dropped_late_life": 0,
+   "best_usd_day": 11.111968516089204,
+   "series_usd_day": 144.45559070915965,
+   "median_usd_day": 11.111968516089204,
+   "n_books": 13,
+   "two_sided_ct": 10,
+   "two_sided_pct": 76.92307692307692,
+   "earnable_usd_day": 111.12,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "ladder",
+   "mutually_exclusive": false,
+   "strike_types": [
+    "greater"
+   ],
+   "category": "Economics",
+   "dark": false,
+   "book_err": 0,
+   "two_detail": [
+    {
+     "ticker": "KXMUSKNW-26JUL31-T700",
+     "usd_day": 11.112,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1100",
+     "usd_day": 11.112,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1050",
+     "usd_day": 11.112,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1000",
+     "usd_day": 11.112,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T900",
+     "usd_day": 11.112,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T750",
+     "usd_day": 11.112,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1150",
+     "usd_day": 11.112,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T800",
+     "usd_day": 11.112,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1250",
+     "usd_day": 11.112,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": false,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1300",
+     "usd_day": 11.112,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": false,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T850",
+     "usd_day": 11.112,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1200",
+     "usd_day": 11.112,
+     "two_sided": false,
+     "target": 1000.0,
+     "yes_pass": false,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T950",
+     "usd_day": 11.112,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    }
+   ]
+  },
+  {
+   "series": "KXCHIPBURRITO",
+   "active_progs": 6,
+   "raw_progs": 6,
+   "dropped_late_life": 0,
+   "best_usd_day": 6.624039744238465,
+   "series_usd_day": 39.74423846543079,
+   "median_usd_day": 6.624039744238465,
+   "n_books": 6,
+   "two_sided_ct": 6,
+   "two_sided_pct": 100.0,
+   "earnable_usd_day": 39.744,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "ladder",
+   "mutually_exclusive": false,
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "category": "Economics",
+   "dark": false,
+   "book_err": 0,
+   "two_detail": [
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.78",
+     "usd_day": 6.624,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.80",
+     "usd_day": 6.624,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.75",
+     "usd_day": 6.624,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.79",
+     "usd_day": 6.624,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.76",
+     "usd_day": 6.624,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.77",
+     "usd_day": 6.624,
+     "two_sided": true,
+     "target": 1000.0,
+     "yes_pass": true,
+     "no_pass": true
+    }
+   ]
+  },
+  {
+   "series": "KXTRUMPENDORSEMENTS",
+   "active_progs": 7,
+   "raw_progs": 7,
+   "dropped_late_life": 0,
+   "best_usd_day": 20.658116657539562,
+   "series_usd_day": 144.60681660277695,
+   "median_usd_day": 20.658116657539562,
+   "n_books": 7,
+   "two_sided_ct": 7,
+   "two_sided_pct": 100.0,
+   "earnable_usd_day": 144.607,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "ladder",
+   "mutually_exclusive": false,
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "category": "Politics",
+   "dark": false,
+   "book_err": 0,
+   "two_detail": [
+    {
+     "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A20",
+     "usd_day": 20.658,
+     "two_sided": true,
+     "target": 300.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A5",
+     "usd_day": 20.658,
+     "two_sided": true,
+     "target": 300.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A10",
+     "usd_day": 20.658,
+     "two_sided": true,
+     "target": 300.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A3",
+     "usd_day": 20.658,
+     "two_sided": true,
+     "target": 300.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A15",
+     "usd_day": 20.658,
+     "two_sided": true,
+     "target": 300.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A50",
+     "usd_day": 20.658,
+     "two_sided": true,
+     "target": 300.0,
+     "yes_pass": true,
+     "no_pass": true
+    },
+    {
+     "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A25",
+     "usd_day": 20.658,
+     "two_sided": true,
+     "target": 300.0,
+     "yes_pass": true,
+     "no_pass": true
+    }
+   ]
+  },
+  {
+   "series": "KXGENERICBALLOTVOTEHUB",
+   "active_progs": 1,
+   "raw_progs": 1,
+   "dropped_late_life": 0,
+   "best_usd_day": 144.6229921378304,
+   "series_usd_day": 144.6229921378304,
+   "median_usd_day": 144.6229921378304,
+   "n_books": 1,
+   "two_sided_ct": 1,
+   "two_sided_pct": 100.0,
+   "earnable_usd_day": 144.623,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "structure": "ladder",
+   "mutually_exclusive": false,
+   "strike_types": [
+    "greater"
+   ],
+   "category": "Elections",
+   "dark": false,
+   "book_err": 0,
+   "two_detail": [
+    {
+     "ticker": "KXGENERICBALLOTVOTEHUB-26JUL24-T5.2",
+     "usd_day": 144.623,
+     "two_sided": true,
+     "target": 300.0,
+     "yes_pass": true,
+     "no_pass": true
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,855 @@
+{
+  "now": "2026-07-23T19:14:24.444741+00:00",
+  "n_active_programs": 2345,
+  "n_eligible": 120,
+  "drops": {
+    "allowlist": 2225
+  },
+  "eligible_by_series": {
+    "KXAAAGASD": 7,
+    "KXB200MON": 40,
+    "KXH100MON": 20,
+    "KXAAAGASW": 15,
+    "KXTRUMPENDORSEMENTS": 7,
+    "KXAMSAVO": 11,
+    "KXGENERICBALLOTVOTEHUB": 1,
+    "KXMUSKNW": 13,
+    "KXCHIPBURRITO": 6
+  },
+  "picked_total_usd_day": 1460.4281435002533,
+  "pure_total_usd_day": 2002.6798826121158,
+  "dilution_usd_day": 542.2517391118624,
+  "picked_dist": {
+    "KXAAAGASD": {
+      "slots": 5,
+      "usd_day": 941.1764705882354
+    },
+    "KXGENERICBALLOTVOTEHUB": {
+      "slots": 1,
+      "usd_day": 144.6229921378304
+    },
+    "KXTRUMPENDORSEMENTS": {
+      "slots": 5,
+      "usd_day": 103.29058328769781
+    },
+    "KXAMSAVO": {
+      "slots": 5,
+      "usd_day": 82.06063369044905
+    },
+    "KXAAAGASW": {
+      "slots": 5,
+      "usd_day": 76.88200747463961
+    },
+    "KXMUSKNW": {
+      "slots": 5,
+      "usd_day": 55.55984258044602
+    },
+    "KXCHIPBURRITO": {
+      "slots": 5,
+      "usd_day": 33.120198721192324
+    },
+    "KXB200MON": {
+      "slots": 5,
+      "usd_day": 13.175230566534912
+    },
+    "KXH100MON": {
+      "slots": 4,
+      "usd_day": 10.54018445322793
+    }
+  },
+  "pure_dist": {
+    "KXAAAGASD": {
+      "slots": 7,
+      "usd_day": 1317.6470588235295
+    },
+    "KXGENERICBALLOTVOTEHUB": {
+      "slots": 1,
+      "usd_day": 144.6229921378304
+    },
+    "KXTRUMPENDORSEMENTS": {
+      "slots": 7,
+      "usd_day": 144.60681660277695
+    },
+    "KXAMSAVO": {
+      "slots": 11,
+      "usd_day": 180.53339411898787
+    },
+    "KXAAAGASW": {
+      "slots": 14,
+      "usd_day": 215.26962092899095
+    }
+  },
+  "only_pure": [
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.125",
+      "series": "KXAAAGASD",
+      "usd_day": 188.23529411764707
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.130",
+      "series": "KXAAAGASD",
+      "usd_day": 188.23529411764707
+    },
+    {
+      "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A5",
+      "series": "KXTRUMPENDORSEMENTS",
+      "usd_day": 20.658116657539562
+    },
+    {
+      "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A50",
+      "series": "KXTRUMPENDORSEMENTS",
+      "usd_day": 20.658116657539562
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T1.30",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T1.40",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T1.50",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T1.60",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T1.70",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T1.80",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.080",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.100",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.120",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.140",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.160",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.180",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.200",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.220",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.240",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922
+    }
+  ],
+  "only_pick": [
+    {
+      "ticker": "KXMUSKNW-26JUL31-T1000",
+      "series": "KXMUSKNW",
+      "usd_day": 11.111968516089204
+    },
+    {
+      "ticker": "KXCHIPBURRITO-26AUG02-T9.75",
+      "series": "KXCHIPBURRITO",
+      "usd_day": 6.624039744238465
+    },
+    {
+      "ticker": "KXB200MON-26JUL31-3.460",
+      "series": "KXB200MON",
+      "usd_day": 2.6350461133069825
+    },
+    {
+      "ticker": "KXH100MON-26JUL31-1.960",
+      "series": "KXH100MON",
+      "usd_day": 2.6350461133069825
+    },
+    {
+      "ticker": "KXMUSKNW-26JUL31-T1050",
+      "series": "KXMUSKNW",
+      "usd_day": 11.111968516089204
+    },
+    {
+      "ticker": "KXCHIPBURRITO-26AUG02-T9.76",
+      "series": "KXCHIPBURRITO",
+      "usd_day": 6.624039744238465
+    },
+    {
+      "ticker": "KXB200MON-26JUL31-3.560",
+      "series": "KXB200MON",
+      "usd_day": 2.6350461133069825
+    },
+    {
+      "ticker": "KXH100MON-26JUL31-2.010",
+      "series": "KXH100MON",
+      "usd_day": 2.6350461133069825
+    },
+    {
+      "ticker": "KXMUSKNW-26JUL31-T1100",
+      "series": "KXMUSKNW",
+      "usd_day": 11.111968516089204
+    },
+    {
+      "ticker": "KXCHIPBURRITO-26AUG02-T9.77",
+      "series": "KXCHIPBURRITO",
+      "usd_day": 6.624039744238465
+    },
+    {
+      "ticker": "KXB200MON-26JUL31-3.660",
+      "series": "KXB200MON",
+      "usd_day": 2.6350461133069825
+    },
+    {
+      "ticker": "KXH100MON-26JUL31-2.060",
+      "series": "KXH100MON",
+      "usd_day": 2.6350461133069825
+    },
+    {
+      "ticker": "KXMUSKNW-26JUL31-T1150",
+      "series": "KXMUSKNW",
+      "usd_day": 11.111968516089204
+    },
+    {
+      "ticker": "KXCHIPBURRITO-26AUG02-T9.78",
+      "series": "KXCHIPBURRITO",
+      "usd_day": 6.624039744238465
+    },
+    {
+      "ticker": "KXB200MON-26JUL31-3.760",
+      "series": "KXB200MON",
+      "usd_day": 2.6350461133069825
+    },
+    {
+      "ticker": "KXH100MON-26JUL31-2.110",
+      "series": "KXH100MON",
+      "usd_day": 2.6350461133069825
+    },
+    {
+      "ticker": "KXMUSKNW-26JUL31-T1200",
+      "series": "KXMUSKNW",
+      "usd_day": 11.111968516089204
+    },
+    {
+      "ticker": "KXCHIPBURRITO-26AUG02-T9.79",
+      "series": "KXCHIPBURRITO",
+      "usd_day": 6.624039744238465
+    },
+    {
+      "ticker": "KXB200MON-26JUL31-3.860",
+      "series": "KXB200MON",
+      "usd_day": 2.6350461133069825
+    }
+  ],
+  "gas_eligible": 22,
+  "gas_two_sided": 9,
+  "gas_slots_picked_now": 10,
+  "gas_rows": [
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.120",
+      "usd_day": 188.23529411764707,
+      "two_sided": true,
+      "book": {
+        "ext_y": 7009.28,
+        "ext_n": 21907.6,
+        "target": 1000.0,
+        "best_y": 0.1,
+        "best_n": 0.89
+      }
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.110",
+      "usd_day": 188.23529411764707,
+      "two_sided": true,
+      "book": {
+        "ext_y": 17915.55,
+        "ext_n": 15387.300000000001,
+        "target": 1000.0,
+        "best_y": 0.51,
+        "best_n": 0.48
+      }
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.105",
+      "usd_day": 188.23529411764707,
+      "two_sided": true,
+      "book": {
+        "ext_y": 4874.7,
+        "ext_n": 9702.79,
+        "target": 1000.0,
+        "best_y": 0.8,
+        "best_n": 0.19
+      }
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.100",
+      "usd_day": 188.23529411764707,
+      "two_sided": false,
+      "book": {
+        "ext_y": 13817.0,
+        "ext_n": 0,
+        "target": 1000.0,
+        "best_y": 0.99,
+        "best_n": null
+      }
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.115",
+      "usd_day": 188.23529411764707,
+      "two_sided": true,
+      "book": {
+        "ext_y": 5051.0599999999995,
+        "ext_n": 18301.190000000002,
+        "target": 1000.0,
+        "best_y": 0.26,
+        "best_n": 0.72
+      }
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.130",
+      "usd_day": 188.23529411764707,
+      "two_sided": false,
+      "book": {
+        "ext_y": 0,
+        "ext_n": 15862.33,
+        "target": 1000.0,
+        "best_y": null,
+        "best_n": 0.98
+      }
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.125",
+      "usd_day": 188.23529411764707,
+      "two_sided": true,
+      "book": {
+        "ext_y": 2982.8,
+        "ext_n": 12780.37,
+        "target": 1000.0,
+        "best_y": 0.08,
+        "best_n": 0.91
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.200",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 0,
+        "ext_n": 36636.71,
+        "target": 1000.0,
+        "best_y": null,
+        "best_n": 0.99
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.180",
+      "usd_day": 15.376401494927922,
+      "two_sided": true,
+      "book": {
+        "ext_y": 4997.49,
+        "ext_n": 38561.12,
+        "target": 1000.0,
+        "best_y": 0.06,
+        "best_n": 0.93
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.260",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 0,
+        "ext_n": 35282.7,
+        "target": 1000.0,
+        "best_y": null,
+        "best_n": 0.99
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-3.980",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 38388.0,
+        "ext_n": 0,
+        "target": 1000.0,
+        "best_y": 0.99,
+        "best_n": null
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.060",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 20716.760000000002,
+        "ext_n": 0,
+        "target": 1000.0,
+        "best_y": 0.99,
+        "best_n": null
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.220",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 0,
+        "ext_n": 39333.770000000004,
+        "target": 1000.0,
+        "best_y": null,
+        "best_n": 0.99
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.140",
+      "usd_day": 15.376401494927922,
+      "two_sided": true,
+      "book": {
+        "ext_y": 9073.79,
+        "ext_n": 41351.47,
+        "target": 1000.0,
+        "best_y": 0.61,
+        "best_n": 0.38
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.000",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 20688.49,
+        "ext_n": 0,
+        "target": 1000.0,
+        "best_y": 0.99,
+        "best_n": null
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.080",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 41958.47,
+        "ext_n": 0,
+        "target": 1000.0,
+        "best_y": 0.99,
+        "best_n": null
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.120",
+      "usd_day": 15.376401494927922,
+      "two_sided": true,
+      "book": {
+        "ext_y": 4981.91,
+        "ext_n": 8981.119999999999,
+        "target": 1000.0,
+        "best_y": 0.94,
+        "best_n": 0.05
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.020",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 25847.18,
+        "ext_n": 0,
+        "target": 1000.0,
+        "best_y": 0.99,
+        "best_n": null
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.240",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 0,
+        "ext_n": 37687.0,
+        "target": 1000.0,
+        "best_y": null,
+        "best_n": 0.99
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.160",
+      "usd_day": 15.376401494927922,
+      "two_sided": true,
+      "book": {
+        "ext_y": 5174.61,
+        "ext_n": 44284.34,
+        "target": 1000.0,
+        "best_y": 0.18,
+        "best_n": 0.8
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.100",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 19359.39,
+        "ext_n": 0,
+        "target": 1000.0,
+        "best_y": 0.99,
+        "best_n": null
+      }
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.040",
+      "usd_day": 15.376401494927922,
+      "two_sided": false,
+      "book": {
+        "ext_y": 21936.059999999998,
+        "ext_n": 0,
+        "target": 1000.0,
+        "best_y": 0.99,
+        "best_n": null
+      }
+    }
+  ],
+  "r3_total_usd_day": 1605.7889016206127,
+  "r3_dilution_usd_day": 145.36075812035938,
+  "r3_dist": {
+    "KXAAAGASD": {
+      "slots": 5,
+      "usd_day": 941.1764705882354
+    },
+    "KXGENERICBALLOTVOTEHUB": {
+      "slots": 1,
+      "usd_day": 144.6229921378304
+    },
+    "KXTRUMPENDORSEMENTS": {
+      "slots": 7,
+      "usd_day": 144.60681660277695
+    },
+    "KXAMSAVO": {
+      "slots": 11,
+      "usd_day": 180.53339411898787
+    },
+    "KXAAAGASW": {
+      "slots": 4,
+      "usd_day": 61.50560597971169
+    },
+    "KXMUSKNW": {
+      "slots": 12,
+      "usd_day": 133.34362219307044
+    }
+  },
+  "picked_full": [
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.100",
+      "series": "KXAAAGASD",
+      "usd_day": 188.23529411764707,
+      "target": 1000.0,
+      "end": "2026-07-24T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXGENERICBALLOTVOTEHUB-26JUL24-T5.2",
+      "series": "KXGENERICBALLOTVOTEHUB",
+      "usd_day": 144.6229921378304,
+      "target": 300.0,
+      "end": "2026-07-24T13:59:00+00:00"
+    },
+    {
+      "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A10",
+      "series": "KXTRUMPENDORSEMENTS",
+      "usd_day": 20.658116657539562,
+      "target": 300.0,
+      "end": "2026-07-26T14:00:00+00:00"
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T0.80",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981,
+      "target": 1000.0,
+      "end": "2026-07-24T20:59:00+00:00"
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-3.980",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922,
+      "target": 1000.0,
+      "end": "2026-07-27T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXMUSKNW-26JUL31-T1000",
+      "series": "KXMUSKNW",
+      "usd_day": 11.111968516089204,
+      "target": 1000.0,
+      "end": "2026-07-31T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXCHIPBURRITO-26AUG02-T9.75",
+      "series": "KXCHIPBURRITO",
+      "usd_day": 6.624039744238465,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXB200MON-26JUL31-3.460",
+      "series": "KXB200MON",
+      "usd_day": 2.6350461133069825,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXH100MON-26JUL31-1.960",
+      "series": "KXH100MON",
+      "usd_day": 2.6350461133069825,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.105",
+      "series": "KXAAAGASD",
+      "usd_day": 188.23529411764707,
+      "target": 1000.0,
+      "end": "2026-07-24T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A15",
+      "series": "KXTRUMPENDORSEMENTS",
+      "usd_day": 20.658116657539562,
+      "target": 300.0,
+      "end": "2026-07-26T14:00:00+00:00"
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T0.90",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981,
+      "target": 1000.0,
+      "end": "2026-07-24T20:59:00+00:00"
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.000",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922,
+      "target": 1000.0,
+      "end": "2026-07-27T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXMUSKNW-26JUL31-T1050",
+      "series": "KXMUSKNW",
+      "usd_day": 11.111968516089204,
+      "target": 1000.0,
+      "end": "2026-07-31T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXCHIPBURRITO-26AUG02-T9.76",
+      "series": "KXCHIPBURRITO",
+      "usd_day": 6.624039744238465,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXB200MON-26JUL31-3.560",
+      "series": "KXB200MON",
+      "usd_day": 2.6350461133069825,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXH100MON-26JUL31-2.010",
+      "series": "KXH100MON",
+      "usd_day": 2.6350461133069825,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.110",
+      "series": "KXAAAGASD",
+      "usd_day": 188.23529411764707,
+      "target": 1000.0,
+      "end": "2026-07-24T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A20",
+      "series": "KXTRUMPENDORSEMENTS",
+      "usd_day": 20.658116657539562,
+      "target": 300.0,
+      "end": "2026-07-26T14:00:00+00:00"
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T1.00",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981,
+      "target": 1000.0,
+      "end": "2026-07-24T20:59:00+00:00"
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.020",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922,
+      "target": 1000.0,
+      "end": "2026-07-27T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXMUSKNW-26JUL31-T1100",
+      "series": "KXMUSKNW",
+      "usd_day": 11.111968516089204,
+      "target": 1000.0,
+      "end": "2026-07-31T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXCHIPBURRITO-26AUG02-T9.77",
+      "series": "KXCHIPBURRITO",
+      "usd_day": 6.624039744238465,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXB200MON-26JUL31-3.660",
+      "series": "KXB200MON",
+      "usd_day": 2.6350461133069825,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXH100MON-26JUL31-2.060",
+      "series": "KXH100MON",
+      "usd_day": 2.6350461133069825,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.115",
+      "series": "KXAAAGASD",
+      "usd_day": 188.23529411764707,
+      "target": 1000.0,
+      "end": "2026-07-24T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A25",
+      "series": "KXTRUMPENDORSEMENTS",
+      "usd_day": 20.658116657539562,
+      "target": 300.0,
+      "end": "2026-07-26T14:00:00+00:00"
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T1.10",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981,
+      "target": 1000.0,
+      "end": "2026-07-24T20:59:00+00:00"
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.040",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922,
+      "target": 1000.0,
+      "end": "2026-07-27T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXMUSKNW-26JUL31-T1150",
+      "series": "KXMUSKNW",
+      "usd_day": 11.111968516089204,
+      "target": 1000.0,
+      "end": "2026-07-31T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXCHIPBURRITO-26AUG02-T9.78",
+      "series": "KXCHIPBURRITO",
+      "usd_day": 6.624039744238465,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXB200MON-26JUL31-3.760",
+      "series": "KXB200MON",
+      "usd_day": 2.6350461133069825,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXH100MON-26JUL31-2.110",
+      "series": "KXH100MON",
+      "usd_day": 2.6350461133069825,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL24-4.120",
+      "series": "KXAAAGASD",
+      "usd_day": 188.23529411764707,
+      "target": 1000.0,
+      "end": "2026-07-24T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A3",
+      "series": "KXTRUMPENDORSEMENTS",
+      "usd_day": 20.658116657539562,
+      "target": 300.0,
+      "end": "2026-07-26T14:00:00+00:00"
+    },
+    {
+      "ticker": "KXAMSAVO-26JUL24-T1.20",
+      "series": "KXAMSAVO",
+      "usd_day": 16.41212673808981,
+      "target": 1000.0,
+      "end": "2026-07-24T20:59:00+00:00"
+    },
+    {
+      "ticker": "KXAAAGASW-26JUL27-4.060",
+      "series": "KXAAAGASW",
+      "usd_day": 15.376401494927922,
+      "target": 1000.0,
+      "end": "2026-07-27T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXMUSKNW-26JUL31-T1200",
+      "series": "KXMUSKNW",
+      "usd_day": 11.111968516089204,
+      "target": 1000.0,
+      "end": "2026-07-31T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXCHIPBURRITO-26AUG02-T9.79",
+      "series": "KXCHIPBURRITO",
+      "usd_day": 6.624039744238465,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    },
+    {
+      "ticker": "KXB200MON-26JUL31-3.860",
+      "series": "KXB200MON",
+      "usd_day": 2.6350461133069825,
+      "target": 1000.0,
+      "end": "2026-08-01T03:59:00+00:00"
+    }
+  ]
+}

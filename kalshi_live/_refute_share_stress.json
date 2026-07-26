@@ -1,0 +1,145 @@
+{
+ "KXH200MS": {
+  "n_strikes_scored": 4,
+  "rows": [
+   {
+    "ticker": "KXH200MS-26JUL-4.500",
+    "best_yes": 0.4,
+    "base": 0.1422,
+    "k2": 0.0798,
+    "k3": 0.0557,
+    "keep2_pct": 56.1,
+    "keep3_pct": 39.2
+   },
+   {
+    "ticker": "KXH200MS-27APR-6.000",
+    "best_yes": 0.36,
+    "base": 0.1061,
+    "k2": 0.0563,
+    "k3": 0.0383,
+    "keep2_pct": 53.0,
+    "keep3_pct": 36.1
+   },
+   {
+    "ticker": "KXH200MS-27MAR-6.000",
+    "best_yes": 0.36,
+    "base": 0.1009,
+    "k2": 0.0535,
+    "k3": 0.0364,
+    "keep2_pct": 53.1,
+    "keep3_pct": 36.1
+   },
+   {
+    "ticker": "KXH200MS-27JUL-4.500",
+    "best_yes": 0.46,
+    "base": 0.0909,
+    "k2": 0.0485,
+    "k3": 0.0331,
+    "keep2_pct": 53.4,
+    "keep3_pct": 36.4
+   }
+  ],
+  "keep2_frac": 0.5411,
+  "keep3_frac": 0.3715,
+  "base_reward_usd_day": 0.19,
+  "reward_k2_usd_day": 0.1028,
+  "reward_k3_usd_day": 0.0706
+ },
+ "KXB200MON": {
+  "n_strikes_scored": 4,
+  "rows": [
+   {
+    "ticker": "KXB200MON-26JUL31-6.760",
+    "best_yes": 0.44,
+    "base": 0.1426,
+    "k2": 0.0772,
+    "k3": 0.0529,
+    "keep2_pct": 54.1,
+    "keep3_pct": 37.1
+   },
+   {
+    "ticker": "KXB200MON-26JUL31-6.560",
+    "best_yes": 0.57,
+    "base": 0.1365,
+    "k2": 0.0737,
+    "k3": 0.0505,
+    "keep2_pct": 54.0,
+    "keep3_pct": 37.0
+   },
+   {
+    "ticker": "KXB200MON-26JUL31-6.660",
+    "best_yes": 0.52,
+    "base": 0.1168,
+    "k2": 0.062,
+    "k3": 0.0422,
+    "keep2_pct": 53.1,
+    "keep3_pct": 36.1
+   },
+   {
+    "ticker": "KXB200MON-26JUL31-6.960",
+    "best_yes": 0.32,
+    "base": 0.0902,
+    "k2": 0.0478,
+    "k3": 0.0325,
+    "keep2_pct": 53.0,
+    "keep3_pct": 36.1
+   }
+  ],
+  "keep2_frac": 0.5363,
+  "keep3_frac": 0.3665,
+  "base_reward_usd_day": 0.21,
+  "reward_k2_usd_day": 0.1126,
+  "reward_k3_usd_day": 0.077
+ },
+ "KXB200MS": {
+  "n_strikes_scored": 4,
+  "rows": [
+   {
+    "ticker": "KXB200MS-26AUG-6.000",
+    "best_yes": 0.69,
+    "base": 0.452,
+    "k2": 0.3385,
+    "k3": 0.2744,
+    "keep2_pct": 74.9,
+    "keep3_pct": 60.7
+   },
+   {
+    "ticker": "KXB200MS-26AUG-5.500",
+    "best_yes": 0.77,
+    "base": 0.1004,
+    "k2": 0.0529,
+    "k3": 0.0359,
+    "keep2_pct": 52.7,
+    "keep3_pct": 35.8
+   },
+   {
+    "ticker": "KXB200MS-26AUG-7.000",
+    "best_yes": 0.4,
+    "base": 0.0818,
+    "k2": 0.0428,
+    "k3": 0.029,
+    "keep2_pct": 52.4,
+    "keep3_pct": 35.5
+   },
+   {
+    "ticker": "KXB200MS-26OCT-6.000",
+    "best_yes": 0.59,
+    "base": 0.0807,
+    "k2": 0.0421,
+    "k3": 0.0284,
+    "keep2_pct": 52.1,
+    "keep3_pct": 35.2
+   }
+  ],
+  "keep2_frac": 0.6664,
+  "keep3_frac": 0.5145,
+  "base_reward_usd_day": 0.12,
+  "reward_k2_usd_day": 0.08,
+  "reward_k3_usd_day": 0.0617
+ },
+ "_basket": {
+  "reward_base": 0.52,
+  "reward_k2": 0.2954,
+  "reward_k3": 0.2093
+ }
+}

@@ -1,0 +1,328 @@
+SKEW COST STUDY - reward cost of moving a quote off reference
+generated 2026-07-23T16:43:51.340319+00:00
+scoring core: scripts/maker_kalshi_recorder.py (qualifying_walk / side_share), unmodified
+deployed shape assumed: JOIN 20 ct/side, MIN_QUOTE_CT 2, tick $0.01
+
+
+##############################################################################################
+# FROZEN dataset (concentration_samples.jsonl)
+# 27 snapshots 2026-07-23T02:25:02Z..2026-07-23T02:48:36Z . 353 contract-snapshots
+# series {'KXAAAGASD': 189, 'KXAAAGASW': 164} . DF {0.5: 353} . Target {1000.0: 353}
+##############################################################################################
+
+==============================================================================================
+Q1  THE DF CLIFF - FROZEN dataset (concentration_samples.jsonl)
+==============================================================================================
+  population: 706 quotable contract-sides over 27 snapshots; 657 earn > 0 at reference (93.1%).
+  The other 49 are R3 failures at reference already (book misses Target Size) - skew is irrelevant there.
+
+  theory: DF=0.50 -> each tick should multiply credit by 0.50 exactly.
+
+   N  mean ratio   median   ZEROED    ~0.50    >0.50   other
+  -- ----------- -------- -------- -------- -------- -------
+   1      0.4571   0.5148  117/657      140      400       0
+   2      0.2255   0.2613  168/657       28      461       0
+   3      0.1092   0.1316  213/657        0      444       0
+   4      0.0535   0.0660  240/657        0      417       0
+
+  MECHANISM - is the zero explained by 'reference level alone meets Target Size'?
+    depth AT reference >= Target Size : 117/657 = 17.8%
+    1-tick skew ZEROES our credit     : 117/657 = 17.8%
+    both together                     : 117   (zeroed but ref<target: 0)
+
+  SURVIVAL - how many ticks of skew before credit hits zero:
+    dies at N=1                117   17.8%
+    dies at N=2                 51    7.8%
+    dies at N=3                 45    6.8%
+    dies at N=4                 27    4.1%
+    survives all 4             417   63.5%
+
+==============================================================================================
+Q1b  WHAT THE CLIFF COSTS IN DOLLARS - FROZEN dataset (concentration_samples.jsonl)
+==============================================================================================
+  Whole-footprint $/day, 20 ct/side, both sides skewed N ticks.
+  (R2 $1.00 floor applied to the Time-Period payout before the $/day normalisation.)
+
+   N  $/day raw  $/day R2-floored    vs N=0  theory DF^N
+  -- ---------- ----------------- --------- ------------
+   0     140.59            139.50     1.000        1.000
+   1      80.20             80.20     0.570        0.500
+   2      43.71             43.62     0.311        0.250
+   3      22.93             21.64     0.163        0.125
+   4      11.73              9.41     0.083        0.062
+
+  contracts scored: 14
+
+==============================================================================================
+Q3  ASYMMETRIC CONTROL - keep the reducing side at reference - FROZEN dataset (concentration_samples.jsonl)
+==============================================================================================
+  Baseline = both sides 20 ct AT reference. Reported as the fraction of
+  baseline snapshot score retained (score = yes_share + no_share, R4).
+
+  policy                                        reward kept  reward lost
+  -------------------------------------------- ------------  -----------
+  both sides at reference (baseline)                  1.000        0.000
+  (b) accumulating PULLED (0 ct)                      0.500        0.500
+  (c) accumulating floored 2 ct at ref                0.562        0.438
+  (c) accumulating floored 5 ct at ref                0.648        0.352
+  (c) accumulating floored 10 ct at ref               0.776        0.224
+  (d) accumulating skewed 1t only                     0.717        0.283
+  (d) accumulating skewed 2t only                     0.615        0.385
+  (d) accumulating skewed 3t only                     0.557        0.443
+  (d) accumulating skewed 4t only                     0.528        0.472
+  (a) symmetric skew 1t                               0.435        0.565
+  (a) symmetric skew 2t                               0.229        0.771
+  (a) symmetric skew 3t                               0.114        0.886
+  (a) symmetric skew 4t                               0.056        0.944
+
+  n = 353 two-sided contract-snapshots (each scored under both accumulating-side assignments).
+  Note the accumulating side is worth 0.500 of the baseline on its own - pulling it cannot cost more than that.
+
+==============================================================================================
+Q5  WHAT THE DEPLOYED THROTTLE COSTS - FROZEN dataset (concentration_samples.jsonl)
+==============================================================================================
+  Accumulating side only (the reducing side stays at reference either way).
+  Reported as the fraction of that side's AT-REFERENCE credit retained.
+
+  |inv| ct  over  size |  SMART=0 (LIVE)   SMART=1  size-only@ref |  SMART gain
+  -------- ----- ----- | --------------- --------- -------------- | -----------
+        16  0.02    19 |           0.437     0.597          0.957 |      36.7%
+        20  0.11    17 |           0.396     0.530          0.870 |      33.8%
+        30  0.33    13 |           0.311     0.383          0.689 |      23.0%
+        45  0.67     6 |           0.152     0.170          0.343 |      11.8%
+        59  0.98     2 |           0.053     0.071          0.121 |      34.0%
+
+  n = 657 scorable contract-sides per row.
+  'size-only@ref' = same shrink, NO price step - the pure-size alternative.
+
+==============================================================================================
+Q4  SIZE vs PRICE - cost per unit of inventory control - FROZEN dataset (concentration_samples.jsonl)
+==============================================================================================
+
+  REWARD SIDE (measured, n=657 contract-sides):
+    lever                               reward kept
+    ---------------------------------- ------------
+    size 20 ct at reference (base)            1.000
+    size 15 ct at reference                   0.781
+    size 10 ct at reference                   0.546
+    size 5 ct at reference                    0.290
+    size 2 ct at reference                    0.121
+    size 1 ct at reference                    0.062
+    20 ct at reference - 1 tick               0.457
+    20 ct at reference - 2 tick               0.225
+    20 ct at reference - 3 tick               0.109
+    20 ct at reference - 4 tick               0.053
+
+  FILL SIDE (modelled). Taker-order size distribution from the public tape:
+    n = 2439 taker orders across 22 allowlist contracts
+    median 12 ct . mean 101 ct . p90 186 ct . max 12243 ct
+    penetration depth of a taker order (ticks below the touch it consumed):
+      0 ticks:  1984 =  81.3%
+      1 tick :   193 =   7.9%
+      2 ticks:    92 =   3.8%
+      3 ticks:    53 =   2.2%
+      4 ticks:    29 =   1.2%
+      5 ticks:    23 =   0.9%
+      >= 1 tick deep: 455/2439 = 18.7% of taker orders
+
+  EXPECTED ADVERSE FILLS per taker order hitting our side
+    fill = min(our_size, max(0, sweep_vol - external_depth_ahead_of_us))
+    averaged over every (contract-side x taker order) pair [657 x 2439 = 1,602,423]
+
+    lever                               fills/order   control  reward kept  cost/control
+    ---------------------------------- ------------ --------- ------------ -------------
+    20 ct at reference (base)                4.5856     0.000        1.000             -
+    size 15 ct at reference                  3.6113     0.212        0.781         1.030
+    size 10 ct at reference                  2.5488     0.444        0.546         1.021
+    size 5 ct at reference                   1.3684     0.702        0.290         1.012
+    size 2 ct at reference                   0.5775     0.874        0.121         1.005
+    size 1 ct at reference                   0.2944     0.936        0.062         1.003
+    20 ct at reference - 1 tick              2.7917     0.391        0.457         1.388
+    20 ct at reference - 2 tick              2.1866     0.523        0.225         1.480
+    20 ct at reference - 3 tick              1.7248     0.624        0.109         1.428
+    20 ct at reference - 4 tick              1.4123     0.692        0.053         1.368
+
+    cost/control = (reward lost) / (fill reduction). LOWER IS BETTER.
+    A value of 1.00 means the lever costs exactly as much reward as the inventory it stops.
+
+
+##############################################################################################
+# FRESH dataset (skew_samples.jsonl)
+# 14 snapshots 2026-07-23T16:35:01Z..2026-07-23T16:42:39Z . 308 contract-snapshots
+# series {'KXAAAGASD': 98, 'KXAAAGASW': 210} . DF {0.5: 308} . Target {1000.0: 308}
+##############################################################################################
+
+==============================================================================================
+Q1  THE DF CLIFF - FRESH dataset (skew_samples.jsonl)
+==============================================================================================
+  population: 470 quotable contract-sides over 14 snapshots; 469 earn > 0 at reference (99.8%).
+  The other 1 are R3 failures at reference already (book misses Target Size) - skew is irrelevant there.
+
+  theory: DF=0.50 -> each tick should multiply credit by 0.50 exactly.
+
+   N  mean ratio   median   ZEROED    ~0.50    >0.50   other
+  -- ----------- -------- -------- -------- -------- -------
+   1      0.3201   0.5083  189/469       56      224       0
+   2      0.1541   0.2554  213/469       18      238       0
+   3      0.0733   0.1276  234/469        0      235       0
+   4      0.0333   0.0000  260/469        0      204       5
+
+  MECHANISM - is the zero explained by 'reference level alone meets Target Size'?
+    depth AT reference >= Target Size : 189/469 = 40.3%
+    1-tick skew ZEROES our credit     : 189/469 = 40.3%
+    both together                     : 189   (zeroed but ref<target: 0)
+
+  SURVIVAL - how many ticks of skew before credit hits zero:
+    dies at N=1                189   40.3%
+    dies at N=2                 24    5.1%
+    dies at N=3                 21    4.5%
+    dies at N=4                 26    5.5%
+    survives all 4             209   44.6%
+
+==============================================================================================
+Q1b  WHAT THE CLIFF COSTS IN DOLLARS - FRESH dataset (skew_samples.jsonl)
+==============================================================================================
+  Whole-footprint $/day, 20 ct/side, both sides skewed N ticks.
+  (R2 $1.00 floor applied to the Time-Period payout before the $/day normalisation.)
+
+   N  $/day raw  $/day R2-floored    vs N=0  theory DF^N
+  -- ---------- ----------------- --------- ------------
+   0     150.53            149.97     1.000        1.000
+   1      83.77             83.77     0.557        0.500
+   2      44.66             44.55     0.297        0.250
+   3      23.13             20.12     0.154        0.125
+   4      11.49              8.57     0.076        0.062
+
+  contracts scored: 22
+
+==============================================================================================
+Q3  ASYMMETRIC CONTROL - keep the reducing side at reference - FRESH dataset (skew_samples.jsonl)
+==============================================================================================
+  Baseline = both sides 20 ct AT reference. Reported as the fraction of
+  baseline snapshot score retained (score = yes_share + no_share, R4).
+
+  policy                                        reward kept  reward lost
+  -------------------------------------------- ------------  -----------
+  both sides at reference (baseline)                  1.000        0.000
+  (b) accumulating PULLED (0 ct)                      0.500        0.500
+  (c) accumulating floored 2 ct at ref                0.559        0.441
+  (c) accumulating floored 5 ct at ref                0.641        0.359
+  (c) accumulating floored 10 ct at ref               0.769        0.231
+  (d) accumulating skewed 1t only                     0.736        0.264
+  (d) accumulating skewed 2t only                     0.622        0.378
+  (d) accumulating skewed 3t only                     0.561        0.439
+  (d) accumulating skewed 4t only                     0.528        0.472
+  (a) symmetric skew 1t                               0.473        0.527
+  (a) symmetric skew 2t                               0.244        0.756
+  (a) symmetric skew 3t                               0.122        0.878
+  (a) symmetric skew 4t                               0.056        0.944
+
+  n = 162 two-sided contract-snapshots (each scored under both accumulating-side assignments).
+  Note the accumulating side is worth 0.500 of the baseline on its own - pulling it cannot cost more than that.
+
+==============================================================================================
+Q5  WHAT THE DEPLOYED THROTTLE COSTS - FRESH dataset (skew_samples.jsonl)
+==============================================================================================
+  Accumulating side only (the reducing side stays at reference either way).
+  Reported as the fraction of that side's AT-REFERENCE credit retained.
+
+  |inv| ct  over  size |  SMART=0 (LIVE)   SMART=1  size-only@ref |  SMART gain
+  -------- ----- ----- | --------------- --------- -------------- | -----------
+        16  0.02    19 |           0.305     0.668          0.954 |     118.8%
+        20  0.11    17 |           0.275     0.578          0.860 |     109.8%
+        30  0.33    13 |           0.214     0.376          0.669 |      75.5%
+        45  0.67     6 |           0.102     0.142          0.319 |      39.8%
+        59  0.98     2 |           0.035     0.075          0.109 |     116.8%
+
+  n = 469 scorable contract-sides per row.
+  'size-only@ref' = same shrink, NO price step - the pure-size alternative.
+
+==============================================================================================
+Q4  SIZE vs PRICE - cost per unit of inventory control - FRESH dataset (skew_samples.jsonl)
+==============================================================================================
+
+  REWARD SIDE (measured, n=469 contract-sides):
+    lever                               reward kept
+    ---------------------------------- ------------
+    size 20 ct at reference (base)            1.000
+    size 15 ct at reference                   0.765
+    size 10 ct at reference                   0.520
+    size 5 ct at reference                    0.267
+    size 2 ct at reference                    0.109
+    size 1 ct at reference                    0.055
+    20 ct at reference - 1 tick               0.320
+    20 ct at reference - 2 tick               0.154
+    20 ct at reference - 3 tick               0.073
+    20 ct at reference - 4 tick               0.033
+
+  FILL SIDE (modelled). Taker-order size distribution from the public tape:
+    n = 2439 taker orders across 22 allowlist contracts
+    median 12 ct . mean 101 ct . p90 186 ct . max 12243 ct
+    penetration depth of a taker order (ticks below the touch it consumed):
+      0 ticks:  1984 =  81.3%
+      1 tick :   193 =   7.9%
+      2 ticks:    92 =   3.8%
+      3 ticks:    53 =   2.2%
+      4 ticks:    29 =   1.2%
+      5 ticks:    23 =   0.9%
+      >= 1 tick deep: 455/2439 = 18.7% of taker orders
+
+  EXPECTED ADVERSE FILLS per taker order hitting our side
+    fill = min(our_size, max(0, sweep_vol - external_depth_ahead_of_us))
+    averaged over every (contract-side x taker order) pair [469 x 2439 = 1,143,891]
+
+    lever                               fills/order   control  reward kept  cost/control
+    ---------------------------------- ------------ --------- ------------ -------------
+    20 ct at reference (base)                2.9878     0.000        1.000             -
+    size 15 ct at reference                  2.3354     0.218        0.765         1.077
+    size 10 ct at reference                  1.6327     0.454        0.520         1.058
+    size 5 ct at reference                   0.8645     0.711        0.267         1.031
+    size 2 ct at reference                   0.3594     0.880        0.109         1.013
+    size 1 ct at reference                   0.1822     0.939        0.055         1.007
+    20 ct at reference - 1 tick              1.7642     0.410        0.320         1.660
+    20 ct at reference - 2 tick              1.0731     0.641        0.154         1.320
+    20 ct at reference - 3 tick              0.7462     0.750        0.073         1.235
+    20 ct at reference - 4 tick              0.5413     0.819        0.033         1.181
+
+    cost/control = (reward lost) / (fill reduction). LOWER IS BETTER.
+    A value of 1.00 means the lever costs exactly as much reward as the inventory it stops.
+
+==============================================================================================
+Q2  BREAKEVEN - how much adverse selection must a tick of skew prevent?
+==============================================================================================
+
+  ADVERSE SELECTION from our own receipts (kalshi_transactions_2026-07-23.csv, trades 07-20..22):
+    slice                   trades  contracts      P&L $  $/contract  % notional
+    ---------------------- ------- ---------- ---------- ----------- -----------
+    ALL all                    244       1470     -77.41     -0.0527      -15.42
+    ALL maker-only             175       1048     -40.88     -0.0390      -10.54
+    ALL maker 07-21..22        159        971     -35.87     -0.0369      -10.03
+    GAS all                    130        652      -4.36     -0.0067       -1.63
+    GAS maker-only             110        558      -2.13     -0.0038       -0.90
+    GAS maker 07-21..22         99        493       0.25      0.0005        0.12
+    TEMP all                   114        818     -73.05     -0.0893      -31.24
+    TEMP maker-only             65        490     -38.75     -0.0792      -25.77
+    TEMP maker 07-21..22        60        477     -36.12     -0.0756      -25.32
+
+    !! 'all' includes the 07-20 operator-directed IOC flatten (canon ?M13);
+      'maker-only' (zero fees both legs) is the strategy's own steady state.
+
+  REWARD COST of skew, whole footprint (22 contracts, measured above):
+    both sides at reference        $150.53/day
+    both sides 1 tick back         $83.77/day   (-$66.76/day, -44.3%)
+    ONE side 1 tick back           $117.15/day  (-$33.38/day, R4 additivity)
+
+  BREAKEVEN - contracts of adverse fill a 1-tick skew must prevent PER DAY
+  to pay for itself, at each measured adverse-selection rate:
+    adverse rate used                   $/contract   ct/day (1 side)   ct/day (both)
+    ---------------------------------- ----------- ----------------- ---------------
+    GAS maker 07-21..22                     0.0005  n/a (not a loss)             n/a
+    GAS maker-only                         -0.0038            8747.4         17494.7
+    GAS all                                -0.0067            4989.7          9979.3
+    TEMP maker 07-21..22                   -0.0756             441.3           882.6
+    TEMP maker-only                        -0.0792             421.6           843.3
+    TEMP all                               -0.0893             373.7           747.4
+    ALL maker 07-21..22                    -0.0369             903.7          1807.4
+    ALL maker-only                         -0.0390             855.4          1710.8
+
+    For scale: our ENTIRE export is 1470 contracts over 3 days = 490 ct/day across the whole book.

@@ -1,0 +1,270 @@
+{
+ "source": "2026-07-23T17:06:04.360224+00:00",
+ "baskets": [
+  {
+   "name": "A. gas only (today's earner)",
+   "K": 7,
+   "capital": 47.95714285714286,
+   "cap_day": 75.0956639064761,
+   "eff": 1.5658911151186556,
+   "mix": {
+    "KXAAAGASD": {
+     "n": 6,
+     "cap_day": 75.0956639064761,
+     "capital": 45.7
+    },
+    "KXAAAGASW": {
+     "n": 1,
+     "cap_day": 0.0,
+     "capital": 2.2571428571428576
+    }
+   }
+  },
+  {
+   "name": "B. gas + ALL structurally-safe",
+   "K": 10,
+   "capital": 84.51428571428572,
+   "cap_day": 97.50126154002272,
+   "eff": 1.1536660425628111,
+   "mix": {
+    "KXAAAGASD": {
+     "n": 6,
+     "cap_day": 75.0956639064761,
+     "capital": 45.7
+    },
+    "KXNETFLIXTOPVIEWSMOVIE": {
+     "n": 1,
+     "cap_day": 12.715014793464514,
+     "capital": 13.728571428571431
+    },
+    "KXACTBLUETOP": {
+     "n": 1,
+     "cap_day": 3.780937502183359,
+     "capital": 8.7
+    },
+    "KXEOWEEK": {
+     "n": 1,
+     "cap_day": 5.599036455803831,
+     "capital": 15.0
+    },
+    "KXTOPMODEL": {
+     "n": 1,
+     "cap_day": 0.3106088820949038,
+     "capital": 1.385714285714286
+    }
+   }
+  },
+  {
+   "name": "C. survivors WITHOUT gas",
+   "K": 10,
+   "capital": 83.94285714285714,
+   "cap_day": 34.12446188074661,
+   "eff": 0.40652013813006516,
+   "mix": {
+    "KXNETFLIXTOPVIEWSMOVIE": {
+     "n": 2,
+     "cap_day": 15.99606548797766,
+     "capital": 26.542857142857144
+    },
+    "KXACTBLUETOP": {
+     "n": 1,
+     "cap_day": 3.780937502183359,
+     "capital": 8.7
+    },
+    "KXEOWEEK": {
+     "n": 1,
+     "cap_day": 5.599036455803831,
+     "capital": 15.0
+    },
+    "KXTRUMPENDORSEMENTS": {
+     "n": 1,
+     "cap_day": 5.126065704044872,
+     "capital": 15.0
+    },
+    "KXNETFLIXTOPVIEWSTV": {
+     "n": 1,
+     "cap_day": 3.197694716246644,
+     "capital": 11.414285714285713
+    },
+    "KXTOPMODEL": {
+     "n": 1,
+     "cap_day": 0.3106088820949038,
+     "capital": 1.385714285714286
+    },
+    "KXAMSAVO": {
+     "n": 1,
+     "cap_day": 0.05064172255646453,
+     "capital": 1.2142857142857144
+    },
+    "KXTRUTHSOCIAL": {
+     "n": 2,
+     "cap_day": 0.06341140983887375,
+     "capital": 4.685714285714287
+    }
+   }
+  }
+ ],
+ "marginal": [
+  {
+   "series": "KXNETFLIXTOPVIEWSMOVIE",
+   "cap_day": 93.22675005199613,
+   "delta": 18.13108614552003,
+   "slots_taken": 3,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXTRUMPENDORSEMENTS",
+   "cap_day": 81.7274708058395,
+   "delta": 6.631806899363397,
+   "slots_taken": 2,
+   "structure": "SAFE-ABSTAIN"
+  },
+  {
+   "series": "KXEOWEEK",
+   "cap_day": 80.69470036227995,
+   "delta": 5.599036455803841,
+   "slots_taken": 1,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXAMSAVO",
+   "cap_day": 79.61628764195616,
+   "delta": 4.520623735480058,
+   "slots_taken": 4,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXACTBLUETOP",
+   "cap_day": 78.87660140865947,
+   "delta": 3.780937502183363,
+   "slots_taken": 1,
+   "structure": "SAFE-ABSTAIN"
+  },
+  {
+   "series": "KXNETFLIXTOPVIEWSTV",
+   "cap_day": 78.29335862272275,
+   "delta": 3.1976947162466445,
+   "slots_taken": 1,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXB200MON",
+   "cap_day": 77.7545574004827,
+   "delta": 2.658893494006591,
+   "slots_taken": 3,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXBIGBROTHERELIMINATION",
+   "cap_day": 77.65267323667634,
+   "delta": 2.5570093302002306,
+   "slots_taken": 2,
+   "structure": "SAFE-ABSTAIN"
+  },
+  {
+   "series": "KXNHSALES",
+   "cap_day": 77.56590115007633,
+   "delta": 2.4702372436002236,
+   "slots_taken": 3,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXMUSKNW",
+   "cap_day": 77.07674302668627,
+   "delta": 1.9810791202101683,
+   "slots_taken": 3,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXTRUTHSOCIAL",
+   "cap_day": 77.02373296477741,
+   "delta": 1.928069058301304,
+   "slots_taken": 3,
+   "structure": "SAFE-ABSTAIN"
+  },
+  {
+   "series": "KXRTX5090MON",
+   "cap_day": 76.64344859705912,
+   "delta": 1.5477846905830148,
+   "slots_taken": 4,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXFEDMENTION",
+   "cap_day": 76.25458927183723,
+   "delta": 1.158925365361128,
+   "slots_taken": 4,
+   "structure": "SAFE-ABSTAIN"
+  },
+  {
+   "series": "KXTRUMPACT",
+   "cap_day": 76.144127111551,
+   "delta": 1.0484632050748957,
+   "slots_taken": 1,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXH100MON",
+   "cap_day": 75.89858021125725,
+   "delta": 0.8029163047811494,
+   "slots_taken": 3,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXCHIPBURRITO",
+   "cap_day": 75.41883767306683,
+   "delta": 0.3231737665907275,
+   "slots_taken": 4,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXTOPMODEL",
+   "cap_day": 75.40627278857102,
+   "delta": 0.3106088820949111,
+   "slots_taken": 1,
+   "structure": "SAFE-ABSTAIN"
+  },
+  {
+   "series": "KXTRUMPUAP",
+   "cap_day": 75.14975873958366,
+   "delta": 0.05409483310755547,
+   "slots_taken": 1,
+   "structure": "SAFE-ABSTAIN"
+  },
+  {
+   "series": "KXLIUKELIMINATION",
+   "cap_day": 75.0956639064761,
+   "delta": 0.0,
+   "slots_taken": 0,
+   "structure": "SAFE-ABSTAIN"
+  },
+  {
+   "series": "KXUSFLYCAN",
+   "cap_day": 75.0956639064761,
+   "delta": 0.0,
+   "slots_taken": 0,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXTRUMPNOMNUM",
+   "cap_day": 75.0956639064761,
+   "delta": 0.0,
+   "slots_taken": 0,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXGENERICBALLOTVOTEHUB",
+   "cap_day": 75.0956639064761,
+   "delta": 0.0,
+   "slots_taken": 0,
+   "structure": "SAFE-LADDER"
+  },
+  {
+   "series": "KXUST10AD",
+   "cap_day": 75.0956639064761,
+   "delta": 0.0,
+   "slots_taken": 0,
+   "structure": "SAFE-LADDER"
+  }
+ ]
+}

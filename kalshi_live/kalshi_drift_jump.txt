@@ -1,0 +1,75 @@
+========================================================================================================
+1. THE 6 RUNOVER POSITIVES, MINUTE BY MINUTE
+   entry VWAP > 0.20, i.e. the ones a drift detector could physically catch
+========================================================================================================
+contract                        entry   total  worst 1m   jump   pre2   pre4   pre6  mins    pnl
+------------------------------------------------------------------------------------------------
+KXTEMPCHIH-26JUL2123-T70.99     0.630   0.625     0.380   0.61 +0.150 -0.390 -0.150    24  -9.90
+KXTEMPLAXH-26JUL2212-T71.99     0.485   0.335     0.380   1.13 +0.020 +0.020 +0.020    36  -7.20
+KXTEMPCHIH-26JUL2212-T69.99     0.715   0.700     0.265   0.38 +0.060 +0.010 -0.050    37  -7.19
+KXTEMPAUSH-26JUL2123-T82.99     0.375   0.370     0.490   1.32 +0.025 +0.055 +0.195    27  -1.76
+KXTEMPAUSH-26JUL2207-T77.99     0.465   0.275     0.310   1.13 -0.190 -0.140 +0.150    42  -0.92
+KXTEMPLAXH-26JUL2212-T70.99     0.765   0.760     0.590   0.78 -0.005 -0.250 +0.155    37  -0.67
+
+  median jump_share = 0.95  (1.00 = the whole loss arrived in a single minute)
+  positions where ONE minute carried >=50% of the move: 5/6
+  positions where ONE minute carried >=80% of the move: 3/6
+
+  WARNING AVAILABLE BEFORE THE KILLER MINUTE (6-min trailing move):
+    median +0.085   range [-0.150, +0.195]
+    D1's firing threshold is -0.080. Positions whose pre-killer 6-min
+    move already exceeded it: 3/6
+
+========================================================================================================
+2. JUMP SHARE BY GROUP — is gappiness what separates TEMP from GAS?
+========================================================================================================
+group                    n  med jump_share  med total drop  med worst 1m
+------------------------------------------------------------------------
+POS RUNOVER              6            0.95           0.497         0.380
+POS TAIL                15            1.00           0.090         0.070
+TEMP control            17            0.67           0.000         0.085
+GAS (all)               18            0.54           0.025         0.020
+
+========================================================================================================
+3. THE TAIL POSITIVES — was there anything to detect at all?
+   entry VWAP <= 0.20. These are cheap out-of-the-money tickets we were
+   sold. If total_drop is tiny, the position never moved: it just expired.
+========================================================================================================
+contract                        entry    end  total drop  mins     pnl
+----------------------------------------------------------------------
+KXTEMPCHIH-26JUL2207-T59.99     0.105  0.005       0.100    39   -2.80
+KXTEMPCHIH-26JUL2123-T69.99     0.195  0.005       0.190    26   -2.79
+KXTEMPCHIH-26JUL2211-T66.99     0.125  0.005       0.120    45   -2.40
+KXTEMPAUSH-26JUL2015-T92.99     0.105  0.005       0.100    33   -2.25
+KXTEMPCHIH-26JUL2208-T59.99     0.035  0.010       0.025    25   -2.20
+KXTEMPAUSH-26JUL2123-T84.99     0.070  0.025       0.045    24   -1.80
+KXTEMPNYCH-26JUL2212-T80.99     0.105  0.005       0.100    35   -1.61
+KXTEMPCHIH-26JUL2206-T58.99     0.015  0.005       0.010    21   -1.40
+KXTEMPDCH-26JUL2206-T71.99      0.035  0.005       0.030    27   -1.00
+KXAAAGASD-26JUL21-4.030         0.185  0.150       0.035   513   -0.94
+KXTEMPAUSH-26JUL2021-T89.99     0.145  0.005       0.140    40   -0.32
+KXTEMPCHIH-26JUL2206-T59.99     0.040  0.005       0.035    25   -0.25
+KXTEMPLAXH-26JUL2021-T74.99     0.095  0.005       0.090    15   -0.17
+KXTEMPAUSH-26JUL2212-T95.99     0.145  0.005       0.140    34   -0.17
+KXAAAGASD-26JUL22-4.055         0.145  0.065       0.080    81   -0.15
+
+  TAIL positives whose price never moved more than 0.05: 6/16
+  For those, there is NO adverse move in existence to detect. They are a
+  PRICING problem (we bought a 7c ticket worth less than 7c), not a
+  detection problem.
+
+========================================================================================================
+4. THE 07-23 GAS PAIR — both legs died. Different failure mode again.
+========================================================================================================
+  NOTE: these settlements post-date the 07-23 receipt CSV, so the lots are
+  NOT in the labelled test set and contribute to NO confusion matrix here.
+  KXAAAGASD-26JUL23-4.090  strike 4.09  result yes  settled at 4.091
+  KXAAAGASD-26JUL23-4.105  strike 4.105  result no  settled at 4.091
+  Settlement 4.091 landed BETWEEN strikes 4.090 and 4.105.
+  A long-4.105 leg and a short-4.090 leg BOTH expire worthless only when the
+  underlying pins between them. That is not adverse drift through a quote --
+  no directional detector can fire, because the underlying did not go
+  anywhere. It is a STRIKE-PAIRING geometry, addressed by strike selection
+  and by not holding both wings into settlement, not by drift detection.
+
+wrote C:\Users\samwa\AppData\Local\Temp\claude\C--lockes-picks-polymarket-ai-v2\02f270fe-27ab-42e6-8906-2ebc25f6df3b\scratchpad\kalshi-wt\kalshi_live\kalshi_drift_jump.json

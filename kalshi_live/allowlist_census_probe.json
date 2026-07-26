@@ -1,0 +1,199 @@
+{
+ "generated": "2026-07-23T19:14:12.015164+00:00",
+ "total_programs": 2345,
+ "per_series": {
+  "KXTEMPDCH": {
+   "raw": 0,
+   "liq": 0,
+   "hasfields": 0,
+   "post_gate": 0,
+   "example": null,
+   "n_usd": 0
+  },
+  "KXTEMPAUSH": {
+   "raw": 0,
+   "liq": 0,
+   "hasfields": 0,
+   "post_gate": 0,
+   "example": null,
+   "n_usd": 0
+  },
+  "KXTEMPLAXH": {
+   "raw": 0,
+   "liq": 0,
+   "hasfields": 0,
+   "post_gate": 0,
+   "example": null,
+   "n_usd": 0
+  },
+  "KXTEMPNYCH": {
+   "raw": 0,
+   "liq": 0,
+   "hasfields": 0,
+   "post_gate": 0,
+   "example": null,
+   "n_usd": 0
+  },
+  "KXTEMPCHIH": {
+   "raw": 0,
+   "liq": 0,
+   "hasfields": 0,
+   "post_gate": 0,
+   "example": null,
+   "n_usd": 0
+  },
+  "KXAAAGASD": {
+   "raw": 7,
+   "liq": 7,
+   "hasfields": 7,
+   "post_gate": 7,
+   "example": {
+    "ticker": "KXAAAGASD-26JUL24-4.120",
+    "target_size_fp": "1000.00",
+    "discount_factor_bps": 5000,
+    "period_reward": 1000000,
+    "start": "2026-07-23T15:14:00Z",
+    "end": "2026-07-24T03:59:00Z",
+    "days": 0.5312,
+    "usd_day": 188.2353
+   },
+   "n_usd": 7
+  },
+  "KXAAAGASW": {
+   "raw": 15,
+   "liq": 15,
+   "hasfields": 15,
+   "post_gate": 15,
+   "example": {
+    "ticker": "KXAAAGASW-26JUL27-4.200",
+    "target_size_fp": "1000.00",
+    "discount_factor_bps": 5000,
+    "period_reward": 1000000,
+    "start": "2026-07-20T15:54:00Z",
+    "end": "2026-07-27T03:59:00Z",
+    "days": 6.5035,
+    "usd_day": 15.3764
+   },
+   "n_usd": 15
+  },
+  "KXB200MON": {
+   "raw": 40,
+   "liq": 40,
+   "hasfields": 40,
+   "post_gate": 40,
+   "example": {
+    "ticker": "KXB200MON-26JUL31-3.860",
+    "target_size_fp": "1000.00",
+    "discount_factor_bps": 5000,
+    "period_reward": 250000,
+    "start": "2026-07-22T16:17:00Z",
+    "end": "2026-08-01T03:59:00Z",
+    "days": 9.4875,
+    "usd_day": 2.635
+   },
+   "n_usd": 40
+  },
+  "KXAMSAVO": {
+   "raw": 11,
+   "liq": 11,
+   "hasfields": 11,
+   "post_gate": 11,
+   "example": {
+    "ticker": "KXAMSAVO-26JUL24-T1.60",
+    "target_size_fp": "1000.00",
+    "discount_factor_bps": 5000,
+    "period_reward": 1000000,
+    "start": "2026-07-18T18:45:00Z",
+    "end": "2026-07-24T20:59:00Z",
+    "days": 6.0931,
+    "usd_day": 16.4121
+   },
+   "n_usd": 11
+  },
+  "KXH100MON": {
+   "raw": 20,
+   "liq": 20,
+   "hasfields": 20,
+   "post_gate": 20,
+   "example": {
+    "ticker": "KXH100MON-26JUL31-2.860",
+    "target_size_fp": "1000.00",
+    "discount_factor_bps": 5000,
+    "period_reward": 250000,
+    "start": "2026-07-22T16:17:00Z",
+    "end": "2026-08-01T03:59:00Z",
+    "days": 9.4875,
+    "usd_day": 2.635
+   },
+   "n_usd": 20
+  },
+  "KXMUSKNW": {
+   "raw": 13,
+   "liq": 13,
+   "hasfields": 13,
+   "post_gate": 13,
+   "example": {
+    "ticker": "KXMUSKNW-26JUL31-T700",
+    "target_size_fp": "1000.00",
+    "discount_factor_bps": 5000,
+    "period_reward": 2000000,
+    "start": "2026-07-13T04:01:00Z",
+    "end": "2026-07-31T03:59:00Z",
+    "days": 17.9986,
+    "usd_day": 11.112
+   },
+   "n_usd": 13
+  },
+  "KXCHIPBURRITO": {
+   "raw": 6,
+   "liq": 6,
+   "hasfields": 6,
+   "post_gate": 6,
+   "example": {
+    "ticker": "KXCHIPBURRITO-26AUG02-T9.78",
+    "target_size_fp": "1000.00",
+    "discount_factor_bps": 5000,
+    "period_reward": 2000000,
+    "start": "2026-07-01T23:21:00Z",
+    "end": "2026-08-01T03:59:00Z",
+    "days": 30.1931,
+    "usd_day": 6.624
+   },
+   "n_usd": 6
+  },
+  "KXTRUMPENDORSEMENTS": {
+   "raw": 7,
+   "liq": 7,
+   "hasfields": 7,
+   "post_gate": 7,
+   "example": {
+    "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A20",
+    "target_size_fp": "300.00",
+    "discount_factor_bps": 5000,
+    "period_reward": 1428571,
+    "start": "2026-07-19T16:01:57.971768Z",
+    "end": "2026-07-26T14:00:00Z",
+    "days": 6.9153,
+    "usd_day": 20.6581
+   },
+   "n_usd": 7
+  },
+  "KXGENERICBALLOTVOTEHUB": {
+   "raw": 1,
+   "liq": 1,
+   "hasfields": 1,
+   "post_gate": 1,
+   "example": {
+    "ticker": "KXGENERICBALLOTVOTEHUB-26JUL24-T5.2",
+    "target_size_fp": "300.00",
+    "discount_factor_bps": 5000,
+    "period_reward": 10000000,
+    "start": "2026-07-17T16:02:04.61865Z",
+    "end": "2026-07-24T13:59:00Z",
+    "days": 6.9145,
+    "usd_day": 144.623
+   },
+   "n_usd": 1
+  }
+ }
+}

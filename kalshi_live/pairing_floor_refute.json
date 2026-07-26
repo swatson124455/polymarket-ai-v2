@@ -1,0 +1,455 @@
+{
+ "KXTRUTHSOCIAL": [
+  {
+   "event": "KXTRUTHSOCIAL-26JUL25",
+   "code_nets(_is_ladder_event)": false,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXTRUTHSOCIAL-26JUL25-T80",
+    "strike": 80.0,
+    "strike_type": "less",
+    "title": "<80"
+   },
+   "long_no_leg": {
+    "ticker": "KXTRUTHSOCIAL-26JUL25-T240",
+    "strike": 240.0,
+    "strike_type": "greater",
+    "title": ">240"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 80.0",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "80.0 < outcome < 240.0",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "outcome > 240.0",
+     "payout_per_pair_usd": 0.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": "outcome > 240.0",
+   "FLOOR_CLAIM_FALSE": true
+  }
+ ],
+ "KXAPRPOTUS": [
+  {
+   "event": "KXAPRPOTUS-26JUL24",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXAPRPOTUS-26JUL24-40.2",
+    "strike": 40.2,
+    "strike_type": "less",
+    "title": "Below 40.2"
+   },
+   "long_no_leg": {
+    "ticker": "KXAPRPOTUS-26JUL24-41.9",
+    "strike": 41.9,
+    "strike_type": "greater",
+    "title": "Above 41.9"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 40.2",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "40.2 < outcome < 41.9",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "outcome > 41.9",
+     "payout_per_pair_usd": 0.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": "outcome > 41.9",
+   "FLOOR_CLAIM_FALSE": true
+  }
+ ],
+ "KXAAAGASD": [
+  {
+   "event": "KXAAAGASD-26JUL24",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXAAAGASD-26JUL24-4.050",
+    "strike": 4.05,
+    "strike_type": "greater",
+    "title": "Above 4.050"
+   },
+   "long_no_leg": {
+    "ticker": "KXAAAGASD-26JUL24-4.130",
+    "strike": 4.13,
+    "strike_type": "greater",
+    "title": "Above 4.130"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 4.05",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "4.05 < outcome < 4.13",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 4.13",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  }
+ ],
+ "KXNETFLIXTOPVIEWSMOVIE": [
+  {
+   "event": "KXNETFLIXTOPVIEWSMOVIE-26JUL27",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-6",
+    "strike": 6.0,
+    "strike_type": "greater_or_equal",
+    "title": "At least 6 million"
+   },
+   "long_no_leg": {
+    "ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-50",
+    "strike": 50.0,
+    "strike_type": "greater_or_equal",
+    "title": "At least 50 million"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 6.0",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "6.0 < outcome < 50.0",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 50.0",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  }
+ ],
+ "KXEOWEEK": [
+  {
+   "event": "KXEOWEEK-26JUL25",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXEOWEEK-26JUL25-0",
+    "strike": 0.0,
+    "strike_type": "greater",
+    "title": "Above 0"
+   },
+   "long_no_leg": {
+    "ticker": "KXEOWEEK-26JUL25-2",
+    "strike": 2.0,
+    "strike_type": "greater",
+    "title": "Above 2"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 0.0",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "0.0 < outcome < 2.0",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 2.0",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  }
+ ],
+ "KXAMSAVO": [
+  {
+   "event": "KXAMSAVO-26JUL24",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXAMSAVO-26JUL24-T0.80",
+    "strike": 0.8,
+    "strike_type": "greater",
+    "title": "Above $0.80"
+   },
+   "long_no_leg": {
+    "ticker": "KXAMSAVO-26JUL24-T1.80",
+    "strike": 1.8,
+    "strike_type": "greater",
+    "title": "Above $1.80"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 0.8",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "0.8 < outcome < 1.8",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 1.8",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  }
+ ],
+ "KXB200MON": [
+  {
+   "event": "KXB200MON-26JUL31",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXB200MON-26JUL31-3.460",
+    "strike": 3.46,
+    "strike_type": "greater",
+    "title": "Above $3.46"
+   },
+   "long_no_leg": {
+    "ticker": "KXB200MON-26JUL31-7.360",
+    "strike": 7.36,
+    "strike_type": "greater",
+    "title": "Above $7.36"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 3.46",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "3.46 < outcome < 7.36",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 7.36",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  }
+ ],
+ "KXMUSKNW": [
+  {
+   "event": "KXMUSKNW-26DEC31",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXMUSKNW-26DEC31-T500",
+    "strike": 500.0,
+    "strike_type": "greater",
+    "title": "Above $500 billion"
+   },
+   "long_no_leg": {
+    "ticker": "KXMUSKNW-26DEC31-T2500",
+    "strike": 2500.0,
+    "strike_type": "greater",
+    "title": "Above $2.5 trillion"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 500.0",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "500.0 < outcome < 2500.0",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 2500.0",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  },
+  {
+   "event": "KXMUSKNW-26JUL31",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXMUSKNW-26JUL31-T700",
+    "strike": 700.0,
+    "strike_type": "greater",
+    "title": "Above $700 billion"
+   },
+   "long_no_leg": {
+    "ticker": "KXMUSKNW-26JUL31-T1700",
+    "strike": 1700.0,
+    "strike_type": "greater",
+    "title": "Above $1.70 trillion"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 700.0",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "700.0 < outcome < 1700.0",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 1700.0",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  }
+ ],
+ "KXNHSALES": [
+  {
+   "event": "KXNHSALES-26JUL24",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXNHSALES-26JUL24-T520000",
+    "strike": 520000.0,
+    "strike_type": "greater",
+    "title": "Above 520,000"
+   },
+   "long_no_leg": {
+    "ticker": "KXNHSALES-26JUL24-T660000",
+    "strike": 660000.0,
+    "strike_type": "greater",
+    "title": "Above 660,000"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 520000.0",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "520000.0 < outcome < 660000.0",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 660000.0",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  }
+ ],
+ "KXRTX5090MON": [
+  {
+   "event": "KXRTX5090MON-26JUL31",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXRTX5090MON-26JUL31-0.030",
+    "strike": 0.03,
+    "strike_type": "greater",
+    "title": "Above $0.03"
+   },
+   "long_no_leg": {
+    "ticker": "KXRTX5090MON-26JUL31-0.980",
+    "strike": 0.98,
+    "strike_type": "greater",
+    "title": "Above $0.98"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 0.03",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "0.03 < outcome < 0.98",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 0.98",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  }
+ ],
+ "KXTRUMPACT": [
+  {
+   "event": "KXTRUMPACT-26JUL19",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXTRUMPACT-26JUL19-T1",
+    "strike": 1.0,
+    "strike_type": "greater_or_equal",
+    "title": "At least 1"
+   },
+   "long_no_leg": {
+    "ticker": "KXTRUMPACT-26JUL19-T15",
+    "strike": 15.0,
+    "strike_type": "greater_or_equal",
+    "title": "At least 15"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 1.0",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "1.0 < outcome < 15.0",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 15.0",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  }
+ ],
+ "KXNETFLIXTOPVIEWSTV": [
+  {
+   "event": "KXNETFLIXTOPVIEWSTV-26JUL27",
+   "code_nets(_is_ladder_event)": true,
+   "ladder_pairing_declares_paired": true,
+   "long_yes_leg": {
+    "ticker": "KXNETFLIXTOPVIEWSTV-26JUL27-6",
+    "strike": 6.0,
+    "strike_type": "greater_or_equal",
+    "title": "At least 6 million"
+   },
+   "long_no_leg": {
+    "ticker": "KXNETFLIXTOPVIEWSTV-26JUL27-50",
+    "strike": 50.0,
+    "strike_type": "greater_or_equal",
+    "title": "At least 50 million"
+   },
+   "settlement_table": [
+    {
+     "region": "outcome < 6.0",
+     "payout_per_pair_usd": 1.0
+    },
+    {
+     "region": "6.0 < outcome < 50.0",
+     "payout_per_pair_usd": 2.0
+    },
+    {
+     "region": "outcome > 50.0",
+     "payout_per_pair_usd": 1.0
+    }
+   ],
+   "ZERO_PAYOUT_REGION": null,
+   "FLOOR_CLAIM_FALSE": false
+  }
+ ]
+}

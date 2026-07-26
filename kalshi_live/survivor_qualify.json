@@ -1,0 +1,1729 @@
+{
+ "generated_utc": "2026-07-23T17:06:04.360224+00:00",
+ "instants": 7,
+ "gap_s": 420,
+ "instant_stamps": [
+  "2026-07-23T16:22:05+00:00",
+  "2026-07-23T16:29:05+00:00",
+  "2026-07-23T16:36:05+00:00",
+  "2026-07-23T16:43:05+00:00",
+  "2026-07-23T16:50:05+00:00",
+  "2026-07-23T16:57:05+00:00",
+  "2026-07-23T17:04:05+00:00"
+ ],
+ "ratio_cut": 2.0,
+ "shape": {
+  "JOIN_SIZE": 20.0,
+  "MAX_MARKET_CAPITAL": 15.0,
+  "MIN_DEPTH_SYM": 0.25,
+  "MAX_TOTAL_CAPITAL": 85.0
+ },
+ "rows": [
+  {
+   "series": "KXAAAGASD",
+   "ours": true,
+   "median_ratio": 1.0,
+   "pool_day": 1317.6470588235295,
+   "programs": 7,
+   "obs": 49,
+   "instants": 7,
+   "two_sided_pct": 85.71428571428571,
+   "admit_pct": 61.224489795918366,
+   "gate_hist": {
+    "sel_sym": 12,
+    "pass_join": 30,
+    "one_side_no_bids": 7
+   },
+   "cap_day_all_per_instant": 111.27933385979702,
+   "cap_day_admitted_per_instant": 75.0956639064761,
+   "capital_per_instant": 45.69999999999999,
+   "cap_per_dollar": 1.6432311576909435,
+   "top_contracts": [
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.115",
+     "cap_day": 29.194265573996805,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.125",
+     "cap_day": 20.36666112905715,
+     "capital": 9.860000000000001,
+     "adm_pct": 71.42857142857143
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.120",
+     "cap_day": 15.440233501734808,
+     "capital": 10.5,
+     "adm_pct": 14.285714285714286
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.105",
+     "cap_day": 15.167471830832072,
+     "capital": 8.842857142857143,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.110",
+     "cap_day": 14.176050036431993,
+     "capital": 10.14,
+     "adm_pct": 71.42857142857143
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.130",
+     "cap_day": 5.39673923647002,
+     "capital": 8.5,
+     "adm_pct": 71.42857142857143
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 7,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Economics"
+   ]
+  },
+  {
+   "series": "KXACTBLUETOP",
+   "ours": false,
+   "median_ratio": 1.7965161616274437,
+   "pool_day": 173.80808690404345,
+   "programs": 4,
+   "obs": 28,
+   "instants": 7,
+   "two_sided_pct": 100.0,
+   "admit_pct": 25.0,
+   "gate_hist": {
+    "price_bounds": 7,
+    "sel_sym": 14,
+    "pass_join": 7
+   },
+   "cap_day_all_per_instant": 5.073188859793144,
+   "cap_day_admitted_per_instant": 3.780937502183359,
+   "capital_per_instant": 8.7,
+   "cap_per_dollar": 0.4345905174923401,
+   "top_contracts": [
+    {
+     "ticker": "KXACTBLUETOP-26JUL24-JOSS",
+     "cap_day": 3.780937502183359,
+     "capital": 8.7,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-ABSTAIN",
+   "strike_types": [
+    "custom"
+   ],
+   "any_mutually_exclusive": true,
+   "bucket_strikes": false,
+   "monotone_strikes": false,
+   "events": 1,
+   "events_code_nets": 0,
+   "events_code_abstains": 1,
+   "strike_parse_ok": 0,
+   "strike_parse_fail": 4,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Politics"
+   ]
+  },
+  {
+   "series": "KXNETFLIXTOPVIEWSMOVIE",
+   "ours": false,
+   "median_ratio": 1.7921788348519152,
+   "pool_day": 207.15551920017097,
+   "programs": 11,
+   "obs": 77,
+   "instants": 7,
+   "two_sided_pct": 81.81818181818181,
+   "admit_pct": 45.45454545454545,
+   "gate_hist": {
+    "one_side_no_bids": 14,
+    "price_bounds": 21,
+    "sel_sym": 7,
+    "pass_join": 35
+   },
+   "cap_day_all_per_instant": 20.117920415831627,
+   "cap_day_admitted_per_instant": 20.117920415831627,
+   "capital_per_instant": 53.01428571428572,
+   "cap_per_dollar": 0.3794811180566461,
+   "top_contracts": [
+    {
+     "ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-25",
+     "cap_day": 12.715014793464514,
+     "capital": 13.728571428571431,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-21",
+     "cap_day": 3.2810506945131452,
+     "capital": 12.814285714285715,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-30",
+     "cap_day": 2.1350206575423583,
+     "capital": 8.757142857142858,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-18",
+     "cap_day": 1.6344371009864866,
+     "capital": 9.614285714285714,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-15",
+     "cap_day": 0.35239716932512,
+     "capital": 8.1,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 11,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Entertainment"
+   ]
+  },
+  {
+   "series": "KXEOWEEK",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 95.62348866292331,
+   "programs": 6,
+   "obs": 42,
+   "instants": 7,
+   "two_sided_pct": 33.333333333333336,
+   "admit_pct": 16.666666666666668,
+   "gate_hist": {
+    "pass_join": 7,
+    "sel_sym": 7,
+    "one_side_no_bids": 28
+   },
+   "cap_day_all_per_instant": 6.440880286964766,
+   "cap_day_admitted_per_instant": 5.599036455803831,
+   "capital_per_instant": 15.0,
+   "cap_per_dollar": 0.3732690970535887,
+   "top_contracts": [
+    {
+     "ticker": "KXEOWEEK-26JUL25-1",
+     "cap_day": 5.599036455803831,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 3,
+   "events_code_nets": 3,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 6,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Politics"
+   ]
+  },
+  {
+   "series": "KXNETFLIXTOPVIEWSTV",
+   "ours": false,
+   "median_ratio": 1.7921788348519152,
+   "pool_day": 207.1555191610213,
+   "programs": 11,
+   "obs": 77,
+   "instants": 7,
+   "two_sided_pct": 45.45454545454545,
+   "admit_pct": 9.090909090909092,
+   "gate_hist": {
+    "one_side_no_bids": 42,
+    "price_bounds": 7,
+    "sel_sym": 19,
+    "pass_join": 7,
+    "sel_spread": 2
+   },
+   "cap_day_all_per_instant": 8.896721283281869,
+   "cap_day_admitted_per_instant": 3.197694716246644,
+   "capital_per_instant": 11.414285714285713,
+   "cap_per_dollar": 0.28014847326316034,
+   "top_contracts": [
+    {
+     "ticker": "KXNETFLIXTOPVIEWSTV-26JUL27-12",
+     "cap_day": 3.197694716246644,
+     "capital": 11.414285714285713,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 11,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Entertainment"
+   ]
+  },
+  {
+   "series": "KXAPRPOTUS",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 143.74242232663576,
+   "programs": 8,
+   "obs": 56,
+   "instants": 7,
+   "two_sided_pct": 85.71428571428571,
+   "admit_pct": 26.785714285714285,
+   "gate_hist": {
+    "pass_join": 15,
+    "price_bounds": 13,
+    "one_side_no_bids": 8,
+    "sel_sym": 20
+   },
+   "cap_day_all_per_instant": 9.75424612789011,
+   "cap_day_admitted_per_instant": 7.324808124452359,
+   "capital_per_instant": 30.814285714285713,
+   "cap_per_dollar": 0.23770819133595972,
+   "top_contracts": [
+    {
+     "ticker": "KXAPRPOTUS-26JUL24-40.9",
+     "cap_day": 4.01746500494894,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXAPRPOTUS-26JUL24-41.2",
+     "cap_day": 3.1693055783335637,
+     "capital": 14.428571428571429,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXAPRPOTUS-26JUL24-40.6",
+     "cap_day": 0.9662627881889845,
+     "capital": 9.700000000000001,
+     "adm_pct": 14.285714285714286
+    }
+   ],
+   "structure_verdict": "DANGEROUS-NETS-NONADDITIVE",
+   "strike_types": [
+    "between",
+    "greater",
+    "less"
+   ],
+   "any_mutually_exclusive": true,
+   "bucket_strikes": true,
+   "monotone_strikes": false,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 8,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Politics"
+   ]
+  },
+  {
+   "series": "KXTOPMODEL",
+   "ours": false,
+   "median_ratio": 1.5613215780138086,
+   "pool_day": 184.66445464467404,
+   "programs": 4,
+   "obs": 28,
+   "instants": 7,
+   "two_sided_pct": 75.0,
+   "admit_pct": 3.5714285714285716,
+   "gate_hist": {
+    "price_bounds": 14,
+    "one_side_no_bids": 7,
+    "sel_sym": 6,
+    "pass_join": 1
+   },
+   "cap_day_all_per_instant": 1.7558505739247086,
+   "cap_day_admitted_per_instant": 0.3106088820949037,
+   "capital_per_instant": 1.3857142857142857,
+   "cap_per_dollar": 0.22415073965611612,
+   "top_contracts": [
+    {
+     "ticker": "KXTOPMODEL-26JUL27-CLAUT",
+     "cap_day": 2.1742621746643263,
+     "capital": 9.7,
+     "adm_pct": 14.285714285714286
+    }
+   ],
+   "structure_verdict": "SAFE-ABSTAIN",
+   "strike_types": [
+    "custom"
+   ],
+   "any_mutually_exclusive": true,
+   "bucket_strikes": false,
+   "monotone_strikes": false,
+   "events": 1,
+   "events_code_nets": 0,
+   "events_code_abstains": 1,
+   "strike_parse_ok": 0,
+   "strike_parse_fail": 4,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Science and Technology"
+   ]
+  },
+  {
+   "series": "KXTRUMPENDORSEMENTS",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 144.60681660277695,
+   "programs": 7,
+   "obs": 49,
+   "instants": 7,
+   "two_sided_pct": 100.0,
+   "admit_pct": 28.571428571428573,
+   "gate_hist": {
+    "sel_sym": 28,
+    "pass_join": 14,
+    "price_bounds": 7
+   },
+   "cap_day_all_per_instant": 10.044715819532586,
+   "cap_day_admitted_per_instant": 6.631806899363396,
+   "capital_per_instant": 30.0,
+   "cap_per_dollar": 0.22106022997877986,
+   "top_contracts": [
+    {
+     "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A5",
+     "cap_day": 5.126065704044872,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXTRUMPENDORSEMENTS-26JUL25-A3",
+     "cap_day": 1.505741195318525,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-ABSTAIN",
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 0,
+   "events_code_abstains": 1,
+   "strike_parse_ok": 0,
+   "strike_parse_fail": 7,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Politics"
+   ]
+  },
+  {
+   "series": "KXTRUMPPHOTO",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 134.85380567365226,
+   "programs": 4,
+   "obs": 28,
+   "instants": 7,
+   "two_sided_pct": 75.0,
+   "admit_pct": 25.0,
+   "gate_hist": {
+    "sel_sym": 14,
+    "pass_join": 7,
+    "one_side_no_bids": 7
+   },
+   "cap_day_all_per_instant": 5.6567023704976105,
+   "cap_day_admitted_per_instant": 1.4251986736624729,
+   "capital_per_instant": 15.0,
+   "cap_per_dollar": 0.09501324491083152,
+   "top_contracts": [
+    {
+     "ticker": "KXTRUMPPHOTO-26JUL26-5",
+     "cap_day": 1.4251986736624729,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "DANGEROUS-NETS-NONADDITIVE",
+   "strike_types": [
+    "between"
+   ],
+   "any_mutually_exclusive": true,
+   "bucket_strikes": true,
+   "monotone_strikes": false,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 4,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Politics"
+   ]
+  },
+  {
+   "series": "KXBIGBROTHERELIMINATION",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 114.53569298071187,
+   "programs": 4,
+   "obs": 28,
+   "instants": 7,
+   "two_sided_pct": 75.0,
+   "admit_pct": 50.0,
+   "gate_hist": {
+    "sel_sym": 7,
+    "one_side_no_bids": 7,
+    "pass_join": 14
+   },
+   "cap_day_all_per_instant": 3.1856460096252945,
+   "cap_day_admitted_per_instant": 2.5570093302002284,
+   "capital_per_instant": 29.771428571428572,
+   "cap_per_dollar": 0.08588802932534356,
+   "top_contracts": [
+    {
+     "ticker": "KXBIGBROTHERELIMINATION-26JUL23-JAS",
+     "cap_day": 1.7159609175609793,
+     "capital": 14.771428571428572,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXBIGBROTHERELIMINATION-26JUL23-ROM",
+     "cap_day": 0.8410484126392487,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-ABSTAIN",
+   "strike_types": [
+    "structured"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": false,
+   "events": 1,
+   "events_code_nets": 0,
+   "events_code_abstains": 1,
+   "strike_parse_ok": 0,
+   "strike_parse_fail": 4,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Entertainment"
+   ]
+  },
+  {
+   "series": "KXAMSAVO",
+   "ours": false,
+   "median_ratio": 1.067671193507036,
+   "pool_day": 180.53339411898793,
+   "programs": 11,
+   "obs": 77,
+   "instants": 7,
+   "two_sided_pct": 100.0,
+   "admit_pct": 64.93506493506493,
+   "gate_hist": {
+    "pass_join": 50,
+    "price_bounds": 21,
+    "sel_sym": 6
+   },
+   "cap_day_all_per_instant": 5.766285072173697,
+   "cap_day_admitted_per_instant": 5.459124236187202,
+   "capital_per_instant": 73.11428571428571,
+   "cap_per_dollar": 0.07466563042850806,
+   "top_contracts": [
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.20",
+     "cap_day": 2.8638117859345553,
+     "capital": 12.5,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.10",
+     "cap_day": 1.05953258645331,
+     "capital": 14.5,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.00",
+     "cap_day": 0.5933938927490188,
+     "capital": 11.299999999999999,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T0.90",
+     "cap_day": 0.5466376405357233,
+     "capital": 9.700000000000001,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.30",
+     "cap_day": 0.3544920578952516,
+     "capital": 8.5,
+     "adm_pct": 14.285714285714286
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.40",
+     "cap_day": 0.18646628819180328,
+     "capital": 7.8999999999999995,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T0.80",
+     "cap_day": 0.15864031976632662,
+     "capital": 8.1,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.60",
+     "cap_day": 0.0,
+     "capital": 7.8999999999999995,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 11,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Economics"
+   ]
+  },
+  {
+   "series": "KXTRUMPACT",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 144.6063923250706,
+   "programs": 10,
+   "obs": 70,
+   "instants": 7,
+   "two_sided_pct": 20.0,
+   "admit_pct": 10.0,
+   "gate_hist": {
+    "one_side_no_bids": 56,
+    "sel_sym": 7,
+    "pass_join": 7
+   },
+   "cap_day_all_per_instant": 1.727059214638324,
+   "cap_day_admitted_per_instant": 1.0484632050748945,
+   "capital_per_instant": 14.900000000000002,
+   "cap_per_dollar": 0.07036665805871775,
+   "top_contracts": [
+    {
+     "ticker": "KXTRUMPACT-26JUL19-T10",
+     "cap_day": 1.0484632050748945,
+     "capital": 14.900000000000002,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 10,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Politics"
+   ]
+  },
+  {
+   "series": "KXNHSALES",
+   "ours": false,
+   "median_ratio": 1.7965161616274437,
+   "pool_day": 63.90768889382004,
+   "programs": 8,
+   "obs": 56,
+   "instants": 7,
+   "two_sided_pct": 100.0,
+   "admit_pct": 100.0,
+   "gate_hist": {
+    "pass_join": 56
+   },
+   "cap_day_all_per_instant": 4.658549638915156,
+   "cap_day_admitted_per_instant": 4.658549638915156,
+   "capital_per_instant": 93.55714285714285,
+   "cap_per_dollar": 0.049793628756155284,
+   "top_contracts": [
+    {
+     "ticker": "KXNHSALES-26JUL24-T620000",
+     "cap_day": 0.9212273980702417,
+     "capital": 14.299999999999999,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNHSALES-26JUL24-T580000",
+     "cap_day": 0.9021724546775965,
+     "capital": 13.299999999999999,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNHSALES-26JUL24-T600000",
+     "cap_day": 0.86502951294101,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNHSALES-26JUL24-T660000",
+     "cap_day": 0.8381853099461852,
+     "capital": 10.12857142857143,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNHSALES-26JUL24-T640000",
+     "cap_day": 0.7298794789764382,
+     "capital": 11.128571428571428,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNHSALES-26JUL24-T520000",
+     "cap_day": 0.1436398533409908,
+     "capital": 8.9,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNHSALES-26JUL24-T560000",
+     "cap_day": 0.13918024152326008,
+     "capital": 11.100000000000003,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNHSALES-26JUL24-T540000",
+     "cap_day": 0.11923538943943433,
+     "capital": 9.700000000000001,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 8,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Economics"
+   ]
+  },
+  {
+   "series": "KXB200MON",
+   "ours": false,
+   "median_ratio": 1.0000801198459235,
+   "pool_day": 105.4018445322793,
+   "programs": 40,
+   "obs": 280,
+   "instants": 7,
+   "two_sided_pct": 92.5,
+   "admit_pct": 70.35714285714286,
+   "gate_hist": {
+    "sel_sym": 55,
+    "pass_join": 197,
+    "one_side_no_bids": 21,
+    "price_bounds": 7
+   },
+   "cap_day_all_per_instant": 15.481475686742423,
+   "cap_day_admitted_per_instant": 13.887507188807982,
+   "capital_per_instant": 303.5714285714287,
+   "cap_per_dollar": 0.045747082504308624,
+   "top_contracts": [
+    {
+     "ticker": "KXB200MON-26JUL31-6.660",
+     "cap_day": 1.0454867351541923,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.460",
+     "cap_day": 1.0312217441632556,
+     "capital": 11.900000000000002,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.960",
+     "cap_day": 0.8150590205647978,
+     "capital": 10.34,
+     "adm_pct": 71.42857142857143
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.260",
+     "cap_day": 0.7045527203347793,
+     "capital": 11.700000000000001,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.860",
+     "cap_day": 0.6663772517964218,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.160",
+     "cap_day": 0.654873211580709,
+     "capital": 10.700000000000001,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-7.060",
+     "cap_day": 0.6148748442812277,
+     "capital": 11.5,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.560",
+     "cap_day": 0.6096213367360512,
+     "capital": 9.5,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.760",
+     "cap_day": 0.5963684649405463,
+     "capital": 10.5,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-5.860",
+     "cap_day": 0.5832802841334714,
+     "capital": 9.671428571428573,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 40,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Science and Technology"
+   ]
+  },
+  {
+   "series": "KXTRUTHSOCIAL",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 144.6205149531384,
+   "programs": 10,
+   "obs": 70,
+   "instants": 7,
+   "two_sided_pct": 70.0,
+   "admit_pct": 35.714285714285715,
+   "gate_hist": {
+    "one_side_no_bids": 21,
+    "pass_join": 25,
+    "sel_sym": 24
+   },
+   "cap_day_all_per_instant": 2.390164103102262,
+   "cap_day_admitted_per_instant": 1.9914804681401694,
+   "capital_per_instant": 43.785714285714285,
+   "cap_per_dollar": 0.045482425047246935,
+   "top_contracts": [
+    {
+     "ticker": "KXTRUTHSOCIAL-26JUL25-B169",
+     "cap_day": 0.8737651193373047,
+     "capital": 14.299999999999999,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXTRUTHSOCIAL-26JUL25-B149",
+     "cap_day": 0.5771242135436593,
+     "capital": 14.099999999999998,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXTRUTHSOCIAL-26JUL25-B189",
+     "cap_day": 0.47717972542033216,
+     "capital": 10.700000000000001,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXTRUTHSOCIAL-26JUL25-B129",
+     "cap_day": 0.22193993443605808,
+     "capital": 8.3,
+     "adm_pct": 28.571428571428573
+    },
+    {
+     "ticker": "KXTRUTHSOCIAL-26JUL25-B230",
+     "cap_day": 0.0,
+     "capital": 8.1,
+     "adm_pct": 28.571428571428573
+    }
+   ],
+   "structure_verdict": "SAFE-ABSTAIN",
+   "strike_types": [
+    "between",
+    "greater",
+    "less"
+   ],
+   "any_mutually_exclusive": true,
+   "bucket_strikes": true,
+   "monotone_strikes": false,
+   "events": 1,
+   "events_code_nets": 0,
+   "events_code_abstains": 1,
+   "strike_parse_ok": 2,
+   "strike_parse_fail": 8,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Politics"
+   ]
+  },
+  {
+   "series": "KXNBATEAMANNOUNCE",
+   "ours": false,
+   "median_ratio": 1.9558193939529325,
+   "pool_day": 98.05478497221605,
+   "programs": 4,
+   "obs": 28,
+   "instants": 7,
+   "two_sided_pct": 100.0,
+   "admit_pct": 100.0,
+   "gate_hist": {
+    "pass_join": 28
+   },
+   "cap_day_all_per_instant": 1.8938115530695063,
+   "cap_day_admitted_per_instant": 1.8938115530695063,
+   "capital_per_instant": 45.8857142857143,
+   "cap_per_dollar": 0.041272356386944396,
+   "top_contracts": [
+    {
+     "ticker": "KXNBATEAMANNOUNCE-26LJAMES23-727",
+     "cap_day": 1.1777041039380973,
+     "capital": 12.242857142857142,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNBATEAMANNOUNCE-26LJAMES23-725",
+     "cap_day": 0.4111887513501147,
+     "capital": 10.242857142857144,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNBATEAMANNOUNCE-26LJAMES23-728",
+     "cap_day": 0.263378012556534,
+     "capital": 14.814285714285715,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXNBATEAMANNOUNCE-26LJAMES23-724",
+     "cap_day": 0.041540685224760114,
+     "capital": 8.585714285714285,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "NEEDS-PROBE-NETS-UNTYPED",
+   "strike_types": [
+    "custom"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": false,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 4,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Sports"
+   ]
+  },
+  {
+   "series": "KXMUSKNW",
+   "ours": false,
+   "median_ratio": 1.1052312835635618,
+   "pool_day": 144.45559070915965,
+   "programs": 13,
+   "obs": 91,
+   "instants": 7,
+   "two_sided_pct": 76.92307692307692,
+   "admit_pct": 68.13186813186813,
+   "gate_hist": {
+    "pass_join": 62,
+    "price_bounds": 7,
+    "one_side_no_bids": 21,
+    "sel_sym": 1
+   },
+   "cap_day_all_per_instant": 2.821800905216199,
+   "cap_day_admitted_per_instant": 2.8109943728293807,
+   "capital_per_instant": 87.21428571428575,
+   "cap_per_dollar": 0.032230893709755376,
+   "top_contracts": [
+    {
+     "ticker": "KXMUSKNW-26JUL31-T750",
+     "cap_day": 0.9915879468295422,
+     "capital": 14.271428571428572,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T700",
+     "cap_day": 0.8290785780763736,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T800",
+     "cap_day": 0.33689133892029605,
+     "capital": 10.27142857142857,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T850",
+     "cap_day": 0.1604125953042424,
+     "capital": 8.700000000000001,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T900",
+     "cap_day": 0.13513608300469143,
+     "capital": 8.1,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1100",
+     "cap_day": 0.10782124332419815,
+     "capital": 7.8999999999999995,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1050",
+     "cap_day": 0.09755399433527327,
+     "capital": 7.8999999999999995,
+     "adm_pct": 85.71428571428571
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T950",
+     "cap_day": 0.08401983463184391,
+     "capital": 8.1,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1000",
+     "cap_day": 0.08242904330795953,
+     "capital": 8.1,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 13,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Economics"
+   ]
+  },
+  {
+   "series": "KXRTX5090MON",
+   "ours": false,
+   "median_ratio": 1.0000801198459235,
+   "pool_day": 52.70092226613965,
+   "programs": 20,
+   "obs": 140,
+   "instants": 7,
+   "two_sided_pct": 60.0,
+   "admit_pct": 29.285714285714285,
+   "gate_hist": {
+    "sel_sym": 8,
+    "one_side_no_bids": 56,
+    "pass_join": 41,
+    "price_bounds": 35
+   },
+   "cap_day_all_per_instant": 1.7115005500831812,
+   "cap_day_admitted_per_instant": 1.6881125701429505,
+   "capital_per_instant": 55.214285714285715,
+   "cap_per_dollar": 0.030573836975422132,
+   "top_contracts": [
+    {
+     "ticker": "KXRTX5090MON-26JUL31-0.530",
+     "cap_day": 0.8902936551313321,
+     "capital": 9.299999999999999,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXRTX5090MON-26JUL31-0.680",
+     "cap_day": 0.3031086879321645,
+     "capital": 8.700000000000001,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXRTX5090MON-26JUL31-0.630",
+     "cap_day": 0.23707421374770968,
+     "capital": 8.357142857142858,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXRTX5090MON-26JUL31-0.480",
+     "cap_day": 0.16371585948660264,
+     "capital": 15.0,
+     "adm_pct": 85.71428571428571
+    },
+    {
+     "ticker": "KXRTX5090MON-26JUL31-0.580",
+     "cap_day": 0.11730813377179948,
+     "capital": 8.100000000000001,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXRTX5090MON-26JUL31-0.730",
+     "cap_day": 0.0,
+     "capital": 7.8999999999999995,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 20,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Science and Technology"
+   ]
+  },
+  {
+   "series": "KXH100MON",
+   "ours": false,
+   "median_ratio": 1.0000801198459235,
+   "pool_day": 52.70092226613965,
+   "programs": 20,
+   "obs": 140,
+   "instants": 7,
+   "two_sided_pct": 75.0,
+   "admit_pct": 31.428571428571427,
+   "gate_hist": {
+    "pass_join": 44,
+    "sel_sym": 54,
+    "one_side_no_bids": 35,
+    "price_bounds": 7
+   },
+   "cap_day_all_per_instant": 3.882805517621534,
+   "cap_day_admitted_per_instant": 1.505037536153705,
+   "capital_per_instant": 84.12857142857146,
+   "cap_per_dollar": 0.017889731283878302,
+   "top_contracts": [
+    {
+     "ticker": "KXH100MON-26JUL31-2.710",
+     "cap_day": 0.37320051590801423,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.660",
+     "cap_day": 0.34810907080123404,
+     "capital": 15.0,
+     "adm_pct": 71.42857142857143
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.760",
+     "cap_day": 0.2826395728695417,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.610",
+     "cap_day": 0.1869973812855546,
+     "capital": 13.5,
+     "adm_pct": 57.142857142857146
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.860",
+     "cap_day": 0.1810664525865298,
+     "capital": 12.5,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.810",
+     "cap_day": 0.17528364340986374,
+     "capital": 13.099999999999998,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXH100MON-26JUL31-2.910",
+     "cap_day": 0.13734236864427196,
+     "capital": 10.1,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 20,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Science and Technology"
+   ]
+  },
+  {
+   "series": "KXFEDMENTION",
+   "ours": false,
+   "median_ratio": 1.0639819078573631,
+   "pool_day": 452.96269202633505,
+   "programs": 43,
+   "obs": 301,
+   "instants": 7,
+   "two_sided_pct": 100.0,
+   "admit_pct": 30.897009966777407,
+   "gate_hist": {
+    "sel_sym": 208,
+    "pass_join": 93
+   },
+   "cap_day_all_per_instant": 8.15128652184755,
+   "cap_day_admitted_per_instant": 2.4586523881800315,
+   "capital_per_instant": 156.18571428571437,
+   "cap_per_dollar": 0.015741851932004218,
+   "top_contracts": [
+    {
+     "ticker": "KXFEDMENTION-26JUL-PAND",
+     "cap_day": 0.5228463311056349,
+     "capital": 11.014285714285718,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-GOOD",
+     "cap_day": 0.3215357816950353,
+     "capital": 10.700000000000001,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-REST",
+     "cap_day": 0.2841471040489726,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-UNCE",
+     "cap_day": 0.27092842897710584,
+     "capital": 14.099999999999998,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-QE",
+     "cap_day": 0.24142709683545457,
+     "capital": 9.700000000000001,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-SHOC",
+     "cap_day": 0.2354111251177946,
+     "capital": 15.0,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-PROD",
+     "cap_day": 0.19572541937196825,
+     "capital": 12.100000000000001,
+     "adm_pct": 71.42857142857143
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-CRYP",
+     "cap_day": 0.1877025984725542,
+     "capital": 10.1,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-CENT",
+     "cap_day": 0.13301928654232767,
+     "capital": 11.100000000000003,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-ANCH",
+     "cap_day": 0.12795327251875027,
+     "capital": 13.700000000000001,
+     "adm_pct": 57.142857142857146
+    }
+   ],
+   "structure_verdict": "SAFE-ABSTAIN",
+   "strike_types": [
+    "custom"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": false,
+   "events": 1,
+   "events_code_nets": 0,
+   "events_code_abstains": 1,
+   "strike_parse_ok": 0,
+   "strike_parse_fail": 43,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Mentions"
+   ]
+  },
+  {
+   "series": "KXCHIPBURRITO",
+   "ours": false,
+   "median_ratio": 1.1173280455558514,
+   "pool_day": 39.74423846543079,
+   "programs": 6,
+   "obs": 42,
+   "instants": 7,
+   "two_sided_pct": 100.0,
+   "admit_pct": 83.33333333333333,
+   "gate_hist": {
+    "pass_join": 35,
+    "sel_sym": 7
+   },
+   "cap_day_all_per_instant": 0.5093409300846267,
+   "cap_day_admitted_per_instant": 0.41501727881174766,
+   "capital_per_instant": 51.09999999999999,
+   "cap_per_dollar": 0.008121668861286648,
+   "top_contracts": [
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.78",
+     "cap_day": 0.09254165759990769,
+     "capital": 12.100000000000003,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.80",
+     "cap_day": 0.09194017514020203,
+     "capital": 8.5,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.77",
+     "cap_day": 0.09184351222102956,
+     "capital": 12.900000000000004,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.76",
+     "cap_day": 0.07441568209796999,
+     "capital": 9.700000000000001,
+     "adm_pct": 100.0
+    },
+    {
+     "ticker": "KXCHIPBURRITO-26AUG02-T9.75",
+     "cap_day": 0.0642762517526383,
+     "capital": 7.8999999999999995,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 6,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Economics"
+   ]
+  },
+  {
+   "series": "KXTRUMPUAP",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 6.566347469220246,
+   "programs": 1,
+   "obs": 7,
+   "instants": 7,
+   "two_sided_pct": 100.0,
+   "admit_pct": 100.0,
+   "gate_hist": {
+    "pass_join": 7
+   },
+   "cap_day_all_per_instant": 0.05409483310754993,
+   "cap_day_admitted_per_instant": 0.05409483310754993,
+   "capital_per_instant": 7.8999999999999995,
+   "cap_per_dollar": 0.006847447228803789,
+   "top_contracts": [
+    {
+     "ticker": "KXTRUMPUAP-26MAY-AUG01",
+     "cap_day": 0.05409483310754993,
+     "capital": 7.8999999999999995,
+     "adm_pct": 100.0
+    }
+   ],
+   "structure_verdict": "SAFE-ABSTAIN",
+   "strike_types": [],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": false,
+   "events": 1,
+   "events_code_nets": 0,
+   "events_code_abstains": 1,
+   "strike_parse_ok": 0,
+   "strike_parse_fail": 1,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Politics"
+   ]
+  },
+  {
+   "series": "KXLIUKELIMINATION",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 2450.261780104712,
+   "programs": 13,
+   "obs": 91,
+   "instants": 7,
+   "two_sided_pct": 46.15384615384615,
+   "admit_pct": 0.0,
+   "gate_hist": {
+    "one_side_no_bids": 49,
+    "price_bounds": 42
+   },
+   "cap_day_all_per_instant": 0.0,
+   "cap_day_admitted_per_instant": 0.0,
+   "capital_per_instant": 0.0,
+   "cap_per_dollar": null,
+   "top_contracts": [],
+   "structure_verdict": "SAFE-ABSTAIN",
+   "strike_types": [
+    "structured"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": false,
+   "events": 1,
+   "events_code_nets": 0,
+   "events_code_abstains": 1,
+   "strike_parse_ok": 0,
+   "strike_parse_fail": 13,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Entertainment"
+   ]
+  },
+  {
+   "series": "KXAAAGASW",
+   "ours": true,
+   "median_ratio": 1.0,
+   "pool_day": 230.64602242391882,
+   "programs": 15,
+   "obs": 105,
+   "instants": 7,
+   "two_sided_pct": 40.95238095238095,
+   "admit_pct": 1.9047619047619047,
+   "gate_hist": {
+    "sel_sym": 28,
+    "one_side_no_bids": 61,
+    "price_bounds": 14,
+    "pass_join": 2
+   },
+   "cap_day_all_per_instant": 7.230813647903874,
+   "cap_day_admitted_per_instant": 0.0,
+   "capital_per_instant": 2.257142857142857,
+   "cap_per_dollar": 0.0,
+   "top_contracts": [
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.120",
+     "cap_day": 0.0,
+     "capital": 7.9,
+     "adm_pct": 28.571428571428573
+    }
+   ],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 15,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Economics"
+   ]
+  },
+  {
+   "series": "KXUSFLYCAN",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 180.5128205128205,
+   "programs": 11,
+   "obs": 77,
+   "instants": 7,
+   "two_sided_pct": 0.0,
+   "admit_pct": 0.0,
+   "gate_hist": {
+    "one_side_no_bids": 77
+   },
+   "cap_day_all_per_instant": 0.0,
+   "cap_day_admitted_per_instant": 0.0,
+   "capital_per_instant": 0.0,
+   "cap_per_dollar": null,
+   "top_contracts": [],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 11,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Economics"
+   ]
+  },
+  {
+   "series": "KXTRUMPNOMNUM",
+   "ours": false,
+   "median_ratio": 1.1650945817720044,
+   "pool_day": 165.53037352298756,
+   "programs": 3,
+   "obs": 21,
+   "instants": 7,
+   "two_sided_pct": 0.0,
+   "admit_pct": 0.0,
+   "gate_hist": {
+    "one_side_no_bids": 21
+   },
+   "cap_day_all_per_instant": 0.0,
+   "cap_day_admitted_per_instant": 0.0,
+   "capital_per_instant": 0.0,
+   "cap_per_dollar": null,
+   "top_contracts": [],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 3,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Politics"
+   ]
+  },
+  {
+   "series": "KXDXYDUD",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 145.53067685297506,
+   "programs": 1,
+   "obs": 7,
+   "instants": 7,
+   "two_sided_pct": 0.0,
+   "admit_pct": 0.0,
+   "gate_hist": {
+    "one_side_no_bids": 7
+   },
+   "cap_day_all_per_instant": 0.0,
+   "cap_day_admitted_per_instant": 0.0,
+   "capital_per_instant": 0.0,
+   "cap_per_dollar": null,
+   "top_contracts": [],
+   "structure_verdict": "DANGEROUS-NETS-NONADDITIVE",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": true,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 1,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Financials"
+   ]
+  },
+  {
+   "series": "KXGENERICBALLOTVOTEHUB",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 144.6229921378304,
+   "programs": 1,
+   "obs": 7,
+   "instants": 7,
+   "two_sided_pct": 100.0,
+   "admit_pct": 0.0,
+   "gate_hist": {
+    "sel_sym": 7
+   },
+   "cap_day_all_per_instant": 1.9452103305236765,
+   "cap_day_admitted_per_instant": 0.0,
+   "capital_per_instant": 0.0,
+   "cap_per_dollar": null,
+   "top_contracts": [],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 1,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Elections"
+   ]
+  },
+  {
+   "series": "KXUST10AD",
+   "ours": false,
+   "median_ratio": 1.0,
+   "pool_day": 111.38446653056769,
+   "programs": 1,
+   "obs": 7,
+   "instants": 7,
+   "two_sided_pct": 0.0,
+   "admit_pct": 0.0,
+   "gate_hist": {
+    "one_side_no_bids": 7
+   },
+   "cap_day_all_per_instant": 0.0,
+   "cap_day_admitted_per_instant": 0.0,
+   "capital_per_instant": 0.0,
+   "cap_per_dollar": null,
+   "top_contracts": [],
+   "structure_verdict": "SAFE-LADDER",
+   "strike_types": [
+    "greater"
+   ],
+   "any_mutually_exclusive": false,
+   "bucket_strikes": false,
+   "monotone_strikes": true,
+   "events": 1,
+   "events_code_nets": 1,
+   "events_code_abstains": 0,
+   "strike_parse_ok": 1,
+   "strike_parse_fail": 0,
+   "maker_fee": "FREE",
+   "fee_type": "quadratic",
+   "categories": [
+    "Financials"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,861 @@
+{
+ "rows": [
+  {
+   "series": "KXAAAGASD",
+   "event": "KXAAAGASD-26JUL24",
+   "title": "US gas prices tomorrow?",
+   "contracts": 7,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXAAAGASD-26JUL24-4.100": 4.1,
+    "KXAAAGASD-26JUL24-4.105": 4.105,
+    "KXAAAGASD-26JUL24-4.110": 4.11,
+    "KXAAAGASD-26JUL24-4.115": 4.115,
+    "KXAAAGASD-26JUL24-4.120": 4.12,
+    "KXAAAGASD-26JUL24-4.125": 4.125,
+    "KXAAAGASD-26JUL24-4.130": 4.13
+   },
+   "demo": null
+  },
+  {
+   "series": "KXAAAGASW",
+   "event": "KXAAAGASW-26JUL27",
+   "title": "US gas prices this week",
+   "contracts": 15,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXAAAGASW-26JUL27-3.980": 3.98,
+    "KXAAAGASW-26JUL27-4.000": 4.0,
+    "KXAAAGASW-26JUL27-4.020": 4.02,
+    "KXAAAGASW-26JUL27-4.040": 4.04,
+    "KXAAAGASW-26JUL27-4.060": 4.06,
+    "KXAAAGASW-26JUL27-4.080": 4.08,
+    "KXAAAGASW-26JUL27-4.100": 4.1,
+    "KXAAAGASW-26JUL27-4.120": 4.12,
+    "KXAAAGASW-26JUL27-4.140": 4.14,
+    "KXAAAGASW-26JUL27-4.160": 4.16,
+    "KXAAAGASW-26JUL27-4.180": 4.18,
+    "KXAAAGASW-26JUL27-4.200": 4.2,
+    "KXAAAGASW-26JUL27-4.220": 4.22,
+    "KXAAAGASW-26JUL27-4.240": 4.24,
+    "KXAAAGASW-26JUL27-4.260": 4.26
+   },
+   "demo": null
+  },
+  {
+   "series": "KXACTBLUETOP",
+   "event": "KXACTBLUETOP-26JUL24",
+   "title": "Who will be the top ActBlue fundraiser on Jul 24, 2026?",
+   "contracts": 4,
+   "strike_types": [
+    "custom"
+   ],
+   "mutually_exclusive": true,
+   "code_nets_this_event": false,
+   "netting_is_valid": false,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXACTBLUETOP-26JUL24-AELS": null,
+    "KXACTBLUETOP-26JUL24-JOSS": null,
+    "KXACTBLUETOP-26JUL24-JTAL": null,
+    "KXACTBLUETOP-26JUL24-TJAC": null
+   },
+   "demo": null
+  },
+  {
+   "series": "KXAMSAVO",
+   "event": "KXAMSAVO-26JUL24",
+   "title": "Avocado advertised prices this week",
+   "contracts": 11,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXAMSAVO-26JUL24-T0.80": 0.8,
+    "KXAMSAVO-26JUL24-T0.90": 0.9,
+    "KXAMSAVO-26JUL24-T1.00": 1.0,
+    "KXAMSAVO-26JUL24-T1.10": 1.1,
+    "KXAMSAVO-26JUL24-T1.20": 1.2,
+    "KXAMSAVO-26JUL24-T1.30": 1.3,
+    "KXAMSAVO-26JUL24-T1.40": 1.4,
+    "KXAMSAVO-26JUL24-T1.50": 1.5,
+    "KXAMSAVO-26JUL24-T1.60": 1.6,
+    "KXAMSAVO-26JUL24-T1.70": 1.7,
+    "KXAMSAVO-26JUL24-T1.80": 1.8
+   },
+   "demo": null
+  },
+  {
+   "series": "KXAPRPOTUS",
+   "event": "KXAPRPOTUS-26JUL24",
+   "title": "Trump's approval rating on Jul 24, 2026?",
+   "contracts": 8,
+   "strike_types": [
+    "between",
+    "greater",
+    "less"
+   ],
+   "mutually_exclusive": true,
+   "code_nets_this_event": true,
+   "netting_is_valid": false,
+   "DANGEROUS": true,
+   "strikes": {
+    "KXAPRPOTUS-26JUL24-40.2": 40.2,
+    "KXAPRPOTUS-26JUL24-40.3": 40.3,
+    "KXAPRPOTUS-26JUL24-40.6": 40.6,
+    "KXAPRPOTUS-26JUL24-40.9": 40.9,
+    "KXAPRPOTUS-26JUL24-41.2": 41.2,
+    "KXAPRPOTUS-26JUL24-41.5": 41.5,
+    "KXAPRPOTUS-26JUL24-41.8": 41.8,
+    "KXAPRPOTUS-26JUL24-41.9": 41.9
+   },
+   "demo": {
+    "held": {
+     "KXAPRPOTUS-26JUL24-40.2": 20,
+     "KXAPRPOTUS-26JUL24-41.9": -20
+    },
+    "long_low": "KXAPRPOTUS-26JUL24-40.2",
+    "long_low_strike": 40.2,
+    "long_low_subtitle": "Below 40.2",
+    "short_high": "KXAPRPOTUS-26JUL24-41.9",
+    "short_high_strike": 41.9,
+    "short_high_subtitle": "Above 41.9",
+    "ladder_pairing_naked_remainder": {
+     "KXAPRPOTUS-26JUL24-40.2": 0,
+     "KXAPRPOTUS-26JUL24-41.9": 0
+    },
+    "declared_fully_paired": true,
+    "event_deltas": {
+     "KXAPRPOTUS-26JUL24": 0.0
+    },
+    "event_reads_flat": true
+   }
+  },
+  {
+   "series": "KXB200MON",
+   "event": "KXB200MON-26JUL31",
+   "title": "Price of NVIDIA B200 compute by Jul 31, 2026?",
+   "contracts": 40,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXB200MON-26JUL31-3.460": 3.46,
+    "KXB200MON-26JUL31-3.560": 3.56,
+    "KXB200MON-26JUL31-3.660": 3.66,
+    "KXB200MON-26JUL31-3.760": 3.76,
+    "KXB200MON-26JUL31-3.860": 3.86,
+    "KXB200MON-26JUL31-3.960": 3.96,
+    "KXB200MON-26JUL31-4.060": 4.06,
+    "KXB200MON-26JUL31-4.160": 4.16,
+    "KXB200MON-26JUL31-4.260": 4.26,
+    "KXB200MON-26JUL31-4.360": 4.36,
+    "KXB200MON-26JUL31-4.460": 4.46,
+    "KXB200MON-26JUL31-4.560": 4.56,
+    "KXB200MON-26JUL31-4.660": 4.66,
+    "KXB200MON-26JUL31-4.760": 4.76,
+    "KXB200MON-26JUL31-4.860": 4.86,
+    "KXB200MON-26JUL31-4.960": 4.96,
+    "KXB200MON-26JUL31-5.060": 5.06,
+    "KXB200MON-26JUL31-5.160": 5.16,
+    "KXB200MON-26JUL31-5.260": 5.26,
+    "KXB200MON-26JUL31-5.360": 5.36,
+    "KXB200MON-26JUL31-5.460": 5.46,
+    "KXB200MON-26JUL31-5.560": 5.56,
+    "KXB200MON-26JUL31-5.660": 5.66,
+    "KXB200MON-26JUL31-5.760": 5.76,
+    "KXB200MON-26JUL31-5.860": 5.86,
+    "KXB200MON-26JUL31-5.960": 5.96,
+    "KXB200MON-26JUL31-6.060": 6.06,
+    "KXB200MON-26JUL31-6.160": 6.16,
+    "KXB200MON-26JUL31-6.260": 6.26,
+    "KXB200MON-26JUL31-6.360": 6.36,
+    "KXB200MON-26JUL31-6.460": 6.46,
+    "KXB200MON-26JUL31-6.560": 6.56,
+    "KXB200MON-26JUL31-6.660": 6.66,
+    "KXB200MON-26JUL31-6.760": 6.76,
+    "KXB200MON-26JUL31-6.860": 6.86,
+    "KXB200MON-26JUL31-6.960": 6.96,
+    "KXB200MON-26JUL31-7.060": 7.06,
+    "KXB200MON-26JUL31-7.160": 7.16,
+    "KXB200MON-26JUL31-7.260": 7.26,
+    "KXB200MON-26JUL31-7.360": 7.36
+   },
+   "demo": null
+  },
+  {
+   "series": "KXBIGBROTHERELIMINATION",
+   "event": "KXBIGBROTHERELIMINATION-26JUL23",
+   "title": "Big Brother Season 28 \u00b7 Week 2 elimination",
+   "contracts": 4,
+   "strike_types": [
+    "structured"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": false,
+   "netting_is_valid": false,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXBIGBROTHERELIMINATION-26JUL23-JAS": null,
+    "KXBIGBROTHERELIMINATION-26JUL23-LYR": null,
+    "KXBIGBROTHERELIMINATION-26JUL23-MEL": null,
+    "KXBIGBROTHERELIMINATION-26JUL23-ROM": null
+   },
+   "demo": null
+  },
+  {
+   "series": "KXCHIPBURRITO",
+   "event": "KXCHIPBURRITO-26AUG02",
+   "title": "Chipotle chicken burrito price in July 2026",
+   "contracts": 6,
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXCHIPBURRITO-26AUG02-T9.75": 9.75,
+    "KXCHIPBURRITO-26AUG02-T9.76": 9.76,
+    "KXCHIPBURRITO-26AUG02-T9.77": 9.77,
+    "KXCHIPBURRITO-26AUG02-T9.78": 9.78,
+    "KXCHIPBURRITO-26AUG02-T9.79": 9.79,
+    "KXCHIPBURRITO-26AUG02-T9.80": 9.8
+   },
+   "demo": null
+  },
+  {
+   "series": "KXDXYDUD",
+   "event": "KXDXYDUD-26JUL22",
+   "title": "U.S. Dollar Index (DXY) Daily Up/Down",
+   "contracts": 1,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": true,
+   "code_nets_this_event": true,
+   "netting_is_valid": false,
+   "DANGEROUS": true,
+   "strikes": {
+    "KXDXYDUD-26JUL22-T100.9745": 100.9745
+   },
+   "demo": null
+  },
+  {
+   "series": "KXEOWEEK",
+   "event": "KXEOWEEK-26JUL11",
+   "title": "How many Executive Orders will Trump sign this week? (7/5 - 7/11)",
+   "contracts": 2,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXEOWEEK-26JUL11-1": 1.0,
+    "KXEOWEEK-26JUL11-2": 2.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXEOWEEK",
+   "event": "KXEOWEEK-26JUL18",
+   "title": "How many Executive Orders will Trump sign this week? (7/12 - 7/18)",
+   "contracts": 2,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXEOWEEK-26JUL18-1": 1.0,
+    "KXEOWEEK-26JUL18-2": 2.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXEOWEEK",
+   "event": "KXEOWEEK-26JUL25",
+   "title": "How many Executive Orders will Trump sign this week? (7/19 - 7/25)",
+   "contracts": 2,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXEOWEEK-26JUL25-1": 1.0,
+    "KXEOWEEK-26JUL25-2": 2.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXFEDMENTION",
+   "event": "KXFEDMENTION-26JUL",
+   "title": "What will Kevin Warsh say during his July press conference?",
+   "contracts": 43,
+   "strike_types": [
+    "custom"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": false,
+   "netting_is_valid": false,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXFEDMENTION-26JUL-ADP": null,
+    "KXFEDMENTION-26JUL-AI": null,
+    "KXFEDMENTION-26JUL-ANCH": null,
+    "KXFEDMENTION-26JUL-BAL": null,
+    "KXFEDMENTION-26JUL-BITC": null,
+    "KXFEDMENTION-26JUL-CENT": null,
+    "KXFEDMENTION-26JUL-CONS": null,
+    "KXFEDMENTION-26JUL-CRED": null,
+    "KXFEDMENTION-26JUL-CRYP": null,
+    "KXFEDMENTION-26JUL-DISS": null,
+    "KXFEDMENTION-26JUL-DOLL": null,
+    "KXFEDMENTION-26JUL-EGG": null,
+    "KXFEDMENTION-26JUL-GAS": null,
+    "KXFEDMENTION-26JUL-GOLD": null,
+    "KXFEDMENTION-26JUL-GOOD": null,
+    "KXFEDMENTION-26JUL-GOODD": null,
+    "KXFEDMENTION-26JUL-GOODS": null,
+    "KXFEDMENTION-26JUL-IRAN": null,
+    "KXFEDMENTION-26JUL-LAYO": null,
+    "KXFEDMENTION-26JUL-NATI": null,
+    "KXFEDMENTION-26JUL-NQE": null,
+    "KXFEDMENTION-26JUL-OIL": null,
+    "KXFEDMENTION-26JUL-PAND": null,
+    "KXFEDMENTION-26JUL-PRES": null,
+    "KXFEDMENTION-26JUL-PROB": null,
+    "KXFEDMENTION-26JUL-PROD": null,
+    "KXFEDMENTION-26JUL-PROJ": null,
+    "KXFEDMENTION-26JUL-QE": null,
+    "KXFEDMENTION-26JUL-QT": null,
+    "KXFEDMENTION-26JUL-RECE": null,
+    "KXFEDMENTION-26JUL-RENO": null,
+    "KXFEDMENTION-26JUL-REST": null,
+    "KXFEDMENTION-26JUL-SHOC": null,
+    "KXFEDMENTION-26JUL-SHUT": null,
+    "KXFEDMENTION-26JUL-SLOW": null,
+    "KXFEDMENTION-26JUL-SOFT": null,
+    "KXFEDMENTION-26JUL-STAG": null,
+    "KXFEDMENTION-26JUL-TAX": null,
+    "KXFEDMENTION-26JUL-TRU": null,
+    "KXFEDMENTION-26JUL-TRUM": null,
+    "KXFEDMENTION-26JUL-UNCE": null,
+    "KXFEDMENTION-26JUL-UNCH": null,
+    "KXFEDMENTION-26JUL-VOLA": null
+   },
+   "demo": null
+  },
+  {
+   "series": "KXGENERICBALLOTVOTEHUB",
+   "event": "KXGENERICBALLOTVOTEHUB-26JUL24",
+   "title": "Generic Ballot: Democrats Up/Down (7/17-7/24)?",
+   "contracts": 1,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXGENERICBALLOTVOTEHUB-26JUL24-T5.2": 5.2
+   },
+   "demo": null
+  },
+  {
+   "series": "KXH100MON",
+   "event": "KXH100MON-26JUL31",
+   "title": "Price of NVIDIA H100 SXM compute by Jul 31, 2026?",
+   "contracts": 20,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXH100MON-26JUL31-1.960": 1.96,
+    "KXH100MON-26JUL31-2.010": 2.01,
+    "KXH100MON-26JUL31-2.060": 2.06,
+    "KXH100MON-26JUL31-2.110": 2.11,
+    "KXH100MON-26JUL31-2.160": 2.16,
+    "KXH100MON-26JUL31-2.210": 2.21,
+    "KXH100MON-26JUL31-2.260": 2.26,
+    "KXH100MON-26JUL31-2.310": 2.31,
+    "KXH100MON-26JUL31-2.360": 2.36,
+    "KXH100MON-26JUL31-2.410": 2.41,
+    "KXH100MON-26JUL31-2.460": 2.46,
+    "KXH100MON-26JUL31-2.510": 2.51,
+    "KXH100MON-26JUL31-2.560": 2.56,
+    "KXH100MON-26JUL31-2.610": 2.61,
+    "KXH100MON-26JUL31-2.660": 2.66,
+    "KXH100MON-26JUL31-2.710": 2.71,
+    "KXH100MON-26JUL31-2.760": 2.76,
+    "KXH100MON-26JUL31-2.810": 2.81,
+    "KXH100MON-26JUL31-2.860": 2.86,
+    "KXH100MON-26JUL31-2.910": 2.91
+   },
+   "demo": null
+  },
+  {
+   "series": "KXLIUKELIMINATION",
+   "event": "KXLIUKELIMINATION-26JUL23",
+   "title": "Love Island UK: Thursday Elimination",
+   "contracts": 13,
+   "strike_types": [
+    "structured"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": false,
+   "netting_is_valid": false,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXLIUKELIMINATION-26JUL23-AID": null,
+    "KXLIUKELIMINATION-26JUL23-ANG": null,
+    "KXLIUKELIMINATION-26JUL23-JAS": null,
+    "KXLIUKELIMINATION-26JUL23-JUL": null,
+    "KXLIUKELIMINATION-26JUL23-KAV": null,
+    "KXLIUKELIMINATION-26JUL23-LOR": null,
+    "KXLIUKELIMINATION-26JUL23-MIC": null,
+    "KXLIUKELIMINATION-26JUL23-NON": null,
+    "KXLIUKELIMINATION-26JUL23-PRI": null,
+    "KXLIUKELIMINATION-26JUL23-SAMR": null,
+    "KXLIUKELIMINATION-26JUL23-SIM": null,
+    "KXLIUKELIMINATION-26JUL23-TOM": null,
+    "KXLIUKELIMINATION-26JUL23-YAS": null
+   },
+   "demo": null
+  },
+  {
+   "series": "KXMUSKNW",
+   "event": "KXMUSKNW-26JUL31",
+   "title": "Elon Musk net worth on July 31 (Bloomberg)",
+   "contracts": 13,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXMUSKNW-26JUL31-T1000": 1000.0,
+    "KXMUSKNW-26JUL31-T1050": 1050.0,
+    "KXMUSKNW-26JUL31-T1100": 1100.0,
+    "KXMUSKNW-26JUL31-T1150": 1150.0,
+    "KXMUSKNW-26JUL31-T1200": 1200.0,
+    "KXMUSKNW-26JUL31-T1250": 1250.0,
+    "KXMUSKNW-26JUL31-T1300": 1300.0,
+    "KXMUSKNW-26JUL31-T700": 700.0,
+    "KXMUSKNW-26JUL31-T750": 750.0,
+    "KXMUSKNW-26JUL31-T800": 800.0,
+    "KXMUSKNW-26JUL31-T850": 850.0,
+    "KXMUSKNW-26JUL31-T900": 900.0,
+    "KXMUSKNW-26JUL31-T950": 950.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXNBATEAMANNOUNCE",
+   "event": "KXNBATEAMANNOUNCE-26LJAMES23",
+   "title": "When Will LeBron's New Team be Announced",
+   "contracts": 4,
+   "strike_types": [
+    "custom"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": false,
+   "DANGEROUS": true,
+   "strikes": {
+    "KXNBATEAMANNOUNCE-26LJAMES23-724": 724.0,
+    "KXNBATEAMANNOUNCE-26LJAMES23-725": 725.0,
+    "KXNBATEAMANNOUNCE-26LJAMES23-727": 727.0,
+    "KXNBATEAMANNOUNCE-26LJAMES23-728": 728.0
+   },
+   "demo": {
+    "held": {
+     "KXNBATEAMANNOUNCE-26LJAMES23-724": 20,
+     "KXNBATEAMANNOUNCE-26LJAMES23-728": -20
+    },
+    "long_low": "KXNBATEAMANNOUNCE-26LJAMES23-724",
+    "long_low_strike": 724.0,
+    "long_low_subtitle": "Before Jul 24, 2026",
+    "short_high": "KXNBATEAMANNOUNCE-26LJAMES23-728",
+    "short_high_strike": 728.0,
+    "short_high_subtitle": "Before Jul 28, 2026",
+    "ladder_pairing_naked_remainder": {
+     "KXNBATEAMANNOUNCE-26LJAMES23-724": 0,
+     "KXNBATEAMANNOUNCE-26LJAMES23-728": 0
+    },
+    "declared_fully_paired": true,
+    "event_deltas": {
+     "KXNBATEAMANNOUNCE-26LJAMES23": 0.0
+    },
+    "event_reads_flat": true
+   }
+  },
+  {
+   "series": "KXNETFLIXTOPVIEWSMOVIE",
+   "event": "KXNETFLIXTOPVIEWSMOVIE-26JUL27",
+   "title": "How many views will the #1 Movie on Netflix have this week?",
+   "contracts": 11,
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-12": 12.0,
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-15": 15.0,
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-18": 18.0,
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-21": 21.0,
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-25": 25.0,
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-30": 30.0,
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-35": 35.0,
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-40": 40.0,
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-50": 50.0,
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-6": 6.0,
+    "KXNETFLIXTOPVIEWSMOVIE-26JUL27-9": 9.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXNETFLIXTOPVIEWSTV",
+   "event": "KXNETFLIXTOPVIEWSTV-26JUL27",
+   "title": "How many views will the #1 Show on Netflix have this week?",
+   "contracts": 11,
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXNETFLIXTOPVIEWSTV-26JUL27-12": 12.0,
+    "KXNETFLIXTOPVIEWSTV-26JUL27-15": 15.0,
+    "KXNETFLIXTOPVIEWSTV-26JUL27-18": 18.0,
+    "KXNETFLIXTOPVIEWSTV-26JUL27-21": 21.0,
+    "KXNETFLIXTOPVIEWSTV-26JUL27-25": 25.0,
+    "KXNETFLIXTOPVIEWSTV-26JUL27-30": 30.0,
+    "KXNETFLIXTOPVIEWSTV-26JUL27-35": 35.0,
+    "KXNETFLIXTOPVIEWSTV-26JUL27-40": 40.0,
+    "KXNETFLIXTOPVIEWSTV-26JUL27-50": 50.0,
+    "KXNETFLIXTOPVIEWSTV-26JUL27-6": 6.0,
+    "KXNETFLIXTOPVIEWSTV-26JUL27-9": 9.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXNHSALES",
+   "event": "KXNHSALES-26JUL24",
+   "title": "US new home sales for June",
+   "contracts": 8,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXNHSALES-26JUL24-T520000": 520000.0,
+    "KXNHSALES-26JUL24-T540000": 540000.0,
+    "KXNHSALES-26JUL24-T560000": 560000.0,
+    "KXNHSALES-26JUL24-T580000": 580000.0,
+    "KXNHSALES-26JUL24-T600000": 600000.0,
+    "KXNHSALES-26JUL24-T620000": 620000.0,
+    "KXNHSALES-26JUL24-T640000": 640000.0,
+    "KXNHSALES-26JUL24-T660000": 660000.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXRTX5090MON",
+   "event": "KXRTX5090MON-26JUL31",
+   "title": "Price of NVIDIA RTX 5090 compute by Jul 31, 2026?",
+   "contracts": 20,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXRTX5090MON-26JUL31-0.030": 0.03,
+    "KXRTX5090MON-26JUL31-0.080": 0.08,
+    "KXRTX5090MON-26JUL31-0.130": 0.13,
+    "KXRTX5090MON-26JUL31-0.180": 0.18,
+    "KXRTX5090MON-26JUL31-0.230": 0.23,
+    "KXRTX5090MON-26JUL31-0.280": 0.28,
+    "KXRTX5090MON-26JUL31-0.330": 0.33,
+    "KXRTX5090MON-26JUL31-0.380": 0.38,
+    "KXRTX5090MON-26JUL31-0.430": 0.43,
+    "KXRTX5090MON-26JUL31-0.480": 0.48,
+    "KXRTX5090MON-26JUL31-0.530": 0.53,
+    "KXRTX5090MON-26JUL31-0.580": 0.58,
+    "KXRTX5090MON-26JUL31-0.630": 0.63,
+    "KXRTX5090MON-26JUL31-0.680": 0.68,
+    "KXRTX5090MON-26JUL31-0.730": 0.73,
+    "KXRTX5090MON-26JUL31-0.780": 0.78,
+    "KXRTX5090MON-26JUL31-0.830": 0.83,
+    "KXRTX5090MON-26JUL31-0.880": 0.88,
+    "KXRTX5090MON-26JUL31-0.930": 0.93,
+    "KXRTX5090MON-26JUL31-0.980": 0.98
+   },
+   "demo": null
+  },
+  {
+   "series": "KXTOPMODEL",
+   "event": "KXTOPMODEL-26JUL27",
+   "title": "Top AI model this week",
+   "contracts": 4,
+   "strike_types": [
+    "custom"
+   ],
+   "mutually_exclusive": true,
+   "code_nets_this_event": false,
+   "netting_is_valid": false,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXTOPMODEL-26JUL27-CLAU": null,
+    "KXTOPMODEL-26JUL27-CLAU7": null,
+    "KXTOPMODEL-26JUL27-CLAUF": null,
+    "KXTOPMODEL-26JUL27-CLAUT": null
+   },
+   "demo": null
+  },
+  {
+   "series": "KXTRUMPACT",
+   "event": "KXTRUMPACT-26JUL19",
+   "title": "Will Trump do anything this week? (7/19-7/25)",
+   "contracts": 10,
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXTRUMPACT-26JUL19-T1": 1.0,
+    "KXTRUMPACT-26JUL19-T10": 10.0,
+    "KXTRUMPACT-26JUL19-T15": 15.0,
+    "KXTRUMPACT-26JUL19-T2": 2.0,
+    "KXTRUMPACT-26JUL19-T3": 3.0,
+    "KXTRUMPACT-26JUL19-T4": 4.0,
+    "KXTRUMPACT-26JUL19-T5": 5.0,
+    "KXTRUMPACT-26JUL19-T7": 7.0,
+    "KXTRUMPACT-26JUL19-T8": 8.0,
+    "KXTRUMPACT-26JUL19-T9": 9.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXTRUMPENDORSEMENTS",
+   "event": "KXTRUMPENDORSEMENTS-26JUL25",
+   "title": "How many people will Trump endorse on Truth Social this week? (7/19-7/25)",
+   "contracts": 7,
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": false,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXTRUMPENDORSEMENTS-26JUL25-A10": null,
+    "KXTRUMPENDORSEMENTS-26JUL25-A15": null,
+    "KXTRUMPENDORSEMENTS-26JUL25-A20": null,
+    "KXTRUMPENDORSEMENTS-26JUL25-A25": null,
+    "KXTRUMPENDORSEMENTS-26JUL25-A3": null,
+    "KXTRUMPENDORSEMENTS-26JUL25-A5": null,
+    "KXTRUMPENDORSEMENTS-26JUL25-A50": null
+   },
+   "demo": null
+  },
+  {
+   "series": "KXTRUMPNOMNUM",
+   "event": "KXTRUMPNOMNUM-26JUL19",
+   "title": "How many nominations will Trump send to the Senate this week? (7/19-7/25)",
+   "contracts": 3,
+   "strike_types": [
+    "greater_or_equal"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXTRUMPNOMNUM-26JUL19-T2": 2.0,
+    "KXTRUMPNOMNUM-26JUL19-T3": 3.0,
+    "KXTRUMPNOMNUM-26JUL19-T5": 5.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXTRUMPPHOTO",
+   "event": "KXTRUMPPHOTO-26JUL26",
+   "title": "How many days will Trump be photographed this week? (7/20-7/26) ",
+   "contracts": 4,
+   "strike_types": [
+    "between"
+   ],
+   "mutually_exclusive": true,
+   "code_nets_this_event": true,
+   "netting_is_valid": false,
+   "DANGEROUS": true,
+   "strikes": {
+    "KXTRUMPPHOTO-26JUL26-4": 4.0,
+    "KXTRUMPPHOTO-26JUL26-5": 5.0,
+    "KXTRUMPPHOTO-26JUL26-6": 6.0,
+    "KXTRUMPPHOTO-26JUL26-7": 7.0
+   },
+   "demo": {
+    "held": {
+     "KXTRUMPPHOTO-26JUL26-4": 20,
+     "KXTRUMPPHOTO-26JUL26-7": -20
+    },
+    "long_low": "KXTRUMPPHOTO-26JUL26-4",
+    "long_low_strike": 4.0,
+    "long_low_subtitle": "4",
+    "short_high": "KXTRUMPPHOTO-26JUL26-7",
+    "short_high_strike": 7.0,
+    "short_high_subtitle": "7",
+    "ladder_pairing_naked_remainder": {
+     "KXTRUMPPHOTO-26JUL26-4": 0,
+     "KXTRUMPPHOTO-26JUL26-7": 0
+    },
+    "declared_fully_paired": true,
+    "event_deltas": {
+     "KXTRUMPPHOTO-26JUL26": 0.0
+    },
+    "event_reads_flat": true
+   }
+  },
+  {
+   "series": "KXTRUMPUAP",
+   "event": "KXTRUMPUAP-26MAY",
+   "title": "Will the President order the release of UFO files?",
+   "contracts": 1,
+   "strike_types": [
+    "?"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": false,
+   "netting_is_valid": false,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXTRUMPUAP-26MAY-AUG01": null
+   },
+   "demo": null
+  },
+  {
+   "series": "KXTRUTHSOCIAL",
+   "event": "KXTRUTHSOCIAL-26JUL25",
+   "title": "Trump Truth Social posts this week? (7/19-7/25)",
+   "contracts": 10,
+   "strike_types": [
+    "between",
+    "greater",
+    "less"
+   ],
+   "mutually_exclusive": true,
+   "code_nets_this_event": false,
+   "netting_is_valid": false,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXTRUTHSOCIAL-26JUL25-B109": null,
+    "KXTRUTHSOCIAL-26JUL25-B129": null,
+    "KXTRUTHSOCIAL-26JUL25-B149": null,
+    "KXTRUTHSOCIAL-26JUL25-B169": null,
+    "KXTRUTHSOCIAL-26JUL25-B189": null,
+    "KXTRUTHSOCIAL-26JUL25-B209": null,
+    "KXTRUTHSOCIAL-26JUL25-B230": null,
+    "KXTRUTHSOCIAL-26JUL25-B89": null,
+    "KXTRUTHSOCIAL-26JUL25-T240": 240.0,
+    "KXTRUTHSOCIAL-26JUL25-T80": 80.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXUSFLYCAN",
+   "event": "KXUSFLYCAN-26JUL24",
+   "title": "US flight cancellations for the week ending at 5pm EDT on 7/24",
+   "contracts": 11,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXUSFLYCAN-26JUL24-T1000": 1000.0,
+    "KXUSFLYCAN-26JUL24-T1500": 1500.0,
+    "KXUSFLYCAN-26JUL24-T2000": 2000.0,
+    "KXUSFLYCAN-26JUL24-T2500": 2500.0,
+    "KXUSFLYCAN-26JUL24-T3000": 3000.0,
+    "KXUSFLYCAN-26JUL24-T3500": 3500.0,
+    "KXUSFLYCAN-26JUL24-T4000": 4000.0,
+    "KXUSFLYCAN-26JUL24-T4500": 4500.0,
+    "KXUSFLYCAN-26JUL24-T5000": 5000.0,
+    "KXUSFLYCAN-26JUL24-T5500": 5500.0,
+    "KXUSFLYCAN-26JUL24-T6000": 6000.0
+   },
+   "demo": null
+  },
+  {
+   "series": "KXUST10AD",
+   "event": "KXUST10AD-26JUL23",
+   "title": "10Y US Treasury yield on Jul 23, 2026?",
+   "contracts": 1,
+   "strike_types": [
+    "greater"
+   ],
+   "mutually_exclusive": false,
+   "code_nets_this_event": true,
+   "netting_is_valid": true,
+   "DANGEROUS": false,
+   "strikes": {
+    "KXUST10AD-26JUL23-T4.50": 4.5
+   },
+   "demo": null
+  }
+ ]
+}

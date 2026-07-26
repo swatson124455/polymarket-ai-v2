@@ -1,0 +1,590 @@
+{
+ "generated": "2026-07-23T17:21:53.546307+00:00",
+ "rows": [
+  {
+   "series": "KXAAAGASD",
+   "n": 3,
+   "program_h": 12.75,
+   "market_open_age_h": 5.364873974166667,
+   "issued_after_open_h": 3.2333333333333334,
+   "close_in_h": 10.618459359166668,
+   "ratio": 1.0,
+   "market_life_h": 15.983333333333333,
+   "samples": [
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.120",
+     "program_h": 12.75,
+     "market_open_age_h": 5.364873974166667,
+     "issued_after_open_h": 3.2333333333333334,
+     "close_in_h": 10.618459359166668,
+     "ratio": 1.0,
+     "market_life_h": 15.983333333333333
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.110",
+     "program_h": 12.75,
+     "market_open_age_h": 5.364873974166667,
+     "issued_after_open_h": 3.2333333333333334,
+     "close_in_h": 10.618459359166668,
+     "ratio": 1.0,
+     "market_life_h": 15.983333333333333
+    },
+    {
+     "ticker": "KXAAAGASD-26JUL24-4.105",
+     "program_h": 12.75,
+     "market_open_age_h": 5.364873974166667,
+     "issued_after_open_h": 3.2333333333333334,
+     "close_in_h": 10.618459359166668,
+     "ratio": 1.0,
+     "market_life_h": 15.983333333333333
+    }
+   ]
+  },
+  {
+   "series": "KXAAAGASW",
+   "n": 3,
+   "program_h": 156.08333333333334,
+   "market_open_age_h": 76.36487397416666,
+   "issued_after_open_h": 2.9,
+   "close_in_h": 82.61845935916668,
+   "ratio": 1.0,
+   "market_life_h": 158.98333333333332,
+   "samples": [
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.200",
+     "program_h": 156.08333333333334,
+     "market_open_age_h": 76.36487397416666,
+     "issued_after_open_h": 2.9,
+     "close_in_h": 82.61845935916668,
+     "ratio": 1.0,
+     "market_life_h": 158.98333333333332
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.180",
+     "program_h": 156.08333333333334,
+     "market_open_age_h": 76.36487397416666,
+     "issued_after_open_h": 2.9,
+     "close_in_h": 82.61845935916668,
+     "ratio": 1.0,
+     "market_life_h": 158.98333333333332
+    },
+    {
+     "ticker": "KXAAAGASW-26JUL27-4.260",
+     "program_h": 156.08333333333334,
+     "market_open_age_h": 76.36487397416666,
+     "issued_after_open_h": 2.9,
+     "close_in_h": 82.61845935916668,
+     "ratio": 1.0,
+     "market_life_h": 158.98333333333332
+    }
+   ]
+  },
+  {
+   "series": "KXNETFLIXTOPVIEWSMOVIE",
+   "n": 3,
+   "program_h": 101.9523886225,
+   "market_open_age_h": 44.198207307500006,
+   "issued_after_open_h": 0.8809447105555556,
+   "close_in_h": 106.61845935916668,
+   "ratio": 1.8183376857192741,
+   "market_life_h": 150.81666666666666,
+   "samples": [
+    {
+     "ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-50",
+     "program_h": 101.95238862111113,
+     "market_open_age_h": 44.198207307500006,
+     "issued_after_open_h": 0.8809447119444445,
+     "close_in_h": 106.61845935916668,
+     "ratio": 1.8183376857192741,
+     "market_life_h": 150.81666666666666
+    },
+    {
+     "ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-40",
+     "program_h": 101.9523886225,
+     "market_open_age_h": 44.198207307500006,
+     "issued_after_open_h": 0.8809447105555556,
+     "close_in_h": 106.61845935916668,
+     "ratio": 1.8183376857192741,
+     "market_life_h": 150.81666666666666
+    },
+    {
+     "ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-35",
+     "program_h": 101.95238862388888,
+     "market_open_age_h": 44.198207307500006,
+     "issued_after_open_h": 0.8809447091666667,
+     "close_in_h": 106.61845935916668,
+     "ratio": 1.8183376857192741,
+     "market_life_h": 150.81666666666666
+    }
+   ]
+  },
+  {
+   "series": "KXMUSKNW",
+   "n": 3,
+   "program_h": 431.96666666666664,
+   "market_open_age_h": 528.8648739741667,
+   "issued_after_open_h": 275.51666666666665,
+   "close_in_h": 197.61845935916668,
+   "ratio": 1.1063719845539297,
+   "market_life_h": 726.4833333333333,
+   "samples": [
+    {
+     "ticker": "KXMUSKNW-26JUL31-T700",
+     "program_h": 431.96666666666664,
+     "market_open_age_h": 528.8648739741667,
+     "issued_after_open_h": 275.51666666666665,
+     "close_in_h": 197.61845935916668,
+     "ratio": 1.1063719845539297,
+     "market_life_h": 726.4833333333333
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1100",
+     "program_h": 431.96666666666664,
+     "market_open_age_h": 528.8648739741667,
+     "issued_after_open_h": 275.51666666666665,
+     "close_in_h": 197.61845935916668,
+     "ratio": 1.1063719845539297,
+     "market_life_h": 726.4833333333333
+    },
+    {
+     "ticker": "KXMUSKNW-26JUL31-T1050",
+     "program_h": 431.96666666666664,
+     "market_open_age_h": 528.8648739741667,
+     "issued_after_open_h": 275.51666666666665,
+     "close_in_h": 197.61845935916668,
+     "ratio": 1.1063719845539297,
+     "market_life_h": 726.4833333333333
+    }
+   ]
+  },
+  {
+   "series": "KXACTBLUETOP",
+   "n": 3,
+   "program_h": 55.233333333333334,
+   "market_open_age_h": 146.36487397416667,
+   "issued_after_open_h": 101.75,
+   "close_in_h": 20.618459359166668,
+   "ratio": 1.9417562060325855,
+   "market_life_h": 166.98333333333332,
+   "samples": [
+    {
+     "ticker": "KXACTBLUETOP-26JUL24-AELS",
+     "program_h": 55.233333333333334,
+     "market_open_age_h": 146.36487397416667,
+     "issued_after_open_h": 101.75,
+     "close_in_h": 20.618459359166668,
+     "ratio": 1.9417562060325855,
+     "market_life_h": 166.98333333333332
+    },
+    {
+     "ticker": "KXACTBLUETOP-26JUL24-TJAC",
+     "program_h": 55.233333333333334,
+     "market_open_age_h": 146.36487397416667,
+     "issued_after_open_h": 101.75,
+     "close_in_h": 20.618459359166668,
+     "ratio": 1.9417562060325855,
+     "market_life_h": 166.98333333333332
+    },
+    {
+     "ticker": "KXACTBLUETOP-26JUL24-JOSS",
+     "program_h": 55.233333333333334,
+     "market_open_age_h": 146.36487397416667,
+     "issued_after_open_h": 101.75,
+     "close_in_h": 20.618459359166668,
+     "ratio": 1.9417562060325855,
+     "market_life_h": 166.98333333333332
+    }
+   ]
+  },
+  {
+   "series": "KXNHSALES",
+   "n": 3,
+   "program_h": 300.43333333333334,
+   "market_open_age_h": 695.8648739741666,
+   "issued_after_open_h": 406.05,
+   "close_in_h": 20.618459359166668,
+   "ratio": 1.9417562060325855,
+   "market_life_h": 716.4833333333333,
+   "samples": [
+    {
+     "ticker": "KXNHSALES-26JUL24-T600000",
+     "program_h": 300.43333333333334,
+     "market_open_age_h": 695.8648739741666,
+     "issued_after_open_h": 406.05,
+     "close_in_h": 20.618459359166668,
+     "ratio": 1.9417562060325855,
+     "market_life_h": 716.4833333333333
+    },
+    {
+     "ticker": "KXNHSALES-26JUL24-T660000",
+     "program_h": 300.43333333333334,
+     "market_open_age_h": 695.8648739741666,
+     "issued_after_open_h": 406.05,
+     "close_in_h": 20.618459359166668,
+     "ratio": 1.9417562060325855,
+     "market_life_h": 716.4833333333333
+    },
+    {
+     "ticker": "KXNHSALES-26JUL24-T560000",
+     "program_h": 300.43333333333334,
+     "market_open_age_h": 695.8648739741666,
+     "issued_after_open_h": 406.05,
+     "close_in_h": 20.618459359166668,
+     "ratio": 1.9417562060325855,
+     "market_life_h": 716.4833333333333
+    }
+   ]
+  },
+  {
+   "series": "KXFEDMENTION",
+   "n": 3,
+   "program_h": 227.83333333333334,
+   "market_open_age_h": 378.8648739741667,
+   "issued_after_open_h": 305.65,
+   "close_in_h": 164.63512602583333,
+   "ratio": 1.0647831229736853,
+   "market_life_h": 543.5,
+   "samples": [
+    {
+     "ticker": "KXFEDMENTION-26JUL-STAG",
+     "program_h": 227.83333333333334,
+     "market_open_age_h": 378.8648739741667,
+     "issued_after_open_h": 305.65,
+     "close_in_h": 164.63512602583333,
+     "ratio": 1.0647831229736853,
+     "market_life_h": 543.5
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-GOODD",
+     "program_h": 227.83333333333334,
+     "market_open_age_h": 378.8648739741667,
+     "issued_after_open_h": 305.65,
+     "close_in_h": 164.63512602583333,
+     "ratio": 1.0647831229736853,
+     "market_life_h": 543.5
+    },
+    {
+     "ticker": "KXFEDMENTION-26JUL-GOLD",
+     "program_h": 227.83333333333334,
+     "market_open_age_h": 378.8648739741667,
+     "issued_after_open_h": 305.65,
+     "close_in_h": 164.63512602583333,
+     "ratio": 1.0647831229736853,
+     "market_life_h": 543.5
+    }
+   ]
+  },
+  {
+   "series": "KXAMSAVO",
+   "n": 3,
+   "program_h": 146.23333333333332,
+   "market_open_age_h": 119.36487397416666,
+   "issued_after_open_h": 0.75,
+   "close_in_h": 29.618459359166668,
+   "ratio": 1.0724153354823607,
+   "market_life_h": 148.98333333333332,
+   "samples": [
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.60",
+     "program_h": 146.23333333333332,
+     "market_open_age_h": 119.36487397416666,
+     "issued_after_open_h": 0.75,
+     "close_in_h": 29.618459359166668,
+     "ratio": 1.0724153354823607,
+     "market_life_h": 148.98333333333332
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.20",
+     "program_h": 146.23333333333332,
+     "market_open_age_h": 119.36487397416666,
+     "issued_after_open_h": 0.75,
+     "close_in_h": 29.618459359166668,
+     "ratio": 1.0724153354823607,
+     "market_life_h": 148.98333333333332
+    },
+    {
+     "ticker": "KXAMSAVO-26JUL24-T1.70",
+     "program_h": 146.23333333333332,
+     "market_open_age_h": 119.36487397416666,
+     "issued_after_open_h": 0.75,
+     "close_in_h": 29.618459359166668,
+     "ratio": 1.0724153354823607,
+     "market_life_h": 148.98333333333332
+    }
+   ]
+  },
+  {
+   "series": "KXB200MON",
+   "n": 3,
+   "program_h": 227.7,
+   "market_open_age_h": 92.1982073075,
+   "issued_after_open_h": 67.11666666666666,
+   "close_in_h": 202.63484824805556,
+   "ratio": 1.0000808854678924,
+   "market_life_h": 294.8330555555556,
+   "samples": [
+    {
+     "ticker": "KXB200MON-26JUL31-3.860",
+     "program_h": 227.7,
+     "market_open_age_h": 521.3648739741667,
+     "issued_after_open_h": 496.28333333333336,
+     "close_in_h": 202.63484824805556,
+     "ratio": 1.0000808854678924,
+     "market_life_h": 723.9997222222222
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-7.360",
+     "program_h": 227.7,
+     "market_open_age_h": 92.1982073075,
+     "issued_after_open_h": 67.11666666666666,
+     "close_in_h": 202.63484824805556,
+     "ratio": 1.0000808854678924,
+     "market_life_h": 294.8330555555556
+    },
+    {
+     "ticker": "KXB200MON-26JUL31-6.960",
+     "program_h": 227.7,
+     "market_open_age_h": 92.1982073075,
+     "issued_after_open_h": 67.11666666666666,
+     "close_in_h": 202.63484824805556,
+     "ratio": 1.0000808854678924,
+     "market_life_h": 294.8330555555556
+    }
+   ]
+  },
+  {
+   "series": "KXEOWEEK",
+   "n": 3,
+   "program_h": 501.96814858305555,
+   "market_open_age_h": 123.36487397416666,
+   "issued_after_open_h": 2.0318514169444444,
+   "close_in_h": 380.6351260258333,
+   "ratio": 1.0,
+   "market_life_h": 504.0,
+   "samples": [
+    {
+     "ticker": "KXEOWEEK-26JUL25-1",
+     "program_h": 501.96814858305555,
+     "market_open_age_h": 123.36487397416666,
+     "issued_after_open_h": 2.0318514169444444,
+     "close_in_h": 380.6351260258333,
+     "ratio": 1.0,
+     "market_life_h": 504.0
+    },
+    {
+     "ticker": "KXEOWEEK-26JUL25-2",
+     "program_h": 501.96814858305555,
+     "market_open_age_h": 123.36487397416666,
+     "issued_after_open_h": 2.0318514169444444,
+     "close_in_h": 380.6351260258333,
+     "ratio": 1.0,
+     "market_life_h": 504.0
+    },
+    {
+     "ticker": "KXEOWEEK-26JUL18-1",
+     "program_h": 501.96993552305554,
+     "market_open_age_h": 291.3648739741667,
+     "issued_after_open_h": 2.0300644769444443,
+     "close_in_h": -2.370429529722222,
+     "ratio": -0.011147873702834194,
+     "market_life_h": 288.99444444444447
+    }
+   ]
+  },
+  {
+   "series": "KXRT",
+   "n": 3,
+   "program_h": 97.96300263083333,
+   "market_open_age_h": 39.98154064083334,
+   "issued_after_open_h": 0.6536640355555556,
+   "close_in_h": 932.6351260258334,
+   "ratio": 15.905740965225405,
+   "market_life_h": 972.6166666666667,
+   "samples": [
+    {
+     "ticker": "KXRT-BUD-90",
+     "program_h": 97.96300262944445,
+     "market_open_age_h": 39.98154064083334,
+     "issued_after_open_h": 0.6536640369444444,
+     "close_in_h": 932.6351260258334,
+     "ratio": 15.905740965225405,
+     "market_life_h": 972.6166666666667
+    },
+    {
+     "ticker": "KXRT-BUD-85",
+     "program_h": 97.96300263083333,
+     "market_open_age_h": 39.98154064083334,
+     "issued_after_open_h": 0.6536640355555556,
+     "close_in_h": 932.6351260258334,
+     "ratio": 15.905740965225405,
+     "market_life_h": 972.6166666666667
+    },
+    {
+     "ticker": "KXRT-BUD-80",
+     "program_h": 97.9630026325,
+     "market_open_age_h": 39.98154064083334,
+     "issued_after_open_h": 0.6536640338888888,
+     "close_in_h": 932.6351260258334,
+     "ratio": 15.905740965225405,
+     "market_life_h": 972.6166666666667
+    }
+   ]
+  },
+  {
+   "series": "KXH200MS",
+   "n": 3,
+   "program_h": 227.78333333333333,
+   "market_open_age_h": 867.8482073074999,
+   "issued_after_open_h": 842.6833333333333,
+   "close_in_h": 3875.6348482480557,
+   "ratio": 19.127748086259043,
+   "market_life_h": 4743.483055555555,
+   "samples": [
+    {
+     "ticker": "KXH200MS-26DEC-4.000",
+     "program_h": 227.78333333333333,
+     "market_open_age_h": 867.8482073074999,
+     "issued_after_open_h": 842.6833333333333,
+     "close_in_h": 3875.6348482480557,
+     "ratio": 19.127748086259043,
+     "market_life_h": 4743.483055555555
+    },
+    {
+     "ticker": "KXH200MS-27JUN-3.000",
+     "program_h": 227.78333333333333,
+     "market_open_age_h": 867.8482073074999,
+     "issued_after_open_h": 842.6833333333333,
+     "close_in_h": 8218.634848248055,
+     "ratio": 40.56212288969927,
+     "market_life_h": 9086.483055555556
+    },
+    {
+     "ticker": "KXH200MS-26SEP-6.500",
+     "program_h": 227.78333333333333,
+     "market_open_age_h": 867.8482073074999,
+     "issued_after_open_h": 842.6833333333333,
+     "close_in_h": 1666.6348482480555,
+     "ratio": 8.22548376648021,
+     "market_life_h": 2534.4830555555554
+    }
+   ]
+  },
+  {
+   "series": "KXFUNDRAISING",
+   "n": 3,
+   "program_h": 99.96706028166666,
+   "market_open_age_h": 41.36487397416667,
+   "issued_after_open_h": 0.03293971805555555,
+   "close_in_h": 2036.6184593591665,
+   "ratio": 34.73376109862075,
+   "market_life_h": 2077.983333333333,
+   "samples": [
+    {
+     "ticker": "KXFUNDRAISING-CLFQ326-A205000000",
+     "program_h": 99.96706028027779,
+     "market_open_age_h": 41.36487397416667,
+     "issued_after_open_h": 0.032939719444444446,
+     "close_in_h": 2036.6184593591665,
+     "ratio": 34.73376109862075,
+     "market_life_h": 2077.983333333333
+    },
+    {
+     "ticker": "KXFUNDRAISING-CLFQ326-A195000000",
+     "program_h": 99.96706028166666,
+     "market_open_age_h": 41.36487397416667,
+     "issued_after_open_h": 0.03293971805555555,
+     "close_in_h": 2036.6184593591665,
+     "ratio": 34.73376109862075,
+     "market_life_h": 2077.983333333333
+    },
+    {
+     "ticker": "KXFUNDRAISING-CLFQ326-A185000000",
+     "program_h": 99.96706028305555,
+     "market_open_age_h": 41.36487397416667,
+     "issued_after_open_h": 0.03293971666666667,
+     "close_in_h": 2036.6184593591665,
+     "ratio": 34.73376109862075,
+     "market_life_h": 2077.983333333333
+    }
+   ]
+  },
+  {
+   "series": "KXDPZ",
+   "n": 3,
+   "program_h": 125.96529388138889,
+   "market_open_age_h": 67.83154064083334,
+   "issued_after_open_h": 0.5013727849999999,
+   "close_in_h": 4810.635126025833,
+   "ratio": 82.04357101456836,
+   "market_life_h": 4878.466666666666,
+   "samples": [
+    {
+     "ticker": "KXDPZ-26OCTSSSG-5.0",
+     "program_h": 125.96529387972222,
+     "market_open_age_h": 67.83154064083334,
+     "issued_after_open_h": 0.5013727866666666,
+     "close_in_h": 4810.635126025833,
+     "ratio": 82.04357101456836,
+     "market_life_h": 4878.466666666666
+    },
+    {
+     "ticker": "KXDPZ-26OCTSSSG-4.5",
+     "program_h": 125.96529388138889,
+     "market_open_age_h": 67.83154064083334,
+     "issued_after_open_h": 0.5013727849999999,
+     "close_in_h": 4810.635126025833,
+     "ratio": 82.04357101456836,
+     "market_life_h": 4878.466666666666
+    },
+    {
+     "ticker": "KXDPZ-26OCTSSSG-4.0",
+     "program_h": 125.96529388277779,
+     "market_open_age_h": 67.83154064083334,
+     "issued_after_open_h": 0.5013727836111112,
+     "close_in_h": 4810.635126025833,
+     "ratio": 82.04357101456836,
+     "market_life_h": 4878.466666666666
+    }
+   ]
+  },
+  {
+   "series": "KXVOTEPRIMARY",
+   "n": 3,
+   "program_h": 104.96425879583333,
+   "market_open_age_h": 46.51487397416667,
+   "issued_after_open_h": 0.18574120388888887,
+   "close_in_h": 9212.635126025833,
+   "ratio": 157.11802379363172,
+   "market_life_h": 9259.15,
+   "samples": [
+    {
+     "ticker": "KXVOTEPRIMARY-SCRSENS26DNORDNOR-85",
+     "program_h": 104.96425879416667,
+     "market_open_age_h": 46.51487397416667,
+     "issued_after_open_h": 0.18574120555555554,
+     "close_in_h": 9212.635126025833,
+     "ratio": 157.11802379363172,
+     "market_life_h": 9259.15
+    },
+    {
+     "ticker": "KXVOTEPRIMARY-SCRSENS26DNORDNOR-80",
+     "program_h": 104.96425879583333,
+     "market_open_age_h": 46.51487397416667,
+     "issued_after_open_h": 0.18574120388888887,
+     "close_in_h": 9212.635126025833,
+     "ratio": 157.11802379363172,
+     "market_life_h": 9259.15
+    },
+    {
+     "ticker": "KXVOTEPRIMARY-SCRSENS26DNORDNOR-75",
+     "program_h": 104.9642587975,
+     "market_open_age_h": 46.51487397416667,
+     "issued_after_open_h": 0.1857412022222222,
+     "close_in_h": 9212.635126025833,
+     "ratio": 157.11802379363172,
+     "market_life_h": 9259.15
+    }
+   ]
+  }
+ ]
+}

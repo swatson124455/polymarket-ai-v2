@@ -1,0 +1,501 @@
+{
+  "generated": "2026-07-23T17:18:34.112342+00:00",
+  "flatten": [
+    {
+      "series": "KXACTBLUETOP",
+      "ticker": "KXACTBLUETOP-26JUL24-SBRO",
+      "h_to_close": 20.72027504888889,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.040000000000000036
+    },
+    {
+      "series": "KXACTBLUETOP",
+      "ticker": "KXACTBLUETOP-26JUL24-SBEL",
+      "h_to_close": 20.72027504888889,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.020000000000000018
+    },
+    {
+      "series": "KXACTBLUETOP",
+      "ticker": "KXACTBLUETOP-26JUL24-NSHA",
+      "h_to_close": 20.72027504888889,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXACTBLUETOP",
+      "ticker": "KXACTBLUETOP-26JUL24-MPEL",
+      "h_to_close": 20.72027504888889,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXACTBLUETOP",
+      "ticker": "KXACTBLUETOP-26JUL24-HSTE",
+      "h_to_close": 20.72027504888889,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.040000000000000036
+    },
+    {
+      "series": "KXACTBLUETOP",
+      "ticker": "KXACTBLUETOP-26JUL31-TJAC",
+      "h_to_close": 188.7202750488889,
+      "strand_unwind_possible": true,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.08,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.12
+    },
+    {
+      "series": "KXBIGBROTHERELIMINATION",
+      "ticker": "KXBIGBROTHERELIMINATION-26JUL23-YAS",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXBIGBROTHERELIMINATION",
+      "ticker": "KXBIGBROTHERELIMINATION-26JUL23-TAY",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXBIGBROTHERELIMINATION",
+      "ticker": "KXBIGBROTHERELIMINATION-26JUL23-RIC",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXBIGBROTHERELIMINATION",
+      "ticker": "KXBIGBROTHERELIMINATION-26JUL23-MAL",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXBIGBROTHERELIMINATION",
+      "ticker": "KXBIGBROTHERELIMINATION-26JUL23-LAT",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXBIGBROTHERELIMINATION",
+      "ticker": "KXBIGBROTHERELIMINATION-26JUL23-KAM",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXMUSKNW",
+      "ticker": "KXMUSKNW-26JUL31-T1700",
+      "h_to_close": 197.7202750488889,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXMUSKNW",
+      "ticker": "KXMUSKNW-26JUL31-T1600",
+      "h_to_close": 197.7202750488889,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXMUSKNW",
+      "ticker": "KXMUSKNW-26JUL31-T1500",
+      "h_to_close": 197.7202750488889,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXMUSKNW",
+      "ticker": "KXMUSKNW-26JUL31-T1400",
+      "h_to_close": 197.7202750488889,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXMUSKNW",
+      "ticker": "KXMUSKNW-26JUL31-T1350",
+      "h_to_close": 197.7202750488889,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.010000000000000009
+    },
+    {
+      "series": "KXMUSKNW",
+      "ticker": "KXMUSKNW-26DEC31-T500",
+      "h_to_close": 3868.7202750488887,
+      "strand_unwind_possible": true,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.07,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.9299999999999999
+    },
+    {
+      "series": "KXAAAGASD",
+      "ticker": "KXAAAGASD-26JUL24-4.095",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.99,
+      "flat_longNO_ok": false,
+      "flat_longNO_px": null
+    },
+    {
+      "series": "KXAAAGASD",
+      "ticker": "KXAAAGASD-26JUL24-4.090",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.98,
+      "flat_longNO_ok": false,
+      "flat_longNO_px": null
+    },
+    {
+      "series": "KXAAAGASD",
+      "ticker": "KXAAAGASD-26JUL24-4.085",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.99,
+      "flat_longNO_ok": false,
+      "flat_longNO_px": null
+    },
+    {
+      "series": "KXAAAGASD",
+      "ticker": "KXAAAGASD-26JUL24-4.080",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.99,
+      "flat_longNO_ok": false,
+      "flat_longNO_px": null
+    },
+    {
+      "series": "KXAAAGASD",
+      "ticker": "KXAAAGASD-26JUL24-4.075",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.99,
+      "flat_longNO_ok": false,
+      "flat_longNO_px": null
+    },
+    {
+      "series": "KXAAAGASD",
+      "ticker": "KXAAAGASD-26JUL24-4.070",
+      "h_to_close": 10.720275048888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.99,
+      "flat_longNO_ok": false,
+      "flat_longNO_px": null
+    },
+    {
+      "series": "KXAAAGASW",
+      "ticker": "KXAAAGASW-26JUL27-4.150",
+      "h_to_close": 82.72027504888888,
+      "strand_unwind_possible": true,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.57,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.7
+    },
+    {
+      "series": "KXAAAGASW",
+      "ticker": "KXAAAGASW-26JUL27-4.130",
+      "h_to_close": 82.72027504888888,
+      "strand_unwind_possible": true,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.67,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.8
+    },
+    {
+      "series": "KXAAAGASW",
+      "ticker": "KXAAAGASW-26JUL27-4.110",
+      "h_to_close": 82.72027504888888,
+      "strand_unwind_possible": true,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.91,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.97
+    },
+    {
+      "series": "KXAAAGASW",
+      "ticker": "KXAAAGASW-26JUL27-4.300",
+      "h_to_close": 82.72027504888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.020000000000000018
+    },
+    {
+      "series": "KXAAAGASW",
+      "ticker": "KXAAAGASW-26JUL27-4.280",
+      "h_to_close": 82.72027504888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": false,
+      "flat_longYES_px": null,
+      "flat_longNO_ok": true,
+      "flat_longNO_px": 0.020000000000000018
+    },
+    {
+      "series": "KXAAAGASW",
+      "ticker": "KXAAAGASW-26JUL27-3.960",
+      "h_to_close": 82.72027504888888,
+      "strand_unwind_possible": false,
+      "flat_longYES_ok": true,
+      "flat_longYES_px": 0.99,
+      "flat_longNO_ok": false,
+      "flat_longNO_px": null
+    }
+  ],
+  "lock": [
+    {
+      "series": "KXNETFLIXTOPVIEWSMOVIE",
+      "n_programs": 11,
+      "rep_ticker": "KXNETFLIXTOPVIEWSMOVIE-26JUL27-50",
+      "program_h": 101.95238862111113,
+      "tail_h": 47.983333333611114,
+      "lock_h": 149.93572195472223,
+      "compensated_pct": 67.9973973459766,
+      "pool_period_usd": 80.0,
+      "pool_per_program_day": 18.832319928622333,
+      "pool_per_lock_day": 12.805487411330864
+    },
+    {
+      "series": "KXNETFLIXTOPVIEWSTV",
+      "n_programs": 11,
+      "rep_ticker": "KXNETFLIXTOPVIEWSTV-26JUL27-50",
+      "program_h": 101.95238863972223,
+      "tail_h": 47.983333333611114,
+      "lock_h": 149.93572197333333,
+      "compensated_pct": 67.99739734994898,
+      "pool_period_usd": 80.0,
+      "pool_per_program_day": 18.832319925184553,
+      "pool_per_lock_day": 12.805487409741353
+    },
+    {
+      "series": "KXTRUMPENDORSEMENTS",
+      "n_programs": 7,
+      "rep_ticker": "KXTRUMPENDORSEMENTS-26JUL25-A20",
+      "program_h": 165.96723006444444,
+      "tail_h": 0.0,
+      "lock_h": 165.96723006444444,
+      "compensated_pct": 100.0,
+      "pool_period_usd": 142.8571,
+      "pool_per_program_day": 20.65811665753956,
+      "pool_per_lock_day": 20.65811665753956
+    },
+    {
+      "series": "KXEOWEEK",
+      "n_programs": 6,
+      "rep_ticker": "KXEOWEEK-26JUL25-1",
+      "program_h": 501.96814858305555,
+      "tail_h": 0.0,
+      "lock_h": 501.96814858305555,
+      "compensated_pct": 100.0,
+      "pool_period_usd": 333.3333,
+      "pool_per_program_day": 15.93726459055663,
+      "pool_per_lock_day": 15.93726459055663
+    },
+    {
+      "series": "KXAMSAVO",
+      "n_programs": 11,
+      "rep_ticker": "KXAMSAVO-26JUL24-T1.60",
+      "program_h": 146.23333333333332,
+      "tail_h": 2.0,
+      "lock_h": 148.23333333333332,
+      "compensated_pct": 98.65077580391275,
+      "pool_period_usd": 100.0,
+      "pool_per_program_day": 16.412126738089814,
+      "pool_per_lock_day": 16.190690353047
+    },
+    {
+      "series": "KXACTBLUETOP",
+      "n_programs": 4,
+      "rep_ticker": "KXACTBLUETOP-26JUL24-AELS",
+      "program_h": 55.233333333333334,
+      "tail_h": 10.0,
+      "lock_h": 65.23333333333333,
+      "compensated_pct": 84.67041389882472,
+      "pool_period_usd": 100.0,
+      "pool_per_program_day": 43.45202172601086,
+      "pool_per_lock_day": 36.79100664282065
+    },
+    {
+      "series": "KXB200MON",
+      "n_programs": 40,
+      "rep_ticker": "KXB200MON-26JUL31-3.860",
+      "program_h": 227.7,
+      "tail_h": 0.01638888888888889,
+      "lock_h": 227.71638888888887,
+      "compensated_pct": 99.99280293835291,
+      "pool_period_usd": 25.0,
+      "pool_per_program_day": 2.6350461133069834,
+      "pool_per_lock_day": 2.634856467413779
+    },
+    {
+      "series": "KXBIGBROTHERELIMINATION",
+      "n_programs": 4,
+      "rep_ticker": "KXBIGBROTHERELIMINATION-26JUL23-MEL",
+      "program_h": 83.81666666666666,
+      "tail_h": 0.0,
+      "lock_h": 83.81666666666666,
+      "compensated_pct": 100.0,
+      "pool_period_usd": 100.0,
+      "pool_per_program_day": 28.63392324517797,
+      "pool_per_lock_day": 28.63392324517797
+    },
+    {
+      "series": "KXNHSALES",
+      "n_programs": 8,
+      "rep_ticker": "KXNHSALES-26JUL24-T600000",
+      "program_h": 300.43333333333334,
+      "tail_h": 10.0,
+      "lock_h": 310.43333333333334,
+      "compensated_pct": 96.7786964458284,
+      "pool_period_usd": 100.0,
+      "pool_per_program_day": 7.988461111727505,
+      "pool_per_lock_day": 7.731128530011811
+    },
+    {
+      "series": "KXMUSKNW",
+      "n_programs": 13,
+      "rep_ticker": "KXMUSKNW-26JUL31-T700",
+      "program_h": 431.96666666666664,
+      "tail_h": 19.0,
+      "lock_h": 450.96666666666664,
+      "compensated_pct": 95.7868282947742,
+      "pool_period_usd": 200.0,
+      "pool_per_program_day": 11.111968516089204,
+      "pool_per_lock_day": 10.643802202675733
+    },
+    {
+      "series": "KXTRUTHSOCIAL",
+      "n_programs": 10,
+      "rep_ticker": "KXTRUTHSOCIAL-26JUL25-B89",
+      "program_h": 165.95155955416666,
+      "tail_h": 0.0,
+      "lock_h": 165.95155955416666,
+      "compensated_pct": 100.0,
+      "pool_period_usd": 100.0,
+      "pool_per_program_day": 14.46205149531384,
+      "pool_per_lock_day": 14.46205149531384
+    },
+    {
+      "series": "KXRTX5090MON",
+      "n_programs": 20,
+      "rep_ticker": "KXRTX5090MON-26JUL31-0.480",
+      "program_h": 227.7,
+      "tail_h": 0.01638888888888889,
+      "lock_h": 227.71638888888887,
+      "compensated_pct": 99.99280293835291,
+      "pool_period_usd": 25.0,
+      "pool_per_program_day": 2.6350461133069834,
+      "pool_per_lock_day": 2.634856467413779
+    },
+    {
+      "series": "KXFEDMENTION",
+      "n_programs": 43,
+      "rep_ticker": "KXFEDMENTION-26JUL-STAG",
+      "program_h": 227.83333333333334,
+      "tail_h": 10.016666666666667,
+      "lock_h": 237.85000000000002,
+      "compensated_pct": 95.78866232219185,
+      "pool_period_usd": 100.0,
+      "pool_per_program_day": 10.5340160936357,
+      "pool_per_lock_day": 10.090393104898043
+    },
+    {
+      "series": "KXTRUMPACT",
+      "n_programs": 10,
+      "rep_ticker": "KXTRUMPACT-26JUL19-T8",
+      "program_h": 165.96776680555556,
+      "tail_h": 0.0,
+      "lock_h": 165.96776680555556,
+      "compensated_pct": 100.0,
+      "pool_period_usd": 100.0,
+      "pool_per_program_day": 14.460639232507061,
+      "pool_per_lock_day": 14.460639232507061
+    },
+    {
+      "series": "KXAAAGASD",
+      "n_programs": 7,
+      "rep_ticker": "KXAAAGASD-26JUL24-4.120",
+      "program_h": 12.75,
+      "tail_h": 0.0,
+      "lock_h": 12.75,
+      "compensated_pct": 100.0,
+      "pool_period_usd": 100.0,
+      "pool_per_program_day": 188.23529411764707,
+      "pool_per_lock_day": 188.23529411764707
+    },
+    {
+      "series": "KXAAAGASW",
+      "n_programs": 15,
+      "rep_ticker": "KXAAAGASW-26JUL27-4.200",
+      "program_h": 156.08333333333334,
+      "tail_h": 0.0,
+      "lock_h": 156.08333333333334,
+      "compensated_pct": 100.0,
+      "pool_period_usd": 100.0,
+      "pool_per_program_day": 15.376401494927922,
+      "pool_per_lock_day": 15.376401494927922
+    }
+  ],
+  "join_ct": 20.0,
+  "caveats": "read-only public API; one instant; reward-side/book-shape only; no fill rate, queue position, adverse selection or settlement toxicity"
+}

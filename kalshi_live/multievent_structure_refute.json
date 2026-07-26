@@ -1,0 +1,4148 @@
+{
+ "KXNETFLIXTOPVIEWSMOVIE": {
+  "events": 11,
+  "markets": 121,
+  "strike_type_union": [
+   "greater_or_equal"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXNETFLIXTOPVIEWSMOVIE-26JUL27": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26JUL27-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26JUL27-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSMOVIE-26JUL20": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26JUL20-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26JUL20-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSMOVIE-26JUL13": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26JUL13-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26JUL13-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSMOVIE-26JUL06": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26JUL06-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26JUL06-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSMOVIE-26JUN29": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26JUN29-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26JUN29-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSMOVIE-26JUN22": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26JUN22-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26JUN22-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSMOVIE-26JUN15": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26JUN15-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26JUN15-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSMOVIE-26JUN08": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26JUN08-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26JUN08-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSMOVIE-26JUN01": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26JUN01-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26JUN01-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSMOVIE-26MAY25": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26MAY25-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26MAY25-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSMOVIE-26MAY18": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSMOVIE-26MAY18-6",
+     "KXNETFLIXTOPVIEWSMOVIE-26MAY18-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   }
+  }
+ },
+ "KXNETFLIXTOPVIEWSTV": {
+  "events": 11,
+  "markets": 121,
+  "strike_type_union": [
+   "greater_or_equal"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXNETFLIXTOPVIEWSTV-26JUL27": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26JUL27-6",
+     "KXNETFLIXTOPVIEWSTV-26JUL27-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSTV-26JUL20": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26JUL20-6",
+     "KXNETFLIXTOPVIEWSTV-26JUL20-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSTV-26JUL13": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26JUL13-6",
+     "KXNETFLIXTOPVIEWSTV-26JUL13-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSTV-26JUL06": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26JUL06-6",
+     "KXNETFLIXTOPVIEWSTV-26JUL06-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSTV-26JUN29": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26JUN29-6",
+     "KXNETFLIXTOPVIEWSTV-26JUN29-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSTV-26JUN22": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26JUN22-6",
+     "KXNETFLIXTOPVIEWSTV-26JUN22-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSTV-26JUN15": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26JUN15-6",
+     "KXNETFLIXTOPVIEWSTV-26JUN15-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSTV-26JUN08": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26JUN08-6",
+     "KXNETFLIXTOPVIEWSTV-26JUN08-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSTV-26JUN01": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26JUN01-6",
+     "KXNETFLIXTOPVIEWSTV-26JUN01-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSTV-26MAY25": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26MAY25-6",
+     "KXNETFLIXTOPVIEWSTV-26MAY25-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   },
+   "KXNETFLIXTOPVIEWSTV-26MAY18": {
+    "n": 11,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNETFLIXTOPVIEWSTV-26MAY18-6",
+     "KXNETFLIXTOPVIEWSTV-26MAY18-50"
+    ],
+    "lo_title": "At least 6 million",
+    "hi_title": "At least 50 million"
+   }
+  }
+ },
+ "KXTRUMPENDORSEMENTS": {
+  "events": 10,
+  "markets": 69,
+  "strike_type_union": [
+   "greater_or_equal"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   false
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   false
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXTRUMPENDORSEMENTS-26JUL25": {
+    "n": 7,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPENDORSEMENTS-26JUL18": {
+    "n": 7,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPENDORSEMENTS-26JUL11": {
+    "n": 7,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPENDORSEMENTS-26JUL04": {
+    "n": 7,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPENDORSEMENTS-26JUN27": {
+    "n": 7,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPENDORSEMENTS-26JUN20": {
+    "n": 7,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPENDORSEMENTS-26JUN13": {
+    "n": 7,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPENDORSEMENTS-26JUN06": {
+    "n": 7,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPENDORSEMENTS-26MAY30": {
+    "n": 7,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPENDORSEMENTS-26MAY23": {
+    "n": 6,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 6,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   }
+  }
+ },
+ "KXEOWEEK": {
+  "events": 13,
+  "markets": 38,
+  "strike_type_union": [
+   "greater"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   false,
+   true
+  ],
+  "pairing_heterogeneous": true,
+  "per_event": {
+   "KXEOWEEK-26JUL25": {
+    "n": 3,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active",
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26JUL25-0",
+     "KXEOWEEK-26JUL25-2"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 2"
+   },
+   "KXEOWEEK-26JUL18": {
+    "n": 3,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26JUL18-0",
+     "KXEOWEEK-26JUL18-2"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 2"
+   },
+   "KXEOWEEK-26JUL11": {
+    "n": 3,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26JUL11-0",
+     "KXEOWEEK-26JUL11-2"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 2"
+   },
+   "KXEOWEEK-26JUL04": {
+    "n": 3,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26JUL04-0",
+     "KXEOWEEK-26JUL04-2"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 2"
+   },
+   "KXEOWEEK-26JUN27": {
+    "n": 3,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26JUN27-0",
+     "KXEOWEEK-26JUN27-2"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 2"
+   },
+   "KXEOWEEK-26JUN20": {
+    "n": 3,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26JUN20-0",
+     "KXEOWEEK-26JUN20-2"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 2"
+   },
+   "KXEOWEEK-26JUN13": {
+    "n": 3,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26JUN13-0",
+     "KXEOWEEK-26JUN13-2"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 2"
+   },
+   "KXEOWEEK-26JUN06": {
+    "n": 3,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26JUN06-0",
+     "KXEOWEEK-26JUN06-2"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 2"
+   },
+   "KXEOWEEK-26MAY30": {
+    "n": 3,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26MAY30-0",
+     "KXEOWEEK-26MAY30-2"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 2"
+   },
+   "KXEOWEEK-26MAY23": {
+    "n": 5,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26MAY23-0",
+     "KXEOWEEK-26MAY23-4"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 4"
+   },
+   "KXEOWEEK-26MAY16": {
+    "n": 2,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26MAY16-0",
+     "KXEOWEEK-26MAY16-1"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 1"
+   },
+   "KXEOWEEK-26MAY09": {
+    "n": 3,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXEOWEEK-26MAY09-0",
+     "KXEOWEEK-26MAY09-2"
+    ],
+    "lo_title": "Above 0",
+    "hi_title": "Above 2"
+   },
+   "KXEOWEEK-26MAY02": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   }
+  }
+ },
+ "KXAMSAVO": {
+  "events": 7,
+  "markets": 49,
+  "strike_type_union": [
+   "greater"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXAMSAVO-26JUL24": {
+    "n": 11,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAMSAVO-26JUL24-T0.80",
+     "KXAMSAVO-26JUL24-T1.80"
+    ],
+    "lo_title": "Above $0.80",
+    "hi_title": "Above $1.80"
+   },
+   "KXAMSAVO-26JUL17": {
+    "n": 7,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAMSAVO-26JUL17-T0.80",
+     "KXAMSAVO-26JUL17-T2.00"
+    ],
+    "lo_title": "Above $0.80",
+    "hi_title": "Above $2.00"
+   },
+   "KXAMSAVO-26JUL10": {
+    "n": 7,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAMSAVO-26JUL10-T0.80",
+     "KXAMSAVO-26JUL10-T2.00"
+    ],
+    "lo_title": "Above $0.80",
+    "hi_title": "Above $2.00"
+   },
+   "KXAMSAVO-26JUL03": {
+    "n": 7,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAMSAVO-26JUL03-T0.80",
+     "KXAMSAVO-26JUL03-T2.00"
+    ],
+    "lo_title": "Above $0.80",
+    "hi_title": "Above $2.00"
+   },
+   "KXAMSAVO-26JUN26": {
+    "n": 7,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAMSAVO-26JUN26-T0.80",
+     "KXAMSAVO-26JUN26-T2.00"
+    ],
+    "lo_title": "Above $0.80",
+    "hi_title": "Above $2.00"
+   },
+   "KXAMSAVO-26JUN19": {
+    "n": 5,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAMSAVO-26JUN19-T0.80",
+     "KXAMSAVO-26JUN19-T1.20"
+    ],
+    "lo_title": "Above $0.80",
+    "hi_title": "Above $1.20"
+   },
+   "KXAMSAVO-26JUN12": {
+    "n": 5,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAMSAVO-26JUN12-T0.90",
+     "KXAMSAVO-26JUN12-T1.30"
+    ],
+    "lo_title": "Above $0.90",
+    "hi_title": "Above $1.30"
+   }
+  }
+ },
+ "KXACTBLUETOP": {
+  "events": 3,
+  "markets": 27,
+  "strike_type_union": [
+   "custom"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   false
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   false
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXACTBLUETOP-26JUL24": {
+    "n": 9,
+    "strike_types": [
+     "custom"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": false,
+    "parse_fail": 9,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXACTBLUETOP-26JUL17": {
+    "n": 9,
+    "strike_types": [
+     "custom"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 9,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXACTBLUETOP-26JUL31": {
+    "n": 9,
+    "strike_types": [
+     "custom"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": false,
+    "parse_fail": 9,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   }
+  }
+ },
+ "KXB200MON": {
+  "events": 2,
+  "markets": 80,
+  "strike_type_union": [
+   "greater"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXB200MON-26JUL31": {
+    "n": 40,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXB200MON-26JUL31-3.460",
+     "KXB200MON-26JUL31-7.360"
+    ],
+    "lo_title": "Above $3.46",
+    "hi_title": "Above $7.36"
+   },
+   "KXB200MON-26MAY31": {
+    "n": 40,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXB200MON-26MAY31-4.820",
+     "KXB200MON-26MAY31-5.210"
+    ],
+    "lo_title": "Above $4.82",
+    "hi_title": "Above $5.21"
+   }
+  }
+ },
+ "KXBIGBROTHERELIMINATION": {
+  "events": 3,
+  "markets": 49,
+  "strike_type_union": [
+   "structured"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   false
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   false
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXBIGBROTHERELIMINATION-26JUL23": {
+    "n": 16,
+    "strike_types": [
+     "structured"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": false,
+    "parse_fail": 16,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXBIGBROTHERELIMINATION-26JUL16": {
+    "n": 17,
+    "strike_types": [
+     "structured"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 17,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXBIGBROTHERELIMINATION-26JUL09": {
+    "n": 16,
+    "strike_types": [
+     "structured"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 16,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   }
+  }
+ },
+ "KXNHSALES": {
+  "events": 3,
+  "markets": 24,
+  "strike_type_union": [
+   "greater"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXNHSALES-26JUL24": {
+    "n": 8,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNHSALES-26JUL24-T520000",
+     "KXNHSALES-26JUL24-T660000"
+    ],
+    "lo_title": "Above 520,000",
+    "hi_title": "Above 660,000"
+   },
+   "KXNHSALES-26JUN24": {
+    "n": 8,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNHSALES-26JUN24-T560000",
+     "KXNHSALES-26JUN24-T700000"
+    ],
+    "lo_title": "Above 560,000",
+    "hi_title": "Above 700,000"
+   },
+   "KXNHSALES-26MAY28": {
+    "n": 8,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNHSALES-26MAY28-T620",
+     "KXNHSALES-26MAY28-T760"
+    ],
+    "lo_title": "Above 620,000",
+    "hi_title": "Above 760,000"
+   }
+  }
+ },
+ "KXMUSKNW": {
+  "events": 4,
+  "markets": 74,
+  "strike_type_union": [
+   "greater"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXMUSKNW-26DEC31": {
+    "n": 21,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXMUSKNW-26DEC31-T500",
+     "KXMUSKNW-26DEC31-T2500"
+    ],
+    "lo_title": "Above $500 billion",
+    "hi_title": "Above $2.5 trillion"
+   },
+   "KXMUSKNW-26JUL31": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXMUSKNW-26JUL31-T700",
+     "KXMUSKNW-26JUL31-T1700"
+    ],
+    "lo_title": "Above $700 billion",
+    "hi_title": "Above $1.70 trillion"
+   },
+   "KXMUSKNW-26JUN30": {
+    "n": 24,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXMUSKNW-26JUN30-T690",
+     "KXMUSKNW-26JUN30-T1700"
+    ],
+    "lo_title": "Above $690 billion",
+    "hi_title": "Above $1.70 trillion"
+   },
+   "KXMUSKNW-26MAY31": {
+    "n": 11,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXMUSKNW-26MAY31-T625",
+     "KXMUSKNW-26MAY31-T675"
+    ],
+    "lo_title": "Above $625 billion",
+    "hi_title": "Above $675 billion"
+   }
+  }
+ },
+ "KXTRUTHSOCIAL": {
+  "events": 10,
+  "markets": 92,
+  "strike_type_union": [
+   "between",
+   "greater",
+   "less"
+  ],
+  "strike_type_heterogeneous": true,
+  "code_nets_values": [
+   false
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXTRUTHSOCIAL-26JUL25": {
+    "n": 10,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": false,
+    "parse_fail": 8,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUTHSOCIAL-26JUL25-T80",
+     "KXTRUTHSOCIAL-26JUL25-T240"
+    ],
+    "lo_title": "<80",
+    "hi_title": ">240"
+   },
+   "KXTRUTHSOCIAL-26JUL18": {
+    "n": 10,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 8,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUTHSOCIAL-26JUL18-T80",
+     "KXTRUTHSOCIAL-26JUL18-T240"
+    ],
+    "lo_title": "<80",
+    "hi_title": ">240"
+   },
+   "KXTRUTHSOCIAL-26JUL11": {
+    "n": 9,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUTHSOCIAL-26JUL11-T80",
+     "KXTRUTHSOCIAL-26JUL11-T220"
+    ],
+    "lo_title": "<80",
+    "hi_title": ">220"
+   },
+   "KXTRUTHSOCIAL-26JUL04": {
+    "n": 9,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUTHSOCIAL-26JUL04-T80",
+     "KXTRUTHSOCIAL-26JUL04-T220"
+    ],
+    "lo_title": "<80",
+    "hi_title": ">220"
+   },
+   "KXTRUTHSOCIAL-26JUN27": {
+    "n": 9,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUTHSOCIAL-26JUN27-T80",
+     "KXTRUTHSOCIAL-26JUN27-T220"
+    ],
+    "lo_title": "<80",
+    "hi_title": ">220"
+   },
+   "KXTRUTHSOCIAL-26JUN20": {
+    "n": 9,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUTHSOCIAL-26JUN20-T80",
+     "KXTRUTHSOCIAL-26JUN20-T220"
+    ],
+    "lo_title": "<80",
+    "hi_title": ">220"
+   },
+   "KXTRUTHSOCIAL-26JUN13": {
+    "n": 9,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUTHSOCIAL-26JUN13-T80",
+     "KXTRUTHSOCIAL-26JUN13-T220"
+    ],
+    "lo_title": "<80",
+    "hi_title": ">220"
+   },
+   "KXTRUTHSOCIAL-26JUN06": {
+    "n": 9,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUTHSOCIAL-26JUN06-T80",
+     "KXTRUTHSOCIAL-26JUN06-T220"
+    ],
+    "lo_title": "<80",
+    "hi_title": ">220"
+   },
+   "KXTRUTHSOCIAL-26MAY30": {
+    "n": 9,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUTHSOCIAL-26MAY30-T80",
+     "KXTRUTHSOCIAL-26MAY30-T220"
+    ],
+    "lo_title": "<80",
+    "hi_title": ">220"
+   },
+   "KXTRUTHSOCIAL-26MAY23": {
+    "n": 9,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 7,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUTHSOCIAL-26MAY23-T80",
+     "KXTRUTHSOCIAL-26MAY23-T220"
+    ],
+    "lo_title": "<80",
+    "hi_title": ">220"
+   }
+  }
+ },
+ "KXRTX5090MON": {
+  "events": 2,
+  "markets": 60,
+  "strike_type_union": [
+   "greater"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXRTX5090MON-26JUL31": {
+    "n": 20,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXRTX5090MON-26JUL31-0.030",
+     "KXRTX5090MON-26JUL31-0.980"
+    ],
+    "lo_title": "Above $0.03",
+    "hi_title": "Above $0.98"
+   },
+   "KXRTX5090MON-26MAY31": {
+    "n": 40,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXRTX5090MON-26MAY31-0.280",
+     "KXRTX5090MON-26MAY31-0.670"
+    ],
+    "lo_title": "Above $0.28",
+    "hi_title": "Above $0.67"
+   }
+  }
+ },
+ "KXFEDMENTION": {
+  "events": 2,
+  "markets": 88,
+  "strike_type_union": [
+   "custom"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   false
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   false
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXFEDMENTION-26JUL": {
+    "n": 43,
+    "strike_types": [
+     "custom"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": false,
+    "parse_fail": 43,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXFEDMENTION-26JUN": {
+    "n": 45,
+    "strike_types": [
+     "custom"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 44,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   }
+  }
+ },
+ "KXTRUMPACT": {
+  "events": 10,
+  "markets": 84,
+  "strike_type_union": [
+   "greater_or_equal"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXTRUMPACT-26JUL19": {
+    "n": 10,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPACT-26JUL19-T1",
+     "KXTRUMPACT-26JUL19-T15"
+    ],
+    "lo_title": "At least 1",
+    "hi_title": "At least 15"
+   },
+   "KXTRUMPACT-26JUL12": {
+    "n": 10,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPACT-26JUL12-T1",
+     "KXTRUMPACT-26JUL12-T15"
+    ],
+    "lo_title": "At least 1",
+    "hi_title": "At least 15"
+   },
+   "KXTRUMPACT-26JUL05": {
+    "n": 8,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPACT-26JUL05-T1",
+     "KXTRUMPACT-26JUL05-T15"
+    ],
+    "lo_title": "At least 1",
+    "hi_title": "At least 15"
+   },
+   "KXTRUMPACT-26JUN28": {
+    "n": 8,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPACT-26JUN28-T1",
+     "KXTRUMPACT-26JUN28-T15"
+    ],
+    "lo_title": "At least 1",
+    "hi_title": "At least 15"
+   },
+   "KXTRUMPACT-26JUN21": {
+    "n": 8,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPACT-26JUN21-T1",
+     "KXTRUMPACT-26JUN21-T15"
+    ],
+    "lo_title": "At least 1",
+    "hi_title": "At least 15"
+   },
+   "KXTRUMPACT-26JUN14": {
+    "n": 8,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPACT-26JUN14-T1",
+     "KXTRUMPACT-26JUN14-T15"
+    ],
+    "lo_title": "At least 1",
+    "hi_title": "At least 15"
+   },
+   "KXTRUMPACT-26JUN07": {
+    "n": 8,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPACT-26JUN07-T1",
+     "KXTRUMPACT-26JUN07-T15"
+    ],
+    "lo_title": "At least 1",
+    "hi_title": "At least 15"
+   },
+   "KXTRUMPACT-26MAY31": {
+    "n": 8,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPACT-26MAY31-T1",
+     "KXTRUMPACT-26MAY31-T15"
+    ],
+    "lo_title": "At least 1",
+    "hi_title": "At least 15"
+   },
+   "KXTRUMPACT-26MAY24": {
+    "n": 8,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPACT-26MAY24-T1",
+     "KXTRUMPACT-26MAY24-T15"
+    ],
+    "lo_title": "At least 1",
+    "hi_title": "At least 15"
+   },
+   "KXTRUMPACT-26MAY17": {
+    "n": 8,
+    "strike_types": [
+     "greater_or_equal"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPACT-26MAY17-T1",
+     "KXTRUMPACT-26MAY17-T15"
+    ],
+    "lo_title": "At least 1",
+    "hi_title": "At least 15"
+   }
+  }
+ },
+ "KXAAAGASD": {
+  "events": 68,
+  "markets": 1191,
+  "strike_type_union": [
+   "greater"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXAAAGASD-26JUL24": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL24-4.050",
+     "KXAAAGASD-26JUL24-4.130"
+    ],
+    "lo_title": "Above 4.050",
+    "hi_title": "Above 4.130"
+   },
+   "KXAAAGASD-26JUL23": {
+    "n": 35,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL23-4.020",
+     "KXAAAGASD-26JUL23-4.190"
+    ],
+    "lo_title": "Above 4.020",
+    "hi_title": "Above 4.190"
+   },
+   "KXAAAGASD-26JUL22": {
+    "n": 27,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL22-3.980",
+     "KXAAAGASD-26JUL22-4.110"
+    ],
+    "lo_title": "Above 3.980",
+    "hi_title": "Above 4.110"
+   },
+   "KXAAAGASD-26JUL21": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL21-3.965",
+     "KXAAAGASD-26JUL21-4.045"
+    ],
+    "lo_title": "Above 3.965",
+    "hi_title": "Above 4.045"
+   },
+   "KXAAAGASD-26JUL20": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL20-3.960",
+     "KXAAAGASD-26JUL20-4.040"
+    ],
+    "lo_title": "Above 3.960",
+    "hi_title": "Above 4.040"
+   },
+   "KXAAAGASD-26JUL19": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL19-3.950",
+     "KXAAAGASD-26JUL19-4.030"
+    ],
+    "lo_title": "Above 3.950",
+    "hi_title": "Above 4.030"
+   },
+   "KXAAAGASD-26JUL18": {
+    "n": 21,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL18-3.940",
+     "KXAAAGASD-26JUL18-4.040"
+    ],
+    "lo_title": "Above 3.940",
+    "hi_title": "Above 4.040"
+   },
+   "KXAAAGASD-26JUL17": {
+    "n": 24,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL17-3.905",
+     "KXAAAGASD-26JUL17-4.020"
+    ],
+    "lo_title": "Above 3.905",
+    "hi_title": "Above 4.020"
+   },
+   "KXAAAGASD-26JUL16": {
+    "n": 23,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL16-3.850",
+     "KXAAAGASD-26JUL16-3.960"
+    ],
+    "lo_title": "Above 3.850",
+    "hi_title": "Above 3.960"
+   },
+   "KXAAAGASD-26JUL15": {
+    "n": 21,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL15-3.820",
+     "KXAAAGASD-26JUL15-3.920"
+    ],
+    "lo_title": "Above 3.820",
+    "hi_title": "Above 3.920"
+   },
+   "KXAAAGASD-26JUL14": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL14-3.830",
+     "KXAAAGASD-26JUL14-3.910"
+    ],
+    "lo_title": "Above 3.830",
+    "hi_title": "Above 3.910"
+   },
+   "KXAAAGASD-26JUL13": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL13-3.835",
+     "KXAAAGASD-26JUL13-3.915"
+    ],
+    "lo_title": "Above 3.835",
+    "hi_title": "Above 3.915"
+   },
+   "KXAAAGASD-26JUL12": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL12-3.840",
+     "KXAAAGASD-26JUL12-3.920"
+    ],
+    "lo_title": "Above 3.840",
+    "hi_title": "Above 3.920"
+   },
+   "KXAAAGASD-26JUL11": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL11-3.845",
+     "KXAAAGASD-26JUL11-3.925"
+    ],
+    "lo_title": "Above 3.845",
+    "hi_title": "Above 3.925"
+   },
+   "KXAAAGASD-26JUL10": {
+    "n": 24,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL10-3.805",
+     "KXAAAGASD-26JUL10-3.920"
+    ],
+    "lo_title": "Above 3.805",
+    "hi_title": "Above 3.920"
+   },
+   "KXAAAGASD-26JUL09": {
+    "n": 21,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL09-3.755",
+     "KXAAAGASD-26JUL09-3.855"
+    ],
+    "lo_title": "Above 3.755",
+    "hi_title": "Above 3.855"
+   },
+   "KXAAAGASD-26JUL08": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL08-3.750",
+     "KXAAAGASD-26JUL08-3.830"
+    ],
+    "lo_title": "Above 3.750",
+    "hi_title": "Above 3.830"
+   },
+   "KXAAAGASD-26JUL07": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL07-3.755",
+     "KXAAAGASD-26JUL07-3.835"
+    ],
+    "lo_title": "Above 3.755",
+    "hi_title": "Above 3.835"
+   },
+   "KXAAAGASD-26JUL06": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL06-3.765",
+     "KXAAAGASD-26JUL06-3.845"
+    ],
+    "lo_title": "Above 3.765",
+    "hi_title": "Above 3.845"
+   },
+   "KXAAAGASD-26JUL05": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL05-3.770",
+     "KXAAAGASD-26JUL05-3.850"
+    ],
+    "lo_title": "Above 3.770",
+    "hi_title": "Above 3.850"
+   },
+   "KXAAAGASD-26JUL04": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL04-3.785",
+     "KXAAAGASD-26JUL04-3.865"
+    ],
+    "lo_title": "Above 3.785",
+    "hi_title": "Above 3.865"
+   },
+   "KXAAAGASD-26JUL03": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL03-3.800",
+     "KXAAAGASD-26JUL03-3.880"
+    ],
+    "lo_title": "Above 3.800",
+    "hi_title": "Above 3.880"
+   },
+   "KXAAAGASD-26JUL02": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL02-3.805",
+     "KXAAAGASD-26JUL02-3.885"
+    ],
+    "lo_title": "Above 3.805",
+    "hi_title": "Above 3.885"
+   },
+   "KXAAAGASD-26JUL01": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUL01-3.805",
+     "KXAAAGASD-26JUL01-3.885"
+    ],
+    "lo_title": "Above 3.805",
+    "hi_title": "Above 3.885"
+   },
+   "KXAAAGASD-26JUN30": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN30-3.820",
+     "KXAAAGASD-26JUN30-3.900"
+    ],
+    "lo_title": "Above 3.820",
+    "hi_title": "Above 3.900"
+   },
+   "KXAAAGASD-26JUN29": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN29-3.825",
+     "KXAAAGASD-26JUN29-3.905"
+    ],
+    "lo_title": "Above 3.825",
+    "hi_title": "Above 3.905"
+   },
+   "KXAAAGASD-26JUN28": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN28-3.840",
+     "KXAAAGASD-26JUN28-3.920"
+    ],
+    "lo_title": "Above 3.840",
+    "hi_title": "Above 3.920"
+   },
+   "KXAAAGASD-26JUN27": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN27-3.860",
+     "KXAAAGASD-26JUN27-3.940"
+    ],
+    "lo_title": "Above 3.860",
+    "hi_title": "Above 3.940"
+   },
+   "KXAAAGASD-26JUN26": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN26-3.880",
+     "KXAAAGASD-26JUN26-3.960"
+    ],
+    "lo_title": "Above 3.880",
+    "hi_title": "Above 3.960"
+   },
+   "KXAAAGASD-26JUN25": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN25-3.890",
+     "KXAAAGASD-26JUN25-3.970"
+    ],
+    "lo_title": "Above 3.890",
+    "hi_title": "Above 3.970"
+   },
+   "KXAAAGASD-26JUN24": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN24-3.885",
+     "KXAAAGASD-26JUN24-3.965"
+    ],
+    "lo_title": "Above 3.885",
+    "hi_title": "Above 3.965"
+   },
+   "KXAAAGASD-26JUN23": {
+    "n": 13,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN23-3.8750",
+     "KXAAAGASD-26JUN23-3.9350"
+    ],
+    "lo_title": "Above 3.8750",
+    "hi_title": "Above 3.9350"
+   },
+   "KXAAAGASD-26JUN22": {
+    "n": 13,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN22-3.8900",
+     "KXAAAGASD-26JUN22-3.9500"
+    ],
+    "lo_title": "Above 3.8900",
+    "hi_title": "Above 3.9500"
+   },
+   "KXAAAGASD-26JUN21": {
+    "n": 13,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN21-3.9000",
+     "KXAAAGASD-26JUN21-3.9600"
+    ],
+    "lo_title": "Above 3.9000",
+    "hi_title": "Above 3.9600"
+   },
+   "KXAAAGASD-26JUN20": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN20-3.9200",
+     "KXAAAGASD-26JUN20-4.0000"
+    ],
+    "lo_title": "Above 3.9200",
+    "hi_title": "Above 4.0000"
+   },
+   "KXAAAGASD-26JUN19": {
+    "n": 15,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN19-3.9400",
+     "KXAAAGASD-26JUN19-4.0100"
+    ],
+    "lo_title": "Above 3.9400",
+    "hi_title": "Above 4.0100"
+   },
+   "KXAAAGASD-26JUN18": {
+    "n": 15,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN18-3.970",
+     "KXAAAGASD-26JUN18-4.040"
+    ],
+    "lo_title": "Above 3.970",
+    "hi_title": "Above 4.040"
+   },
+   "KXAAAGASD-26JUN17": {
+    "n": 15,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN17-3.990",
+     "KXAAAGASD-26JUN17-4.060"
+    ],
+    "lo_title": "Above 3.990",
+    "hi_title": "Above 4.060"
+   },
+   "KXAAAGASD-26JUN16": {
+    "n": 15,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN16-4.020",
+     "KXAAAGASD-26JUN16-4.090"
+    ],
+    "lo_title": "Above 4.020",
+    "hi_title": "Above 4.090"
+   },
+   "KXAAAGASD-26JUN15": {
+    "n": 15,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN15-4.020",
+     "KXAAAGASD-26JUN15-4.090"
+    ],
+    "lo_title": "Above 4.020",
+    "hi_title": "Above 4.090"
+   },
+   "KXAAAGASD-26JUN14": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN14-4.020",
+     "KXAAAGASD-26JUN14-4.100"
+    ],
+    "lo_title": "Above 4.020",
+    "hi_title": "Above 4.100"
+   },
+   "KXAAAGASD-26JUN13": {
+    "n": 14,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN13-4.065",
+     "KXAAAGASD-26JUN13-4.130"
+    ],
+    "lo_title": "Above 4.065",
+    "hi_title": "Above 4.130"
+   },
+   "KXAAAGASD-26JUN12": {
+    "n": 16,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN12-4.065",
+     "KXAAAGASD-26JUN12-4.140"
+    ],
+    "lo_title": "Above 4.065",
+    "hi_title": "Above 4.140"
+   },
+   "KXAAAGASD-26JUN11": {
+    "n": 15,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN11-4.100",
+     "KXAAAGASD-26JUN11-4.170"
+    ],
+    "lo_title": "Above 4.100",
+    "hi_title": "Above 4.170"
+   },
+   "KXAAAGASD-26JUN10": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN10-4.100",
+     "KXAAAGASD-26JUN10-4.180"
+    ],
+    "lo_title": "Above 4.100",
+    "hi_title": "Above 4.180"
+   },
+   "KXAAAGASD-26JUN09": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN09-4.100",
+     "KXAAAGASD-26JUN09-4.180"
+    ],
+    "lo_title": "Above 4.100",
+    "hi_title": "Above 4.180"
+   },
+   "KXAAAGASD-26JUN08": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN08-4.100",
+     "KXAAAGASD-26JUN08-4.180"
+    ],
+    "lo_title": "Above 4.100",
+    "hi_title": "Above 4.180"
+   },
+   "KXAAAGASD-26JUN07": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN07-4.130",
+     "KXAAAGASD-26JUN07-4.210"
+    ],
+    "lo_title": "Above 4.130",
+    "hi_title": "Above 4.210"
+   },
+   "KXAAAGASD-26JUN06": {
+    "n": 15,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN06-4.170",
+     "KXAAAGASD-26JUN06-4.240"
+    ],
+    "lo_title": "Above 4.170",
+    "hi_title": "Above 4.240"
+   },
+   "KXAAAGASD-26JUN05": {
+    "n": 14,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN05-4.190",
+     "KXAAAGASD-26JUN05-4.260"
+    ],
+    "lo_title": "Above 4.190",
+    "hi_title": "Above 4.260"
+   },
+   "KXAAAGASD-26JUN04": {
+    "n": 14,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN04-4.200",
+     "KXAAAGASD-26JUN04-4.270"
+    ],
+    "lo_title": "Above 4.200",
+    "hi_title": "Above 4.270"
+   },
+   "KXAAAGASD-26JUN03": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN03-4.200",
+     "KXAAAGASD-26JUN03-4.290"
+    ],
+    "lo_title": "Above 4.200",
+    "hi_title": "Above 4.290"
+   },
+   "KXAAAGASD-26JUN02": {
+    "n": 15,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN02-4.270",
+     "KXAAAGASD-26JUN02-4.340"
+    ],
+    "lo_title": "Above 4.270",
+    "hi_title": "Above 4.340"
+   },
+   "KXAAAGASD-26JUN01": {
+    "n": 13,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26JUN01-4.280",
+     "KXAAAGASD-26JUN01-4.340"
+    ],
+    "lo_title": "Above 4.280",
+    "hi_title": "Above 4.340"
+   },
+   "KXAAAGASD-26MAY31": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY31-4.280",
+     "KXAAAGASD-26MAY31-4.360"
+    ],
+    "lo_title": "Above 4.280",
+    "hi_title": "Above 4.360"
+   },
+   "KXAAAGASD-26MAY30": {
+    "n": 23,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY30-4.340",
+     "KXAAAGASD-26MAY30-4.450"
+    ],
+    "lo_title": "Above 4.340",
+    "hi_title": "Above 4.450"
+   },
+   "KXAAAGASD-26MAY29": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY29-4.365",
+     "KXAAAGASD-26MAY29-4.450"
+    ],
+    "lo_title": "Above 4.365",
+    "hi_title": "Above 4.450"
+   },
+   "KXAAAGASD-26MAY28": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY28-4.385",
+     "KXAAAGASD-26MAY28-4.470"
+    ],
+    "lo_title": "Above 4.385",
+    "hi_title": "Above 4.470"
+   },
+   "KXAAAGASD-26MAY27": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY27-4.450",
+     "KXAAAGASD-26MAY27-4.530"
+    ],
+    "lo_title": "Above 4.450",
+    "hi_title": "Above 4.530"
+   },
+   "KXAAAGASD-26MAY26": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY26-4.470",
+     "KXAAAGASD-26MAY26-4.550"
+    ],
+    "lo_title": "Above 4.470",
+    "hi_title": "Above 4.550"
+   },
+   "KXAAAGASD-26MAY25": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY25-4.470",
+     "KXAAAGASD-26MAY25-4.550"
+    ],
+    "lo_title": "Above 4.470",
+    "hi_title": "Above 4.550"
+   },
+   "KXAAAGASD-26MAY24": {
+    "n": 17,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY24-4.470",
+     "KXAAAGASD-26MAY24-4.550"
+    ],
+    "lo_title": "Above 4.470",
+    "hi_title": "Above 4.550"
+   },
+   "KXAAAGASD-26MAY23": {
+    "n": 20,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY23-4.520",
+     "KXAAAGASD-26MAY23-4.615"
+    ],
+    "lo_title": "Above 4.520",
+    "hi_title": "Above 4.615"
+   },
+   "KXAAAGASD-26MAY22": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY22-4.530",
+     "KXAAAGASD-26MAY22-4.615"
+    ],
+    "lo_title": "Above 4.530",
+    "hi_title": "Above 4.615"
+   },
+   "KXAAAGASD-26MAY21": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY21-4.530",
+     "KXAAAGASD-26MAY21-4.615"
+    ],
+    "lo_title": "Above 4.530",
+    "hi_title": "Above 4.615"
+   },
+   "KXAAAGASD-26MAY20": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY20-4.500",
+     "KXAAAGASD-26MAY20-4.585"
+    ],
+    "lo_title": "Above 4.500",
+    "hi_title": "Above 4.585"
+   },
+   "KXAAAGASD-26MAY19": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY19-4.485",
+     "KXAAAGASD-26MAY19-4.570"
+    ],
+    "lo_title": "Above 4.485",
+    "hi_title": "Above 4.570"
+   },
+   "KXAAAGASD-26MAY18": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASD-26MAY18-4.485",
+     "KXAAAGASD-26MAY18-4.570"
+    ],
+    "lo_title": "Above 4.485",
+    "hi_title": "Above 4.570"
+   }
+  }
+ },
+ "KXAAAGASW": {
+  "events": 12,
+  "markets": 293,
+  "strike_type_union": [
+   "greater"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXAAAGASW-26JUL27": {
+    "n": 21,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26JUL27-3.960",
+     "KXAAAGASW-26JUL27-4.300"
+    ],
+    "lo_title": "Above 3.960",
+    "hi_title": "Above 4.300"
+   },
+   "KXAAAGASW-26JUL20": {
+    "n": 27,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26JUL20-3.760",
+     "KXAAAGASW-26JUL20-4.100"
+    ],
+    "lo_title": "Above 3.760",
+    "hi_title": "Above 4.100"
+   },
+   "KXAAAGASW-26JUL13": {
+    "n": 20,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26JUL13-3.620",
+     "KXAAAGASW-26JUL13-4.000"
+    ],
+    "lo_title": "Above 3.620",
+    "hi_title": "Above 4.000"
+   },
+   "KXAAAGASW-26JUL06": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26JUL06-3.660",
+     "KXAAAGASW-26JUL06-3.940"
+    ],
+    "lo_title": "Above 3.660",
+    "hi_title": "Above 3.940"
+   },
+   "KXAAAGASW-26JUN29": {
+    "n": 32,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26JUN29-3.660",
+     "KXAAAGASW-26JUN29-3.940"
+    ],
+    "lo_title": "Above 3.660",
+    "hi_title": "Above 3.940"
+   },
+   "KXAAAGASW-26JUN22": {
+    "n": 35,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26JUN22-3.800",
+     "KXAAAGASW-26JUN22-4.120"
+    ],
+    "lo_title": "Above 3.800",
+    "hi_title": "Above 4.120"
+   },
+   "KXAAAGASW-26JUN15": {
+    "n": 26,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26JUN15-3.860",
+     "KXAAAGASW-26JUN15-4.200"
+    ],
+    "lo_title": "Above 3.860",
+    "hi_title": "Above 4.200"
+   },
+   "KXAAAGASW-26JUN08": {
+    "n": 26,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26JUN08-4.120",
+     "KXAAAGASW-26JUN08-4.460"
+    ],
+    "lo_title": "Above 4.120",
+    "hi_title": "Above 4.460"
+   },
+   "KXAAAGASW-26JUN01": {
+    "n": 27,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26JUN01-4.200",
+     "KXAAAGASW-26JUN01-4.640"
+    ],
+    "lo_title": "Above 4.200",
+    "hi_title": "Above 4.640"
+   },
+   "KXAAAGASW-26MAY25": {
+    "n": 22,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26MAY25-4.460",
+     "KXAAAGASW-26MAY25-4.740"
+    ],
+    "lo_title": "Above 4.460",
+    "hi_title": "Above 4.740"
+   },
+   "KXAAAGASW-26MAY18": {
+    "n": 18,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26MAY18-4.340",
+     "KXAAAGASW-26MAY18-4.640"
+    ],
+    "lo_title": "Above 4.340",
+    "hi_title": "Above 4.640"
+   },
+   "KXAAAGASW-26MAR16": {
+    "n": 21,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "closed"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAAAGASW-26MAR16-3.470",
+     "KXAAAGASW-26MAR16-4.270"
+    ],
+    "lo_title": "Above $3.470",
+    "hi_title": "Above $4.270"
+   }
+  }
+ },
+ "KXAPRPOTUS": {
+  "events": 11,
+  "markets": 89,
+  "strike_type_union": [
+   "between",
+   "greater",
+   "less"
+  ],
+  "strike_type_heterogeneous": true,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXAPRPOTUS-26JUL24": {
+    "n": 8,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-26JUL24-40.2",
+     "KXAPRPOTUS-26JUL24-41.9"
+    ],
+    "lo_title": "Below 40.2",
+    "hi_title": "Above 41.9"
+   },
+   "KXAPRPOTUS-26JUL17": {
+    "n": 8,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-26JUL17-39.6",
+     "KXAPRPOTUS-26JUL17-41.3"
+    ],
+    "lo_title": "Below 39.6",
+    "hi_title": "Above 41.3"
+   },
+   "KXAPRPOTUS-26JUL10": {
+    "n": 8,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-26JUL10-39.6",
+     "KXAPRPOTUS-26JUL10-41.3"
+    ],
+    "lo_title": "Below 39.6",
+    "hi_title": "Above 41.3"
+   },
+   "KXAPRPOTUS-26JUL03": {
+    "n": 8,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-26JUL03-39.6",
+     "KXAPRPOTUS-26JUL03-41.3"
+    ],
+    "lo_title": "Below 39.6",
+    "hi_title": "Above 41.3"
+   },
+   "KXAPRPOTUS-26JUN26": {
+    "n": 8,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-26JUN26-39.6",
+     "KXAPRPOTUS-26JUN26-41.3"
+    ],
+    "lo_title": "Below 39.6",
+    "hi_title": "Above 41.3"
+   },
+   "KXAPRPOTUS-26JUN19": {
+    "n": 8,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-26JUN19-39.0",
+     "KXAPRPOTUS-26JUN19-40.7"
+    ],
+    "lo_title": "Below 39.0",
+    "hi_title": "Above 40.7"
+   },
+   "KXAPRPOTUS-26JUN12": {
+    "n": 8,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-26JUN12-39.0",
+     "KXAPRPOTUS-26JUN12-40.7"
+    ],
+    "lo_title": "Below 39.0",
+    "hi_title": "Above 40.7"
+   },
+   "KXAPRPOTUS-26JUN05": {
+    "n": 8,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-26JUN05-39.0",
+     "KXAPRPOTUS-26JUN05-40.7"
+    ],
+    "lo_title": "Below 39.0",
+    "hi_title": "Above 40.7"
+   },
+   "KXAPRPOTUS-26MAY29": {
+    "n": 8,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-26MAY29-39.0",
+     "KXAPRPOTUS-26MAY29-40.7"
+    ],
+    "lo_title": "Below 39.0",
+    "hi_title": "Above 40.7"
+   },
+   "KXAPRPOTUS-26MAY22": {
+    "n": 8,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-26MAY22-39.9",
+     "KXAPRPOTUS-26MAY22-41.6"
+    ],
+    "lo_title": "Below 39.9",
+    "hi_title": "Above 41.6"
+   },
+   "KXAPRPOTUS-25JAN31": {
+    "n": 9,
+    "strike_types": [
+     "between",
+     "greater",
+     "less"
+    ],
+    "statuses": [
+     "closed"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXAPRPOTUS-25JAN31-38.0",
+     "KXAPRPOTUS-25JAN31-40.0"
+    ],
+    "lo_title": "37.9 or below",
+    "hi_title": "40.1 or above"
+   }
+  }
+ },
+ "KXTRUMPPHOTO": {
+  "events": 11,
+  "markets": 29,
+  "strike_type_union": [
+   "between"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   false,
+   true
+  ],
+  "nets_heterogeneous": true,
+  "pairing_values": [
+   false,
+   true
+  ],
+  "pairing_heterogeneous": true,
+  "per_event": {
+   "KXTRUMPPHOTO-26JUL26": {
+    "n": 4,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPPHOTO-26JUL26-4",
+     "KXTRUMPPHOTO-26JUL26-7"
+    ],
+    "lo_title": "4",
+    "hi_title": "7"
+   },
+   "KXTRUMPPHOTO-26JUL19": {
+    "n": 4,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPPHOTO-26JUL19-4",
+     "KXTRUMPPHOTO-26JUL19-7"
+    ],
+    "lo_title": "4",
+    "hi_title": "7"
+   },
+   "KXTRUMPPHOTO-26JUL12": {
+    "n": 4,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPPHOTO-26JUL12-4",
+     "KXTRUMPPHOTO-26JUL12-7"
+    ],
+    "lo_title": "4",
+    "hi_title": "7"
+   },
+   "KXTRUMPPHOTO-26JUL05": {
+    "n": 4,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPPHOTO-26JUL05-4",
+     "KXTRUMPPHOTO-26JUL05-7"
+    ],
+    "lo_title": "4",
+    "hi_title": "7"
+   },
+   "KXTRUMPPHOTO-26JUN28": {
+    "n": 4,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPPHOTO-26JUN28-4",
+     "KXTRUMPPHOTO-26JUN28-7"
+    ],
+    "lo_title": "4",
+    "hi_title": "7"
+   },
+   "KXTRUMPPHOTO-26JUN21": {
+    "n": 4,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXTRUMPPHOTO-26JUN21-4",
+     "KXTRUMPPHOTO-26JUN21-7"
+    ],
+    "lo_title": "4",
+    "hi_title": "7"
+   },
+   "KXTRUMPPHOTO-26JUN14": {
+    "n": 1,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 1,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPPHOTO-26JUN07": {
+    "n": 1,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 1,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPPHOTO-26MAY31": {
+    "n": 1,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 1,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPPHOTO-26MAY24": {
+    "n": 1,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 1,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXTRUMPPHOTO-26MAY17": {
+    "n": 1,
+    "strike_types": [
+     "between"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": false,
+    "parse_fail": 1,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   }
+  }
+ },
+ "KXNBATEAMANNOUNCE": {
+  "events": 1,
+  "markets": 26,
+  "strike_type_union": [
+   "custom"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   true
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXNBATEAMANNOUNCE-26LJAMES23": {
+    "n": 26,
+    "strike_types": [
+     "custom"
+    ],
+    "statuses": [
+     "active",
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": true,
+    "lo_hi": [
+     "KXNBATEAMANNOUNCE-26LJAMES23-709",
+     "KXNBATEAMANNOUNCE-26LJAMES23-1018"
+    ],
+    "lo_title": "Before Jul 9, 2026",
+    "hi_title": "Before Oct 18, 2026"
+   }
+  }
+ },
+ "KXDXYDUD": {
+  "events": 21,
+  "markets": 21,
+  "strike_type_union": [
+   "greater"
+  ],
+  "strike_type_heterogeneous": false,
+  "code_nets_values": [
+   true
+  ],
+  "nets_heterogeneous": false,
+  "pairing_values": [
+   false
+  ],
+  "pairing_heterogeneous": false,
+  "per_event": {
+   "KXDXYDUD-26JUL24": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "initialized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL23": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL22": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "active"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL21": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL20": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL17": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL16": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL15": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL14": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL13": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL10": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL09": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL08": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL07": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL06": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL03": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL02": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUL01": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUN30": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUN29": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   },
+   "KXDXYDUD-26JUN26": {
+    "n": 1,
+    "strike_types": [
+     "greater"
+    ],
+    "statuses": [
+     "finalized"
+    ],
+    "code_nets": true,
+    "parse_fail": 0,
+    "pairing_would_pair_lo_hi": false,
+    "lo_hi": null,
+    "lo_title": null,
+    "hi_title": null
+   }
+  }
+ }
+}

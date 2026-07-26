@@ -465,6 +465,21 @@ RAMP_LIFE_FRAC = _envf("KALSHI_RAMP_LIFE_FRAC", 0.5)
 # capped at MAX_ENTRY_CUTOFF_MIN absolute (e.g. gas daily: no entry in the final 2h).
 LATE_LIFE_FRAC = _envf("KALSHI_LATE_LIFE_FRAC", 0.6)
 MAX_ENTRY_CUTOFF_MIN = _envf("KALSHI_MAX_ENTRY_CUTOFF_MIN", 120.0)
+# --- FAR-CLOSE CAP (KALSHI_MAX_DAYS_TO_CLOSE, operator directive 2026-07-25) --------------------
+# The late-life gate above refuses markets ending too SOON. This refuses markets ending too FAR
+# OUT, and it exists because reward is size x TIME PRESENT and we are barely present in long
+# markets. Measured presence by market life (venue order history, unpruned slice, n=20 markets):
+#   under 24h  median 16.6%   |   4-14d  median 10.0%   |   14d+ median 0.02% (max 1.15%, n=5)
+# A market we are absent from 99.98% of the time cannot pay, but it still ties up capital and
+# carries fill risk the whole way. Worse, the presence gate CANNOT catch these on its own without
+# a calibration table: with no table the presence factor defaults to 1.0 and a 30-day window looks
+# BETTER than a short one, because the estimate multiplies the daily pool by 30 days.
+# So this is a hard structural cap, independent of any calibration file being present.
+# Deliberately conservative for now — the directive is to gather results and data on short markets
+# first and ramp the horizon up later. Held inventory in an excluded market is NOT stranded: it
+# falls through to the STRAND UNWIND path, which rests the reducing side at reference so the
+# position still flattens passively. 0 disables the cap.
+MAX_DAYS_TO_CLOSE = _envf("KALSHI_MAX_DAYS_TO_CLOSE", 3.0)
 # --- UNWIND LOSS CAP (2026-07-22 live loss): the maker unwind re-priced at reference every
 # cycle CHASES a trending market — buying the reducing side at the top realized the full
 # adverse move (~50c/pair on DC vs the doctrine's 1-2c bleed). The reducing quote never rests
@@ -604,6 +619,12 @@ def select_footprint(progs, now):
         cutoff_min = min(MAX_ENTRY_CUTOFF_MIN, max(WIND_DOWN_MIN, LATE_LIFE_FRAC * life_min))
         if end < now + timedelta(minutes=cutoff_min):
             drops["drop_late_life"] = drops.get("drop_late_life", 0) + 1
+            continue
+        # FAR-CLOSE CAP — refuse markets resolving beyond the horizon we can actually stay present
+        # in. Measured presence in 14d+ markets was a 0.02% median (n=5). Structural, so it holds
+        # even with no presence calibration loaded.
+        if MAX_DAYS_TO_CLOSE > 0 and end > now + timedelta(days=MAX_DAYS_TO_CLOSE):
+            drops["drop_far_close"] = drops.get("drop_far_close", 0) + 1
             continue
         # window length in days — still needed for the per-market ramp below (NOT for usd_day).
         days = max((end - start).total_seconds() / 86400, 1 / 24)

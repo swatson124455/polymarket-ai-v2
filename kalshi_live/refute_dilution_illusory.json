@@ -1,0 +1,35 @@
+{
+  "now": "2026-07-23T19:29:31.631769+00:00",
+  "n_programs": 2345,
+  "n_eligible": 120,
+  "eligible_by_series": {
+    "KXAAAGASD": 7,
+    "KXB200MON": 40,
+    "KXH100MON": 20,
+    "KXAAAGASW": 15,
+    "KXTRUMPENDORSEMENTS": 7,
+    "KXAMSAVO": 11,
+    "KXGENERICBALLOTVOTEHUB": 1,
+    "KXMUSKNW": 13,
+    "KXCHIPBURRITO": 6
+  },
+  "gas_two_sided_fresh": 10,
+  "gas_two_D": 6,
+  "gas_two_W": 4,
+  "gas_slots_picked": 10,
+  "picked_gas_two": 5,
+  "picked_gas_one": 5,
+  "amsavo_two_sided_fresh": 11,
+  "amsavo_slots_picked": 5,
+  "pick_by_series": {
+    "KXAAAGASD": 5,
+    "KXGENERICBALLOTVOTEHUB": 1,
+    "KXTRUMPENDORSEMENTS": 5,
+    "KXAMSAVO": 5,
+    "KXAAAGASW": 5,
+    "KXMUSKNW": 5,
+    "KXCHIPBURRITO": 5,
+    "KXB200MON": 5,
+    "KXH100MON": 4
+  }
+}
