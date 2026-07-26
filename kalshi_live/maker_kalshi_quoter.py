@@ -45,6 +45,21 @@ STOP_FILE = os.path.join(DATA_DIR, "STOP")
 STATE_FILE = os.path.join(DATA_DIR, "quoter_state.json")
 LOCK_FILE = os.path.join(DATA_DIR, "quoter.lock")
 
+# --- SILENT-FAILURE COUNTERS ---------------------------------------------------------------------
+# An audit of all 62 exception handlers found 14 that swallow the error with no counter and no log.
+# Most are harmless (telemetry, best-effort cleanup) but four sit where silence hides a REAL fault:
+#   ioc_cancel_fail   the venue left an IOC order RESTING and our cancel failed -> a naked,
+#                     non-post_only taker order lingers. The code exists precisely to stop that.
+#   standing_row_skip a malformed resting-order row is skipped -> we see FEWER standing orders than
+#                     exist -> the diff re-creates them -> DUPLICATE orders. This is the shape the
+#                     *_fp field-rename footgun produces.
+#   rank_fail         score ranking threw -> we silently fall back to pool order while believing we
+#                     are ranking on capture.
+#   flatten_cancel_fail  a pre-flatten cancel failed -> a maker order can still fill mid-flatten.
+# Counting only. NO control flow is changed by this — swallowing is often the right behaviour;
+# doing it INVISIBLY is not.
+_SILENT = defaultdict(int)          # defaultdict, not Counter: only `defaultdict` is imported here
+
 
 def _acquire_lock():
     """Single-instance guard (review C17): stops a manual run from overlapping the timer cycle and
@@ -737,7 +752,7 @@ def select_footprint(progs, now):
                 swing_penalty=SCORE_SWING_PENALTY, unknown_bonus=SCORE_UNKNOWN_BONUS,
                 explore=SCORE_EXPLORE)
         except Exception:
-            pass
+            _SILENT["rank_fail"] += 1        # silently fell back to POOL order
     # ROUND-ROBIN across series (review C18): a single high-pot series (50 concurrent hourly temp
     # strikes ~ $1,920/day each) would otherwise fill the whole FOOTPRINT_TOP by usd_day and starve
     # every other allowlisted series — the fee-free gas lane got ZERO slots. Take one market per
@@ -2306,6 +2321,8 @@ def run_once():
         if DROP_GRACE > 0:
             st["drop_grace"] = grace_used
             plan["grace_retained"] = len(grace_used)
+        if _SILENT:
+            plan["silent_failures"] = dict(_SILENT)   # audited swallowers that actually fired
         if AMEND_DECREASE:
             plan["amends"] = len(amends)
             plan["amend_fail"] = amend_fail
@@ -2397,7 +2414,7 @@ def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
         try:
             client.cancel_order(oid)
         except Exception:
-            pass
+            _SILENT["flatten_cancel_fail"] += 1   # a maker order may fill DURING the flatten
     try:
         pos0 = _held_cost(client)[1].get(ticker, 0.0)      # STARTING signed position, read ONCE
     except Exception:
@@ -2430,7 +2447,7 @@ def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
                 try:
                     client.cancel_order(o.get("order_id"))
                 except Exception:
-                    pass
+                    _SILENT["ioc_cancel_fail"] += 1   # a NAKED taker order may now be resting
             remaining -= int(round(fill))
             crossed += 1
             if fill <= 0:
@@ -2582,7 +2599,7 @@ def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4):
                 try:
                     client.cancel_order(o.get("order_id"))
                 except Exception:
-                    pass
+                    _SILENT["ioc_cancel_fail"] += 1   # a NAKED taker order may now be resting
             remaining -= int(round(fill))
             crossed += int(round(fill))
             if fill <= 0:
@@ -2898,7 +2915,8 @@ def _live_standing(client):
             out[o["ticker"]].append({"side": outcome, "price_dollars": float(price_str),
                                      "count": int(float(cnt)), "order_id": o["order_id"]})
         except Exception:
-            continue
+            _SILENT["standing_row_skip"] += 1     # unreadable resting order -> risk of a DUPLICATE
+            continue                              # create; see the _SILENT block for why it matters
     return dict(out), len(orders)
 
 
