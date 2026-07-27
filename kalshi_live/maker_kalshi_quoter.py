@@ -616,6 +616,22 @@ MAX_DAYS_TO_CLOSE = _envf("KALSHI_MAX_DAYS_TO_CLOSE", 3.0)
 # that it rests AT the cap (deeper in the book) and the residual waits for the backstop.
 # Bounded realized loss per pair, accepted trade: delta may ride longer.
 MAX_UNWIND_LOSS = _envf("KALSHI_MAX_UNWIND_LOSS", 0.10)
+# EXIT AT THE TOUCH (operator directive 2026-07-27, after a live -$27.35 session).
+# The cap above was written against a REAL failure (chasing a trend and realizing ~50c/pair) but
+# its instrument is wrong: capping the exit PRICE means that once the market moves more than
+# MAX_UNWIND_LOSS against us, our exit rests BEHIND the touch and simply never fills. Measured
+# 2026-07-27 on KXNDQHUD: exit pinned at 0.73 with the market at 0.82, no fill, full position
+# rode into settlement (~-$9.82 on 42 ct where a touch exit was ~-1c/ct).
+# ON (default): reducing quotes rest AT the reference. We accept the loss and get out.
+# OFF: the legacy cap, byte-for-byte. Kept so the old behaviour is one env var away.
+EXIT_AT_TOUCH = _envb("KALSHI_EXIT_AT_TOUCH", True)
+# HOLDING => EXIT ONLY (operator directive 2026-07-27). While we carry inventory on a ticker we
+# rest the REDUCING side and nothing else — no accumulating side, at any size. The old design
+# ("both sides always rest, control position by SKEW") re-offered the losing side after every
+# fill: KXNDQHUD was hit 3x in 47s at 0.60 -> 0.66 -> 0.70 (20 + 17 + 5 ct), each re-post worse
+# than the last, and KXDXYDUD ran -20 -> +17 -> +35 straight through flat while the breaker was
+# tripped on every cycle. One-sided is legal ONLY as an exit; flat is both-sides-or-nothing.
+HOLDING_EXIT_ONLY = _envb("KALSHI_HOLDING_EXIT_ONLY", True)
 # HOLD BOTH SIDES (2026-07-26). The block's own design comment is "shrink the accumulating
 # side, grow the reducing side, both stay live" — but the reducing side was sized min(|inv|,
 # room) off the NOMINAL join, so at inventory below INV_SOFT_CT (where the throttle never
@@ -1042,10 +1058,25 @@ def _offset_size(add_cnt, price, inv):
 
 
 def _unwind_price(best, cost):
-    """Price for a reducing (unwind) quote: the book reference, CAPPED so a fill can never lock
-    in more than MAX_UNWIND_LOSS per pair vs our cost basis (pair realized loss = held-side cost
-    + exit-side price - 1). cost<=0 means basis unknown -> no cap (reference, legacy behavior).
-    Floored to the cent so float noise can never round the cap UP past the intended bound."""
+    """Price for a reducing (unwind) quote.
+
+    EXIT_AT_TOUCH (default ON, operator directive 2026-07-27): rest AT the book reference and
+    accept whatever loss that implies. The MAX_UNWIND_LOSS cap below is a CEILING on the exit
+    PRICE, which means the further the market runs against us the further our exit sits BEHIND
+    the touch — unfillable at exactly the moment we most need out. Measured live 2026-07-27:
+    holding 42 ct of KXNDQHUD NO at cost 0.364, the cap priced our exit at
+    floor((1-0.364+0.10)*100)/100 = 0.73 while the market was at 0.82. It never filled; the
+    position rode to settlement. Exiting at the touch would have realized ~1c/ct; the cap turned
+    that into the full position. A loss cap that blocks the exit is not a loss cap.
+
+    Set KALSHI_EXIT_AT_TOUCH=0 to restore the legacy capped behaviour exactly.
+
+    LEGACY (flag off): the book reference CAPPED so a fill can never lock in more than
+    MAX_UNWIND_LOSS per pair vs our cost basis (pair realized loss = held-side cost + exit-side
+    price - 1). cost<=0 means basis unknown -> no cap. Floored to the cent so float noise can
+    never round the cap UP past the intended bound."""
+    if EXIT_AT_TOUCH:
+        return best
     if cost <= 0:
         return best
     cap = math.floor((1.0 - cost + MAX_UNWIND_LOSS) * 100.0) / 100.0
@@ -1407,10 +1438,25 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         quotes.append({"side": "yes", "price_dollars": best_y, "count": int(add_y), "reason": "activate"})
         quotes.append({"side": "no", "price_dollars": best_n, "count": int(add_n), "reason": "activate"})
     else:
+        # HOLDING => EXIT ONLY (operator directive 2026-07-27). This is THE line that turned a
+        # single adverse fill into a 42-contract position. The legacy design below kept the
+        # accumulating side live (shrunk, but live) whenever we held inventory, so every fill was
+        # followed by a fresh offer of the SAME losing side. Live tape 2026-07-27, KXNDQHUD:
+        #   19:06:44  sell 20 @ NO 0.40   (maker)
+        #   19:07:16  sell 17 @ NO 0.34   (maker)  <- only possible because we re-posted
+        #   19:07:31  sell  5 @ NO 0.30   (maker)  <- and again
+        # 22 of the 42 contracts exist solely because of the re-post. Same shape on KXINXHUD
+        # (22 of 29.1 ct). Once we hold, the only order we want working is the one that gets us
+        # out. Flat is still both-sides-or-nothing (below); one-sided is legal ONLY as an exit.
+        if HOLDING_EXIT_ONLY and abs(inv) >= INV_TOLERANCE:
+            if stats is not None:
+                stats["holding_exit_only"] = stats.get("holding_exit_only", 0) + 1
+            return _reducing_quotes(best_y, best_n, inv, cost)
         # JOIN: external depth meets Target both sides, so shaping OUR size never voids it.
         # BOTH sides ALWAYS rest here (never pulled to zero) — the resting quotes are what earns
         # the rewards; inventory earns nothing. Position control is done by SKEW, not by removing
         # a quote: shrink+step-in the accumulating side, grow the reducing side. Both stay live.
+        # (Reachable only when flat, or with HOLDING_EXIT_ONLY off.)
         y_price, y_cnt, y_reason = best_y, _capped_join(best_y, best_n), "join"
         n_price, n_cnt, n_reason = best_n, _capped_join(best_n, best_y), "join"
         # STAND-DOWN: on a thin-reward regime, size BOTH accumulating sides down to MIN_QUOTE_CT
@@ -2297,19 +2343,26 @@ def run_once():
                     return ((pos > 0 and q2.get("side") == "no")
                             or (pos < 0 and q2.get("side") == "yes"))
                 return False
+            # HOLDING => EXIT ONLY overrides KEEP_BOTH (operator directive 2026-07-27). KEEP_BOTH
+            # exists to keep a HELD market two-sided so its snapshot still earns — but "held" is
+            # exactly the state we have now decided must be exit-only, so the two rules are in
+            # direct conflict and the risk rule wins. Left computed here rather than deleting
+            # KEEP_BOTH, so setting KALSHI_HOLDING_EXIT_ONLY=0 restores the old pairing intact.
+            _keep_both = REDUCE_ONLY_KEEP_BOTH and not HOLDING_EXIT_ONLY
+
             def _shape(t, qs):
                 out = []
                 for q2 in qs:
                     if _keep_reducing(t, q2):
                         out.append(q2)
-                    elif (REDUCE_ONLY_KEEP_BOTH and abs(naked_by.get(t, 0.0)) >= INV_TOLERANCE
+                    elif (_keep_both and abs(naked_by.get(t, 0.0)) >= INV_TOLERANCE
                           and q2.get("count", 0) > MIN_QUOTE_CT):
                         # ONLY where we HOLD inventory: keep that market two-sided (else the
                         # snapshot is excluded and even our resting exit quote earns $0) at the
                         # floor size, so added risk is ~10x smaller than a normal join. FLAT
                         # markets stay pulled — reduce-only must still mean reduce-only.
                         out.append(dict(q2, count=MIN_QUOTE_CT, reason="minjoin"))
-                    elif (REDUCE_ONLY_KEEP_BOTH and abs(naked_by.get(t, 0.0)) >= INV_TOLERANCE
+                    elif (_keep_both and abs(naked_by.get(t, 0.0)) >= INV_TOLERANCE
                           and q2.get("reason") is not None):
                         out.append(q2)          # already at/below the floor — keep as-is
                 return out

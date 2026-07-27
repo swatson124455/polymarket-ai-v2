@@ -26,6 +26,7 @@ ADD to RED - |inv| for when `room` caps RED (it does in production: MAX_MARKET_C
 room ~23). `_unwind_size` is untouched and still caps PURE unwinds at |inv|.
 """
 from test_live_hardening import MockClient, _run, q
+from test_live_hardening import legacy_inventory_mode  # noqa: E402
 
 M = {"target": 1000, "end": "2099-01-01T00:00:00Z", "usd_day": 100.0, "ramp_min": 180}
 
@@ -91,6 +92,7 @@ def test_double_fill_paired_across_a_sweep(monkeypatch):
 # ---- both sides stay live ---------------------------------------------------------------
 
 def test_both_sides_stay_live_while_holding(monkeypatch):
+    legacy_inventory_mode(monkeypatch)
     _cfg(monkeypatch)
     for inv in (1, 8, 25, -1, -8, -25):
         y, n = _sides(inv)
@@ -113,6 +115,7 @@ def test_flat_is_unchanged(monkeypatch):
 # ---- the legacy defect must not come back ----------------------------------------------
 
 def test_flag_off_reproduces_the_legacy_sizing(monkeypatch):
+    legacy_inventory_mode(monkeypatch)
     _cfg(monkeypatch)
     monkeypatch.setattr(q, "PAIR_BOTH_SIDES", False)
     y, n = _sides(8)

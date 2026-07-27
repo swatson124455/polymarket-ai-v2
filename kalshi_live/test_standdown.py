@@ -31,6 +31,7 @@ import pytest
 
 # Reuse the live-hardening harness (module handle + run_once driver + mock client/config helpers).
 from test_live_hardening import q, MockClient, _run, _cfg
+from test_live_hardening import legacy_inventory_mode  # noqa: E402
 
 
 # ---------------------------------------------------------------------------------------------
@@ -140,6 +141,7 @@ def test_fix_pin_via_cycle_slashes_committed_capital(monkeypatch, tmp_path):
 # T3 — NEVER BLOCKS EXITS
 # ---------------------------------------------------------------------------------------------
 def test_standdown_never_blocks_exits(monkeypatch):
+    legacy_inventory_mode(monkeypatch)
     # Long +40 ct on a thin-reward market. Stand-down ON must STILL rest the reducing (NO) side at
     # full |inv| size to unwind — de-risk is never blocked or down-sized.
     _std_cfg(monkeypatch, on=True)

@@ -14,6 +14,7 @@ The asymmetry these pin, in both directions:
   an ENTRY at 0.99 must still be REFUSED (relaxing that would be a far worse regression)
 """
 from test_live_hardening import MockClient, _run, q
+from test_live_hardening import legacy_inventory_mode  # noqa: E402
 
 M = {"target": 1000, "end": "2099-01-01T00:00:00Z"}
 
@@ -86,6 +87,7 @@ def test_entry_band_still_binds_on_a_normal_book(monkeypatch):
 # ---- the economic governor is MAX_UNWIND_LOSS, not the band --------------------------
 
 def test_unwind_loss_cap_still_binds_after_the_relaxation(monkeypatch):
+    legacy_inventory_mode(monkeypatch)
     # Long YES at 0.5426 (the live 4.140 basis) against a 0.99 NO bid: paying 0.99 to close
     # would cost 1.5326 for $1.00. The cap must pull the resting price down to 1-cost+MUL.
     _live_band(monkeypatch, unwind_loss=0.10)

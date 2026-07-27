@@ -19,6 +19,7 @@ not a re-expression of it -- so reverting the source change fails them.
 # _run() never touches. Getting this wrong makes the stubs silently no-op, the real venue gets
 # read, and the tests pass for the wrong reason.
 from test_live_hardening import MockClient, _run, q
+from test_live_hardening import legacy_inventory_mode  # noqa: E402
 
 
 def _book(yes_levels, no_levels):
@@ -106,6 +107,7 @@ def test_crossed_book_still_refused_and_counted(monkeypatch, tmp_path):
 
 
 def test_loss_cap_still_binds_on_a_one_sided_book(monkeypatch, tmp_path):
+    legacy_inventory_mode(monkeypatch)
     # The relaxed guard must NOT let a one-sided book bypass the unwind loss cap. Long YES
     # at the live 4.140 basis (0.5426) against a 0.99 NO bid would pay 1.5326 for $1.00.
     _setup(monkeypatch, yes_levels=[], no_levels=[["0.99", "5000"]])
