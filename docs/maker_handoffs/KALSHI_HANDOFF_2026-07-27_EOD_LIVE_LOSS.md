@@ -14,13 +14,15 @@ session, or a line of code cited by file:line.
 |---|---|---|
 | STOP sentinel | **PRESENT** | written 19:38:00Z |
 | service `polymarket-maker-kalshi-ws` | active (running, idling under STOP) | 19:38Z |
-| balance | **$271.5700** | 19:50:33Z |
-| held cost basis | $1.84 | 19:50:33Z |
-| equity (cost) / (mark) | **$273.41 / $273.10** | 19:50:33Z |
-| open positions | 5, all dust (largest 2.70 ct) | 19:50:33Z |
-| resting orders | 1 | 19:50:33Z |
+| balance | **$272.5700** | 20:16:47Z |
+| held cost basis | $0.67 | 20:16:47Z |
+| equity (cost) / (mark) | **$273.24 / $273.08** | 20:16:47Z |
+| open positions | 5, all dust (largest 0.95 ct) | 20:16:47Z |
+| resting orders | **0** | 20:16:47Z |
 
-**SESSION P&L: −$27.35.** First read today was balance $297.9614 + held $2.80 = $300.76 equity.
+**SESSION P&L: −$27.52** (cost basis). First read today was balance $297.9614 + held $2.80 =
+$300.76 equity. (An earlier draft of this handoff quoted −$27.35 from the 19:50:33Z read; the
+residual dust settled between the two reads. Both are real reads — use the 20:16:47Z one.)
 Attribution (do not quote the total bare): this is the **naked one-sided leg** — the defect class
 the 07-26 audit measured at −$0.13645/ct naked vs −$0.02248/ct hedged — compounded by an exit-price
 cap that made the cheap exit unfillable. It is NOT structural maker cost.
@@ -54,6 +56,67 @@ Pushed to `origin/claude/maker-kalshi-live`.
 **`book_src_err: 0` every cycle**, reads 41 → 7–10, cold cycle ~13.8s → 4.6–8.0s live, 0 × 429.
 Its cold-start REST fallback also fired correctly in production (`book_ws:0 / book_rest:41` on the
 daemon's first cycle, which runs before the feed exists).
+
+---
+
+## §1B — FIVE DAYS OF WORK, 2026-07-23 → 2026-07-27: WHAT IS ACTUALLY ON THE BOX
+
+78 commits landed on `claude/maker-kalshi-live` in this window. Most were built behind a default-OFF
+flag. **The single most useful fact for the next session is which of them are actually ON**, because
+a commit existing is not the same as the bot running it. Flag state below is a live read of
+`/opt/pa2-maker-kalshi-live/live.env` at 2026-07-27T20:16:43Z.
+
+### ON in production right now
+| feature | knob | value | landed |
+|---|---|---|---|
+| option B — cold cycle books from the WS mirror | `KALSHI_WS_BOOK_COLD` | **1** | 07-27 `e237283` |
+| Stage B hot reprice | `KALSHI_WS_HOT` | **1** | 07-24 `614eb5a`/`a96ab60`/`a339cb3` |
+| pre-close naked flatten | `KALSHI_PRECLOSE_FLATTEN` | **1** | 07-24 `d9dfbee` |
+| taker flatten | `KALSHI_TAKER_FLATTEN` | **1** (I set this 19:22Z today) | pre-window |
+| capture-rank market selection | `KALSHI_SCORE_RANK` | **1** | 07-25 `6e59db0`/`7e2fab0` |
+| presence gate | `KALSHI_PRESENCE_GATE` | **1** | 07-25 `8a260ca` |
+| far-close cap | `KALSHI_MAX_DAYS_TO_CLOSE` | **8** (built as 3) | 07-25 `4fa24d8` |
+| keep both sides under breaker | `KALSHI_REDUCE_ONLY_KEEP_BOTH` | **1** | 07-26 `0a86b2b` |
+| unwind loss cap | `KALSHI_MAX_UNWIND_LOSS` | **0.10** | pre-window |
+
+### BUILT, TESTED, COMMITTED — and OFF
+| feature | knob | value | landed |
+|---|---|---|---|
+| capture gate | `KALSHI_CAPTURE_GATE` | **0** | 07-24 `eac0443` |
+| stand-down guard | `KALSHI_STANDDOWN` | **0** | 07-24 `62f39e9` |
+| net-EV flagging | `KALSHI_NETEV_GATE` | **0** | 07-24 `f17c0c2` |
+| smart throttle | `KALSHI_THROTTLE_SMART` | **0** | pre-window (turned off 07-27, deliberate) |
+| pivot-select | `KALSHI_PIVOT_SELECT` | absent → **0** | 07-24 `4c731f6` |
+| funding gate (free-cash capital accounting) | `KALSHI_FUNDING_GATE` | absent → **0** | 07-23 `de224fc` |
+
+**That second table is the story of the five days.** Six features were designed, built, tested and
+committed, and the bot is running none of them. The funding gate in particular is the capital-
+accounting root fix from 07-23 — with it OFF, the legacy gate counts already-spent `held_cost`
+against `MAX_TOTAL_CAPITAL`, which is the "treadmill" its own build doc describes.
+
+### Day-by-day, what each day produced
+- **07-23 (~25 commits)** — capital-accounting root fix + funding gate (OFF); settlement-P&L
+  attributor; fill-sign root fix (156/317 fills were sign-inverted); fee schedule verified 67/67
+  (maker fees ZERO by default); ground-truth transaction export; support email drafts (NOT SENT);
+  3 live defect fixes (categorical event netting, strike-parse darkness, inflatable daily quota).
+- **07-24 (~10 commits)** — the WS daemon itself (Stage A + Stage B) through a 4-lens adversarial
+  review and 11/11 mutation verification; pre-close flatten; capture gate; net-EV gate; stand-down;
+  pivot-select; pooled HTTP transport (2.7× measured). Almost all default-OFF.
+- **07-25 (~20 commits)** — R1 pool formula fix (a live SELECTION bug); presence measurement;
+  capture-based ranking; far-close cap; $1.20 gate floor; silent-handler instrumentation;
+  falsification suite 12/12; chaos + outer-bounds suites; the retraction ledger.
+- **07-26 (~14 commits)** — the intent-vs-actual audit (**"there is no working exit path, all four
+  are closed"**); the reward-vs-fill measurement (sit at the touch; the lever is pairedness);
+  strand unwind one-sided fix `447c271`; entry bands must not gate exits `b1ee877`; hold-both-sides
+  `0a86b2b`; daily-halt split; config-visibility warning; inventory stress over real books.
+- **07-27 (5 commits, mine)** — option B (deployed, works); this session's live run and −$27.52;
+  fixes 1+2 WIP; two handoffs.
+
+### The uncomfortable cross-reference
+The 07-26 audit `bdaaf7c` concluded **there is no working exit path**. The 07-26 measurement
+`1ef08da` concluded **sit at the touch**. Today's loss was caused by an exit that could not fill
+because it was NOT at the touch (D1 below). Both conclusions were already on record before I went
+live, and I did not check the fixes against them before raising capital 295×.
 
 ---
 
