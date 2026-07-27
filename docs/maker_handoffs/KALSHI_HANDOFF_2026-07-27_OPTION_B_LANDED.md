@@ -161,6 +161,24 @@ Nothing below was started, reordered, or descoped this session.
 7. **M2b** — automated per-event reward export; today the split needs a manual UI/CSV pull.
 8. **M4 / M5** and everything in the prior handoff's §7 — unchanged.
 
+9. **NEW 2026-07-27, TABLED by operator: the bot flips positions THROUGH flat under the
+   breaker.** OBSERVED live, not inferred: `KXDXYDUD-26JUL27-T101.4640` held **−20.0** at
+   19:23:08Z with a resting `yes 0.55 x37`; at 19:27:08Z the position was **+17.0**
+   (−20 + 37 = +17 exactly). Mechanism: `KALSHI_REDUCE_ONLY_KEEP_BOTH=1` keeps the ordinary
+   two-sided maker quote live while the breaker is reduce-only, and that side is sized by the
+   capital/join rule — NOT capped at `|inv|` the way `_unwind_size` is. So a full fill on the
+   "reducing" side crosses through flat and opens the opposite position, which `_unwind_size`'s
+   own docstring calls out as the thing it exists to prevent.
+   Same setup was live simultaneously on `KXINXHUD-26JUL271600-T7410.20`: −29.05 with
+   `yes 0.65 x41` resting.
+   The breaker was tripped on EVERY cycle from 19:11Z onward, so this is the steady state, not
+   an edge case.
+   Candidate lever: `KALSHI_REDUCE_ONLY_KEEP_BOTH=0`. Cost is a PROPORTIONAL reward loss on the
+   dropped side (R4 pays the mean of `(yes_share + no_share)/2`; prior handoff §7 citing
+   `KALSHI_LIP_RULE_CANON.md` §R3/R4) — not a $0 cliff.
+   **BOTH SIDES OF THIS TRADE ARE UNMEASURED:** what KEEP_BOTH=0 costs in actual reward, and
+   what the flips cost in spread. Operator tabled it 2026-07-27 pending measurement.
+
 Prior handoff's §7 (measured NEGATIVE, do not re-litigate) stands as written: Phase 3
 velocity-conditional placement; the already-built things (`event_deltas`, `ladder_pairing`
 + the LADDER ESCAPE HATCH at `maker_kalshi_quoter.py:2166`, the strand fix `447c271`); and
