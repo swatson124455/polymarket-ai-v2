@@ -714,6 +714,50 @@ def public_get(path):
         return json.loads(r.read())
 
 
+# ---------------- OPTION B: pluggable book source ------------------------------------------------
+# The cold cycle's book reads dominate its wall clock: ~40 serialized REST round trips, measured
+# 2026-07-27 from the VPS at 320ms p50 / 327ms p90 (n=78) = ~12.5s of pure network. The WS daemon
+# already holds a live mirror of exactly those books, so it can answer the same question from
+# memory (feed latency 47ms p50, n=342, same measurement).
+#
+# BOOK_SOURCE is a callable(ticker) -> orderbook_fp-shaped dict, or None.
+#   None (the DEFAULT)  -> every book read is a REST fetch, byte-identical to the legacy path.
+#                          A timer run or a manual quoter run installs nothing and is unchanged.
+#   installed           -> the provider answers, and returning None means "I cannot vouch for this
+#                          ticker — fetch it over REST". The provider owns the whole staleness
+#                          predicate; see Daemon.mirror_book in maker_kalshi_ws_daemon.py.
+#
+# The contract is deliberately one-way: a provider can only ever DECLINE. It can never make the
+# cycle skip a book, and it can never suppress a REST fetch it did not answer.
+BOOK_SOURCE = None
+_book_src = {"mirror": 0, "rest": 0, "src_err": 0}      # per-cycle attribution (reset in run_once)
+
+
+def _get_book(ticker):
+    """orderbook_fp dict for `ticker` — from BOOK_SOURCE when it vouches, REST otherwise.
+
+    Raises exactly what public_get raises (RuntimeError on read-budget exhaustion, urllib errors
+    on transport), so every caller's existing except-branch keeps its meaning unchanged.
+
+    A provider that RAISES is treated as a provider that declined: a bug in the mirror path must
+    degrade this cycle to REST, never break a live trading cycle. It is counted, not swallowed."""
+    src = BOOK_SOURCE
+    if src is not None:
+        try:
+            ob = src(ticker)
+        except Exception:
+            ob = None
+            _book_src["src_err"] += 1
+        # `is not None`, NOT truthiness: an empty book ({} / empty level lists) is a legitimate
+        # answer the caller already handles (the empty_books counter). Treating it as "declined"
+        # would issue a REST read to re-learn the same emptiness on every quiet market.
+        if ob is not None:
+            _book_src["mirror"] += 1
+            return ob
+    _book_src["rest"] += 1
+    return public_get(f"/trade-api/v2/markets/{ticker}/orderbook").get("orderbook_fp") or {}
+
+
 # ---------------- pure planning (unit-tested offline) ----------------
 
 def parse_iso(s):
@@ -1709,6 +1753,7 @@ def run_once():
         _release_lock(_lock)
         return 0
     _reads[0] = 0
+    _book_src.update(mirror=0, rest=0, src_err=0)   # per-cycle book-source attribution
     cyc = int(now.timestamp())            # per-cycle nonce for unique order ids
     st = load_state()
     plan = {"ts": now.isoformat(), "mode": client.mode}
@@ -2034,7 +2079,7 @@ def run_once():
             if t in flattened:
                 continue                                # just de-risked; leave it alone this cycle
             try:
-                ob = public_get(f"/trade-api/v2/markets/{t}/orderbook").get("orderbook_fp") or {}
+                ob = _get_book(t)              # WS mirror when it vouches, else REST (identical)
                 if not (ob.get("yes_dollars") or ob.get("no_dollars")):
                     # ENVELOPE-level emptiness (API field rename / genuinely empty book) is
                     # invisible to the row-level malformed counter — count it (masking audit).
@@ -2128,7 +2173,7 @@ def run_once():
             if t in fp_tickers or t in flattened or abs(pos) < INV_TOLERANCE:
                 continue
             try:
-                ob = public_get(f"/trade-api/v2/markets/{t}/orderbook").get("orderbook_fp") or {}
+                ob = _get_book(t)              # WS mirror when it vouches, else REST (identical)
             except RuntimeError:
                 break                                   # read budget exhausted
             except Exception:
@@ -2463,6 +2508,11 @@ def run_once():
             # retained fetch-fail markets are already IN desired -> do NOT subtract
             # them again (that double-counted and could go negative)
             "reads": _reads[0], "gated_out": len(footprint) - len(desired),
+            # OPTION B attribution: how many books this cycle came from the WS mirror vs REST,
+            # and how many times the provider FAILED (src_err > 0 means the mirror path is
+            # broken and we are silently back on REST — that must be visible, not inferred).
+            "book_mirror": _book_src["mirror"], "book_rest": _book_src["rest"],
+            "book_src_err": _book_src["src_err"],
             "fetch_failed": fetch_failed, "capped_markets": capped_markets,
             "budget_dropped_markets": budget_dropped,
             "cancel_fail": cancel_fail, "create_fail": create_fail,
@@ -2595,7 +2645,9 @@ def run_once():
           f"{plan.get('quote_fail',0)}q skipped={plan.get('create_skipped',0)} "
           f"badrows={plan.get('dropped_book_rows',0)} "
           f"capped={plan.get('capped_markets',0)} write_tokens={plan.get('write_tokens',0)} "
-          f"reads={_reads[0]} committed=${plan.get('committed_usd', plan.get('est_capital_usd',0)):,.2f}"
+          f"reads={_reads[0]} books={_book_src['mirror']}ws/{_book_src['rest']}rest"
+          + (f"/{_book_src['src_err']}ERR" if _book_src["src_err"] else "")
+          + f" committed=${plan.get('committed_usd', plan.get('est_capital_usd',0)):,.2f}"
           f"/{MAX_TOTAL_CAPITAL:,.0f} held=${plan.get('held_cost_usd',0):,.2f}"
           + (f" first_err={plan.get('first_quote_err')}" if plan.get("first_quote_err") else ""))
     return 0

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """KALSHI WS MAKER DAEMON — event-driven requoting on top of the UNCHANGED quoter.
 
-Replaces the 2-minute systemd timer with a long-lived process. Additive-only:
-maker_kalshi_quoter.py is imported, NEVER modified — every guard (loss meter,
-breakers, ladder pairing, caps, STOP, netev/capture gates) runs verbatim.
+Replaces the 2-minute systemd timer with a long-lived process. The quoter's
+DECISION logic is never modified — every guard (loss meter, breakers, ladder
+pairing, caps, STOP, netev/capture gates) runs verbatim. Stage C (below) adds
+one hook to the quoter's book-READ path; it changes where a book comes from,
+never what is done with it.
 
-TWO STAGES:
+THREE STAGES:
 
   STAGE A (always on): WS-TRIGGERED FULL CYCLES.
     Book moves / our fills trigger an immediate M.run_once() — the complete
@@ -14,6 +16,26 @@ TWO STAGES:
 
   STAGE B (KALSHI_WS_HOT=1, DEFAULT 0 — armed only after adversarial re-review):
     surgical reprice from the WS mirror between cycles.
+
+  STAGE C (KALSHI_WS_BOOK_COLD=1, DEFAULT 0): the COLD cycle's ~40 serialized
+    REST book reads served from the same mirror. Measured 2026-07-27 on the VPS:
+    REST orderbook round trip 320ms p50 (n=78) x ~40 reads = ~12.5s of pure
+    serialized network per cycle; the mirror answers in memory at 47ms p50 feed
+    latency (n=342). Preconditions measured the same day, same box:
+      - mirror == REST EXACTLY: 78/78 shadow comparisons, 0 mismatches, on the
+        full level maps of both sides (best price, total depth, every level)
+      - our OWN resting orders appear in the mirror exactly as in REST (verified
+        on a live resting order), so run_once's `own` subtraction is unaffected
+      - 39/40 footprint mirrors seed in 1.7s; the 1 holdout is a genuinely EMPTY
+        book the venue sends no snapshot for -> stays dirty -> REST forever
+      - footprint churn over 150s: 0 added, 0 dropped (40/40 overlap)
+    This makes the mirror AUTHORITATIVE for cold quoting decisions, not just hot
+    reprices, so the staleness predicate in Daemon.mirror_book is load-bearing
+    for the whole cycle. It is written to DECLINE, never to guess.
+    NOT in scope (still REST, deliberately): the flatten / taker-cross book reads
+    (quoter _flatten_all, flatten_to_zero, _taker_cross_capped). Those price an
+    order that CROSSES; that is a different risk class from a resting quote and
+    was never part of the cold cycle's read count.
 
 STAGE B SAFETY MODEL (rebuilt after the 4-lens adversarial review 2026-07-25;
 all four reviewers' mandatory findings are implemented here):
@@ -73,6 +95,7 @@ WS_HOT_WRITES_PER_S = M._envf("KALSHI_WS_HOT_WRITES_PER_S", 3.0)
 WS_HOT_BURST = M._envi("KALSHI_WS_HOT_BURST", 6)
 WS_STALE_S = M._envi("KALSHI_WS_STALE_S", 90)         # hot ctx max age
 WS_MIN_MOVE = M._envf("KALSHI_WS_MIN_MOVE", 0.01)     # 1 tick
+WS_BOOK_COLD = M._envi("KALSHI_WS_BOOK_COLD", 0)      # STAGE C (option B) flag — DEFAULT OFF
 LOG_PATH = os.path.join(M.DATA_DIR, "ws_daemon_log.jsonl")
 
 
@@ -275,6 +298,52 @@ class Daemon:
             self.programs_mono = time.monotonic()
         return self.programs
 
+    # ---------------- STAGE C: the cold cycle's book reads, served from the mirror ----------
+    def mirror_book(self, ticker):
+        """M.BOOK_SOURCE provider. Returns an orderbook_fp-shaped dict, or None meaning
+        "I cannot vouch for this ticker — read it over REST".
+
+        THIS PREDICATE IS THE ENTIRE SAFETY OF STAGE C. Quoting off a silently stale mirror is
+        strictly worse than quoting slowly off a fresh REST book, so every arm below declines
+        (-> REST) rather than guessing. It can only ever SUBTRACT trust; it can never cause a
+        book to be skipped, and it never suppresses a fetch it did not answer.
+
+        What makes a CLEAN mirror trustworthy (Feed does all four, verbatim):
+          - seq gap            -> gap_count++, EVERY mirror dirty, forced reconnect (feed :260-266)
+          - disconnect/error   -> EVERY mirror dirty in the except arm (feed :329-332)
+          - unparseable delta / unknown snapshot dialect -> that mirror dirty (feed :111, :130)
+          - silently dead socket -> ping_interval=10s / ping_timeout=20s makes recv() raise into
+            the same except arm, so undetected deadness is bounded at ~30s (feed :217-218)
+
+        DELIBERATELY NO PER-TICKER AGE BOUND. A quiet ladder book legitimately receives no update
+        for minutes — that is why RECV_TIMEOUT_S is 300s (feed :40-44). Silence is evidence of a
+        quiet market, NOT of a stale mirror; the ping keepalive above is what proves liveness.
+        An age bound here would force mass REST fallback on healthy quiet books and would buy
+        nothing the ping does not already buy."""
+        feed = self.feed
+        # ONE dereference: a resubscribe builds a whole new Feed with fresh mirrors and drops the
+        # old object, so we can never mix a stale mirror dict into a live feed's answer.
+        if feed is None:
+            return None                               # first cold cycle: no feed exists yet
+        if "orderbook_delta" not in feed.confirmed_channels:
+            return None                               # not ACKed on THIS connection
+        m = feed.mirrors.get(ticker)
+        if m is None or m.dirty:
+            return None                               # unwatched / gapped / never seeded
+        # run_once runs on a WORKER thread (_run_cold -> asyncio.to_thread) while the event loop
+        # keeps applying deltas, so unlike the hot path this read races real mutation. A dict
+        # resize mid-iteration raises RuntimeError; retry, then decline to REST. (A snapshot
+        # rebinds m.yes/m.no to NEW dicts, so an in-flight sort of the old dict stays safe.)
+        for _ in range(3):
+            try:
+                ys, ns = m.rows()
+            except RuntimeError:
+                continue
+            if m.dirty:
+                return None                           # went dirty mid-read — do not trust it
+            return {"yes_dollars": ys, "no_dollars": ns}
+        return None
+
     # ---------------- cold path ----------------
     def cold_cycle(self):
         """The full guarded cycle — the quoter, verbatim — then rebuild hot ctx.
@@ -285,10 +354,17 @@ class Daemon:
         stacking, the exact class the cancel-failure guard exists to prevent)."""
         t0 = time.monotonic()
         with self.cold_lock:
+            # STAGE C: install the mirror as this cycle's book source. Restored in `finally` so a
+            # raising cycle can never leave a provider installed for a later run in this process.
+            prev_src = M.BOOK_SOURCE
+            if WS_BOOK_COLD:
+                M.BOOK_SOURCE = self.mirror_book
             try:
                 M.run_once()
             except Exception as e:                    # cycle errors are loud, not fatal
                 _log({"ev": "cold_cycle_error", "err": repr(e)[:200]})
+            finally:
+                M.BOOK_SOURCE = prev_src
             self.last_cycle_mono = time.monotonic()
             tickers = None
             if not os.path.exists(M.STOP_FILE) and self.client.mode != "dry_run":
@@ -298,7 +374,12 @@ class Daemon:
                     self.ctx.invalidate()             # ctx unusable -> hot disabled
                     _log({"ev": "ctx_build_error", "err": repr(e)[:200]})
         _log({"ev": "cold_cycle", "secs": round(time.monotonic() - t0, 2),
-              "hot_ctx": bool(tickers)})
+              "hot_ctx": bool(tickers),
+              # STAGE C attribution. book_src_err > 0 means the provider is throwing and we are
+              # silently back on REST — the whole point of counting it is that "it got slow again"
+              # must be readable here, not re-derived from a stopwatch.
+              "book_ws": M._book_src["mirror"], "book_rest": M._book_src["rest"],
+              "book_src_err": M._book_src["src_err"]})
         return tickers
 
     # ---------------- hot path (Stage B) ----------------
@@ -549,7 +630,7 @@ class Daemon:
 
     async def main(self):
         _log({"ev": "daemon_start", "mode": self.client.mode, "hot": bool(WS_HOT),
-              "cold_s": WS_COLD_S})
+              "book_cold": bool(WS_BOOK_COLD), "cold_s": WS_COLD_S})
         tickers = await self._run_cold() or set()
         watch = sorted(tickers)[:40] or ["KXB200MON-26JUL31-6.960"]
         feed = self._new_feed(watch)
