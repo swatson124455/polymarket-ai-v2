@@ -1452,6 +1452,18 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # reducing-side fixes further up, because this is the last gate every quote passes.
         _ok_y = _ok_exit_price(y_price) if y_reason == "unwind" else _ok_entry_price(y_price)
         _ok_n = _ok_exit_price(n_price) if n_reason == "unwind" else _ok_entry_price(n_price)
+        # THE OFFSET ASSUMED ITS PARTNER WOULD REST. RED was sized ADD+|inv| so that a DOUBLE
+        # fill lands paired — but the ADDING side can still be dropped right here (price outside
+        # its band, or shaped to 0). If that happens, RED stands alone and a full fill carries us
+        # THROUGH flat by the whole ADD component. Caught by stress_inventory.py on a real book:
+        # inv=-16 with the adding side dropped left RED=113 -> net +97, growing the imbalance 6x.
+        # When the partner will not rest, fall back to a pure unwind capped at |inv|.
+        if abs(inv) >= INV_TOLERANCE and PAIR_BOTH_SIDES:
+            _iv2 = int(abs(inv))
+            if inv > 0 and not (y_cnt > 0 and _ok_y):
+                n_cnt = min(n_cnt, _iv2)
+            elif inv < 0 and not (n_cnt > 0 and _ok_n):
+                y_cnt = min(y_cnt, _iv2)
         if y_cnt > 0 and _ok_y:
             quotes.append({"side": "yes", "price_dollars": y_price, "count": y_cnt, "reason": y_reason})
         if n_cnt > 0 and _ok_n:
