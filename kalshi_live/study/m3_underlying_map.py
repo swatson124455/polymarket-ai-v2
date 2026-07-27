@@ -41,12 +41,35 @@ FAMILIES = (
     ("KXFED", "us_fed"), ("KXRATE", "us_fed"),
     ("KXCLUBF", "club_football"), ("KXJOINCLUB", "club_football"),
     ("KXLIUK", "club_football"),
-    ("KXH100MS", "gpu_restock"), ("KXH200MS", "gpu_restock"),
-    ("KXB200MS", "gpu_restock"), ("KXA100MS", "gpu_restock"),
-    ("KXRTX", "gpu_restock"),
+    # GPU restock: one underlying (supply of Nvidia accelerators), many cadences.
+    # MS/WS/MON/MAX are daily/weekly/monthly/max variants of the SAME product line.
+    ("KXH100", "gpu_restock"), ("KXH200", "gpu_restock"),
+    ("KXB200", "gpu_restock"), ("KXA100", "gpu_restock"), ("KXRTX", "gpu_restock"),
     ("KXCOINBASE", "crypto"), ("KXBTC", "crypto"), ("KXETH", "crypto"),
     ("KXTRUMP", "us_politics_trump"), ("KXMUSK", "musk"),
     ("KXRT", "box_office_reviews"), ("KXBOX", "box_office_reviews"),
+    # Single-name equities move together with each other and the tape; grouping them is the
+    # CONSERVATIVE direction here (over-grouping understates independence, which is the safe
+    # error for a diversification ceiling).
+    ("KXMETA", "us_equities"), ("KXBA", "us_equities"), ("KXSBUX", "us_equities"),
+    ("KXNCLH", "us_equities"), ("KXAMZN", "us_equities"), ("KXRBLX", "us_equities"),
+    ("KXCVNA", "us_equities"), ("KXRDDT", "us_equities"), ("KXAC", "us_equities"),
+    ("KXHOOD", "us_equities"), ("KXHOODA", "us_equities"),
+    ("KXCOMPANYACTIONRDDT", "us_equities"),
+    # Chipotle: the stock and the burrito-count market share one company.
+    ("KXCMG", "chipotle"), ("KXCHIPBURRITO", "chipotle"),
+    ("KXINXHUD", "macro_index_fx"), ("KXNDQHUD", "macro_index_fx"),
+    ("KXDXYDUD", "macro_index_fx"), ("KXEURUSDAW", "macro_index_fx"),
+    ("KXUSGDPSHARE", "us_macro"),
+    ("KXNEXTTEAMNBA", "nba"), ("KXNBANEXTCONTRACT", "nba"),
+    ("KXNBANEXTTEAMOUTLET", "nba"), ("KXNBARETIRE", "nba"),
+    ("KXMLBALMOTY", "mlb"), ("KXNEXTTEAMMLB", "mlb"), ("KXNEXTMANAGERMLB", "mlb"),
+    ("KXGTA6SONGS", "gta6"), ("KXGTATRAILER", "gta6"),
+    ("KXMAMDANIEO", "us_politics"), ("KXAPRPOTUS", "us_politics"),
+    ("KXGENERICBALLOTVOTEHUB", "us_politics"), ("KXTRUTHSOCIAL", "us_politics"),
+    ("KXTARIFFBILL", "us_politics"), ("KXCLARITYVOTE", "us_politics"),
+    ("KXWCTEAMS", "world_cup"), ("KXWCCAREERGOALS", "world_cup"),
+    ("KXINTLPLAYAGAIN", "world_cup"),
 )
 
 
