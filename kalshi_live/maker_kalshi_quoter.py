@@ -2098,6 +2098,11 @@ def run_once():
                                               # cycle -> funding gate FAILS CLOSED to the legacy gate
         cost_by = {}                          # per-ticker avg cost basis (unwind loss cap)
         breaker = False
+        # governed-market set: initialized HERE, before the mode branch, because the quote loop
+        # reads it unconditionally — initializing it inside the live branch broke every dry-run
+        # cycle with UnboundLocalError (self-audit F18, 2026-07-29, same-day regression of the
+        # loss-governor commit). Dry-run keeps it empty: no fills, nothing to govern.
+        _exit_only_mkts = set()
         if client.mode == "dry_run":
             standing = st.get("simulated_standing", {})
             own = {}
@@ -2146,9 +2151,8 @@ def run_once():
             # BOTH reads succeeded -> a complete cycle; only NOW clear the blackout streak.
             st["read_fail_streak"] = 0
             # PER-MARKET LOSS GOVERNORS (see config block): build the exit-only set for this
-            # cycle. Both parts fail OPEN (a parse fault must not block trading — the global
-            # halts still stand behind them).
-            _exit_only_mkts = set()
+            # cycle (initialized empty above the mode branch). Governor faults fail OPEN (a
+            # parse fault must not block trading — the global halts still stand behind them).
             _day_mkt = now.strftime("%Y-%m-%d")
             if MKT_DAY_LOSS_EXITONLY_USD > 0:
                 try:
@@ -2179,7 +2183,12 @@ def run_once():
                             if parse_iso(_exp) > now:
                                 _active[_t4] = _exp      # still cooling; expired ones drop
                         except Exception:
-                            pass                         # unparseable stamp -> forget it
+                            # FAIL CLOSED (self-audit F19, 2026-07-29): forgetting an
+                            # unparseable stamp re-opened the exact re-entry this governor
+                            # exists to block. Re-stamp a fresh full cooldown instead — the
+                            # market stays exit-only and the clock self-heals.
+                            _active[_t4] = (now + timedelta(
+                                seconds=REENTRY_COOLDOWN_S)).isoformat()
                     st["reentry_cool"] = _active
                     _exit_only_mkts |= set(_active)
                     plan["reentry_cooldown"] = len(_active)
@@ -2418,6 +2427,13 @@ def run_once():
                     # remainder self-hedges to settlement exactly as ladder_pairing intends.
                     ok, nc = _taker_cross_capped(client, t, int(round(abs(pos))), pos > 0,
                                                  cost=cost_by.get(t, 0.0))
+                    # RE-ENTRY COOLDOWN feed (self-audit F5, 2026-07-29): the settle-taker is
+                    # one of the taker exits — "a book that just ran us over must not be
+                    # rejoined" applies here exactly as at the strand cross.
+                    if REENTRY_COOLDOWN_S > 0 and nc:
+                        _cool6 = st.get("reentry_cool") or {}
+                        _cool6[t] = (now + timedelta(seconds=REENTRY_COOLDOWN_S)).isoformat()
+                        st["reentry_cool"] = _cool6
                     # HONEST OUTCOME (masking audit 07-22): flatten_to_zero cancels the ticker's
                     # resting orders FIRST, so a FAILED flatten (book unreadable / every IOC
                     # rejected / zero liquidity) leaves the position naked with NO reducing quote.
@@ -2510,6 +2526,15 @@ def run_once():
                                  ((_pos > 0 and o["side"] == "no") or
                                   (_pos < 0 and o["side"] == "yes"))) else {}))
                         for o in standing[t]]
+                    # LOSS GOVERNOR (self-audit F6a, 2026-07-29): the retained copy routed
+                    # around the exit-only strip below, so a governed market's accumulating
+                    # resting orders survived on any transient fetch error. Strip them here
+                    # too — for a governed market, cancelling the accumulating side is the
+                    # governor doing its job, not a stranding risk (unwind copies survive).
+                    if t in _exit_only_mkts:
+                        desired[t] = [o for o in desired[t] if o.get("reason") == "unwind"]
+                        if not desired[t]:
+                            desired.pop(t, None)
                 fetch_failed += 1
                 continue
             # book refs for the ladder escape hatch below (cheap re-parse of small lists)
@@ -2680,6 +2705,13 @@ def run_once():
             keep = max(1, c0 // 2)
             cross = min(c0 - keep, int(MAX_MARKET_CAPITAL / price2))
             if cross < 1:
+                continue
+            # LOSS GOVERNOR (self-audit F6b, 2026-07-29): this hatch OPENS a position on t2
+            # (fresh collateral, its own comment below) after the loop that enforces the
+            # exit-only set — so a loss-tripped or cooling t2 could be re-entered through it.
+            # Gate it like any other opening order, and COUNT the gate so it is never silent.
+            if t2 in _exit_only_mkts:
+                plan["ladder_cross_gated"] = plan.get("ladder_cross_gated", 0) + 1
                 continue
             uws[0]["count"] = keep                      # keep+cross <= c0 <= |naked|: flip-safe
             plan["ladder_cross"] = plan.get("ladder_cross", 0) + 1
@@ -2904,8 +2936,15 @@ def run_once():
         if PRECLOSE_FLATTEN:
             grace_state = st.get("preclose_grace", {})
             try:
-                _preclose_naked_flatten(client, held_by, now, plan, grace_state,
-                                        costs_by=cost_by)
+                _pc_crossed = _preclose_naked_flatten(client, held_by, now, plan, grace_state,
+                                                      costs_by=cost_by) or []
+                # RE-ENTRY COOLDOWN feed (self-audit F5): pre-close taker exits count too.
+                if REENTRY_COOLDOWN_S > 0 and _pc_crossed:
+                    _cool7 = st.get("reentry_cool") or {}
+                    _until7 = (now + timedelta(seconds=REENTRY_COOLDOWN_S)).isoformat()
+                    for _t7 in _pc_crossed:
+                        _cool7[_t7] = _until7
+                    st["reentry_cool"] = _cool7
             except Exception as e:                          # a backstop bug must never abort the cycle
                 plan["preclose_error"] = f"{e!r}"[:160]
                 print(f"WARNING preclose flatten pass RAISED: {e!r} — cycle continues")
@@ -3485,7 +3524,8 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
     telemetry (plan keys) is written ONLY when the mechanism actually engages, so a flag-OFF plan
     row is byte-identical to legacy."""
     if not held_by:
-        return
+        return []
+    crossed = []       # tickers we PAID a taker to leave -> the caller's re-entry cooldown feed
     naked_by = ladder_pairing(held_by)
     for t, npos in naked_by.items():
         if abs(npos) < INV_TOLERANCE:
@@ -3530,6 +3570,8 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
             plan["preclose_taker_failed"] = plan.get("preclose_taker_failed", 0) + 1
             print(f"WARNING preclose flatten RAISED on {t} (naked {npos:+.2f}): {e!r}")
             continue
+        if nc:
+            crossed.append(t)
         plan["preclose_taker_ct"] = round(plan.get("preclose_taker_ct", 0.0) + nc, 2)
         print(f"preclose flatten {t}: naked {npos:+.2f}, {mins:.1f}min to close -> taker crossed "
               f"{nc} ct ({'FLAT' if flat else 'RESIDUAL — maker exit re-rested'})")
@@ -3537,6 +3579,7 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
             grace_state.pop(t, None)                       # naked cleared -> forget the clock
         else:
             plan["preclose_taker_failed"] = plan.get("preclose_taker_failed", 0) + 1
+    return crossed
 
 
 def _strand_cross(client, naked_by, costs_by, now, plan, strand_state):

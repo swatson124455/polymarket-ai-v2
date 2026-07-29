@@ -151,6 +151,87 @@ def test_strand_cross_feeds_the_cooldown(monkeypatch, tmp_path):
     assert "T1" in cool and q.parse_iso(cool["T1"]) > q.utcnow()
 
 
+# ---- SELF-AUDIT FIXES (2026-07-29 evening: F18 / F19 / F6a / F6b / F5 gaps) ----
+
+def test_dry_run_cycle_survives_with_governors_in_code(monkeypatch, tmp_path):
+    """F18: _exit_only_mkts was initialized only in the live branch -> every dry-run cycle
+    died with UnboundLocalError at the first quoted market. Dry-run must complete a cycle."""
+    _cfg(monkeypatch)
+    _fp1(monkeypatch)
+    c = MockClient(mode="dry_run")
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("mode") == "dry_run"
+    assert row.get("quote_fail", 0) == 0 and "positions_read_failed" not in row
+
+
+def test_unparseable_cooldown_stamp_fails_closed(monkeypatch, tmp_path):
+    """F19: an unparseable expiry used to be forgotten (fail-open re-entry). It must now
+    re-stamp a fresh cooldown and keep the market exit-only."""
+    _cfg(monkeypatch)
+    _fp1(monkeypatch)
+    monkeypatch.setattr(q, "REENTRY_COOLDOWN_S", 3600.0)
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as fh:
+        json.dump({"reentry_cool": {"T1": "not-a-timestamp"}}, fh)
+    c = MockClient(mode="live", positions=[])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("reentry_cooldown") == 1, "corrupt stamp must stay cooling, not amnesty"
+    assert c.created == []
+    fresh = _state(tmp_path)["reentry_cool"]["T1"]
+    assert q.parse_iso(fresh) > q.utcnow(), "stamp self-heals to a real future expiry"
+
+
+def test_fetch_fail_retention_respects_governor(monkeypatch, tmp_path):
+    """F6a: on a transient book-fetch error the retained standing copy routed around the
+    exit-only strip, so a governed market's accumulating orders survived. They must not."""
+    _cfg(monkeypatch)
+    _fp1(monkeypatch)
+    monkeypatch.setattr(q, "REENTRY_COOLDOWN_S", 3600.0)
+    future = (q.utcnow() + dt.timedelta(seconds=3000)).isoformat()
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as fh:
+        json.dump({"reentry_cool": {"T1": future}}, fh)
+    # book fetch fails for T1; an accumulating order is resting -> diff must CANCEL it
+    def _pg(p):
+        if "orderbook" in p:
+            # ValueError, NOT RuntimeError: RuntimeError is the read-budget-exhausted signal
+            # (`except RuntimeError: break`), which empties `desired` and cancels everything —
+            # passing this test without exercising the retention branch at all.
+            raise ValueError("book 500")
+        return {"incentive_programs": [], "next_cursor": ""}
+    monkeypatch.setattr(q, "public_get", _pg)
+    from test_live_hardening import _order
+    c = MockClient(mode="live", positions=[],
+                   resting=[_order("acc1", "T1", "yes", 0.50, 10)])
+    _run(monkeypatch, c, str(tmp_path))
+    assert "acc1" in c.cancelled, \
+        "governed market's accumulating order must be cancelled even on a fetch error"
+
+
+def test_settle_taker_feeds_reentry_cooldown(monkeypatch, tmp_path):
+    """F5: the settle-taker paid a taker to leave but never armed the cooldown — the exact
+    rejoin loop the 07-29 fix was written to close, still open through this path."""
+    _cfg(monkeypatch)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    monkeypatch.setattr(q, "REENTRY_COOLDOWN_S", 3600.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "TAKER_FLATTEN", 1)
+    # market closes inside SETTLE_UNWIND_MIN -> settle-taker arms
+    close = (q.utcnow() + dt.timedelta(minutes=5)).isoformat()
+    def _pg(p):
+        if p.endswith("/orderbook"):
+            return {"orderbook_fp": {"yes_dollars": [["0.60", "500"]],
+                                     "no_dollars": [["0.38", "500"]]}}
+        if "/markets/" in p:
+            return {"market": {"close_time": close}}
+        return {"incentive_programs": [], "next_cursor": ""}
+    monkeypatch.setattr(q, "public_get", _pg)
+    c = MockClient(mode="live", positions=[_pos(pos="5.00")])
+    _run(monkeypatch, c, str(tmp_path))
+    assert len(c.crosses) >= 1, "settle-taker must fire"
+    cool = _state(tmp_path).get("reentry_cool") or {}
+    assert "T1" in cool and q.parse_iso(cool["T1"]) > q.utcnow(), \
+        "a settle-taker exit must arm the re-entry cooldown"
+
+
 def test_realized_side_channel_populated_by_held_cost():
     c = MockClient(positions=[_pos(realized="-3.25"),
                               {"ticker": "T2", "position_fp": "0", "realized_pnl_dollars": "9"}])
