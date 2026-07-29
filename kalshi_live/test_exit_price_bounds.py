@@ -14,18 +14,17 @@ The asymmetry these pin, in both directions:
   an ENTRY at 0.99 must still be REFUSED (relaxing that would be a far worse regression)
 """
 from test_live_hardening import MockClient, _run, q
-from test_live_hardening import legacy_inventory_mode  # noqa: E402
 
 M = {"target": 1000, "end": "2099-01-01T00:00:00Z"}
 
 
-def _live_band(monkeypatch, unwind_loss=0.10):
-    """The production band: 0.04/0.96, with the live unwind loss cap."""
+def _live_band(monkeypatch):
+    """The production band: 0.04/0.96. (The unwind loss cap that used to be set here was
+    removed 2026-07-28, Q1 operator decision — exits price at the touch unconditionally.)"""
     monkeypatch.setattr(q, "MIN_PRICE_DOLLARS", 0.04)
     monkeypatch.setattr(q, "MAX_PRICE_DOLLARS", 0.96)
     monkeypatch.setattr(q, "EXIT_MIN_PRICE_DOLLARS", 0.01)
     monkeypatch.setattr(q, "EXIT_MAX_PRICE_DOLLARS", 0.99)
-    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", unwind_loss)
     monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
     monkeypatch.setattr(q, "JOIN_SIZE", 20)
     monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 15.0)
@@ -84,17 +83,21 @@ def test_entry_band_still_binds_on_a_normal_book(monkeypatch):
         assert 0.04 < x["price_dollars"] <= 0.96
 
 
-# ---- the economic governor is MAX_UNWIND_LOSS, not the band --------------------------
+# ---- there is NO economic governor on an exit price (Q1: loss is bounded in TIME) ----
 
-def test_unwind_loss_cap_still_binds_after_the_relaxation(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
-    # Long YES at 0.5426 (the live 4.140 basis) against a 0.99 NO bid: paying 0.99 to close
-    # would cost 1.5326 for $1.00. The cap must pull the resting price down to 1-cost+MUL.
-    _live_band(monkeypatch, unwind_loss=0.10)
+def test_exit_rests_at_the_099_touch_even_deep_underwater(monkeypatch):
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_unwind_loss_cap_still_binds_
+    # after_the_relaxation) asserted the removed MAX_UNWIND_LOSS cap pulling this price down
+    # to 1-cost+MUL. Long YES at 0.5426 (the live 4.140 basis) against a 0.99 NO bid pays
+    # 1.5326 for $1.00 — and the exit must rest at 0.99 ANYWAY ("we can sell at a loss").
+    # A cap here parks the exit behind the touch on exactly the book a losing position ends
+    # on; loss is bounded in TIME by the strand cross instead. Any price below the touch
+    # reappearing here is the cap coming back.
+    _live_band(monkeypatch)
     qs = _dq(yes=[], no=[["0.99", "5000"]], inv=62.0, cost=0.5426)
-    assert qs and qs[0]["side"] == "no"
-    assert qs[0]["price_dollars"] <= 1.0 - 0.5426 + 0.10 + 1e-9
-    assert qs[0]["price_dollars"] < 0.99, "the cap, not the band, must be what binds"
+    assert qs and qs[0]["side"] == "no" and qs[0]["reason"] == "unwind"
+    assert abs(qs[0]["price_dollars"] - 0.99) < 1e-9, \
+        "the exit must rest AT the touch whatever the cost basis"
 
 
 def test_exit_below_the_entry_floor_is_allowed(monkeypatch):

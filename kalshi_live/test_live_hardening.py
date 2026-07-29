@@ -67,23 +67,11 @@ class MockClient:
         return sum(x["count"] for x in self.crosses)
 
 
-def legacy_inventory_mode(monkeypatch):
-    """Put the quoter back in PRE-2026-07-27 inventory behaviour for one test.
-
-    The operator directive of 2026-07-27 changed two things by default:
-      EXIT_AT_TOUCH=True      reducing quotes rest AT the reference (no MAX_UNWIND_LOSS ceiling)
-      HOLDING_EXIT_ONLY=True  while holding, ONLY the reducing side rests — no accumulating side
-
-    A large body of tests predates that and exercises machinery that is only reachable in the old
-    regime: the unwind LOSS CAP, and the throttle/skew that shapes an accumulating side while we
-    hold. Those features still exist and are still flag-reachable, so the tests are kept as
-    genuine regression cover — they now assert LEGACY behaviour and, in doing so, prove the two
-    flags revert cleanly. They are NOT evidence about the default configuration; the default is
-    covered by test_exit_only.py.
-
-    Call this explicitly (never autouse) so every legacy-mode test declares itself."""
-    monkeypatch.setattr(q, "EXIT_AT_TOUCH", False)
-    monkeypatch.setattr(q, "HOLDING_EXIT_ONLY", False)
+# (`legacy_inventory_mode` lived here until 2026-07-28. It flipped EXIT_AT_TOUCH /
+# HOLDING_EXIT_ONLY off so pre-07-27 tests could keep exercising the loss cap and the
+# holding-side skew. The operator's Q1 decision removed those flags — the inventory risk
+# rule is UNCONDITIONAL — so the legacy regime no longer exists to switch into. Every test
+# that called it was rewritten against the new contract; see test_exit_only.py for the pins.)
 
 
 def _order(oid, ticker, outcome, price, cnt):
@@ -274,29 +262,28 @@ def test_flat_quotes_both_sides_at_reference(monkeypatch):
     sides = {x["side"]: x for x in qs}
     assert sides["yes"]["price_dollars"] == 0.50 and sides["no"]["price_dollars"] == 0.49  # at ref
 
-def test_long_yes_throttles_yes_keeps_no_at_ref(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
-    # long yes above SOFT on THIS ticker -> YES (its own accumulating side) skewed 1 tick inside
-    # + shrunk; NO (reducing) grows at reference as the passive unwind. Direction is per-ticker,
-    # so this holds even with event_delta defaulting to 0.
+def test_long_yes_rests_only_the_reducing_no_at_ref(monkeypatch):
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_long_yes_throttles_yes_keeps_no_
+    # at_ref) asserted the removed holding-side skew — a shrunk/stepped-inside YES resting NEXT TO
+    # the unwind. Holding is now EXIT ONLY: the reducing NO rests AT the reference and nothing
+    # else. A second side while holding is the accumulating re-post defect and must fail here.
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
-    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)}
-    assert qs["yes"]["price_dollars"] == 0.49          # 1 tick inside (0.50 - 0.01)
-    assert qs["yes"]["reason"] == "join"
-    assert qs["no"]["price_dollars"] == 0.49           # reducing side stays at ref (maker unwind)
-    assert qs["no"]["reason"] == "unwind"
-    assert qs["yes"]["count"] < qs["no"]["count"]      # accumulating shrunk, reducing grown
-    assert qs["no"]["count"] >= 50                     # reducing side grown toward |inv|=50 to flatten
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 250.0)
+    qs = q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)
+    assert len(qs) == 1, f"holding must be exit-only, got {qs}"
+    assert qs[0]["side"] == "no" and qs[0]["reason"] == "unwind"
+    assert qs[0]["price_dollars"] == 0.49              # AT the reference (fillable), not stepped
+    assert qs[0]["count"] == 50                        # exactly |inv|: pure exit, never through flat
 
-def test_long_yes_between_soft_and_hard_keeps_yes_live(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
-    # Below HARD a side is never pulled to zero (quotes are the paycheck): the accumulating YES
-    # shrinks toward the MIN_QUOTE floor + steps 1 tick inside, but stays LIVE.
+def test_long_yes_between_soft_and_hard_rests_no_accumulating_side(monkeypatch):
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_long_yes_between_soft_and_hard_
+    # keeps_yes_live) asserted the removed keep-the-paycheck-side-live floor. Between SOFT and
+    # HARD is still HOLDING, so the accumulating YES must not rest at ANY size — the MIN_QUOTE
+    # floor coming back here is a regression.
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
     monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
     qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)}
-    assert "yes" in qs and qs["yes"]["count"] >= 2     # live at/above the floor
-    assert qs["yes"]["price_dollars"] == 0.49          # stepped 1 tick inside so it fills last
+    assert "yes" not in qs, "no accumulating side may rest while holding, floor or not"
     assert "no" in qs and qs["no"]["reason"] == "unwind"
 
 def test_long_yes_at_hard_pulls_accumulating_side(monkeypatch):
@@ -328,26 +315,28 @@ def test_settlement_ramp_shrinks_join_not_unwind(monkeypatch):
     assert nearu["no"]["reason"] == "unwind" and nearu["no"]["count"] >= 20
 
 def test_long_no_mirror(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin asserted the removed holding-side skew
+    # on the short polarity. Long NO is HOLDING -> exit only: the reducing YES at reference.
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
-    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=-50.0)}
-    assert qs["no"]["price_dollars"] == 0.48           # NO (this ticker's accumulating) -> 1 tick inside
-    assert qs["yes"]["price_dollars"] == 0.50          # YES reducing -> at ref
-    assert qs["yes"]["reason"] == "unwind" and qs["no"]["reason"] == "join"
-    assert qs["no"]["count"] < qs["yes"]["count"]
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 250.0)
+    qs = q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=-50.0)
+    assert len(qs) == 1, f"holding must be exit-only, got {qs}"
+    assert qs[0]["side"] == "yes" and qs[0]["reason"] == "unwind"
+    assert qs[0]["price_dollars"] == 0.50              # YES reducing -> at ref
+    assert qs[0]["count"] == 50
 
 def test_event_delta_throttles_when_ticker_below_soft(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
-    # THE ACCUMULATION FIX: this ticker is under SOFT (inv=20) so per-ticker alone would NOT
-    # throttle — but the EVENT aggregate is over SOFT, which must still throttle the accumulating
-    # side (correlated 'above X' strikes each small, additive to a large directional short/long).
+    # SUBJECT STILL LIVE (the event-delta throttle shapes FLAT tickers); the HELD half of the
+    # old pin was rewritten 2026-07-28 (Q1): any per-ticker inventory >= tolerance is now
+    # exit-only, so the event aggregate can no longer keep an accumulating side resting there.
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
-    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=20.0, event_delta=55.0)}
-    assert qs["yes"]["price_dollars"] == 0.49          # event pushed us over SOFT -> throttle YES
-    assert qs["no"]["reason"] == "unwind"              # our +20 still unwinds via NO
+    qs = q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=20.0, event_delta=55.0)
+    assert len(qs) == 1 and qs[0]["side"] == "no" and qs[0]["reason"] == "unwind", \
+        f"holding +20 inside a directional event must still be exit-only, got {qs}"
     # flat ticker in a directional event: throttle the event-accumulating side, no unwind created
     qs2 = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=0.0, event_delta=-55.0)}
     assert qs2["no"]["price_dollars"] == 0.48          # event short -> throttle NO (accumulating)
+    assert qs2["yes"]["price_dollars"] == 0.50         # non-accumulating side stays at ref
     assert all(x["reason"] != "unwind" for x in qs2.values())   # nothing to unwind (flat)
 
 def test_activate_market_rests_reducing_side_when_carrying_inventory(monkeypatch):
@@ -483,7 +472,6 @@ def test_stop_sentinel_flattens(monkeypatch, tmp_path):
 
 # ---- per-event aggregate delta (fix B) ----
 def test_unwind_size_never_overshoots_inventory(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
     # A1 REGRESSION: unwinding a SMALL position must not rest MORE than |inv| — resting a full
     # capped-join floor (e.g. 80) to unwind +5 would, on full fill, flip +5 -> -75.
     monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 250.0)
@@ -495,15 +483,13 @@ def test_unwind_size_never_overshoots_inventory(monkeypatch):
     # a <= assertion would pass on BOTH builds and pin nothing.
     assert q._unwind_size(80, 0.99, 400) == int(250 / 0.99)         # 252 post-fix; 126 pre-fix
     assert q._unwind_size(80, 0.50, 200) == 200        # |inv| within room -> exactly the position
-    # end-to-end: a +5 long-yes ticker rests a NO unwind of exactly 5 (no overshoot)
+    # end-to-end: a +5 long-yes ticker rests a NO unwind of exactly 5 (no overshoot).
+    # (Pre-Q1 the reducing half of a TWO-SIDED quote was ADD+|inv| so a double fill landed
+    # paired; since 2026-07-28 holding is exit-only, so EVERY unwind is a pure exit == |inv|.)
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
-    # The _unwind_size assertions above still pin PURE unwinds (strand / wind-down /
-    # _flatten_all) at <= |inv| — unchanged. End-to-end, though, the reducing half of a
-    # TWO-SIDED quote is deliberately ADD+|inv| so a double fill lands paired, so it is no
-    # longer == |inv| here. It must still COVER the position.
-    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=5.0)}
-    assert qs["no"]["count"] >= 5 and qs["no"]["reason"] == "unwind"
-    assert 5 + qs["yes"]["count"] - qs["no"]["count"] == 0     # double fill lands PAIRED
+    qs = q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=5.0)
+    assert len(qs) == 1 and qs[0]["side"] == "no" and qs[0]["reason"] == "unwind"
+    assert qs[0]["count"] == 5                         # exactly the position, never through flat
 
 def test_event_deltas_aggregates_correlated_strikes():
     # SERIES-EVENT-STRIKE: the first two dash-fields identify the event; strikes aggregate.
@@ -535,23 +521,25 @@ def test_bound_creates_prioritizes_unwind(monkeypatch):
     assert dropped == 1
 
 def test_unwind_create_exempt_from_committed_cap(monkeypatch, tmp_path):
-    legacy_inventory_mode(monkeypatch)
-    # THE STUCK-BOT FIX: held inventory ALONE exceeds MAX_TOTAL_CAPITAL. The accumulating
-    # (join) side is correctly gated, but the REDUCING (unwind) side must STILL be placed —
-    # otherwise the bot can never flatten (cap blocks the only de-risking order).
+    # THE STUCK-BOT FIX: held inventory ALONE exceeds MAX_TOTAL_CAPITAL. The REDUCING (unwind)
+    # side must STILL be placed — otherwise the bot can never flatten (cap blocks the only
+    # de-risking order). Post-Q1 (2026-07-28) the held ticker no longer PROPOSES an accumulating
+    # side at all (exit-only), so the cap-gates-accumulating prong is pinned via a FLAT sibling
+    # ticker T2 whose join book must be skipped while the cap is breached.
     # (HELD ceiling disabled here to pin the committed-cap mechanism in ISOLATION — at defaults
     # the $50 held would trip the level breaker first, which handles this scenario earlier.)
     monkeypatch.setattr(q, "HELD_MAX_USD", 1e9)
     _cfg(monkeypatch, join=20, mktcap=250, totcap=10)     # cap $10, held will be ~$50
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
-        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"},
+        {"ticker": "T2", "usd_day": 90.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
     c = MockClient(mode="live", resting=[], positions=[{"ticker": "T1", "position_fp": "50"}])  # long yes
     row = _run(monkeypatch, c, str(tmp_path))
-    reds = [o for o in c.created if o["side"] == "no"]
-    accs = [o for o in c.created if o["side"] == "yes"]
+    reds = [o for o in c.created if o["ticker"] == "T1" and o["side"] == "no"]
     assert len(reds) == 1                                 # reducing NO placed despite committed>cap
-    assert len(accs) == 0                                 # accumulating YES gated by the cap
-    assert row.get("create_skipped", 0) >= 1
+    assert len([o for o in c.created if o["ticker"] == "T1"]) == 1   # ...and it is T1's ONLY order
+    assert not [o for o in c.created if o["ticker"] == "T2"]         # flat T2's join gated by the cap
+    assert row.get("capped_markets", 0) >= 1              # cap_desired cut the accumulating tail
 
 def test_read_blackout_cancels_last_known_quotes(monkeypatch, tmp_path):
     # AUDIT MED-4: fail-closed alone leaves resting quotes LIVE and fillable while the bot is
@@ -832,28 +820,30 @@ def test_late_life_entry_gate(monkeypatch):
     assert q.select_footprint([prog("KXAAAGASD-1-4.1", 2790, 90)], now) == []
 
 
-def test_unwind_price_loss_capped(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
-    # 2026-07-22 loss: unwind chased the ref and realized ~50c/pair. Cap: exit-side price never
-    # rests above (1 - cost + MAX_UNWIND_LOSS); at/below the cap it rests at reference.
-    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10)
-    assert q._unwind_price(0.85, 0.62) == 0.48     # cap 1-0.62+0.10 binds (was resting 0.85)
-    assert q._unwind_price(0.30, 0.10) == 0.30     # cap 1.00 -> reference (normal bleed zone)
-    assert q._unwind_price(0.49, 0.0) == 0.49      # unknown basis -> cap disabled (legacy)
-    # end-to-end through desired_quotes: long yes at cost 0.62, book no-ref 0.49 -> capped 0.48
+def test_unwind_price_rests_at_the_touch_never_capped(monkeypatch):
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_unwind_price_loss_capped)
+    # asserted the removed MAX_UNWIND_LOSS ceiling (exit never above 1-cost+MUL). The cap
+    # priced the exit BEHIND the touch exactly when the market moved most (live 07-27: exit
+    # pinned 0.73 vs market 0.82, 42 ct rode to settlement). The contract is now: the exit
+    # rests AT the book reference REGARDLESS of cost basis ("we can sell at a loss"); loss is
+    # bounded in TIME by the strand cross, never by refusing to price the exit. If anyone
+    # reintroduces a price cap, the 0.85/0.62 case below fails first.
+    assert q._unwind_price(0.85, 0.62) == 0.85     # old cap returned 0.48 here — 37c behind
+    assert q._unwind_price(0.82, 0.364) == 0.82    # the live 07-27 defect shape, verbatim
+    assert q._unwind_price(0.30, 0.10) == 0.30     # normal bleed zone: reference, unchanged
+    assert q._unwind_price(0.49, 0.0) == 0.49      # unknown basis: reference, unchanged
+    # end-to-end through desired_quotes: long yes at cost 0.62, book no-ref 0.49 -> AT 0.49
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
-    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=20.0, cost=0.62)}
-    assert qs["no"]["reason"] == "unwind" and qs["no"]["price_dollars"] == 0.48
-    # and with a cheap basis the unwind still rests at reference (no behavior change)
-    qs2 = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=20.0, cost=0.10)}
-    assert qs2["no"]["price_dollars"] == 0.49
+    qs = q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=20.0, cost=0.62)
+    assert len(qs) == 1 and qs[0]["reason"] == "unwind" and qs[0]["price_dollars"] == 0.49
+    # and the price cannot depend on the basis at all (same book, cheap basis, same price)
+    qs2 = q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=20.0, cost=0.10)
+    assert qs2[0]["price_dollars"] == 0.49
 
 
 def test_velocity_breaker_reduce_only(monkeypatch, tmp_path):
-    # pins the TAP-OUT behaviour (KEEP_BOTH off): reduce-only drops the accumulating side
-    # entirely. The default-on two-sided variant is covered by
-    # test_reduce_only_keeps_market_two_sided.
-    monkeypatch.setattr(q, "REDUCE_ONLY_KEEP_BOTH", False)
+    # Exit-only under the breaker is the ONLY behaviour since the Q1 decision (2026-07-28):
+    # KALSHI_REDUCE_ONLY_KEEP_BOTH is deleted, so this pin now runs the code as it ships.
     # 2026-07-22 loss: held $0->$28 in 3 'cycle ok' cycles. Rapid held-$ growth must flip the
     # book to REDUCE-ONLY: accumulating creates dropped, unwind still placed, plan flagged.
     import time as _time
@@ -886,10 +876,8 @@ def test_velocity_breaker_reduce_only(monkeypatch, tmp_path):
 
 
 def test_held_ceiling_level_trigger(monkeypatch, tmp_path):
-    # pins the TAP-OUT behaviour (KEEP_BOTH off): reduce-only drops the accumulating side
-    # entirely. The default-on two-sided variant is covered by
-    # test_reduce_only_keeps_market_two_sided.
-    monkeypatch.setattr(q, "REDUCE_ONLY_KEEP_BOTH", False)
+    # Exit-only under the breaker is the ONLY behaviour since the Q1 decision (2026-07-28):
+    # KALSHI_REDUCE_ONLY_KEEP_BOTH is deleted, so this pin now runs the code as it ships.
     # Operator invariant ("never lose more than the reward"): total unpaired held-$ above
     # HELD_MAX_USD flips reduce-only even with ZERO growth (flat history) — a LEVEL lid on the
     # only uncapped loss channel (settlement risk), sized to ~one day's measured rewards.
@@ -925,8 +913,12 @@ def test_daily_loss_halt_writes_stop_and_flattens(monkeypatch, tmp_path):
     monkeypatch.setattr(q, "STOP_ESCALATE_S", 0)
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
         {"ticker": "T2", "usd_day": 90.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    # equity_basis "mark" seeded: the Q1 build (2026-07-28) marks held inventory to book and
+    # re-baselines ONCE on the basis change — a state file without the key is deliberately
+    # re-baselined instead of halted, so this test seeds post-migration state to pin the meter.
     with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
-        json.dump({"equity_day": q.utcnow().strftime("%Y%m%d"), "equity_day_start": 150.0}, f)
+        json.dump({"equity_day": q.utcnow().strftime("%Y%m%d"), "equity_day_start": 150.0,
+                   "equity_basis": "mark"}, f)
     resting = [_order("a", "T1", "yes", 0.6, 10)]
     c = MockClient(mode="live", resting=resting,
                    positions=[{"ticker": "T1", "position_fp": "50",
@@ -939,7 +931,8 @@ def test_daily_loss_halt_writes_stop_and_flattens(monkeypatch, tmp_path):
     # fresh day -> baseline set, NO halt even though equity is far below yesterday's start
     os.remove(os.path.join(str(tmp_path), "STOP"))
     with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
-        json.dump({"equity_day": "19990101", "equity_day_start": 500.0}, f)
+        json.dump({"equity_day": "19990101", "equity_day_start": 500.0,
+                   "equity_basis": "mark"}, f)
     c2 = MockClient(mode="live", resting=[],
                     positions=[{"ticker": "T1", "position_fp": "50",
                                 "market_exposure_dollars": "15.00"}])
@@ -975,12 +968,13 @@ def test_breaker_keeps_retained_reducing_side(monkeypatch, tmp_path):
     assert "uw" not in c.cancelled                               # reducing side SURVIVES
 
 
-def test_strand_unwind_is_loss_capped(monkeypatch, tmp_path):
-    legacy_inventory_mode(monkeypatch)
-    # Review test-weak (MED): the incident path is the STRAND unwind; pin its loss cap.
-    # Long yes 30 @ cost 0.62; book no-ref 0.85 -> capped at 1-0.62+0.10=0.48, NOT 0.85.
+def test_strand_unwind_rests_at_the_touch_not_loss_capped(monkeypatch, tmp_path):
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_strand_unwind_is_loss_capped)
+    # asserted the removed MAX_UNWIND_LOSS cap on the strand path (exit parked at 0.48 vs a
+    # 0.85 book). The cap parked the exit BEHIND the touch on exactly the trended books where
+    # the strand path fires; the contract is now: the strand exit rests AT the reference
+    # whatever the cost basis. Long yes 30 @ cost 0.62; book no-ref 0.85 -> rest AT 0.85.
     _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
-    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10)
     monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
     monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])   # STRAND path only
@@ -994,7 +988,8 @@ def test_strand_unwind_is_loss_capped(monkeypatch, tmp_path):
     _run(monkeypatch, c, str(tmp_path))
     unw = [o for o in c.created if o["ticker"] == "STR"]
     assert len(unw) == 1 and unw[0]["side"] == "no"
-    assert unw[0]["price"] == 0.48                               # capped, not chased to 0.85
+    assert unw[0]["price"] == 0.85                               # AT the touch — fillable
+    assert unw[0]["count"] <= 30                                 # still never through flat
 
 
 def test_env_clamps_footguns():
@@ -1108,13 +1103,16 @@ def test_paired_positions_not_unwound_or_takered(monkeypatch, tmp_path):
     assert not c.created                                          # no strand unwinds either
 
 
-def test_ladder_escape_hatch_splits_parked_unwind(monkeypatch, tmp_path):
-    legacy_inventory_mode(monkeypatch)
-    # Naked +20 on 4.050 at cost 0.62; book no-ref 0.85 -> unwind parks at 0.48 (2c cap...
-    # here MAX_UNWIND_LOSS=0.10 -> 0.48 < 0.85-tick = parked). Adjacent strike 4.060 has a
-    # book -> half the unwind stays parked, half rests NO on 4.060 at ITS reference.
+def test_ladder_hatch_never_fires_when_the_exit_rests_at_the_touch(monkeypatch, tmp_path):
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_ladder_escape_hatch_splits_
+    # parked_unwind) asserted the hatch splitting a PARKED unwind — an unwind held below the
+    # touch by the removed MAX_UNWIND_LOSS cap. Parked unwinds no longer exist: _unwind_price
+    # returns the reference unconditionally, so the hatch's own trigger ("price < touch") can
+    # never arm on this path. This pins that consequence on the SAME fixture: the exit rests
+    # AT the touch at FULL size (not halved into lanes) and no cross lane is planned. If a
+    # price cap ever comes back, the unwind parks again, the hatch fires, and ladder_cross==1
+    # fails this test.
     _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
-    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10)
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
     monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
     monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
@@ -1130,20 +1128,17 @@ def test_ladder_escape_hatch_splits_parked_unwind(monkeypatch, tmp_path):
     c = MockClient(mode="live", resting=[], positions=[
         {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "12.40"}])
     row = _run(monkeypatch, c, str(tmp_path))
-    assert row.get("ladder_cross") == 1
+    assert row.get("ladder_cross") is None                    # never armed: nothing is parked
     ups = [o for o in c.created if o["ticker"].endswith("4.050") and o["side"] == "no"]
-    crs = [o for o in c.created if o["ticker"].endswith("4.060") and o["side"] == "no"]
-    assert len(ups) == 1 and ups[0]["price"] == 0.48          # parked lane at the capped price
-    # B carries its own JOIN no-bid (normal rent quoting) PLUS the cross-hedge lane; the cross
-    # is the one sized to the halved unwind (10), at B's own reference.
-    cross = [o for o in crs if o["count"] == 20 - ups[0]["count"]]
-    assert len(cross) == 1 and cross[0]["price"] == 0.92      # cross lane at B's OWN reference
-    assert ups[0]["count"] + cross[0]["count"] <= 20          # flip-safe: unwind lanes <= |naked|
-    # ...and when the unwind is NOT parked (cheap basis -> cap above ref) there is NO hatch
+    assert len(ups) == 1 and ups[0]["price"] == 0.85          # AT the touch, expensive basis or not
+    assert ups[0]["count"] == 20                              # FULL |naked| — not halved into lanes
+    # cheap basis, same book: identical shape (the basis cannot move the exit price at all)
     c2 = MockClient(mode="live", resting=[], positions=[
         {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "2.00"}])
     row2 = _run(monkeypatch, c2, str(tmp_path))
     assert row2.get("ladder_cross") is None
+    ups2 = [o for o in c2.created if o["ticker"].endswith("4.050") and o["side"] == "no"]
+    assert len(ups2) == 1 and ups2[0]["price"] == 0.85
 
 
 # ============ 07-22 MASKING AUDIT fixes (honest failure reporting) ============
@@ -1217,13 +1212,15 @@ def test_strike_parse_preserves_negative_sign():
     assert all(v == 0 for v in q.ladder_pairing(good).values())
 
 
-def test_ladder_cross_is_capital_gated_not_unwind_exempt(monkeypatch, tmp_path):
-    legacy_inventory_mode(monkeypatch)
-    # Ladder review (07-22): the hatch's cross BUYS a new position (commits fresh collateral),
-    # so tagging it 'unwind' wrongly exempted it from the committed-capital gate — several
-    # simultaneous hatches could breach MAX_TOTAL. It is now 'ladder': capital-gated.
+def test_touch_exit_exempt_from_tight_cap_while_adjacent_join_is_gated(monkeypatch, tmp_path):
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_ladder_cross_is_capital_gated_
+    # not_unwind_exempt) drove the hatch's 'ladder' cross lane under a tight cap — reachable
+    # only through a PARKED unwind, which the removed MAX_UNWIND_LOSS cap created. With exits
+    # unconditionally AT the touch the hatch cannot arm, so the polarity split this fixture
+    # still proves is: under a $1 total cap, the true reducing exit on the collapsed 4.050
+    # book is STILL placed (unwind-exempt) while the flat 4.060 sibling's accumulating join
+    # is capital-gated to nothing.
     _cfg(monkeypatch, join=20, mktcap=250, totcap=1)      # cap so tight nothing accumulating fits
-    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10)
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
     monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
     monkeypatch.setattr(q, "HELD_MAX_USD", 1e9); monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
@@ -1239,12 +1236,12 @@ def test_ladder_cross_is_capital_gated_not_unwind_exempt(monkeypatch, tmp_path):
     c = MockClient(mode="live", resting=[], positions=[
         {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "12.40"}])
     row = _run(monkeypatch, c, str(tmp_path))
-    assert row.get("ladder_cross") == 1                    # hatch still PLANNED
+    assert row.get("ladder_cross") is None                 # hatch cannot arm: nothing is parked
     crossed = [o for o in c.created if o["ticker"].endswith("4.060")]
-    assert not crossed                                     # ...but capital-gated, not placed
-    assert row.get("create_skipped", 0) >= 1
-    parked = [o for o in c.created if o["ticker"].endswith("4.050") and o["side"] == "no"]
-    assert len(parked) == 1                                # the true reducing unwind still exempt
+    assert not crossed                                     # flat sibling fully capital-gated
+    exits = [o for o in c.created if o["ticker"].endswith("4.050") and o["side"] == "no"]
+    assert len(exits) == 1 and exits[0]["price"] == 0.85   # the reducing exit still exempt, at touch
+    assert len(c.created) == 1                             # ...and it is the ONLY order placed
 
 
 def test_reward_qualification_gate(monkeypatch):
@@ -1267,20 +1264,22 @@ def test_reward_qualification_gate(monkeypatch):
 
 
 def test_throttle_step_ticks_knob(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
     # Reward economics (CFTC-verified): score = 0.50^(ticks from reference) x size, so the
     # throttle's 1-tick step HALVES that side's credit (or zeroes it if the book already meets
     # Target Size above). Knob lets us A/B it; default 1 preserves existing behaviour exactly.
+    # SETUP REWRITTEN 2026-07-28 (Q1): per-ticker inventory can no longer reach the throttle
+    # (holding => exit-only), so the knob is exercised through its surviving driver — the
+    # EVENT-delta throttle on a FLAT ticker inside a directional event.
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
     monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
     monkeypatch.setattr(q, "THROTTLE_STEP_TICKS", 1)          # default
-    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)}
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=0.0, event_delta=50.0)}
     assert qs["yes"]["price_dollars"] == 0.49                 # 1 tick inside best (0.50)
     monkeypatch.setattr(q, "THROTTLE_STEP_TICKS", 0)          # A/B: stay at reference
-    qs0 = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)}
+    qs0 = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=0.0, event_delta=50.0)}
     assert qs0["yes"]["price_dollars"] == 0.50                # full 1.0x credit
     assert qs0["yes"]["count"] == qs["yes"]["count"]          # size throttle unchanged either way
-    assert qs0["no"]["reason"] == "unwind"                    # de-risk side unaffected
+    assert qs0["no"]["price_dollars"] == 0.49                 # non-accumulating side unaffected
 
 
 def test_breakers_measure_naked_not_gross(monkeypatch, tmp_path):
@@ -1312,22 +1311,25 @@ def test_breakers_measure_naked_not_gross(monkeypatch, tmp_path):
 
 
 def test_throttle_skips_step_when_it_would_zero_credit(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
     # Sandbox A/B (n=612): the 1-tick step ZEROED reward credit in 12% of snapshots — when the
     # depth AT the best price already meets Target Size, the qualifying walk stops there and a
     # quote one tick back is outside the scored set. Free win: stay at reference in exactly that
     # case and take the risk reduction from SIZE instead.
+    # SETUP REWRITTEN 2026-07-28 (Q1): driven via the EVENT-delta throttle on a FLAT ticker
+    # (per-ticker inventory is exit-only and can no longer reach the throttle).
     monkeypatch.setattr(q, "THROTTLE_STEP_TICKS", 1); monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
     monkeypatch.setattr(q, "THROTTLE_SMART", True)   # opt-in; DEFAULT OFF in production
     # top level ALONE meets target(1000) -> stepping back scores zero -> stay at ref, shrink more
     fat = [["0.50", "5000"]]
     m = {"target": 1000, "end": "2099-01-01T00:00:00Z"}
-    qs = {x["side"]: x for x in q.desired_quotes(m, fat, [["0.49", "5000"]], q.utcnow(), inv=50.0)}
+    qs = {x["side"]: x for x in q.desired_quotes(m, fat, [["0.49", "5000"]], q.utcnow(),
+                                                 inv=0.0, event_delta=50.0)}
     assert qs["yes"]["price_dollars"] == 0.50                 # AT reference (full credit kept)
     # thin top level -> a tick back is still inside the qualifying set -> step as before
     thin_top = [["0.50", "50"], ["0.49", "5000"]]
-    qs2 = {x["side"]: x for x in q.desired_quotes(m, thin_top, [["0.49", "5000"]], q.utcnow(), inv=50.0)}
+    qs2 = {x["side"]: x for x in q.desired_quotes(m, thin_top, [["0.49", "5000"]], q.utcnow(),
+                                                  inv=0.0, event_delta=50.0)}
     assert qs2["yes"]["price_dollars"] == 0.49                # stepped (unchanged behaviour)
     # the risk brake survives either way: throttled size is below the un-throttled join
     flat = {x["side"]: x for x in q.desired_quotes(m, fat, [["0.49", "5000"]], q.utcnow(), inv=0.0)}
@@ -1351,38 +1353,31 @@ def test_ladder_invariants_flagged_live(monkeypatch, tmp_path, capsys):
     assert "LADDER INVARIANT VIOLATED" in capsys.readouterr().out
 
 
-def test_reduce_only_keeps_market_two_sided(monkeypatch, tmp_path):
-    legacy_inventory_mode(monkeypatch)
-    # CFTC Feb-2026: a snapshot with one-sided liquidity is EXCLUDED -> $0 rewards, including on
-    # the exit quote. Reduce-only used to drop the accumulating side entirely, making us
-    # one-sided exactly while the guard was engaged (observed live 07-23: 3/3 markets earning $0).
-    # Plug-in ON: keep both sides, accumulating shrunk to the floor. OFF: exact old behaviour.
+def test_reduce_only_holds_exit_only_and_pulls_flat_markets(monkeypatch, tmp_path):
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_reduce_only_keeps_market_two_
+    # sided) asserted the removed KALSHI_REDUCE_ONLY_KEEP_BOTH plug-in — a floor-sized
+    # accumulating quote kept resting on a HELD market under the breaker so the snapshot still
+    # earned. That is the accumulating re-post defect wearing a reward argument (KXDXYDUD ran
+    # -20 -> +17 THROUGH flat under reduce-only, live 07-27). The pin is now the OPPOSITE:
+    # under the breaker a held market keeps ONLY its reducing quote (one-sided, forfeiting the
+    # snapshot — by design) and a flat market is fully pulled. A second side reappearing on
+    # the held market, at any size, must fail here.
     _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
     monkeypatch.setattr(q, "INV_TOLERANCE", 3.0); monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
     monkeypatch.setattr(q, "HELD_MAX_USD", 5.0)      # force the breaker on
     monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
-        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+        {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"},
+        {"ticker": "T2", "usd_day": 90.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
     pos = [{"ticker": "T1", "position_fp": "20", "market_exposure_dollars": "12.00"}]
-
-    monkeypatch.setattr(q, "REDUCE_ONLY_KEEP_BOTH", True)
     c = MockClient(mode="live", resting=[], positions=list(pos))
     row = _run(monkeypatch, c, str(tmp_path))
     assert row.get("breaker_reduce_only") == 1
-    assert row.get("two_sided_markets") == 1 and row.get("one_sided_markets") == 0
-    sides = {o["side"] for o in c.created}
-    assert sides == {"yes", "no"}                                  # market still qualifies
-    acc = [o for o in c.created if o["side"] == "yes"]
-    assert acc and acc[0]["count"] == 2                            # floor size only
-
-    # TAP OUT -> byte-identical old behaviour: accumulating side dropped, one-sided
-    monkeypatch.setattr(q, "REDUCE_ONLY_KEEP_BOTH", False)
-    c2 = MockClient(mode="live", resting=[], positions=list(pos))
-    row2 = _run(monkeypatch, c2, str(tmp_path))
-    assert row2.get("breaker_reduce_only") == 1
-    assert {o["side"] for o in c2.created} == {"no"}                # exit quote only
-    assert row2.get("one_sided_markets") == 1
+    assert {o["side"] for o in c.created} == {"no"}                # the exit quote and NOTHING else
+    assert all(o["ticker"] == "T1" for o in c.created)             # flat T2 fully pulled
+    assert len(c.created) == 1
+    assert row.get("one_sided_markets") == 1 and row.get("two_sided_markets") == 0
 
 
 # ================= MIRROR SYMMETRY (operator guardrail 2026-07-23) =================
@@ -1404,16 +1399,16 @@ def _plain(qs):
 
 @pytest.mark.parametrize("inv,cost", [
     (0.0, 0.0),        # flat
-    (5.0, 0.0),        # small position -> unwind, no throttle
-    (50.0, 0.0),       # above SOFT -> throttle + unwind
-    (100.0, 0.0),      # at/above HARD -> accumulating side pulled
-    (20.0, 0.62),      # loss-capped unwind (parked)
+    (5.0, 0.0),        # small position -> exit only
+    (50.0, 0.0),       # above SOFT -> still exit only (same rule, any held size)
+    (100.0, 0.0),      # at/above HARD -> still exit only
+    (20.0, 0.62),      # deep-underwater exit -> rests at the touch (Q1: no loss cap)
     (2.0, 0.0),        # below tolerance
 ])
 def test_mirror_symmetry_long_yes_vs_long_no(monkeypatch, inv, cost):
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
     monkeypatch.setattr(q, "INV_TOLERANCE", 3.0); monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
-    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10); monkeypatch.setattr(q, "THROTTLE_STEP_TICKS", 1)
+    monkeypatch.setattr(q, "THROTTLE_STEP_TICKS", 1)
     m = {"target": 1, "end": "2099-01-01T00:00:00Z"}
     yl = [["0.55", "9999"]]; nl = [["0.42", "9999"]]
     a = q.desired_quotes(m, yl, nl, q.utcnow(), inv=inv, cost=cost)          # long yes
@@ -1563,13 +1558,16 @@ def test_daily_loss_cumulative_downticks_survive_a_deposit(monkeypatch, tmp_path
     assert row.get("daily_down") == 25.0 and row.get("daily_dd") == 10.0
 
 def test_daily_loss_legacy_state_file_still_halts_on_day_start_drop(monkeypatch, tmp_path):
-    # migration guard: a state file written by the PRE-fix build has no peak/prev keys. The peak
+    # migration guard: a state file with no peak/prev keys (the pre-Q3 shape). The peak
     # must seed from equity_day_start so the old drop-from-day-start behaviour is a FLOOR, never
-    # weaker. (Passes on both builds by construction — a compatibility guard, not a pin.)
+    # weaker. equity_basis "mark" is seeded because the Q1 build (2026-07-28) deliberately
+    # re-baselines ONCE when the key is absent (cost->mark meter migration) — that one-time
+    # re-baseline is intended behaviour, not the subject here; the subject is peak-seeding.
     _q3cfg(monkeypatch)
     d = str(tmp_path)
     with open(os.path.join(d, "quoter_state.json"), "w") as f:
-        json.dump({"equity_day": q.utcnow().strftime("%Y%m%d"), "equity_day_start": 150.0}, f)
+        json.dump({"equity_day": q.utcnow().strftime("%Y%m%d"), "equity_day_start": 150.0,
+                   "equity_basis": "mark"}, f)
     row = _run(monkeypatch, _BalClient(100.0, mode="live"), d)
     assert row.get("daily_loss_halt") == 50.0
 

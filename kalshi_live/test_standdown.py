@@ -31,7 +31,6 @@ import pytest
 
 # Reuse the live-hardening harness (module handle + run_once driver + mock client/config helpers).
 from test_live_hardening import q, MockClient, _run, _cfg
-from test_live_hardening import legacy_inventory_mode  # noqa: E402
 
 
 # ---------------------------------------------------------------------------------------------
@@ -141,23 +140,22 @@ def test_fix_pin_via_cycle_slashes_committed_capital(monkeypatch, tmp_path):
 # T3 — NEVER BLOCKS EXITS
 # ---------------------------------------------------------------------------------------------
 def test_standdown_never_blocks_exits(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
-    # Long +40 ct on a thin-reward market. Stand-down ON must STILL rest the reducing (NO) side at
-    # full |inv| size to unwind — de-risk is never blocked or down-sized.
+    # SETUP REWRITTEN 2026-07-28 (Q1 operator decision): the old version ran in the removed
+    # legacy holding mode, where an accumulating side rested next to the exit. Holding is now
+    # EXIT-ONLY before stand-down sizing can even run, so the pin sharpens: the exit is the
+    # ONLY quote, at full |inv|, and stand-down cannot touch it (identical across the flag).
+    # Long +40 ct on a thin-reward market. Stand-down ON must STILL rest the reducing (NO)
+    # side at full |inv| size to unwind — de-risk is never blocked or down-sized.
     _std_cfg(monkeypatch, on=True)
     on = _sides(q.desired_quotes(_mkt(usd_day=5.0), _YL, _NL, q.utcnow(), inv=40.0))
     assert "no" in on and on["no"]["reason"] == "unwind"
-    # >= |inv| since 2026-07-26: the reducing half is ADD+|inv| (ADD=2 under stand-down -> 42),
-    # so de-risk is still never blocked or down-sized — it is slightly LARGER, which is what
-    # makes a double fill land exactly paired.
-    assert on["no"]["count"] >= 40                             # covers |inv|, not floored by stand-down
-    assert on["yes"]["count"] <= 2                             # the ACCUMULATING side is what shrinks
-    assert 40 + on["yes"]["count"] - on["no"]["count"] == 0    # double fill lands PAIRED
-    # Exit sizing is no longer IDENTICAL across the flag, by design: the reducing half depends
-    # on the adding half, and stand-down shrinks the adding half. Both must still cover |inv|.
+    assert on["no"]["count"] == 40                             # full |inv|, never floored to MIN_QUOTE
+    assert on["no"]["price_dollars"] == 0.49                   # AT the reference (fillable)
+    assert "yes" not in on                                     # exit-only: no accumulating side
+    # ...and stand-down changes NOTHING about the exit (flag off -> byte-identical quote)
     _std_cfg(monkeypatch, on=False)
     off = _sides(q.desired_quotes(_mkt(usd_day=5.0), _YL, _NL, q.utcnow(), inv=40.0))
-    assert off["no"]["count"] >= 40 and on["no"]["count"] >= 40
+    assert off == on
 
 
 def test_standdown_skips_thin_activate_but_never_a_held_exit(monkeypatch):

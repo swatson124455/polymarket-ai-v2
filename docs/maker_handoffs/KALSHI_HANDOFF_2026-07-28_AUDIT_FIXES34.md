@@ -195,3 +195,89 @@ the no-fill mock; pacing is pinned via the clock re-arm, not the tries count.
 - Deploying 228bedd requires: your Q1–Q4 answers, suite green on the box, and the funding-gate
   trio resolved or explicitly accepted. The STRAND cross needs TAKER_FLATTEN=1 (currently set).
 - Re-park instantly: `sudo touch /opt/pa2-maker-kalshi-live/STOP`.
+
+---
+
+## §7 — ADDENDUM (same day, later): OPERATOR DECISIONS RECEIVED AND EXECUTED
+
+Operator answers (2026-07-28, verbatim intent): 1 proceed; 2 confirmed the $40/day
+stop-flatten-wait rule; 3 proceed; Q1 yes; Q2 yes-if-the-math-holds; Q3 review-and-report
+(NOT decided — 30s stays the implemented default pending the report); Q4 $50; bonus all yes;
+limit 1 when parked.
+
+Executed:
+- **live.env: `KALSHI_MAX_TOTAL_CAPITAL=1`** (parked; backup `live.env.bak-PARK1-20260729_004539`).
+  VERIFIED in the same read: `KALSHI_DAILY_LOSS_HALT_USD=40` and `KALSHI_DAILY_DOWN_HALT_USD=40`
+  were ALREADY the configured values — the operator's "$40 in one day" rule is the existing halt,
+  which writes STOP + maker-first flattens + waits for the operator. The gap was that it could
+  not SEE unrealized losses; closed below.
+- **Q1**: `KALSHI_EXIT_AT_TOUCH`, `KALSHI_HOLDING_EXIT_ONLY`, `KALSHI_MAX_UNWIND_LOSS`,
+  `KALSHI_REDUCE_ONLY_KEEP_BOTH` DELETED; the risk rule is unconditional; the inv-driven
+  skew/offset machinery in the JOIN branch (unreachable behind the exit-only return) removed;
+  KEEP_BOTH minjoin branches removed; the 18 legacy-mode tests rewritten against the new
+  behaviour; `legacy_inventory_mode` deleted. `_offset_size`/`KALSHI_PAIR_BOTH_SIDES` are now
+  ORPHANED (no production caller) — retained pending an explicit removal decision (not in the
+  authorized set).
+- **Q2**: the three funding-gate pins rewritten to assert EXIT PRECEDENCE (the exit rests at
+  full |inv| cap-exempt; accumulating creates are refused while it works). The math, with
+  sources: the reservation is bounded in TIME (STRAND_CROSS_S forces the exit; a filled exit
+  FREES the capital), so the cost is a reward pause of ~seconds-to-minutes on the affected
+  capital — against the measured alternative of the naked tail ($0.13645/ct naked vs $0.02248/ct
+  hedged, 07-26 reward-vs-fill audit) and the 07-27 single-position spread of -$0.59 exited vs
+  -$15.29 ridden. INFERRED composition of ESTABLISHED inputs.
+- **MTM METER (bonus)**: the daily halt's equity now marks held inventory at liquidation value
+  from the cycle's own books (mirror-served under the daemon), per-ticker cost fallback,
+  whole-meter cost fallback on any marking error (never disarmed), one-time day-baseline
+  migration on the basis change. The 07-27 "equity flat" failure is now structurally impossible:
+  an unrealized collapse trips the $40 halt.
+- **Q6 (bonus)**: far-close cap now ALSO gates on the MARKET clock — min(program end,
+  market close_time) inside MAX_DAYS_TO_CLOSE, close_time cached in-process. KXNHPRIMARY28-28
+  (resolves 2028) can no longer be quoted through a weekly program window.
+- **Q7 (bonus)**: `KALSHI_FLATTEN_MAX_SLIP` (default 0.10): a taker burst refuses any pass whose
+  touch has moved more than the bound against us from the burst's first pass, in BOTH
+  flatten_to_zero and _taker_cross_capped; the refused residual gets its maker exit re-rested.
+  The 07-27 DXY dump (0.52 -> 0.25 in one burst) is impossible within a single burst; successive
+  cycles can still follow a real trend one bounded step at a time.
+- **Q8 (bonus)**: RULE ELEVEN (stop means halt) and RULE TWELVE (deliverable echo-back +
+  headline discipline) added to the UserPromptSubmit hook.
+
+## §8 — Q3 REVIEW: THE STRAND-CROSS WAIT (report requested by the operator; NOT yet decided)
+
+**The knob:** after an exit has rested unfilled for `KALSHI_STRAND_CROSS_S` seconds (implemented
+default 30) with a naked residual >= 5 ct, the bot pays the spread and crosses — one bounded IOC
+per period.
+
+**What a cross costs (ESTABLISHED):** the taker fee is 0.07 x p x (1-p) — 0.79c/ct at p=0.87
+(verified against the 07-27 fills' own fee fields), at most ~1.75c/ct at p=0.50 — plus the
+half-spread. A maker exit costs $0 in fees.
+
+**What waiting cost on the one live chain we have (ESTABLISHED, 07-27 tape):** KXNDQHUD went
+0.60 -> 0.66 in 32s, -> 0.70 in 15s more, and the exit that priced 9c behind the touch at ~19:11
+never saw the market again — 29 minutes later the STOP escalation paid 0.87. Riding the full
+position to settlement would have cost -$15.29 vs -$0.59 for an immediate touch exit (EOD §2 D1,
+re-verified). Every 30s of waiting in that trend was worth roughly -$0.35 of exit price on that
+one 42-ct position (INFERRED: 14.70 spread over ~42 min of ride).
+
+**The honest counter-example (ESTABLISHED):** KXDXYDUD settled YES the next day — ex post,
+holding won. A strand cross at ~19:26 would have realized a loss that settlement erased. The
+knob is a RISK bound, not an ex-post P&L maximizer: it converts unbounded tails into a known
+spread+fee cost. The operator's rule ("we can sell at a loss") prices that trade-off ON.
+
+**Options:**
+- **30s (implemented default).** Pro: in the 07-27 trend, crosses ~29 min earlier at ~5c/ct
+  better; tail risk time-boxed to ~30s + one IOC per period. Con: on choppy books it will
+  sometimes pay ~1-3c/ct for a spike that would have mean-reverted. With the 5-ct floor and
+  one-IOC pacing the worst-case unnecessary-cross cost per episode is roughly $0.10-0.80
+  (INFERRED arithmetic from the fee formula and typical sizes).
+- **60-120s.** Pro: more chance the maker exit fills free. Con: on 07-27 the market never came
+  back at all — longer waits bought nothing and cost trend distance.
+- **Price-triggered (cross when the mark moves X cents against the exit).** Theoretically
+  cleaner (reacts to adversity, not clock) but unmeasured, more code, and the MTM meter now
+  bounds the day anyway.
+**RESOLVED (operator, 2026-07-28): 15 seconds** ("ok proceed with 15s and we can adjust").
+The operator's reasoning — a spike that matters persists past 30s, so wait less — matches the
+one live chain (NDQ never mean-reverted). The repeated-bleed fear ("give up $20 over and over")
+was separately corrected: that channel is fix 2's re-post defect, already dead unconditionally;
+the wait only prices WHEN the single remaining exit gets forced. Shipped as the code default
+(15.0) AND set explicitly in live.env. Effective exit latency = 15s + up to one ~5-8s cycle.
+Tune with `strand_due` / `strand_crossed_ct` telemetry.

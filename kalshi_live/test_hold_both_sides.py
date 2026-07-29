@@ -24,9 +24,14 @@ pair could ever complete.
 FIX: RED = ADD + |inv| where ADD is the count AFTER stand-down/ramp/throttle, plus a clamp of
 ADD to RED - |inv| for when `room` caps RED (it does in production: MAX_MARKET_CAPITAL=15 ->
 room ~23). `_unwind_size` is untouched and still caps PURE unwinds at |inv|.
+
+Q1 UPDATE (2026-07-28): holding is now EXIT-ONLY (operator decision; flags removed), so the
+two-sided offset block described above is gone from production — while holding, ADD is 0 by
+construction and the only resting quote IS the reducing one. The net-flat invariant these
+tests pin survives unchanged (a full fill of the exit lands flat); the sizing helper
+_offset_size is ORPHANED and pinned directly below.
 """
-from test_live_hardening import MockClient, _run, q
-from test_live_hardening import legacy_inventory_mode  # noqa: E402
+from test_live_hardening import MockClient, _run, q  # noqa: F401 (MockClient/_run: harness parity)
 
 M = {"target": 1000, "end": "2099-01-01T00:00:00Z", "usd_day": 100.0, "ramp_min": 180}
 
@@ -89,14 +94,20 @@ def test_double_fill_paired_across_a_sweep(monkeypatch):
         assert inv + y - n == 0, f"inv={inv}: yes={y} no={n} -> net {inv + y - n}"
 
 
-# ---- both sides stay live ---------------------------------------------------------------
+# ---- holding => only the reducing side lives --------------------------------------------
 
-def test_both_sides_stay_live_while_holding(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
+def test_only_the_reducing_side_lives_while_holding(monkeypatch):
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_both_sides_stay_live_while_
+    # holding) asserted the removed keep-both-sides-live design. Holding is exit-only now:
+    # exactly ONE side rests — the reducing one — and the other side reappearing at any size
+    # is the accumulating re-post defect.
     _cfg(monkeypatch)
-    for inv in (1, 8, 25, -1, -8, -25):
+    for inv in (1, 8, 25):
         y, n = _sides(inv)
-        assert y > 0 and n > 0, f"inv={inv} dropped a side: yes={y} no={n}"
+        assert y == 0 and n > 0, f"inv={inv}: long-yes must rest ONLY the NO exit, got yes={y} no={n}"
+    for inv in (-1, -8, -25):
+        y, n = _sides(inv)
+        assert n == 0 and y > 0, f"inv={inv}: long-no must rest ONLY the YES exit, got yes={y} no={n}"
 
 
 def test_hard_stop_still_pulls_the_adding_side_to_zero(monkeypatch):
@@ -115,13 +126,21 @@ def test_flat_is_unchanged(monkeypatch):
 # ---- the legacy defect must not come back ----------------------------------------------
 
 def test_flag_off_reproduces_the_legacy_sizing(monkeypatch):
-    legacy_inventory_mode(monkeypatch)
+    # CONVERTED to a direct unit test 2026-07-28 (Q1 operator decision): _offset_size is now
+    # ORPHANED — its only production call site (the two-sided offset block) was removed with
+    # holding => exit-only, so desired_quotes can no longer route here. The helper and its
+    # KALSHI_PAIR_BOTH_SIDES flag are retained pending an explicit operator removal decision,
+    # and this pins their sizing contract directly so a future caller inherits it intact.
     _cfg(monkeypatch)
     monkeypatch.setattr(q, "PAIR_BOTH_SIDES", False)
-    y, n = _sides(8)
-    assert n == 8, "flag OFF must restore min(|inv|, room)"
-    assert y == 100 and n < y, "which IS the defect: adding 100 while reducing 8"
-    assert 8 + y - n == 100, "and a double fill leaves us +100"
+    assert q._offset_size(100, 0.65, 8) == 8, "flag OFF must restore min(|inv|, room)"
+    # which IS the defect the fix killed: adding 100 while reducing 8 -> a double fill = +100
+    monkeypatch.setattr(q, "PAIR_BOTH_SIDES", True)
+    assert q._offset_size(100, 0.65, 8) == 108, "flag ON: RED = ADD + |inv| (paired double fill)"
+    # room (MAX_MARKET_CAPITAL/price) still bounds it in both modes
+    assert q._offset_size(500, 0.65, 8) == int(250.0 / 0.65)
+    monkeypatch.setattr(q, "PAIR_BOTH_SIDES", False)
+    assert q._offset_size(500, 0.65, 900) == int(250.0 / 0.65)
 
 
 # ---- room cap: never grow the imbalance --------------------------------------------------

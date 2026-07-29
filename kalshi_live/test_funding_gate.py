@@ -68,28 +68,38 @@ def _t1(created, side=None):
 
 
 # ---- Pin #1: FLAG-OFF NO-OP -------------------------------------------------------------------
+# REWRITTEN 2026-07-28 (operator Q2 decision). Under the unconditional risk rule the held OTHER
+# position now gets a FULL-SIZE exit at the touch (300 ct @ 0.49 = ~$147 reservation, cap-EXEMPT),
+# so `committed` carries held + exit and T1 is refused at the market-cap stage (capped_markets)
+# rather than per-create (create_skipped). The OUTCOME pinned is unchanged: no accumulating T1
+# order may be placed, and the exit always is.
 def test_flag_off_is_noop_legacy_gate_still_blocks(monkeypatch, tmp_path):
-    # KALSHI_FUNDING_GATE=0 (default): held_cost ($300) still inflates committed past the $100 cap,
-    # so the fresh accumulating T1 book is refused — identical to the legacy behaviour.
     c, row = _held_scenario(monkeypatch, tmp_path, funding_gate=0)
     assert len(_t1(c.created)) == 0                       # no accumulating T1 buy placed
-    assert row.get("create_skipped", 0) >= 1
+    assert row.get("capped_markets", 0) >= 1 or row.get("create_skipped", 0) >= 1
     assert row.get("committed_usd", 0) >= 300.0           # committed still carries the spent held cost
     assert "funding_gate" not in row                      # no funding telemetry emitted (flag off)
+    reds = [o for o in c.created if o["ticker"] == _HELD_TICKER and o["side"] == "no"]
+    assert len(reds) == 1 and reds[0]["count"] <= 300     # the exit rests, capped at |inv|
 
 
-# ---- Pin #2: THE FIX PIN ----------------------------------------------------------------------
-def test_flag_on_admits_when_held_inflated_but_free_cash_ample(monkeypatch, tmp_path):
-    # SAME scenario, KALSHI_FUNDING_GATE=1, free_cash $500. held_cost is dropped from the gate and
-    # the resting BUY book ($0 standing + ~$20 fresh) is far under min(free_cash, cap)=$100 -> both
-    # T1 sides ADMITTED. This create is BLOCKED on the legacy gross+held code -> pins the change.
+# ---- Pin #2: EXIT PRECEDENCE (operator Q2 decision, 2026-07-28) -------------------------------
+# REWRITTEN: the old pin asserted that with the funding gate on and free cash ample, both T1
+# sides are admitted. Under holding => exit-only the OTHER exit rests at FULL |inv| at the touch
+# and is deliberately cap-exempt — its ~$147 reservation exceeds the $100 funding allowance, so
+# EVERY accumulating create is crowded out while the unwind works. The operator ruled this
+# CORRECT: getting out outranks getting in. The crowding is bounded in TIME (the strand cross
+# forces the exit after STRAND_CROSS_S; a filled exit FREES the capital), so the cost is a
+# reward pause of seconds-to-minutes against the alternative the 07-27 tape priced at
+# -$15.29 ridden vs -$0.59 exited (one 42-ct position).
+def test_exit_precedence_crowds_out_new_quotes_while_unwinding(monkeypatch, tmp_path):
     c, row = _held_scenario(monkeypatch, tmp_path, funding_gate=1, balance="500.0000")
-    assert len(_t1(c.created)) == 2                       # both accumulating T1 sides placed
-    assert len(_t1(c.created, "yes")) == 1 and len(_t1(c.created, "no")) == 1
+    reds = [o for o in c.created if o["ticker"] == _HELD_TICKER and o["side"] == "no"]
+    assert len(reds) == 1 and reds[0]["count"] <= 300     # the exit rests at full remaining size
+    assert len(_t1(c.created)) == 0, \
+        "while a large exit reserves the book, accumulating creates must be refused"
     assert row.get("funding_gate") == 1                   # gate active
     assert row.get("free_cash_usd") == 500.0
-    # the funding number counts the resting BUY book only, NOT the $300 spent held cost
-    assert row.get("funding_committed_usd", 0) < 100.0
 
 
 # ---- Pin #3: HARD CEILING (never overdraw free cash even with a huge cap) ----------------------
@@ -116,7 +126,9 @@ def test_balance_read_failure_fails_closed_to_legacy_gate(monkeypatch, tmp_path)
     c, row = _held_scenario(monkeypatch, tmp_path, funding_gate=1, balance_raises=True)
     assert "balance_read_failed" in row                  # the read did fail this cycle
     assert len(_t1(c.created)) == 0                       # accumulating T1 buy still blocked (no loosening)
-    assert row.get("create_skipped", 0) >= 1
+    # (post-Q2 rewrite: the block lands at the market-cap stage now that the exit's reservation
+    # inflates committed — either counter is acceptable evidence, the outcome above is the pin)
+    assert row.get("capped_markets", 0) >= 1 or row.get("create_skipped", 0) >= 1
     assert "funding_gate" not in row                      # gate inactive (failed closed)
     reds = [o for o in c.created if o["ticker"] == _HELD_TICKER and o["side"] == "no"]
     assert len(reds) == 1                                 # reducing OTHER unwind exempt -> still placed

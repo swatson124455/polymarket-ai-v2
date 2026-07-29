@@ -101,7 +101,7 @@ _ENV_DECLARED = {}                      # name -> default as passed at the call 
 # rather than only counted. Everything else lands in the plan row's `env_absent`.
 _SAFETY_KNOBS = ("KALSHI_PRECLOSE_FLATTEN", "KALSHI_TAKER_FLATTEN", "KALSHI_THROTTLE_SMART",
                  "KALSHI_CAPTURE_GATE", "KALSHI_STANDDOWN", "KALSHI_NETEV_GATE",
-                 "KALSHI_MAX_UNWIND_LOSS", "KALSHI_HELD_MAX_USD",
+                 "KALSHI_HELD_MAX_USD",
                  "KALSHI_DAILY_LOSS_HALT_USD", "KALSHI_DAILY_DOWN_HALT_USD")
 
 
@@ -539,11 +539,11 @@ THROTTLE_SMART = _envb("KALSHI_THROTTLE_SMART")
 # the guard is engaged we earn exactly $0, including on the exit quote that is still resting.
 # Observed live 07-23: all 3 markets one-sided during reduce-only, and the bot flips in and out
 # of that state every few minutes, so a large share of the day earns nothing.
-# With this ON the accumulating side is kept but SHRUNK TO THE FLOOR (MIN_QUOTE_CT) instead of
-# pulled: the market stays qualifying (both quotes earn) while added risk is ~10x smaller than a
-# normal join. NOT zero added risk — a floor quote can still fill; that is the trade.
-# TAP OUT: set KALSHI_REDUCE_ONLY_KEEP_BOTH=0 in live.env and the next cycle reverts exactly.
-REDUCE_ONLY_KEEP_BOTH = _envb("KALSHI_REDUCE_ONLY_KEEP_BOTH", True)
+# REMOVED (operator Q1 decision, 2026-07-28): KALSHI_REDUCE_ONLY_KEEP_BOTH kept the accumulating
+# side alive (floor-sized) on HELD markets under the breaker. That is a direct contradiction of
+# the holding => exit-only risk rule, and the live 07-27 tape showed the shape it enables
+# (KXDXYDUD flipped -20 -> +17 THROUGH flat under reduce-only). The old pairing is in git
+# history (`0a86b2b`, removed with the flags in this commit); revert is the revert mechanism.
 INV_SOFT_CT = _envf("KALSHI_INV_SOFT_CT", 30.0)
 INV_HARD_CT = _envf("KALSHI_INV_HARD_CT", 80.0)
 # INVARIANT (fix H): a single JOIN fill must not by itself breach the hard cap, or one fill
@@ -609,29 +609,22 @@ MAX_ENTRY_CUTOFF_MIN = _envf("KALSHI_MAX_ENTRY_CUTOFF_MIN", 120.0)
 # falls through to the STRAND UNWIND path, which rests the reducing side at reference so the
 # position still flattens passively. 0 disables the cap.
 MAX_DAYS_TO_CLOSE = _envf("KALSHI_MAX_DAYS_TO_CLOSE", 3.0)
-# --- UNWIND LOSS CAP (2026-07-22 live loss): the maker unwind re-priced at reference every
-# cycle CHASES a trending market — buying the reducing side at the top realized the full
-# adverse move (~50c/pair on DC vs the doctrine's 1-2c bleed). The reducing quote never rests
-# at a price that would lock in more than MAX_UNWIND_LOSS per pair vs our cost basis; past
-# that it rests AT the cap (deeper in the book) and the residual waits for the backstop.
-# Bounded realized loss per pair, accepted trade: delta may ride longer.
-MAX_UNWIND_LOSS = _envf("KALSHI_MAX_UNWIND_LOSS", 0.10)
-# EXIT AT THE TOUCH (operator directive 2026-07-27, after a live -$27.35 session).
-# The cap above was written against a REAL failure (chasing a trend and realizing ~50c/pair) but
-# its instrument is wrong: capping the exit PRICE means that once the market moves more than
-# MAX_UNWIND_LOSS against us, our exit rests BEHIND the touch and simply never fills. Measured
-# 2026-07-27 on KXNDQHUD: exit pinned at 0.73 with the market at 0.82, no fill, full position
-# rode into settlement (~-$9.82 on 42 ct where a touch exit was ~-1c/ct).
-# ON (default): reducing quotes rest AT the reference. We accept the loss and get out.
-# OFF: the legacy cap, byte-for-byte. Kept so the old behaviour is one env var away.
-EXIT_AT_TOUCH = _envb("KALSHI_EXIT_AT_TOUCH", True)
-# HOLDING => EXIT ONLY (operator directive 2026-07-27). While we carry inventory on a ticker we
-# rest the REDUCING side and nothing else — no accumulating side, at any size. The old design
-# ("both sides always rest, control position by SKEW") re-offered the losing side after every
-# fill: KXNDQHUD was hit 3x in 47s at 0.60 -> 0.66 -> 0.70 (20 + 17 + 5 ct), each re-post worse
-# than the last, and KXDXYDUD ran -20 -> +17 -> +35 straight through flat while the breaker was
-# tripped on every cycle. One-sided is legal ONLY as an exit; flat is both-sides-or-nothing.
-HOLDING_EXIT_ONLY = _envb("KALSHI_HOLDING_EXIT_ONLY", True)
+# --- THE INVENTORY RISK RULE IS UNCONDITIONAL (operator Q1 decision, 2026-07-28) --------------
+# Operator's rule, on record 2026-07-27 19:48:56Z: "we can sell at a loss"; "we shouldnt be one
+# sided unles we are exiting". Flat => both sides or nothing. Holding => the reducing side and
+# NOTHING else, at any size. One-sided is legal ONLY as an exit.
+# Two flags briefly made this switchable (KALSHI_EXIT_AT_TOUCH, KALSHI_HOLDING_EXIT_ONLY,
+# 21596e3) and a loss cap (KALSHI_MAX_UNWIND_LOSS) once priced exits BEHIND the touch. The
+# operator ordered all three OUT: the losing behaviour must not be one env var away (the same
+# shape as the dormant neg-risk landmine in CLAUDE.md). What they guarded against:
+#   - the cap (2026-07-22, ~50c/pair chase) is superseded by the STRAND CROSS (STRAND_CROSS_S):
+#     losses are bounded in TIME by paying the spread, never by refusing to price the exit —
+#     "a loss cap that blocks the exit is not a loss cap" (live 2026-07-27: exit pinned 0.73 vs
+#     market 0.82, 42 ct rode to settlement).
+#   - re-offering the losing side ("both sides always rest, control by SKEW") re-armed every
+#     adverse fill: KXNDQHUD hit 3x in 47s at 0.60 -> 0.66 -> 0.70; KXDXYDUD ran -20 -> +17
+#     THROUGH flat under the breaker.
+# git revert is the revert mechanism (this commit; behaviour flags deliberately NOT recreated).
 # HOLD BOTH SIDES (2026-07-26). The block's own design comment is "shrink the accumulating
 # side, grow the reducing side, both stay live" — but the reducing side was sized min(|inv|,
 # room) off the NOMINAL join, so at inventory below INV_SOFT_CT (where the throttle never
@@ -681,6 +674,16 @@ if MAX_ENTRY_CUTOFF_MIN < WIND_DOWN_MIN:
 # offsets, wait, re-check, and taker-cross ONLY what is still material after the wait.
 STOP_ESCALATE_S = _envi("KALSHI_STOP_ESCALATE_S", 90)       # seconds passive offsets get to fill
 STOP_TAKER_MIN_CT = _envf("KALSHI_STOP_TAKER_MIN_CT", 5.0)  # escalate only if |pos| still >= this
+# --- FLATTEN SLIPPAGE BOUND (operator Q7 decision 2026-07-28): flatten_to_zero's IOC loop hit
+# whatever the touch was after each pass, 4 tries deep — live 2026-07-27 the STOP escalation
+# walked KXDXYDUD 0.52 -> 0.50 -> 0.46 -> 0.25 in ~2s, selling 23 ct at 0.25 that settled at
+# 1.00 the next day. A pass whose touch has moved more than this many DOLLARS against us from
+# the FIRST pass's touch is refused; the residual keeps/regains its maker exit and later passes
+# (next cycle / strand clock) retry from the fresh book. 0 disables the bound.
+FLATTEN_MAX_SLIP = _envf("KALSHI_FLATTEN_MAX_SLIP", 0.10)
+# market close_time cache for the far-close market-clock cap (static per market; the daemon is
+# a long-lived process so steady-state cost is ~zero reads).
+_CLOSE_TIME_CACHE = {}
 # --- PRE-CLOSE SETTLEMENT FLATTEN (2026-07-24 measured loss): a market CLOSES (trading ends) at
 # its close_time but SETTLES hours later; after close we CANNOT trade, so whatever NAKED (unpaired,
 # net-directional) ladder inventory we hold AT CLOSE rides to settlement and resolves against us
@@ -711,9 +714,12 @@ PRECLOSE_FLATTEN_MIN = _envf("KALSHI_PRECLOSE_FLATTEN_MIN", 15.0)  # act within 
 # residual, clock re-armed after every attempt so book-walking is paced (the 07-27 STOP escalation
 # walked DXY 0.52 -> 0.25 in 4 back-to-back IOCs; one pass per clock period cannot).
 # The taker leg needs TAKER_FLATTEN=1 and live mode; otherwise the clock and telemetry still run.
-# Default 30s = the fix-3 proposal on record; operator has NOT yet confirmed the value (Q3 in the
-# 07-27 EOD handoff). 0 disables the mechanism entirely.
-STRAND_CROSS_S = _envf("KALSHI_STRAND_CROSS_S", 30.0)
+# Default 15s — OPERATOR-CONFIRMED 2026-07-28 ("ok proceed with 15s and we can adjust"), revised
+# down from the 30s proposal on the operator's read that a spike that matters persists: the one
+# live chain (07-27 KXNDQHUD) ran 0.60 -> 0.66 in 32s, 0.70 at 47s, and never came back, so a
+# shorter wait exits cheaper in exactly the trends that hurt. Effective exit latency is this
+# clock + up to one cycle (~5-8s live). 0 disables the mechanism entirely.
+STRAND_CROSS_S = _envf("KALSHI_STRAND_CROSS_S", 15.0)
 # --- selection: prefer BALANCED books (maker-unwind fills) over one-sided drift traps ---
 MAX_SPREAD_TICKS = _envi("KALSHI_MAX_SPREAD_TICKS", 8)      # skip wide/illiquid books
 MIN_DEPTH_SYM = _envf("KALSHI_MIN_DEPTH_SYM", 0.25)         # min(depth)/max(depth) both sides
@@ -1013,14 +1019,14 @@ def _ok_exit_price(p):
     guard applied to leaving, the same family as the standing rule that the YES/NO mandate
     governs ENTRIES only.
 
-    MAX_UNWIND_LOSS remains the SOLE economic governor of whether an exit is worth taking;
-    this bound is only "can the venue accept the order at all"."""
+    There is deliberately NO economic governor on an exit price (operator: "we can sell at a
+    loss"); this bound is only "can the venue accept the order at all"."""
     return p is not None and EXIT_MIN_PRICE_DOLLARS <= p <= EXIT_MAX_PRICE_DOLLARS
 
 
 def _reducing_quotes(best_y, best_n, inv, cost):
     """THE reducing-side quote builder — long yes -> a NO bid, long no -> a YES bid,
-    loss-capped by _unwind_price and never larger than |inv| (_unwind_size).
+    priced AT the reference by _unwind_price and never larger than |inv| (_unwind_size).
 
     Extracted 2026-07-26. This block existed in FIVE byte-identical copies inside
     desired_quotes (wind-down, presence gate, net-EV gate, capture gate, void/activate), and
@@ -1055,7 +1061,12 @@ def _reducing_quotes(best_y, best_n, inv, cost):
 
 
 def _offset_size(add_cnt, price, inv):
-    """Size the REDUCING HALF OF A TWO-SIDED QUOTE so a double fill lands exactly PAIRED.
+    """ORPHANED since the Q1 decision (2026-07-28): its only call site — the two-sided offset
+    block in desired_quotes — became unreachable behind holding => exit-only and was removed.
+    Retained (with KALSHI_PAIR_BOTH_SIDES) pending an explicit operator removal decision; it is
+    not called from any production path.
+
+    Size the REDUCING HALF OF A TWO-SIDED QUOTE so a double fill lands exactly PAIRED.
 
     NOT a pure unwind. `_unwind_size` caps at |inv| so a pure exit can never cross flat —
     right for the strand path, the wind-down exit and `_flatten_all`, which have stopped
@@ -1078,29 +1089,19 @@ def _offset_size(add_cnt, price, inv):
 
 
 def _unwind_price(best, cost):
-    """Price for a reducing (unwind) quote.
+    """Price for a reducing (unwind) quote: the book reference, ALWAYS (operator Q1 decision
+    2026-07-28 — "we can sell at a loss").
 
-    EXIT_AT_TOUCH (default ON, operator directive 2026-07-27): rest AT the book reference and
-    accept whatever loss that implies. The MAX_UNWIND_LOSS cap below is a CEILING on the exit
-    PRICE, which means the further the market runs against us the further our exit sits BEHIND
-    the touch — unfillable at exactly the moment we most need out. Measured live 2026-07-27:
-    holding 42 ct of KXNDQHUD NO at cost 0.364, the cap priced our exit at
-    floor((1-0.364+0.10)*100)/100 = 0.73 while the market was at 0.82. It never filled; the
-    position rode to settlement. Exiting at the touch would have realized ~1c/ct; the cap turned
-    that into the full position. A loss cap that blocks the exit is not a loss cap.
+    A price cap here (the removed KALSHI_MAX_UNWIND_LOSS) meant that once the market moved
+    further than the cap, our exit rested BEHIND the touch — unfillable at exactly the moment we
+    most needed out. Measured live 2026-07-27: 42 ct KXNDQHUD NO at cost 0.364, cap-priced exit
+    0.73 vs market 0.82, never filled, rode to settlement. A loss cap that blocks the exit is
+    not a loss cap. Loss is bounded in TIME instead: the strand cross (STRAND_CROSS_S) pays the
+    spread after a bounded wait, and the mark-aware daily halt bounds the day.
 
-    Set KALSHI_EXIT_AT_TOUCH=0 to restore the legacy capped behaviour exactly.
-
-    LEGACY (flag off): the book reference CAPPED so a fill can never lock in more than
-    MAX_UNWIND_LOSS per pair vs our cost basis (pair realized loss = held-side cost + exit-side
-    price - 1). cost<=0 means basis unknown -> no cap. Floored to the cent so float noise can
-    never round the cap UP past the intended bound."""
-    if EXIT_AT_TOUCH:
-        return best
-    if cost <= 0:
-        return best
-    cap = math.floor((1.0 - cost + MAX_UNWIND_LOSS) * 100.0) / 100.0
-    return min(best, cap)
+    `cost` is retained for call-site compatibility (and the audit trail); it no longer prices
+    anything."""
+    return best
 
 
 def _throttled_quote(best, cnt, over, levels, target):
@@ -1434,8 +1435,8 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # ignoring void/activate economics — exercises place/diff/cancel machinery.
         # HOLDING => EXIT ONLY applies HERE TOO (leak found in the 2026-07-28 adversarial review of
         # fix 2): without this guard the drill switch re-arms the accumulating side while holding —
-        # the exact defect the risk rule exists to kill, one env var away. Risk rule wins over drills.
-        if HOLDING_EXIT_ONLY and abs(inv) >= INV_TOLERANCE:
+        # the exact defect the risk rule exists to kill. Risk rule wins over drills.
+        if abs(inv) >= INV_TOLERANCE:
             if stats is not None:
                 stats["holding_exit_only"] = stats.get("holding_exit_only", 0) + 1
             return _reducing_quotes(best_y, best_n, inv, cost)
@@ -1465,25 +1466,27 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         quotes.append({"side": "yes", "price_dollars": best_y, "count": int(add_y), "reason": "activate"})
         quotes.append({"side": "no", "price_dollars": best_n, "count": int(add_n), "reason": "activate"})
     else:
-        # HOLDING => EXIT ONLY (operator directive 2026-07-27). This is THE line that turned a
-        # single adverse fill into a 42-contract position. The legacy design below kept the
-        # accumulating side live (shrunk, but live) whenever we held inventory, so every fill was
-        # followed by a fresh offer of the SAME losing side. Live tape 2026-07-27, KXNDQHUD:
+        # HOLDING => EXIT ONLY (operator directive 2026-07-27; made UNCONDITIONAL by the Q1
+        # decision 2026-07-28). This is THE line that turned a single adverse fill into a
+        # 42-contract position. The legacy design kept the accumulating side live (shrunk, but
+        # live) whenever we held inventory, so every fill was followed by a fresh offer of the
+        # SAME losing side. Live tape 2026-07-27, KXNDQHUD:
         #   19:06:44  sell 20 @ NO 0.40   (maker)
         #   19:07:16  sell 17 @ NO 0.34   (maker)  <- only possible because we re-posted
         #   19:07:31  sell  5 @ NO 0.30   (maker)  <- and again
         # 22 of the 42 contracts exist solely because of the re-post. Same shape on KXINXHUD
         # (22 of 29.1 ct). Once we hold, the only order we want working is the one that gets us
         # out. Flat is still both-sides-or-nothing (below); one-sided is legal ONLY as an exit.
-        if HOLDING_EXIT_ONLY and abs(inv) >= INV_TOLERANCE:
+        if abs(inv) >= INV_TOLERANCE:
             if stats is not None:
                 stats["holding_exit_only"] = stats.get("holding_exit_only", 0) + 1
             return _reducing_quotes(best_y, best_n, inv, cost)
         # JOIN: external depth meets Target both sides, so shaping OUR size never voids it.
         # BOTH sides ALWAYS rest here (never pulled to zero) — the resting quotes are what earns
-        # the rewards; inventory earns nothing. Position control is done by SKEW, not by removing
-        # a quote: shrink+step-in the accumulating side, grow the reducing side. Both stay live.
-        # (Reachable only when flat, or with HOLDING_EXIT_ONLY off.)
+        # the rewards; inventory earns nothing. Reachable only when FLAT (sub-tolerance dust):
+        # the skew/offset machinery that shaped an accumulating side WHILE HOLDING was removed
+        # with the Q1 decision (unreachable behind the return above); the event-delta throttle
+        # below still shapes a flat ticker inside a directional event.
         y_price, y_cnt, y_reason = best_y, _capped_join(best_y, best_n), "join"
         n_price, n_cnt, n_reason = best_n, _capped_join(best_n, best_y), "join"
         # STAND-DOWN: on a thin-reward regime, size BOTH accumulating sides down to MIN_QUOTE_CT
@@ -1500,87 +1503,48 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                 if stats is not None:
                     stats["standdown"] = stats.get("standdown", 0) + 1
                     stats["standdown_min_rho"] = min(stats.get("standdown_min_rho", 1e18), _eff)
-        # THROTTLE DIRECTION follows THIS ticker's own inventory (accumulating side = the one whose
-        # fill grows our |inv|). When flat on the ticker, follow the EVENT aggregate (a flat ticker
-        # in a directional event must not ADD to the drift). MAGNITUDE uses max(|inv|,|event|) so
-        # correlated strikes each under SOFT still throttle via the event aggregate.
+        # THROTTLE DIRECTION follows the EVENT aggregate (a flat ticker in a directional event
+        # must not ADD to the drift). Per-ticker inventory can no longer drive this block: the
+        # holding => exit-only return above guarantees |inv| < INV_TOLERANCE here, so the
+        # inv-driven throttle arm, the held-$ envelope and the offset/pairing machinery that
+        # shaped an accumulating side WHILE HOLDING were removed as unreachable (Q1, 2026-07-28;
+        # `git show 228bedd^:kalshi_live/maker_kalshi_quoter.py` has the last live copy).
         # SETTLEMENT RAMP (audit HIGH-2): be SMALL at settlement so the settle-taker is a rare
         # backstop, not the primary exit into the worst tick. Inside RAMP_MIN both join sizes
         # scale down linearly with time-to-end (floor MIN_QUOTE_CT); unwind quotes are never
-        # ramped (set below) — de-risking gets easier as the end nears, adding gets harder.
+        # ramped — de-risking gets easier as the end nears, adding gets harder.
         mins_left = (end - now).total_seconds() / 60.0
         ramp_min = m.get("ramp_min") or RAMP_MIN     # per-market (C13); fallback to global default
         if mins_left < ramp_min:
             scale = max(0.0, (mins_left - WIND_DOWN_MIN) / max(1.0, ramp_min - WIND_DOWN_MIN))
             y_cnt = max(MIN_QUOTE_CT, int(y_cnt * scale))
             n_cnt = max(MIN_QUOTE_CT, int(n_cnt * scale))
-        if abs(inv) >= INV_TOLERANCE:
-            acc = 1 if inv > 0 else -1
-        elif abs(ev) > INV_SOFT_CT:
+        if abs(ev) > INV_SOFT_CT:
             acc = 1 if ev > 0 else -1
-        else:
-            acc = 0
-        mag = max(abs(inv), abs(ev))
-        # per-market HELD-$ envelope (review C12): INV_HARD_CT bounds CONTRACTS, but at high prices
-        # HARD contracts are many multiples of the MAX_MARKET_CAPITAL dollar intent (60 ct @0.96 =
-        # ~$57 on one ticker). Pull the accumulating side once held $ on THIS ticker reaches the
-        # per-market $ cap, not only at the contract HARD — whichever binds first. held-$ uses this
-        # ticker's own signed inventory (0 when flat/event-driven -> the contract HARD governs).
-        held_usd = abs(inv) * (best_y if inv > 0 else best_n)
-        hard = mag >= INV_HARD_CT or held_usd >= MAX_MARKET_CAPITAL
-        if acc != 0 and (mag > INV_SOFT_CT or hard):
+            mag = abs(ev)
+            hard = mag >= INV_HARD_CT
             # shrink the accumulating side toward MIN_QUOTE_CT and step it 1 tick inside so it
-            # fills last. AT/ABOVE HARD (contract OR $) the accumulating side IS pulled to zero
-            # (audit MED-3): the MIN_QUOTE floor would keep leaking fills on a one-way market, so
-            # HARD is the hard position envelope. Above it, bounded risk beats that side's reward.
+            # fills last. AT/ABOVE HARD the accumulating side IS pulled to zero (audit MED-3):
+            # the MIN_QUOTE floor would keep leaking fills on a one-way market, so HARD is the
+            # hard envelope. Above it, bounded risk beats that side's reward.
             over = min(1.0, (mag - INV_SOFT_CT) / max(1.0, INV_HARD_CT - INV_SOFT_CT))
-            if acc > 0:                             # accumulating YES -> throttle YES
+            if acc > 0:                             # event drifts YES-ward -> throttle YES
                 if hard:
                     y_cnt = 0                       # HARD STOP: cap the envelope, stop the leak
                 else:
                     y_price, y_cnt = _throttled_quote(best_y, y_cnt, over, yl, target)
-            else:                                   # accumulating NO -> throttle NO
+            else:                                   # event drifts NO-ward -> throttle NO
                 if hard:
                     n_cnt = 0
                 else:
                     n_price, n_cnt = _throttled_quote(best_n, n_cnt, over, nl, target)
-        # OFFSET the position: grow the REDUCING side toward |inv| at reference so its fills drain
-        # the overhang back to ~zero net delta (maker offset, tagged 'unwind' = exempt from the
-        # capital cap; capped at |inv| so it can't overshoot past flat). This does NOT bloat into a
-        # held pair — it only sizes enough to cancel what we already hold.
-        if abs(inv) >= INV_TOLERANCE:
-            # RED = ADD + |inv| (ADD = the count AFTER stand-down/ramp/throttle), then clamp
-            # ADD to RED - |inv| for when `room` caps RED. Together these hold the invariant
-            # "a double fill lands paired" in every regime, instead of only at hard-stop.
-            _iv = int(abs(inv))
-            if inv > 0:                             # long yes -> grow NO (reduces), at ref BUT
-                n_price, n_reason = _unwind_price(best_n, cost), "unwind"   # loss-capped
-                n_cnt = _offset_size(y_cnt, n_price, inv)
-                if PAIR_BOTH_SIDES:                 # clamp is part of the fix, not of legacy
-                    y_cnt = min(y_cnt, max(0, n_cnt - _iv))
-            else:                                   # long no -> grow YES (reduces)
-                y_price, y_reason = _unwind_price(best_y, cost), "unwind"
-                y_cnt = _offset_size(n_cnt, y_price, inv)
-                if PAIR_BOTH_SIDES:
-                    n_cnt = min(n_cnt, max(0, y_cnt - _iv))
         # FINAL EMIT — the band depends on WHAT the quote is, not merely on its price. A leg
-        # re-priced to "unwind" above is REDUCING risk and takes venue bounds; anything else is
-        # OPENING risk and takes the strategy band. Applying the entry band here undid the
-        # reducing-side fixes further up, because this is the last gate every quote passes.
+        # tagged "unwind" is REDUCING risk and takes venue bounds; anything else is OPENING risk
+        # and takes the strategy band. (Post-Q1 nothing in THIS branch emits an unwind — every
+        # reducing quote comes from _reducing_quotes via the returns above — but the reason-aware
+        # gate stays: it is the last gate every quote passes and must never re-gate an exit.)
         _ok_y = _ok_exit_price(y_price) if y_reason == "unwind" else _ok_entry_price(y_price)
         _ok_n = _ok_exit_price(n_price) if n_reason == "unwind" else _ok_entry_price(n_price)
-        # THE OFFSET ASSUMED ITS PARTNER WOULD REST. RED was sized ADD+|inv| so that a DOUBLE
-        # fill lands paired — but the ADDING side can still be dropped right here (price outside
-        # its band, or shaped to 0). If that happens, RED stands alone and a full fill carries us
-        # THROUGH flat by the whole ADD component. Caught by stress_inventory.py on a real book:
-        # inv=-16 with the adding side dropped left RED=113 -> net +97, growing the imbalance 6x.
-        # When the partner will not rest, fall back to a pure unwind capped at |inv|.
-        if abs(inv) >= INV_TOLERANCE and PAIR_BOTH_SIDES:
-            _iv2 = int(abs(inv))
-            if inv > 0 and not (y_cnt > 0 and _ok_y):
-                n_cnt = min(n_cnt, _iv2)
-            elif inv < 0 and not (n_cnt > 0 and _ok_n):
-                y_cnt = min(y_cnt, _iv2)
         if y_cnt > 0 and _ok_y:
             quotes.append({"side": "yes", "price_dollars": y_price, "count": y_cnt, "reason": y_reason})
         if n_cnt > 0 and _ok_n:
@@ -1864,6 +1828,39 @@ def run_once():
         footprint = select_footprint(progs, now)
         plan.update(FP_DROPS)                 # drop reasons (empty when a test patches selection)
         plan["programs_seen"] = len(progs)
+        # FAR-CLOSE CAP ON THE MARKET CLOCK (operator Q6 decision 2026-07-28). select_footprint's
+        # cap gates on the reward-PROGRAM window end — but a market can carry a short weekly
+        # program while the MARKET itself resolves years out. Live 2026-07-27: KXNHPRIMARY28-28
+        # (resolves 2028) passed an 8-day cap via its weekly program, was quoted, and filled
+        # 20 ct @ 0.73. The horizon rule is min(program end, market close): both must be inside
+        # MAX_DAYS_TO_CLOSE. close_time is static per market -> cached in-process (the daemon is
+        # long-lived, so steady-state adds ~zero reads). An unreadable clock KEEPS the market
+        # (counted): a transient read failure must not evacuate the whole footprint. Held
+        # inventory in a dropped market still unwinds via the strand path, as with the
+        # program-end cap.
+        if MAX_DAYS_TO_CLOSE > 0:
+            _fc_keep = []
+            for _m in footprint:
+                _t2 = _m["ticker"]
+                _ct = _CLOSE_TIME_CACHE.get(_t2)
+                if _ct is None:
+                    try:
+                        _ct = public_get(f"/trade-api/v2/markets/{_t2}"
+                                         ).get("market", {}).get("close_time")
+                        _CLOSE_TIME_CACHE[_t2] = _ct or ""
+                    except Exception:
+                        plan["farclose_check_failed"] = plan.get("farclose_check_failed", 0) + 1
+                        _fc_keep.append(_m)
+                        continue
+                try:
+                    _far = bool(_ct) and parse_iso(_ct) > now + timedelta(days=MAX_DAYS_TO_CLOSE)
+                except Exception:
+                    _far = False
+                if _far:
+                    plan["drop_far_market_close"] = plan.get("drop_far_market_close", 0) + 1
+                else:
+                    _fc_keep.append(_m)
+            footprint = _fc_keep
         usd_day = {m["ticker"]: m["usd_day"] for m in footprint}
 
         # standing FIRST so activate can size against external (non-own) depth.
@@ -1928,24 +1925,61 @@ def run_once():
             # window. Rapid growth = adverse accumulation -> the whole book goes REDUCE-ONLY
             # below (only unwind quotes survive; accumulating quotes cancelled by the diff).
             # Self-releasing: reduce-only stops the growth, the window slides, the gate clears.
-            # DAILY LOSS KILL (treadmill guard): equity = cash + held COST BASIS, so SETTLED
-            # losses show up here even though held-$ returns to zero. Drop beyond the daily
-            # budget -> write STOP (operator must clear it) + maker-first flatten NOW. Balance
-            # read failure only skips this check (primary reads above remain fail-closed).
-            # COST BASIS, NOT MARK, DELIBERATELY (re-affirmed 2026-07-23): /portfolio/balance
-            # exposes portfolio_value (integer cents) as a venue mark, but whether it INCLUDES
-            # cash is unverified — read wrong it double-counts the balance and halves or doubles
-            # the meter, and the state freeze forbids probing the endpoint. Cost basis also keeps
-            # the meter noise-free: an entry moves cash down and cost up by the same amount, so
-            # only realized/settled moves tick it. KNOWN GAP: open (unrealized) losses stay
-            # invisible until settlement. That is a separate change needing a live probe of
-            # portfolio_value's semantics first — NOT fixed here.
+            # DAILY LOSS KILL (treadmill guard): drop beyond the daily budget -> write STOP
+            # (operator must clear it) + maker-first flatten NOW. Balance read failure only
+            # skips this check (primary reads above remain fail-closed).
+            # MARK-TO-MARKET (operator decision 2026-07-28, replacing cost basis). The cost-basis
+            # meter's own comment admitted "KNOWN GAP: open (unrealized) losses stay invisible
+            # until settlement" — live 2026-07-27 it read -$1.00 while the marked number was
+            # ~-$22, and the operator was told "flat" three times. Held inventory is now marked
+            # at LIQUIDATION value from the same books the cycle already reads (mirror-served
+            # under the daemon, so ~zero extra REST): long yes -> |pos| x best YES bid, long no
+            # -> |pos| x best NO bid. Per-ticker fallback to COST on an unreadable/one-sided
+            # book, and a whole-marking fallback to the old cost-basis meter on any error —
+            # a marking bug must never DISARM the halt (counted, not swallowed).
+            # We still do NOT read the venue's portfolio_value: whether it includes cash is
+            # unverified (re-affirmed 2026-07-23); our own books are ground truth we control.
             _equity = None
             try:
                 # ONE get_balance() call; free_cash reused by the funding gate below (no second
                 # fetch). A raise leaves free_cash None (init above) -> funding gate fails closed.
                 free_cash = float(client.get_balance().get("balance_dollars") or 0)
-                _equity = free_cash + held_cost
+                _marked, _mark_fb = 0.0, 0
+                try:
+                    for _t, _p in held_by.items():
+                        if not _p:
+                            continue
+                        _mv = None
+                        try:
+                            _ob = _get_book(_t) or {}
+                            if _p > 0:
+                                _bb = max((pr for pr, _ in _levels(_ob.get("yes_dollars") or [])[0]),
+                                          default=None)
+                            else:
+                                _bb = max((pr for pr, _ in _levels(_ob.get("no_dollars") or [])[0]),
+                                          default=None)
+                            if _bb is not None:
+                                _mv = abs(_p) * _bb
+                        except Exception:
+                            _mv = None
+                        if _mv is None:
+                            _mv = abs(_p) * float(cost_by.get(_t, 0.0))   # fallback: cost
+                            _mark_fb += 1
+                        _marked += _mv
+                    _equity = free_cash + _marked
+                    plan["equity_mark_usd"] = round(_equity, 2)
+                    if _mark_fb:
+                        plan["mark_fallback_tickers"] = _mark_fb
+                except Exception as _me:
+                    plan["mark_failed"] = repr(_me)[:120]
+                    _equity = free_cash + held_cost       # old meter, never disarmed
+                # ONE-TIME BASIS MIGRATION: day baselines written by the cost-basis meter would
+                # register the bid-ask spread as an instant "loss" under marks. Re-baseline ONCE
+                # on the definition change (this is not a deposit re-baseline; the deposit-proof
+                # property of dd/down is unchanged thereafter).
+                if st.get("equity_basis") != "mark":
+                    st["equity_basis"] = "mark"
+                    st["equity_day"] = None               # forces the new-day seed below
             except Exception as e:
                 plan["balance_read_failed"] = repr(e)[:120]
                 st["balance_fail_streak"] = int(st.get("balance_fail_streak", 0)) + 1
@@ -2381,24 +2415,13 @@ def run_once():
             # exactly the state we have now decided must be exit-only, so the two rules are in
             # direct conflict and the risk rule wins. Left computed here rather than deleting
             # KEEP_BOTH, so setting KALSHI_HOLDING_EXIT_ONLY=0 restores the old pairing intact.
-            _keep_both = REDUCE_ONLY_KEEP_BOTH and not HOLDING_EXIT_ONLY
-
+            # Under the breaker ONLY reducing quotes survive. The KEEP_BOTH "minjoin" branches
+            # (a floor-sized accumulating quote on HELD markets so the snapshot still earned)
+            # were removed with KALSHI_REDUCE_ONLY_KEEP_BOTH (operator Q1 decision 2026-07-28):
+            # holding => exit only admits no accumulating side, breaker or not. The reward cost
+            # of the dropped side is proportional, not a $0 cliff (R4 pays the side-share mean).
             def _shape(t, qs):
-                out = []
-                for q2 in qs:
-                    if _keep_reducing(t, q2):
-                        out.append(q2)
-                    elif (_keep_both and abs(naked_by.get(t, 0.0)) >= INV_TOLERANCE
-                          and q2.get("count", 0) > MIN_QUOTE_CT):
-                        # ONLY where we HOLD inventory: keep that market two-sided (else the
-                        # snapshot is excluded and even our resting exit quote earns $0) at the
-                        # floor size, so added risk is ~10x smaller than a normal join. FLAT
-                        # markets stay pulled — reduce-only must still mean reduce-only.
-                        out.append(dict(q2, count=MIN_QUOTE_CT, reason="minjoin"))
-                    elif (_keep_both and abs(naked_by.get(t, 0.0)) >= INV_TOLERANCE
-                          and q2.get("reason") is not None):
-                        out.append(q2)          # already at/below the floor — keep as-is
-                return out
+                return [q2 for q2 in qs if _keep_reducing(t, q2)]
             desired = {t: _shape(t, qs) for t, qs in desired.items()}
             desired = {t: qs for t, qs in desired.items() if qs}
             print(f"WARNING breaker: naked ${plan.get('naked_held_usd', 0):.2f} of "
@@ -2869,6 +2892,7 @@ def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
     long_yes = pos0 > 0
     remaining = int(round(abs(pos0)))                      # hard cap on cumulative crossing
     crossed = 0
+    first_px = None                                        # slippage anchor: the FIRST pass's touch
     for _ in range(tries):
         if remaining < max(1, int(INV_TOLERANCE)):
             break
@@ -2880,6 +2904,17 @@ def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
         price, side = (yb, "ask") if long_yes else (ya, "bid")   # long yes->sell yes; long no->buy yes
         if price is None or not (0.01 <= price <= 0.99):
             break
+        # SLIPPAGE BOUND (Q7): each pass re-reads the touch, and on a thin book our own fills
+        # move it — the 07-27 STOP escalation dumped into a 27c-worse touch on pass 4. Refuse a
+        # pass whose price has deteriorated more than FLATTEN_MAX_SLIP from the first pass
+        # (deterioration = a LOWER sell for long-yes, a HIGHER buy for long-no).
+        if FLATTEN_MAX_SLIP > 0:
+            if first_px is None:
+                first_px = price
+            elif (first_px - price if long_yes else price - first_px) > FLATTEN_MAX_SLIP:
+                print(f"flatten: {ticker} touch moved {abs(price - first_px):.2f} against us "
+                      f"(bound {FLATTEN_MAX_SLIP:.2f}) — refusing further crosses this pass")
+                break
         try:
             resp = client.create_order_v2(ticker, side, remaining, price,
                                           time_in_force="immediate_or_cancel", post_only=False)
@@ -2899,6 +2934,15 @@ def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
                 break                                        # nothing at the touch; don't spin
         except Exception:
             break
+    # RE-REST (fix 4 leg 3, mirrored from _taker_cross_capped): the cancel phase above cleared
+    # the ticker's resting exit; if the cross left a residual, put a maker exit back so the
+    # position keeps a working exit inside this cycle (STOP/settle paths re-rest next cycle
+    # regardless — this closes the one-cycle gap).
+    if remaining >= max(1, int(INV_TOLERANCE)):
+        _pos = float(remaining) if long_yes else -float(remaining)
+        if _rest_maker_offset(client, ticker, _pos, 0.0, "flatrerest") is None:
+            print(f"WARNING flatten residual {remaining} ct on {ticker} and the re-rest FAILED "
+                  f"— no working exit until the next cycle")
     # SECONDARY consistency check (never the driver); fall back to our own confirmed count.
     try:
         return abs(_held_cost(client)[1].get(ticker, 0.0)) < INV_TOLERANCE, crossed
@@ -3020,7 +3064,7 @@ def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4, cost=0.0):
     partial cross re-rests the maker exit for the residual, so the position is never left with no
     working exit — and an UNCONFIRMED cancel aborts the cross entirely (the un-cancelled order IS
     the exit; refusing to cross strands nothing).
-    `cost` feeds _unwind_price for the re-rested offset (ignored under EXIT_AT_TOUCH; preserves
+    `cost` feeds _unwind_price for the re-rested offset (vestigial since the Q1 decision; preserves
     the legacy loss-cap pricing exactly when the flag is off).
     Returns (flat_bool, n_contracts_crossed)."""
     remaining = int(round(abs(cap_ct)))
@@ -3030,6 +3074,7 @@ def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4, cost=0.0):
     if not cleared:
         return False, 0                                    # never cross over a possibly-live exit
     crossed = 0
+    first_px = None                                        # slippage anchor (Q7), per invocation
     for _ in range(tries):
         if remaining < max(1, int(INV_TOLERANCE)):
             break
@@ -3041,6 +3086,17 @@ def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4, cost=0.0):
         price, side = (yb, "ask") if long_yes else (ya, "bid")   # long yes->sell yes; long no->buy yes
         if price is None or not (0.01 <= price <= 0.99):
             break
+        # SLIPPAGE BOUND (Q7, same knob as flatten_to_zero): never chase a collapsing touch
+        # within one burst. The anchor is per-invocation, so successive cycles/clock periods can
+        # still follow the market down — one bounded step at a time, with the maker exit
+        # re-rested in between.
+        if FLATTEN_MAX_SLIP > 0:
+            if first_px is None:
+                first_px = price
+            elif (first_px - price if long_yes else price - first_px) > FLATTEN_MAX_SLIP:
+                print(f"taker-cross: {ticker} touch moved {abs(price - first_px):.2f} against us "
+                      f"(bound {FLATTEN_MAX_SLIP:.2f}) — refusing further crosses this pass")
+                break
         try:
             resp = client.create_order_v2(ticker, side, remaining, price,
                                           time_in_force="immediate_or_cancel", post_only=False)

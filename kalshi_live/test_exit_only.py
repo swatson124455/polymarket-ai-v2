@@ -4,10 +4,11 @@
 Operator's rule (2026-07-27 19:48:56Z, normalized): flat => quote both sides or nothing;
 holding => exit only; we can sell at a loss; one-sided is legal ONLY as an exit.
 
-The 07-27 EOD handoff flagged that 18 tests were re-pointed at legacy_inventory_mode and the
-DEFAULT configuration was left thinly covered — "A test_exit_only.py asserting the new default
-does not exist yet and must be written." This is that file. Nothing here touches the flags:
-every pin runs the code exactly as it ships, so a silent default flip fails loudly.
+The 07-27 EOD handoff flagged that 18 tests were re-pointed at a legacy_inventory_mode helper
+(since deleted — the Q1 operator decision 2026-07-28 removed the flags it flipped, making the
+risk rule UNCONDITIONAL) and the DEFAULT configuration was left thinly covered — "A
+test_exit_only.py asserting the new default does not exist yet and must be written." This is
+that file. Every pin runs the code exactly as it ships — there are no flags left to touch.
 
 Run: python -m pytest test_exit_only.py -q  (from the probe dir)
 """
@@ -34,12 +35,17 @@ def _quotes(inv=0.0, cost=0.0, yl=_YL, nl=_NL):
     return q.desired_quotes(M, yl, nl, q.utcnow(), inv=inv, cost=cost)
 
 
-# ---- the defaults themselves are the contract -------------------------------------------------
+# ---- the rule is UNCONDITIONAL — that absence of knobs is the contract ------------------------
 
-def test_the_risk_rule_defaults_are_on():
-    # A silent default flip (env drift, refactor) must fail a test, not a live session.
-    assert q.EXIT_AT_TOUCH is True, "KALSHI_EXIT_AT_TOUCH must default ON"
-    assert q.HOLDING_EXIT_ONLY is True, "KALSHI_HOLDING_EXIT_ONLY must default ON"
+def test_the_risk_rule_is_unconditional():
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_the_risk_rule_defaults_are_on)
+    # asserted EXIT_AT_TOUCH/HOLDING_EXIT_ONLY defaulted True. The operator ordered the flags
+    # DELETED — the losing behaviour must not be one env var away — so the pin is now their
+    # ABSENCE: any of the four knobs reappearing on the module is the switchability coming back.
+    for flag in ("EXIT_AT_TOUCH", "HOLDING_EXIT_ONLY", "MAX_UNWIND_LOSS",
+                 "REDUCE_ONLY_KEEP_BOTH"):
+        assert not hasattr(q, flag), \
+            f"{flag} must stay deleted (Q1: the risk rule is unconditional, not a default)"
     assert q.STRAND_CROSS_S > 0, "KALSHI_STRAND_CROSS_S must default ON (fix 3)"
 
 
@@ -98,7 +104,7 @@ def test_exit_rests_at_the_touch_not_the_loss_cap():
     # floor((1-0.364+0.10)*100)/100 = 0.73; the market's touch was 0.82. The legacy exit rested
     # 9c BEHIND the touch and never filled; 42 ct rode to settlement. Default: rest AT the touch.
     assert q._unwind_price(0.82, 0.364) == 0.82, \
-        "EXIT_AT_TOUCH default must return the reference untouched"
+        "_unwind_price must return the reference untouched (exit-at-touch is unconditional)"
     # end-to-end through desired_quotes: deep-underwater long-yes still quotes the NO touch
     qs = _quotes(inv=8.0, cost=0.82, yl=[["0.82", "500"]], nl=[["0.17", "500"]])
     assert len(qs) == 1 and qs[0]["side"] == "no" and qs[0]["price_dollars"] == 0.17, \

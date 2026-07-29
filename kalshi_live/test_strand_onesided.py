@@ -19,7 +19,6 @@ not a re-expression of it -- so reverting the source change fails them.
 # _run() never touches. Getting this wrong makes the stubs silently no-op, the real venue gets
 # read, and the tests pass for the wrong reason.
 from test_live_hardening import MockClient, _run, q
-from test_live_hardening import legacy_inventory_mode  # noqa: E402
 
 
 def _book(yes_levels, no_levels):
@@ -106,18 +105,20 @@ def test_crossed_book_still_refused_and_counted(monkeypatch, tmp_path):
     assert row.get("strand_crossed_book") == 1
 
 
-def test_loss_cap_still_binds_on_a_one_sided_book(monkeypatch, tmp_path):
-    legacy_inventory_mode(monkeypatch)
-    # The relaxed guard must NOT let a one-sided book bypass the unwind loss cap. Long YES
-    # at the live 4.140 basis (0.5426) against a 0.99 NO bid would pay 1.5326 for $1.00.
+def test_exit_rests_at_the_touch_on_a_one_sided_book(monkeypatch, tmp_path):
+    # REWRITTEN 2026-07-28, Q1 operator decision: old pin (test_loss_cap_still_binds_on_a_one_
+    # sided_book) asserted the removed MAX_UNWIND_LOSS cap holding this price at 0.5774. Long
+    # YES at the live 4.140 basis (0.5426) against a 0.99 NO bid pays 1.5326 for $1.00 — and
+    # the exit must rest AT 0.99 anyway ("we can sell at a loss"): a capped price on a
+    # one-sided trended book is exactly the unfillable exit that rode to settlement on 07-27.
     _setup(monkeypatch, yes_levels=[], no_levels=[["0.99", "5000"]])
-    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", 0.10)
     c = MockClient(mode="live", resting=[], positions=_pos(62, 0.5426 * 62))
     _run(monkeypatch, c, str(tmp_path))
     got = _unwinds(c)
     assert got, "an exit should still be placed"
-    assert got[0]["price"] <= 1.0 - 0.5426 + 0.10 + 1e-9, \
-        f"loss cap must still bind on the newly-reachable path, got {got[0]['price']}"
+    assert abs(got[0]["price"] - 0.99) < 1e-9, \
+        f"the exit must rest AT the touch whatever the cost basis, got {got[0]['price']}"
+    assert got[0]["count"] <= 62                        # still never through flat
 
 
 def test_unwind_size_never_overshoots_flat(monkeypatch, tmp_path):

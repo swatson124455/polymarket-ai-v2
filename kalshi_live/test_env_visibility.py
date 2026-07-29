@@ -48,11 +48,19 @@ def test_envb_non_one_value_is_off(monkeypatch):
 # ---- registration + absence reporting ------------------------------------------------
 
 def test_the_real_flags_are_registered():
-    # The four flags routed through _envb must appear in the declared set, otherwise they
-    # drop out of the absence report and become invisible again.
-    for k in ("KALSHI_THROTTLE_SMART", "KALSHI_TAKER_FLATTEN",
-              "KALSHI_JOIN_ALWAYS", "KALSHI_REDUCE_ONLY_KEEP_BOTH"):
+    # Flags routed through _envb must appear in the declared set, otherwise they drop out of
+    # the absence report and become invisible again. (KALSHI_REDUCE_ONLY_KEEP_BOTH left this
+    # list 2026-07-28 — operator Q1 decision deleted the knob; pinned as REMOVED below.)
+    for k in ("KALSHI_THROTTLE_SMART", "KALSHI_TAKER_FLATTEN", "KALSHI_JOIN_ALWAYS"):
         assert k in q._ENV_DECLARED, f"{k} not registered -> its absence would be silent"
+
+
+def test_the_q1_deleted_knobs_stay_deleted():
+    # Operator Q1 decision 2026-07-28: the money-losing legacy behaviour must not be one env
+    # var away. If any of these re-registers, someone has resurrected a deleted switch.
+    for k in ("KALSHI_EXIT_AT_TOUCH", "KALSHI_HOLDING_EXIT_ONLY",
+              "KALSHI_MAX_UNWIND_LOSS", "KALSHI_REDUCE_ONLY_KEEP_BOTH"):
+        assert k not in q._ENV_DECLARED, f"{k} was deleted by operator decision and is BACK"
 
 
 def test_envi_and_envf_register_too():

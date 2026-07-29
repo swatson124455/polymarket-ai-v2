@@ -25,12 +25,13 @@ from test_live_hardening import MockClient, _run, q
 M = {"target": 1000, "end": "2099-01-01T00:00:00Z"}
 
 
-def _live_band(monkeypatch, unwind_loss=0.10):
+def _live_band(monkeypatch):
+    # (MAX_UNWIND_LOSS was set here until the Q1 operator decision, 2026-07-28, deleted the
+    # cap — exits price at the touch unconditionally, so there is nothing left to configure.)
     monkeypatch.setattr(q, "MIN_PRICE_DOLLARS", 0.04)
     monkeypatch.setattr(q, "MAX_PRICE_DOLLARS", 0.96)
     monkeypatch.setattr(q, "EXIT_MIN_PRICE_DOLLARS", 0.01)
     monkeypatch.setattr(q, "EXIT_MAX_PRICE_DOLLARS", 0.99)
-    monkeypatch.setattr(q, "MAX_UNWIND_LOSS", unwind_loss)
     monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
     monkeypatch.setattr(q, "JOIN_SIZE", 20)
     monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 15.0)
@@ -96,9 +97,10 @@ def test_ladder_hatch_cross_is_NOT_pair_loss_capped(monkeypatch):
     _unwind_price bounds loss against COST BASIS, so capping here charges an ALREADY-SUNK
     mark-to-market loss against a fresh hedge and refuses it exactly when the position has
     moved most — the same sunk-cost error diagnosed in the unwind cap itself. This pins the
-    absence of that cap so it is not "fixed" back in.
+    absence of that cap so it is not "fixed" back in. (The unwind cap itself was later
+    deleted outright — Q1 operator decision 2026-07-28 — which resolves C the same way.)
     """
-    _live_band(monkeypatch, unwind_loss=0.10)
+    _live_band(monkeypatch)
     # the floored-pair property that makes the trade sound: payoff is never below $1
     for held_pays, hedge_pays in ((0, 1), (1, 1), (1, 0)):
         assert held_pays + hedge_pays >= 1
