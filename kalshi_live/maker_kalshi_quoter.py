@@ -59,6 +59,7 @@ LOCK_FILE = os.path.join(DATA_DIR, "quoter.lock")
 # Counting only. NO control flow is changed by this — swallowing is often the right behaviour;
 # doing it INVISIBLY is not.
 _SILENT = defaultdict(int)          # defaultdict, not Counter: only `defaultdict` is imported here
+_REALIZED_BY = {}                   # ticker -> venue realized_pnl_dollars; refreshed by _held_cost
 
 
 def _acquire_lock():
@@ -453,6 +454,24 @@ def _caprank_telemetry(rows, picked, now):
             fh.write(json.dumps(row, separators=(",", ":")) + "\n")
     except Exception:
         _SILENT["caprank_fail"] += 1     # surfaced via plan["silent_failures"], never raises
+
+# --- PER-MARKET LOSS GOVERNORS (operator directive 2026-07-29: "dont ban markets as fixes,
+# fix what caused the issue") — both LOGIC fixes, market-agnostic, both default OFF (no-op).
+# The 07-29 loss shape they close (KXMUSKNW, -$11.02 of the day per session_econ 18:26Z; same
+# shape as the pre-exclusion index bleed): join a trending book at the touch -> get filled on
+# the wrong side -> strand-cross out at a loss -> RE-JOIN the same book minutes later -> repeat.
+# Nothing bounded the per-market bleed and nothing stopped the re-entry. A series ban treats one
+# symptom by name; these govern the BEHAVIOR for every market.
+#   MKT_DAY_LOSS_EXITONLY_USD  a market whose REALIZED loss today (venue receipt:
+#       realized_pnl_dollars delta vs the day-start snapshot) reaches this goes EXIT-ONLY for
+#       the rest of the UTC day: unwind quotes survive, accumulating quotes are stripped and
+#       the diff cancels any resting ones. Receipt-based (churn/mark immune, same doctrine as
+#       the cost ratchet). Trip latches for the day even if the row vanishes on full flat.
+#   REENTRY_COOLDOWN_S  after a strand taker-cross on a ticker (we PAID to leave), the ticker
+#       is exit-only for this many seconds — a book that just ran us over must not be rejoined
+#       one cycle later. Persisted in quoter_state so a restart cannot amnesty it.
+MKT_DAY_LOSS_EXITONLY_USD = _envf("KALSHI_MKT_DAY_LOSS_EXITONLY_USD", 0.0)   # 0 = OFF
+REENTRY_COOLDOWN_S = _envf("KALSHI_REENTRY_COOLDOWN_S", 0.0)                 # 0 = OFF
 
 PRESENCE_GATE = _envi("KALSHI_PRESENCE_GATE", 0)              # 0 = today's exact behavior
 VENUE_PAYOUT_FLOOR_USD = 1.00                                 # Kalshi's documented minimum payout
@@ -2126,6 +2145,46 @@ def run_once():
                 return 0
             # BOTH reads succeeded -> a complete cycle; only NOW clear the blackout streak.
             st["read_fail_streak"] = 0
+            # PER-MARKET LOSS GOVERNORS (see config block): build the exit-only set for this
+            # cycle. Both parts fail OPEN (a parse fault must not block trading — the global
+            # halts still stand behind them).
+            _exit_only_mkts = set()
+            _day_mkt = now.strftime("%Y-%m-%d")
+            if MKT_DAY_LOSS_EXITONLY_USD > 0:
+                try:
+                    _base = st.get("mkt_realized_base") or {}
+                    _tripped = set(st.get("mkt_loss_tripped") or [])
+                    if st.get("mkt_realized_day") != _day_mkt:
+                        st["mkt_realized_day"] = _day_mkt
+                        _base = dict(_REALIZED_BY)       # fresh day -> fresh baseline
+                        _tripped = set()                 # trips are per-day
+                    for _t4, _v4 in _REALIZED_BY.items():
+                        # first seen mid-day -> baseline NOW: lifetime realized from prior days
+                        # must not trip today's governor (fail-open by construction)
+                        _base.setdefault(_t4, _v4)
+                        if _v4 - _base[_t4] <= -MKT_DAY_LOSS_EXITONLY_USD:
+                            _tripped.add(_t4)            # LATCH: stays for the day even if flat
+                    st["mkt_realized_base"] = _base
+                    st["mkt_loss_tripped"] = sorted(_tripped)
+                    _exit_only_mkts |= _tripped
+                    plan["loss_exitonly"] = len(_tripped)
+                except Exception:
+                    _SILENT["loss_governor_fail"] += 1
+            if REENTRY_COOLDOWN_S > 0:
+                try:
+                    _cool = st.get("reentry_cool") or {}
+                    _active = {}
+                    for _t4, _exp in _cool.items():
+                        try:
+                            if parse_iso(_exp) > now:
+                                _active[_t4] = _exp      # still cooling; expired ones drop
+                        except Exception:
+                            pass                         # unparseable stamp -> forget it
+                    st["reentry_cool"] = _active
+                    _exit_only_mkts |= set(_active)
+                    plan["reentry_cooldown"] = len(_active)
+                except Exception:
+                    _SILENT["loss_governor_fail"] += 1
             # VELOCITY CIRCUIT BREAKER: compare held-$ now vs the LOWEST held-$ inside the
             # window. Rapid growth = adverse accumulation -> the whole book goes REDUCE-ONLY
             # below (only unwind quotes survive; accumulating quotes cancelled by the diff).
@@ -2477,6 +2536,15 @@ def run_once():
                 quote_fail += 1
                 if first_quote_err is None:
                     first_quote_err = f"{t}: {e!r}"
+            # LOSS GOVERNOR ENFORCEMENT: a tripped/cooling market keeps ONLY its reducing
+            # quotes; accumulating ones are stripped here and the standing diff cancels any
+            # already resting. Placed at the choke point every quoted market flows through.
+            if q and t in _exit_only_mkts:
+                _kept4 = [o for o in q if o.get("reason") == "unwind"]
+                if len(_kept4) != len(q):
+                    qstats["loss_exitonly_stripped"] = (
+                        qstats.get("loss_exitonly_stripped", 0) + len(q) - len(_kept4))
+                q = _kept4
             if q:
                 desired[t] = q
             # PER-MARKET REWARD TELEMETRY — observation only, and deliberately the LAST thing in the
@@ -2851,7 +2919,15 @@ def run_once():
         if STRAND_CROSS_S > 0:
             strand_state = st.get("strand_grace", {})
             try:
-                _strand_cross(client, naked_by, cost_by, now, plan, strand_state)
+                _crossed4 = _strand_cross(client, naked_by, cost_by, now, plan, strand_state)
+                # RE-ENTRY COOLDOWN feed: a ticker we just PAID a taker to leave starts its
+                # exit-only clock; the governor block above enforces it from next cycle on.
+                if REENTRY_COOLDOWN_S > 0 and _crossed4:
+                    _cool4 = st.get("reentry_cool") or {}
+                    _until4 = (now + timedelta(seconds=REENTRY_COOLDOWN_S)).isoformat()
+                    for _t5 in _crossed4:
+                        _cool4[_t5] = _until4
+                    st["reentry_cool"] = _cool4
             except Exception as e:                          # a backstop bug must never abort the cycle
                 plan["strand_error"] = f"{e!r}"[:160]
                 print(f"WARNING strand-cross pass RAISED: {e!r} — cycle continues")
@@ -3506,15 +3582,16 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state):
         if elapsed >= STRAND_CROSS_S and abs(npos) >= STOP_TAKER_MIN_CT:
             due.append(t)
     if not due:
-        return
+        return []
     plan["strand_due"] = len(due)
     if client.mode == "dry_run" or not TAKER_FLATTEN:
-        return                                             # clock + telemetry only, never a taker
+        return []                                          # clock + telemetry only, never a taker
     try:
         fresh_naked = ladder_pairing(_held_cost(client)[1])
     except Exception:
         plan["strand_read_failed"] = plan.get("strand_read_failed", 0) + 1
-        return                                             # blind -> do not cross (fail closed)
+        return []                                          # blind -> do not cross (fail closed)
+    crossed = []       # tickers we PAID a taker to leave -> the caller's re-entry cooldown feed
     for t in due:
         npos = fresh_naked.get(t, 0.0)
         if abs(npos) < STOP_TAKER_MIN_CT:
@@ -3527,6 +3604,8 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state):
             plan["strand_cross_failed"] = plan.get("strand_cross_failed", 0) + 1
             print(f"WARNING strand cross RAISED on {t} (naked {npos:+.2f}): {e!r}")
             continue
+        if nc:
+            crossed.append(t)
         plan["strand_crossed_ct"] = round(plan.get("strand_crossed_ct", 0.0) + nc, 2)
         print(f"strand cross {t}: naked {npos:+.2f} unfilled >= {STRAND_CROSS_S:.0f}s -> taker "
               f"crossed {nc} ct ({'FLAT' if flat else 'RESIDUAL — maker exit re-rested'})")
@@ -3535,6 +3614,7 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state):
         else:
             plan["strand_cross_failed"] = plan.get("strand_cross_failed", 0) + 1
             strand_state[t] = now.isoformat()              # re-arm: paces the next pass
+    return crossed
 
 
 def naked_held_cost(held_by, cost_by):
@@ -3565,12 +3645,23 @@ def _held_cost(client):
     book. The per-ticker avg cost feeds the unwind loss cap (only when the venue reports
     market_exposure_dollars; absent -> no entry -> cap disabled for that ticker, never faked).
     RAISES if positions cannot be read — the caller must fail CLOSED (defer creates),
-    never treat unknown inventory as $0 (matches the standing-read/reconcile guards)."""
+    never treat unknown inventory as $0 (matches the standing-read/reconcile guards).
+
+    SIDE CHANNEL: _REALIZED_BY is refreshed from the same read (realized_pnl_dollars per
+    ticker — the venue's own attribution) for the per-market loss governor. A side channel,
+    not a 4th return value, so the 3-tuple contract every caller and test pins stays intact
+    (Rule 2). Only tickers with a NONZERO position appear (count_filter=position) — a fully
+    flat market drops out, which is why the governor LATCHES its trips for the day."""
     pos = client.get_positions()          # may raise -> caller defers all creates
     by, costs, total = {}, {}, 0.0
+    _REALIZED_BY.clear()
     for p in (pos.get("market_positions") or []):
         # PROD-VERIFIED 2026-07-20: field is position_fp (string, fractional, signed);
         # 'position' does not exist -> reading it silently blinded the committed cap.
+        try:
+            _REALIZED_BY[p.get("ticker")] = float(p.get("realized_pnl_dollars") or 0.0)
+        except (TypeError, ValueError):
+            pass
         n = float(p.get("position_fp") or p.get("position") or 0)
         if not n:
             continue
