@@ -132,7 +132,7 @@ def test_flag_off_writes_nothing(monkeypatch, tmp_path):
 def test_flag_on_logs_and_cannot_alter_selection(monkeypatch, tmp_path):
     monkeypatch.setattr(q, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(q, "CAPRANK_TELEMETRY", 1)
-    monkeypatch.setattr(q, "FILL_COSTS", {"B": {"cost_usd_day": 3.0}})
+    monkeypatch.setattr(q, "_load_fill_costs", lambda: {"B": {"cost_usd_day": 3.0}})
     rows = [_row("A", 1000), _row("B", 100)]
     picked = [rows[0], rows[1]]
     before = json.dumps(picked, sort_keys=True)
@@ -175,6 +175,159 @@ def test_telemetry_fault_lands_in_silent_not_the_cycle(monkeypatch, tmp_path):
     base = q._SILENT["caprank_fail"]
     q._caprank_telemetry([_row("A", 100)], [_row("A", 100)], q.utcnow())   # must not raise
     assert q._SILENT["caprank_fail"] == base + 1
+
+
+# ---- PROSPECTIVE CAPTURE + RISK-AVERSION KNOBS (operator ask 2026-07-29) ----
+
+def test_prospective_beats_pool_prior_and_defaults_are_noop():
+    """A market the sweep measured must rank on its MEASURED prospective capture, not its pool
+    guess — and with every knob at 1.0 a run WITHOUT sweep data is byte-identical to before."""
+    rows = [_row("GUESS", 500), _row("SWEPT", 500)]
+    pro = {"SWEPT": {"capture": 40.0, "ref": 0.10}}
+    out = kcr.shadow_rank(rows, {}, {}, 60.0, 60.0, now=1000.0, prospective=pro)
+    by = {d["ticker"]: d for d in out}
+    assert by["SWEPT"]["kind"] == "prospective" and by["SWEPT"]["base_usd_day"] == 40.0
+    assert by["SWEPT"]["ref"] == 0.10, "sweep ref feeds the commit estimate too"
+    assert by["GUESS"]["kind"] == "unknown"
+    # no sweep data + default knobs == the pre-knob behavior, exactly
+    old = kcr.shadow_rank(rows, {}, {}, 60.0, 60.0, now=1000.0)
+    assert old == kcr.shadow_rank(rows, {}, {}, 60.0, 60.0, now=1000.0, prospective={},
+                                  risk_lambda=1.0, prospective_haircut=1.0, unknown_haircut=1.0)
+
+
+def test_live_measured_score_outranks_sweep_data():
+    """A FRESH live measurement is better evidence than an offline hypothetical join — the
+    sweep must only fill gaps, never override a 'scored' market."""
+    m = {}
+    ks.update(m, "LIVE", 20.0, 0.50, now=1000.0)
+    pro = {"LIVE": {"capture": 999.0, "ref": 0.50}}
+    out = kcr.shadow_rank([_row("LIVE", 500)], m, {}, 60.0, 60.0, now=1000.0, prospective=pro)
+    assert out[0]["kind"] == "scored" and out[0]["base_usd_day"] == pytest.approx(20.0)
+
+
+def test_risk_lambda_punishes_bleeders_harder():
+    """lambda=3: a market whose fill cost was survivable at lambda=1 must drop below a smaller
+    but clean market."""
+    m = {}
+    ks.update(m, "BLEEDS", 30.0, 0.50, now=1000.0)
+    ks.update(m, "CLEAN", 20.0, 0.50, now=1000.0)
+    costs = {"BLEEDS": {"cost_usd_day": 5.0}}
+    rows = [_row("BLEEDS", 500), _row("CLEAN", 500)]
+    at1 = kcr.shadow_rank(rows, m, costs, 60.0, 60.0, now=1000.0, risk_lambda=1.0)
+    assert [d["ticker"] for d in at1] == ["BLEEDS", "CLEAN"], "30-5 > 20 at lambda=1"
+    at3 = kcr.shadow_rank(rows, m, costs, 60.0, 60.0, now=1000.0, risk_lambda=3.0)
+    assert [d["ticker"] for d in at3] == ["CLEAN", "BLEEDS"], "30-15 < 20 at lambda=3"
+
+
+def test_haircuts_stop_guesses_outranking_receipts():
+    """THE CYCLE-1 FAILURE SHAPE (caprank row 17:28:04Z): stale pool-guesses outranked measured
+    markets. unknown_haircut < 1 must invert that when the guess's edge is only nominal."""
+    m = {}
+    ks.update(m, "MEASURED", 18.0, 0.50, now=1000.0)
+    rows = [_row("GUESS", 20), _row("MEASURED", 500)]
+    plain = kcr.shadow_rank(rows, m, {}, 60.0, 60.0, now=1000.0)
+    assert [d["ticker"] for d in plain] == ["GUESS", "MEASURED"], "pool guess wins at 1.0"
+    averse = kcr.shadow_rank(rows, m, {}, 60.0, 60.0, now=1000.0, unknown_haircut=0.5)
+    assert [d["ticker"] for d in averse] == ["MEASURED", "GUESS"]
+    # prospective_haircut discounts hypothetical joins the same way
+    pro = {"P": {"capture": 20.0, "ref": 0.50}}
+    cut = kcr.shadow_rank([_row("P", 500)], {}, {}, 60.0, 60.0, now=1000.0,
+                          prospective=pro, prospective_haircut=0.5)
+    assert cut[0]["base_usd_day"] == pytest.approx(10.0)
+    # STALE entries are guesses too (the actual cycle-1 kind) — the haircut must hit them
+    m2 = {}
+    ks.update(m2, "STALEG", 50.0, 0.50, now=0.0)
+    outs = kcr.shadow_rank([_row("STALEG", 300)], m2, {}, 60.0, 60.0,
+                           now=ks.STALE_S + 1, unknown_haircut=0.5)
+    assert outs[0]["kind"] == "stale"
+    assert outs[0]["base_usd_day"] == pytest.approx(150.0), "pool prior 300 x 0.5"
+
+
+def test_prospective_file_and_rows_fail_open(tmp_path):
+    p = tmp_path / "p.json"
+    p.write_text("{not json")
+    assert kcr.load_prospective(str(p)) == {}
+    p.write_text(json.dumps({"schema": 999, "markets": {"X": {"capture": 5}}}))
+    assert kcr.load_prospective(str(p)) == {}
+    out = kcr.shadow_rank([_row("A", 100)], {}, {}, 60.0, 60.0, now=1000.0,
+                          prospective={"A": {"capture": "wat"}})
+    assert out[0]["kind"] == "unknown", "malformed sweep row -> pool prior, never a crash"
+
+
+def test_new_knobs_ship_at_noop_defaults():
+    assert q.CAPRANK_RISK_LAMBDA == 1.0
+    assert q.CAPRANK_PROSPECTIVE_HAIRCUT == 1.0
+    assert q.CAPRANK_UNKNOWN_HAIRCUT == 1.0
+
+
+def test_env_knobs_actually_reach_the_shadow(monkeypatch, tmp_path):
+    """WIRING PIN: the KALSHI_CAPRANK_* knobs must flow from the quoter into shadow_rank —
+    a hardcoded 1.0 at the call site (knob silently disconnected) must fail here."""
+    import kalshi_market_scores as kms
+    m = {}
+    kms.update(m, "BLEEDS", 30.0, 0.50, now=q.utcnow().timestamp())
+    kms.update(m, "CLEAN", 20.0, 0.50, now=q.utcnow().timestamp())
+    monkeypatch.setattr(q, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(q, "CAPRANK_TELEMETRY", 1)
+    monkeypatch.setattr(q, "SCORES", m)
+    monkeypatch.setattr(q, "_load_fill_costs", lambda: {"BLEEDS": {"cost_usd_day": 5.0}})
+    monkeypatch.setattr(q, "_load_prospective", lambda: {})
+    monkeypatch.setattr(q, "CAPRANK_RISK_LAMBDA", 3.0)
+    rows = [_row("BLEEDS", 500), _row("CLEAN", 500)]
+    q._caprank_telemetry(rows, rows, q.utcnow())
+    f = [x for x in os.listdir(tmp_path) if x.startswith("caprank-")][0]
+    logged = json.loads(open(os.path.join(str(tmp_path), f)).read().splitlines()[-1])
+    assert logged["shadow"][0] == "CLEAN", "lambda=3 must flip the order INSIDE the quoter"
+    # and a haircut knob must reach it too: unknown pool-guess discounted in the logged row
+    monkeypatch.setattr(q, "CAPRANK_UNKNOWN_HAIRCUT", 0.5)
+    rows2 = [_row("GUESS", 100)]
+    q._caprank_telemetry(rows2, rows2, q.utcnow())
+    logged2 = json.loads(open(os.path.join(str(tmp_path), f)).read().splitlines()[-1])
+    assert logged2["components"][0]["base_usd_day"] == pytest.approx(50.0), \
+        "unknown_haircut must reach the logged base"
+    # and the sweep feed must reach it: a swept market logs kind=prospective, not a pool guess
+    monkeypatch.setattr(q, "_load_prospective",
+                        lambda: {"SWEPT": {"capture": 40.0, "ref": 0.10}})
+    rows3 = [_row("SWEPT", 100)]
+    q._caprank_telemetry(rows3, rows3, q.utcnow())
+    logged3 = json.loads(open(os.path.join(str(tmp_path), f)).read().splitlines()[-1])
+    assert logged3["components"][0]["kind"] == "prospective", \
+        "the offline sweep feed must reach the logged shadow"
+
+
+def test_sweep_capture_matches_live_telemetry_math_exactly():
+    """ZERO-DRIFT PIN: the sweep's prospective capture on a book must equal what
+    _market_telemetry_row computes for the same book with the same join — because the sweep
+    literally delegates to it. If someone re-implements the math, this breaks."""
+    import kalshi_capture_sweep as sw
+    yes_raw = [["0.40", "80"], ["0.39", "50"]]
+    no_raw = [["0.58", "70"], ["0.57", "30"]]
+    row = {"ticker": "T-X", "usd_day": 100.0, "target": 50.0, "df": 0.5}
+    cap, ref = sw.prospective_capture(q, row, yes_raw, no_raw, q.utcnow())
+    (yl, _), (nl, _) = q._levels(yes_raw), q._levels(no_raw)
+    quotes = [{"side": "yes", "price_dollars": 0.40, "count": q._capped_join(0.40, 0.58)},
+              {"side": "no", "price_dollars": 0.58, "count": q._capped_join(0.58, 0.40)}]
+    trow = q._market_telemetry_row(0, q.utcnow(), row, yl, nl, quotes, None, 0.0, None)
+    assert cap == pytest.approx(float(trow["capture_usd_day"])) and cap > 0
+    assert ref == trow["y_ref"] == 0.40
+    # one-sided book: R3 pays nobody -> capture must be 0, not an exception
+    assert sw.prospective_capture(q, row, yes_raw, [], q.utcnow())[0] == 0.0
+
+
+def test_sweep_candidate_rows_r1_canon():
+    """period_reward/10000 IS the daily pool (R1 canon) — and non-liquidity/null rows drop."""
+    import kalshi_capture_sweep as sw
+    progs = [{"incentive_type": "liquidity", "market_ticker": "A", "period_reward": 2000000,
+              "target_size_fp": "50", "discount_factor_bps": 5000},
+             {"incentive_type": "liquidity", "market_ticker": "B", "period_reward": 1000000,
+              "target_size_fp": "50", "discount_factor_bps": 5000},
+             {"incentive_type": "volume", "market_ticker": "V", "period_reward": 9990000,
+              "target_size_fp": "50", "discount_factor_bps": 5000},
+             {"incentive_type": "liquidity", "market_ticker": "N", "period_reward": 9990000,
+              "target_size_fp": None, "discount_factor_bps": 5000}]
+    rows = sw.candidate_rows(progs, 10)
+    assert [r["ticker"] for r in rows] == ["A", "B"]
+    assert rows[0]["usd_day"] == 200.0
 
 
 # ---- the feed builder (kalshi_fill_costs.build is pure) ----

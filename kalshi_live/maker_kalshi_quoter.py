@@ -352,12 +352,23 @@ CAPRANK_TELEMETRY = _envi("KALSHI_CAPRANK_TELEMETRY", 0)
 # receipt-vs-model calibration multiplier on the capture term. STAYS 1.0 until the first real
 # reward credit lands (Thu 2026-07-31 ballot window) — receipts > models.
 CAPRANK_CALIB = _envf("KALSHI_CAPRANK_CALIB", 1.0)
+# RISK-AVERSION knobs (operator ask 2026-07-29) — shadow-only, defaults 1.0 = prior behavior:
+# lambda multiplies the measured fill-cost penalty; the haircuts discount evidence quality
+# (prospective = book measured offline but our join hypothetical; unknown = pure pool guess).
+CAPRANK_RISK_LAMBDA = _envf("KALSHI_CAPRANK_RISK_LAMBDA", 1.0)
+CAPRANK_PROSPECTIVE_HAIRCUT = _envf("KALSHI_CAPRANK_PROSPECTIVE_HAIRCUT", 1.0)
+CAPRANK_UNKNOWN_HAIRCUT = _envf("KALSHI_CAPRANK_UNKNOWN_HAIRCUT", 1.0)
 FILL_COST_PATH = os.environ.get("KALSHI_FILL_COST_PATH",
                                 os.path.join(DATA_DIR, "kalshi_fill_costs.json"))
+PROSPECTIVE_PATH = os.environ.get("KALSHI_PROSPECTIVE_PATH",
+                                  os.path.join(DATA_DIR, "kalshi_prospective_capture.json"))
 
 
 def _load_fill_costs():
-    """Fail-OPEN to {} -> every market costed $0/day; the shadow rank simply has no penalty term."""
+    """Fail-OPEN to {} -> every market costed $0/day; the shadow rank simply has no penalty term.
+    Re-read on every telemetry call (one small json read per ~2-min cycle) so re-running the
+    feed tools takes effect immediately — an import-once cache here would silently pin the
+    shadow to stale data until the next service restart."""
     try:
         import kalshi_capital_rank
         return kalshi_capital_rank.load_fill_costs(FILL_COST_PATH)
@@ -365,8 +376,13 @@ def _load_fill_costs():
         return {}
 
 
-# loaded ONCE at import and ONLY when the flag is on (flag-off does zero file IO -> provable no-op)
-FILL_COSTS = _load_fill_costs() if CAPRANK_TELEMETRY else {}
+def _load_prospective():
+    """Fail-OPEN to {} -> no offline sweep yet; unmeasured markets keep their pool prior."""
+    try:
+        import kalshi_capital_rank
+        return kalshi_capital_rank.load_prospective(PROSPECTIVE_PATH)
+    except Exception:
+        return {}
 
 
 def _caprank_telemetry(rows, picked, now):
@@ -377,10 +393,14 @@ def _caprank_telemetry(rows, picked, now):
         return
     try:
         import kalshi_capital_rank as _kcr
-        shadow = _kcr.shadow_rank(rows, SCORES, FILL_COSTS, MAX_MARKET_CAPITAL, INV_HARD_CT,
-                                  now.timestamp(), calib=CAPRANK_CALIB,
+        shadow = _kcr.shadow_rank(rows, SCORES, _load_fill_costs(), MAX_MARKET_CAPITAL,
+                                  INV_HARD_CT, now.timestamp(), calib=CAPRANK_CALIB,
                                   swing_penalty=SCORE_SWING_PENALTY,
-                                  unknown_bonus=SCORE_UNKNOWN_BONUS)
+                                  unknown_bonus=SCORE_UNKNOWN_BONUS,
+                                  prospective=_load_prospective(),
+                                  risk_lambda=CAPRANK_RISK_LAMBDA,
+                                  prospective_haircut=CAPRANK_PROSPECTIVE_HAIRCUT,
+                                  unknown_haircut=CAPRANK_UNKNOWN_HAIRCUT)
         actual = [r["ticker"] for r in picked[:FOOTPRINT_TOP]]
         top = shadow[:FOOTPRINT_TOP]
         shadow_t = [d["ticker"] for d in top]

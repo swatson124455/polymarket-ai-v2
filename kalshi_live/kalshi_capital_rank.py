@@ -48,6 +48,20 @@ def load_fill_costs(path):
         return {}
 
 
+def load_prospective(path):
+    """Fail-OPEN to {} -> no offline sweep data; unmeasured markets fall back to the pool prior.
+    File written by kalshi_capture_sweep.py; same schema discipline as the fill-cost feed."""
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+        if d.get("schema") != SCHEMA:
+            return {}
+        m = d.get("markets")
+        return m if isinstance(m, dict) else {}
+    except Exception:
+        return {}
+
+
 def est_commit_usd(ref_yes, market_cap_usd, inv_hard_ct, quantum=5):
     """Estimate the dollars BOTH resting sides commit for one market, from the cached reference
     price. Mirrors the quoter's `_capped_join` at JOIN_SIZE=0 exactly (dollar cap per side,
@@ -75,27 +89,53 @@ def est_commit_usd(ref_yes, market_cap_usd, inv_hard_ct, quantum=5):
 
 
 def shadow_rank(rows, scores, fill_costs, market_cap_usd, inv_hard_ct, now,
-                calib=1.0, swing_penalty=1.0, unknown_bonus=1.0):
+                calib=1.0, swing_penalty=1.0, unknown_bonus=1.0,
+                prospective=None, risk_lambda=1.0, prospective_haircut=1.0,
+                unknown_haircut=1.0):
     """Order `rows` best-first by capital-aware score, WITHOUT mutating them. Returns a NEW list
     of component dicts (ticker + every term) so the telemetry row is self-explanatory and the
     operator can audit each ranking decision from the log alone.
 
-    `base_usd_day` reuses kalshi_market_scores.score() verbatim — measured capture with decay,
-    swing penalty and pool-prior blending — so the shadow differs from the live rank ONLY by the
-    capital and fill-cost terms, which is exactly the comparison the telemetry exists to show."""
+    BASE TERM by evidence quality, best available wins:
+      "scored"      — live measured capture (kalshi_market_scores.score() verbatim: decay,
+                      swing penalty, pool-prior blending). Full weight.
+      "prospective" — offline sweep measurement (kalshi_capture_sweep.py): the book WAS read,
+                      but our join is hypothetical. Used when the live score is absent/stale.
+                      x prospective_haircut.
+      "unknown"/"stale" with no sweep data — pool prior only. x unknown_haircut.
+
+    RISK-AVERSION KNOBS (operator ask 2026-07-29; every default 1.0 = exactly the prior
+    behavior, provable no-op):
+      risk_lambda         >1 punishes measured fill-cost harder: cost enters as lambda x cost.
+      prospective_haircut <1 discounts model-joined (not-yet-lived-in) measurements.
+      unknown_haircut     <1 discounts pure pool guesses, so unmeasured markets cannot
+                          outrank receipts — the cycle-1 failure shape."""
     import kalshi_market_scores as ks
+    prospective = prospective or {}
     out = []
     for r in rows:
         t = r.get("ticker")
         base, kind = ks.score(scores, t, r.get("usd_day"), now, swing_penalty, unknown_bonus)
         ref = (scores.get(t) or {}).get("ref")
+        if kind != "scored":
+            p = prospective.get(t)
+            if isinstance(p, dict) and p.get("capture") is not None:
+                try:
+                    base = float(p["capture"]) * prospective_haircut
+                    kind = "prospective"
+                    if ref is None:
+                        ref = p.get("ref")
+                except (TypeError, ValueError):
+                    pass                        # malformed sweep row -> keep the pool prior
+        if kind in ("unknown", "stale"):
+            base *= unknown_haircut
         commit = est_commit_usd(ref, market_cap_usd, inv_hard_ct)
         fc = 0.0
         try:
             fc = float((fill_costs.get(t) or {}).get("cost_usd_day") or 0.0)
         except (TypeError, ValueError, AttributeError):
             pass    # a malformed feed row costs $0, it never blocks the rank
-        cap_score = (base * calib - fc) / max(commit, COMMIT_FLOOR_USD)
+        cap_score = (base * calib - risk_lambda * fc) / max(commit, COMMIT_FLOOR_USD)
         out.append({"ticker": t, "kind": kind, "base_usd_day": round(base, 4),
                     "ref": ref, "commit_usd": round(commit, 2),
                     "cost_usd_day": round(fc, 4), "cap_score": round(cap_score, 6)})
