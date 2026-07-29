@@ -43,6 +43,9 @@ def _halt_reason(monkeypatch, tmp_path, dd_limit, down_limit, equities):
 
 
 def test_drawdown_breach_is_named_as_drawdown(monkeypatch, tmp_path):
+    # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
+    # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
+    monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
     # Monotone decline: drawdown grows to 20 while cumulative-down tracks it. With the
     # DOWN limit far away, only DRAWDOWN can be the trigger -- and it must say so.
     reason, stop = _halt_reason(monkeypatch, tmp_path, dd_limit=10.0, down_limit=1e9,
@@ -67,6 +70,9 @@ def test_cumulative_down_breach_is_named_as_cumulative_down(monkeypatch, tmp_pat
 
 
 def test_reason_states_the_limit_it_breached(monkeypatch, tmp_path):
+    # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
+    # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
+    monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
     # The live bug was comparing _down against the DD limit. The reason must carry the
     # limit that the named quantity was actually tested against.
     reason, _ = _halt_reason(monkeypatch, tmp_path, dd_limit=10.0, down_limit=1e9,

@@ -42,12 +42,28 @@ def req(method, path, body=None):
         return e.code, {"error_body": e.read().decode()[:200]}
 
 
+def _paged(path_base, item_key):
+    """Cursor-follow until exhausted (self-audit A1-F9, 2026-07-29): a single un-cursored GET
+    silently truncates to page 1 (~100 rows) — on THIS script that meant cancel page 1, re-read
+    page 1 empty, print "=> FLAT" while orders were still live. The kill switch must never
+    report a plausible zero it did not verify. 50-page runaway bound, same as the client."""
+    items, cursor = [], ""
+    for _ in range(50):
+        path = path_base + ("&" if "?" in path_base else "?") + "limit=1000" + (
+            f"&cursor={cursor}" if cursor else "")
+        st, d = req("GET", path)
+        if st != 200:
+            print(f"!! could not read {path_base}: HTTP {st} {d}")
+            return None
+        items.extend(d.get(item_key) or [])
+        cursor = d.get("cursor") or ""
+        if not cursor:
+            break
+    return items
+
+
 def resting():
-    st, d = req("GET", f"{P}/portfolio/orders?status=resting")
-    if st != 200:
-        print(f"!! could not read resting orders: HTTP {st} {d}")
-        return None
-    return d.get("orders", []) or []
+    return _paged(f"{P}/portfolio/orders?status=resting", "orders")
 
 
 def main():
@@ -67,8 +83,8 @@ def main():
     time.sleep(1.0)
     left = resting()
     _, bal = req("GET", f"{P}/portfolio/balance")
-    _, pos = req("GET", f"{P}/portfolio/positions")
-    npos = [p for p in (pos.get("market_positions") or []) if float(p.get("position_fp") or p.get("position") or 0) != 0]
+    pos_rows = _paged(f"{P}/portfolio/positions", "market_positions") or []
+    npos = [p for p in pos_rows if float(p.get("position_fp") or p.get("position") or 0) != 0]
     print(f"\nAFTER: resting={len(left) if left is not None else '?'} "
           f"balance={bal.get('balance_dollars')} nonzero_positions={len(npos)}")
     if left:

@@ -84,6 +84,9 @@ def test_basis_migration_never_fires_a_phantom_halt(monkeypatch, tmp_path):
 
 
 def test_marked_drop_trips_the_halt_costs_basis_could_not_see(monkeypatch, tmp_path):
+    # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
+    # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
+    monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
     # THE 07-27 GAP, closed: an open position collapses in MARK while nothing settles. Run 1
     # seeds baselines at bid 0.50 (equity 125); run 2's bid is 0.10 (equity 105) -> a -$20
     # unrealized drawdown the cost meter would have called "flat". Halt budget 5 -> STOP.
@@ -398,6 +401,9 @@ def test_mark_oscillation_cannot_tick_the_ratchet(monkeypatch, tmp_path):
 
 
 def test_realized_loss_still_ticks_the_ratchet(monkeypatch, tmp_path):
+    # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
+    # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
+    monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
     # Anti-treadmill guarantee intact: CASH drops (realized) -> ratchet accrues -> STOP.
     _cfg(monkeypatch)
     _fp(monkeypatch)

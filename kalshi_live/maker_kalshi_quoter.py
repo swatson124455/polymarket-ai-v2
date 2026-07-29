@@ -479,6 +479,13 @@ REENTRY_COOLDOWN_S = _envf("KALSHI_REENTRY_COOLDOWN_S", 0.0)                 # 0
 # invocation still flattens IMMEDIATELY; repeats are spaced at least this far apart (the maker
 # offsets it rested stay working the whole time). 0 = legacy every-heartbeat behavior.
 STOPFLAT_REPEAT_S = _envf("KALSHI_STOPFLAT_REPEAT_S", 1800.0)
+# HALT CONFIRMATION (operator-named 2026-07-29 after the 18:18:29Z halt): the final $6.6 of
+# that trigger arrived in the 90s after a 60-ct fill on a thin book — a mark blip supplied the
+# push over the arm, and the halt then crystallized it by selling into the same thin book. The
+# breach must now HOLD for N consecutive cycles (~15-30s at daemon cadence) before the STOP is
+# written: a one-tick paper mark cannot shut the book, a real crash still halts in <30s. The
+# streak resets the moment equity recovers inside the arm. 1 = legacy fire-on-first-breach.
+HALT_CONFIRM_N = _envi("KALSHI_HALT_CONFIRM_N", 3)
 # stamp path is computed AT USE (not import): freezing it at import is the exact F17
 # import-once class this same audit flagged — and it broke the test harness, which
 # redirects DATA_DIR per test. Sidecar file because the STOP branch runs pre-state.
@@ -1889,10 +1896,23 @@ def diff_orders(standing, desired):
 # ---------------- cycle ----------------
 
 def load_state():
+    # ABSENT file = legitimate cold start (silent). PRESENT-BUT-UNREADABLE = every latching
+    # guard (halt baselines, cumulative-down ratchet, per-market loss trips, cooldowns) would
+    # silently reseed from scratch — a full amnesty (self-audit A2-F20). Preserve the corrupt
+    # file for forensics, be LOUD, and count it where the plan row surfaces it.
+    if not os.path.exists(STATE_FILE):
+        return {}
     try:
         with open(STATE_FILE) as f:
             return json.load(f)
-    except Exception:
+    except Exception as e:
+        _SILENT["state_corrupt"] += 1
+        try:
+            os.replace(STATE_FILE, STATE_FILE + ".corrupt-" + utcnow().strftime("%Y%m%d_%H%M%S"))
+        except Exception:
+            pass
+        print(f"WARNING quoter_state.json UNREADABLE ({e!r}) — preserved aside; latching "
+              f"guards are re-seeding from scratch (halt baselines, loss trips, cooldowns)")
         return {}
 
 
@@ -2008,8 +2028,57 @@ def _blackout_guard(client, st, plan):
           f"{ok}/{len(oids)} last-known quotes ({len(remaining)} left to retry)")
 
 
+def _refresh_safety_knobs():
+    """Re-read the SAFETY knobs from the live env FILE each cycle (self-audit A2-F17): under
+    the long-lived daemon every knob froze at import, so an operator tightening a loss limit
+    mid-incident got SILENCE — the edit did nothing until a restart, with no error. systemd
+    injects live.env only at service start, so os.environ is equally frozen; the FILE is the
+    operator's actual control surface. Scope is deliberately the nine _SAFETY_KNOBS plus the
+    per-market governors — the operator's emergency levers — not the full 60+ knob surface
+    (selection/pacing knobs keep restart semantics; changing those mid-flight is a deploy).
+    KALSHI_ENV_FILE unset (the default) -> provable no-op. Every applied change is PRINTED."""
+    path = os.environ.get("KALSHI_ENV_FILE")
+    if not path:
+        return
+    watch = {"KALSHI_DAILY_LOSS_HALT_USD": ("DAILY_LOSS_HALT_USD", float),
+             "KALSHI_DAILY_DOWN_HALT_USD": ("DAILY_DOWN_HALT_USD", float),
+             "KALSHI_HELD_MAX_USD": ("HELD_MAX_USD", float),
+             "KALSHI_TAKER_FLATTEN": ("TAKER_FLATTEN", int),
+             "KALSHI_PRECLOSE_FLATTEN": ("PRECLOSE_FLATTEN", int),
+             "KALSHI_THROTTLE_SMART": ("THROTTLE_SMART", int),
+             "KALSHI_CAPTURE_GATE": ("CAPTURE_GATE", int),
+             "KALSHI_STANDDOWN": ("STANDDOWN", int),
+             "KALSHI_NETEV_GATE": ("NETEV_GATE", int),
+             "KALSHI_MKT_DAY_LOSS_EXITONLY_USD": ("MKT_DAY_LOSS_EXITONLY_USD", float),
+             "KALSHI_REENTRY_COOLDOWN_S": ("REENTRY_COOLDOWN_S", float),
+             "KALSHI_HALT_CONFIRM_N": ("HALT_CONFIRM_N", int)}
+    try:
+        g = globals()
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if "=" not in line or line.startswith("#"):
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                if k not in watch:
+                    continue
+                gname, cast = watch[k]
+                try:
+                    nv = cast(v.strip())
+                except (TypeError, ValueError):
+                    continue                     # malformed value -> keep the running one
+                if g.get(gname) != nv:
+                    print(f"SAFETY KNOB LIVE-APPLIED: {gname} {g.get(gname)} -> {nv} "
+                          f"(from {path})")
+                    g[gname] = nv
+    except Exception:
+        _SILENT["knob_refresh_fail"] += 1        # unreadable file -> keep running values
+
+
 def run_once():
     os.chdir(DATA_DIR)
+    _refresh_safety_knobs()
     _lock = _acquire_lock()
     if _lock is False:
         print("WARNING another quoter instance holds the run lock; skipping this run (no order ops)")
@@ -2364,6 +2433,11 @@ def run_once():
                         _breaches.append(f"CUMULATIVE-DOWN ${_down:.2f} > ${DAILY_DOWN_HALT_USD:.2f} "
                                          f"(ratcheting sum, never resets)")
                     if _breaches:
+                        st["halt_breach_streak"] = int(st.get("halt_breach_streak", 0)) + 1
+                        plan["halt_breach_streak"] = st["halt_breach_streak"]
+                    else:
+                        st["halt_breach_streak"] = 0
+                    if _breaches and st["halt_breach_streak"] >= max(1, HALT_CONFIRM_N):
                         _why = " AND ".join(_breaches)
                         plan["daily_loss_halt"] = round(drop, 2)
                         plan["daily_halt_reason"] = _why

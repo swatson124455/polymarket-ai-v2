@@ -903,6 +903,9 @@ def test_held_ceiling_level_trigger(monkeypatch, tmp_path):
 
 # ============ 07-22 review-response fixes (daily kill, retained-unwind, strand cap, clamps) ======
 def test_daily_loss_halt_writes_stop_and_flattens(monkeypatch, tmp_path):
+    # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
+    # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
+    monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
     # Treadmill guard: equity (cash + held cost) dropping > DAILY_LOSS_HALT_USD within the UTC
     # day writes STOP (operator must clear) and maker-flattens immediately. Mock balance=100,
     # held=25 -> equity 125; seed day-start at 150 -> drop 25 > 20 -> HALT.
@@ -1532,6 +1535,9 @@ def _q3cfg(monkeypatch):
                         {"orderbook_fp": {"yes_dollars": [["0.50", "9999"]], "no_dollars": [["0.49", "9999"]]}})
 
 def test_daily_loss_measures_drawdown_from_intraday_high_water_mark(monkeypatch, tmp_path):
+    # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
+    # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
+    monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
     # PIN (defect a): reward credits inflated the numerator while day-start stayed FROZEN, so
     # room grew monotonically all day. Measured live: equity 99.76 vs day_start 63.34 => the
     # halt only tripped at 23.34 on an $85 account. Post-fix the quota is a DRAWDOWN.
@@ -1545,6 +1551,9 @@ def test_daily_loss_measures_drawdown_from_intraday_high_water_mark(monkeypatch,
     assert os.path.exists(os.path.join(d, "STOP"))
 
 def test_daily_loss_cumulative_downticks_survive_a_deposit(monkeypatch, tmp_path):
+    # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
+    # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
+    monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
     # PIN (defect c): a mid-day deposit used to add room 1:1 (and, under a naive high-water
     # mark alone, would also FORGIVE the drawdown already taken). The cumulative adverse-move
     # meter only ever counts DOWN moves, so income and deposits cannot pay it back.
@@ -1558,6 +1567,9 @@ def test_daily_loss_cumulative_downticks_survive_a_deposit(monkeypatch, tmp_path
     assert row.get("daily_down") == 25.0 and row.get("daily_dd") == 10.0
 
 def test_daily_loss_legacy_state_file_still_halts_on_day_start_drop(monkeypatch, tmp_path):
+    # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
+    # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
+    monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
     # migration guard: a state file with no peak/prev keys (the pre-Q3 shape). The peak
     # must seed from equity_day_start so the old drop-from-day-start behaviour is a FLOOR, never
     # weaker. equity_basis "mark" is seeded because the Q1 build (2026-07-28) deliberately
