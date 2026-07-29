@@ -892,6 +892,43 @@ def select_footprint(progs, now):
                      # window: entering 80% through caps the score at ~20% however well we execute.
                      "life_min": life_min})
     rows.sort(key=lambda r: (-r["usd_day"], r["ticker"]))
+    # MARKET-CLOCK PRE-FILTER (funnel audit 2026-07-29). The far-market-close veto originally ran
+    # in run_once AFTER selection — so long-dated markets carrying short reward windows (the
+    # KXNHPRIMARY28 pattern: market resolves 2028, program ends this week) consumed footprint
+    # slots and were then vetoed, collapsing a 40-slot footprint to ~5 survivors (measured live
+    # 15:11Z: 3,338 programs -> 40 selected -> 35 vetoed post-hoc). The veto must spend slots on
+    # markets that can actually be quoted: filter the TOP candidate rows by the market's OWN
+    # close_time BEFORE slot allocation. Reads are lazy + cached (_CLOSE_TIME_CACHE, static per
+    # market; steady-state ~zero fetches) and bounded to the head of the pool-ranked list; an
+    # unreadable clock KEEPS the row (fail-open, same as the run_once belt, which remains as a
+    # cheap second check on whatever this pass could not price).
+    if MAX_DAYS_TO_CLOSE > 0 and rows:
+        _kept, _checked = [], 0
+        _budget = FOOTPRINT_TOP * 4                    # bounded first-cycle read cost; cached after
+        for _ri, r in enumerate(rows):
+            if len(_kept) >= FOOTPRINT_TOP * 2 or _checked >= _budget:
+                _kept.extend(rows[_ri:])               # tail unchecked -> run_once belt handles it
+                break
+            _t3 = r["ticker"]
+            _ct3 = _CLOSE_TIME_CACHE.get(_t3)
+            if _ct3 is None:
+                _checked += 1
+                try:
+                    _ct3 = public_get(f"/trade-api/v2/markets/{_t3}"
+                                      ).get("market", {}).get("close_time")
+                    _CLOSE_TIME_CACHE[_t3] = _ct3 or ""
+                except Exception:
+                    _kept.append(r)                    # unreadable clock -> keep (fail-open)
+                    continue
+            try:
+                _far3 = bool(_ct3) and parse_iso(_ct3) > now + timedelta(days=MAX_DAYS_TO_CLOSE)
+            except Exception:
+                _far3 = False
+            if _far3:
+                drops["drop_far_market_close_sel"] = drops.get("drop_far_market_close_sel", 0) + 1
+            else:
+                _kept.append(r)
+        rows = _kept
     # SCORE-BASED RANKING: replace the pool ordering with measured capture carried across cycles.
     # Falls back to exactly the pool order above for any market with no score yet, so a cold cache
     # (or a flag-off run) is byte-for-byte legacy. Wrapped — a ranking fault must never stop a cycle.

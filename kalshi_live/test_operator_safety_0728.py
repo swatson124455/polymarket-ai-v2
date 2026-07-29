@@ -230,6 +230,8 @@ def _prog(tk):
 def test_series_deny_excludes_the_family_by_prefix(monkeypatch):
     monkeypatch.setattr(q, "SERIES_DENY", ["KXDXY", "KXNDQ", "KXINX"])
     monkeypatch.setattr(q, "SERIES_ALLOW", [])
+    monkeypatch.setattr(q, "public_get", lambda p: (_ for _ in ()).throw(RuntimeError("no net")))
+    monkeypatch.setattr(q, "_CLOSE_TIME_CACHE", {})
     progs = [_prog("KXDXYDUD-26JUL29-T101.50"),      # daily variant  -> denied
              _prog("KXNDQHUD-26JUL291600-T28000"),   # hourly variant -> denied
              _prog("KXAAAGASD-26JUL29-4.110")]       # unrelated      -> kept
@@ -244,6 +246,8 @@ def test_series_deny_excludes_the_family_by_prefix(monkeypatch):
 def test_series_deny_empty_is_a_noop(monkeypatch):
     monkeypatch.setattr(q, "SERIES_DENY", [])
     monkeypatch.setattr(q, "SERIES_ALLOW", [])
+    monkeypatch.setattr(q, "public_get", lambda p: (_ for _ in ()).throw(RuntimeError("no net")))
+    monkeypatch.setattr(q, "_CLOSE_TIME_CACHE", {})
     picked = q.select_footprint([_prog("KXDXYDUD-26JUL29-T101.50")], q.utcnow())
     assert any(m["ticker"].startswith("KXDXY") for m in picked), \
         "empty deny-list must change nothing"
@@ -430,3 +434,29 @@ def test_down_basis_migration_discards_mark_noise_once(monkeypatch, tmp_path):
     assert st.get("down_basis") == "cost"
     assert st.get("equity_day_down") == 0.0
     assert not os.path.exists(os.path.join(str(tmp_path), "STOP"))
+
+
+def test_selection_prefilter_spends_slots_on_quotable_markets(monkeypatch):
+    # Funnel audit 2026-07-29: long-dated markets with short reward windows must not consume
+    # footprint slots. 45 far markets outrank 5 near ones by pool; the footprint must contain
+    # the near ones, not 40 soon-to-be-vetoed corpses.
+    monkeypatch.setattr(q, "SERIES_DENY", [])
+    monkeypatch.setattr(q, "SERIES_ALLOW", [])
+    monkeypatch.setattr(q, "MAX_DAYS_TO_CLOSE", 8.0)
+    monkeypatch.setattr(q, "FOOTPRINT_TOP", 40)
+    monkeypatch.setattr(q, "_CLOSE_TIME_CACHE", {})
+    monkeypatch.setattr(q, "SCORE_RANK", 0)
+    from datetime import timedelta
+    far = (q.utcnow() + timedelta(days=400)).isoformat()
+    near = (q.utcnow() + timedelta(days=2)).isoformat()
+
+    def pg(p):
+        t = p.rsplit("/", 1)[-1]
+        return {"market": {"close_time": far if t.startswith("KXFAR") else near}}
+    monkeypatch.setattr(q, "public_get", pg)
+    progs = ([_prog(f"KXFAR{i:02d}-28-X") | {"period_reward": 9000000} for i in range(45)]
+             + [_prog(f"KXNEAR{i:02d}-26JUL31-X") | {"period_reward": 1000000} for i in range(5)])
+    picked = q.select_footprint(progs, q.utcnow())
+    tickers = {m["ticker"] for m in picked}
+    assert all(not t.startswith("KXFAR") for t in tickers), "far markets must not hold slots"
+    assert sum(1 for t in tickers if t.startswith("KXNEAR")) == 5, f"near markets lost slots: {tickers}"
