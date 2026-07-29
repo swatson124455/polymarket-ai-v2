@@ -12,7 +12,10 @@ they are the three reasons TAKER_FLATTEN was disabled (KALSHI_HANDOFF_2026-07-23
 window/flag-off no-op:
   1. CROSSES-NAKED-ONLY  (reason 1: it de-hedged live pairs by crossing the FULL position)
   2. FLAG-OFF NO-OP
-  3. NEVER-STRANDS-EXIT  (reason 3: it cancelled the resting exit then the taker failed -> naked)
+  3. NEVER-STRANDS-EXIT  (REWRITTEN for FIX 4 2026-07-28: cancel(confirmed) -> cross -> re-rest.
+     The old "additive, cancels nothing" contract let an exit outlive its position — live
+     2026-07-27 a stale exit refilled +40.55 ct 7s after the taker crossed the position flat.
+     Never-strand now = the re-rest leg; unconfirmed cancel = no cross at all.)
   4. FIRES-ONLY-NEAR-CLOSE (reason 2: the old flatten was always-on)
   5. MAKER-FIRST          (grace before any taker)
 
@@ -53,6 +56,7 @@ class MockClient:
         self._fill = fill
         self.crosses = []
         self.cancelled = []
+        self.created = []
 
     def create_order_v2(self, ticker, book_side, count, price_dollars,
                         time_in_force="good_till_canceled",
@@ -72,6 +76,14 @@ class MockClient:
         self.cancelled.append(oid)
         self._resting = [o for o in self._resting if o.get("order_id") != oid]
         return {"ok": True}
+
+    def get_orders(self, status="resting"):
+        return {"orders": list(self._resting)}
+
+    def create_quote(self, ticker, side, price, count, post_only=True, client_order_id=None):
+        # the RE-REST leg of fix 4 lands here; recorded so tests can assert never-strand
+        self.created.append({"ticker": ticker, "side": side, "price": price, "count": count})
+        return {"order": {"order_id": client_order_id}}
 
     def total_crossed(self):
         return sum(x["count"] for x in self.crosses)
@@ -133,11 +145,14 @@ def test_flag_off_is_noop(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 3. NEVER-STRANDS-EXIT (reason 3) — one-sided book, taker cannot fill; the resting maker reducing
-#    exit MUST remain (nothing cancelled). The old flatten cancelled the exit first, then the IOC
-#    failed, leaving the position naked with no order.
+# 3. NEVER-STRANDS-EXIT (reason 3) — REWRITTEN 2026-07-28 for FIX 4. The old pin asserted
+#    "cancels NOTHING (additive)", which IS the defect that bit live on 2026-07-27: a taker
+#    crossed the position flat and the un-cancelled exit filled 7s later, re-opening +40.55 ct.
+#    The contract is now CANCEL(confirmed) -> CROSS -> RE-REST: the stale exit must be cancelled
+#    BEFORE the cross, and never-strand is provided by re-resting a fresh maker exit for any
+#    residual the cross could not fill.
 # ---------------------------------------------------------------------------
-def test_never_strands_the_resting_exit(monkeypatch):
+def test_exit_cancelled_before_cross_and_rerested_on_failure(monkeypatch):
     _std_config(monkeypatch)
     q._BOOK_PATCH = _ONE_SIDED                       # long-yes wants to SELL yes; no yes bid -> no fill
     held = {"KXAAAGASW-26JUL24-4.140": 8.0}
@@ -147,9 +162,31 @@ def test_never_strands_the_resting_exit(monkeypatch):
                    resting=[exit_order], book=_ONE_SIDED, fill=False)
     plan, grace = {}, {}
     q._preclose_naked_flatten(c, held, q.utcnow(), plan, grace, close_time_of=_close_in(10))
-    assert c.cancelled == [], "the taker must cancel NOTHING (it is additive)"
-    assert exit_order in c._resting, "the resting maker reducing exit must REMAIN after a failed taker"
+    assert "exit1" in c.cancelled, \
+        "the stale exit must be CANCELLED before the cross (fix 4: an exit must not outlive its position)"
+    assert exit_order not in c._resting
+    rerested = [o for o in c.created if o["ticker"] == "KXAAAGASW-26JUL24-4.140"]
+    assert len(rerested) == 1 and rerested[0]["side"] == "no", \
+        "failed cross must RE-REST the maker exit (never-strand now lives in the re-rest leg)"
+    assert rerested[0]["count"] <= 8, "re-rest must never overshoot |pos|"
     assert plan.get("preclose_taker_failed", 0) >= 1
+
+
+def test_unconfirmed_cancel_refuses_to_cross(monkeypatch):
+    # FIX 4's fail-closed arm: if the resting book cannot be PROVEN clear, no cross may fire —
+    # the un-cancellable order IS the exit, so refusing strands nothing. This is the exact
+    # 2026-07-27 19:40:03Z sequence (silent cancel failure -> cross -> stale exit refilled +40.55)
+    # made impossible.
+    _std_config(monkeypatch)
+    held = {"KXAAAGASW-26JUL24-4.140": 8.0}
+    exit_order = {"order_id": "exit1", "ticker": "KXAAAGASW-26JUL24-4.140", "side": "no"}
+    c = MockClient(positions=[{"ticker": "KXAAAGASW-26JUL24-4.140", "position_fp": "8.0"}],
+                   resting=[exit_order])
+    c.cancel_order = lambda oid: (_ for _ in ()).throw(RuntimeError("cancel 429"))  # cancels FAIL
+    plan, grace = {}, {}
+    q._preclose_naked_flatten(c, held, q.utcnow(), plan, grace, close_time_of=_close_in(10))
+    assert c.crosses == [], "an unconfirmed cancel must ABORT the cross"
+    assert exit_order in c._resting, "the maker exit keeps working the book — nothing stranded"
 
 
 # ---------------------------------------------------------------------------

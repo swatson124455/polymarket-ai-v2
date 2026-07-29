@@ -185,6 +185,20 @@ def test_flatten_to_zero_fail_closed_on_blind_position():
     flat, n = q.flatten_to_zero(c, "T1")
     assert not flat and n == 0 and not c.crosses         # never cross blind
 
+def test_flatten_to_zero_refuses_to_cross_on_unconfirmed_cancel(monkeypatch):
+    # FIX 4 (live 2026-07-27 19:40:03Z): cancels were swallowed by try/except, the cross
+    # proceeded, and the stale 41ct@0.73 exit refilled the position +40.55 ct seven seconds
+    # after the taker got it flat. An UNCONFIRMED cancel must ABORT the cross — the resting
+    # order IS the maker exit, so refusing to cross strands nothing.
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "public_get", lambda p: _BOOK)
+    c = MockClient(mode="live", resting=[_order("x1", "T1", "no", 0.38, 8)],
+                   positions=[{"ticker": "T1", "position_fp": "20.00"}],
+                   cancel_fail_ids=["x1"])                # the exit's cancel 429s
+    flat, n = q.flatten_to_zero(c, "T1", standing_oids=["x1"])
+    assert not flat and c.crosses == [], "unconfirmed cancel must abort the cross"
+    assert any(o.get("order_id") == "x1" for o in c._resting)   # the exit keeps working the book
+
 def test_flatten_all_maker_first_no_taker_below_threshold(monkeypatch):
     # STOP is MAKER-FIRST: cancel quotes, rest a passive offset. With the residual below the
     # taker threshold, escalation must NOT fire — no spread is crossed (no fire-sale).

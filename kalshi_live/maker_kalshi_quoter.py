@@ -689,11 +689,31 @@ STOP_TAKER_MIN_CT = _envf("KALSHI_STOP_TAKER_MIN_CT", 5.0)  # escalate only if |
 # residual is the settlement gamble. This mechanism, within PRECLOSE_FLATTEN_MIN of MARKET CLOSE
 # (trading end, NOT the reward-period end), MAKER-FIRST rests the reducing quote (existing unwind
 # path) and, if the naked residual still exceeds STOP_TAKER_MIN_CT after a STOP_ESCALATE_S grace,
-# TAKER-crosses AT MOST |naked| contracts — NEVER a paired leg, NEVER cancelling the resting exit
-# (the taker is additive; a failed taker leaves the maker exit resting). SEPARATE from the general
+# TAKER-crosses AT MOST |naked| contracts — NEVER a paired leg. SEPARATE from the general
 # TAKER_FLATTEN backstop (that stays as-is). DEFAULT 0 = OFF = byte-for-byte today's behavior.
+# ORDERING (FIX 4, operator-approved 2026-07-27): every taker cross is CANCEL -> CROSS -> RE-REST.
+# The original design left the resting maker exit alone ("the taker is additive") on a no-self-trade
+# argument — but self-trade was never the risk. Live 2026-07-27 19:40:03Z: a taker crossed KXNDQHUD
+# flat, and the un-cancelled 41ct@0.73 exit filled 7 SECONDS LATER (+40.55 ct) — the moment the
+# position died, the "exit" became a naked ENTRY. Never-strand is now provided by the RE-REST leg
+# (a failed/partial cross re-rests the maker exit), not by never cancelling.
 PRECLOSE_FLATTEN = _envi("KALSHI_PRECLOSE_FLATTEN", 0)          # 0 = OFF, provable no-op until flipped
 PRECLOSE_FLATTEN_MIN = _envf("KALSHI_PRECLOSE_FLATTEN_MIN", 15.0)  # act within N min of MARKET CLOSE
+# --- FIX 3 (operator-approved 2026-07-27): CROSS THE EXIT IF IT DOES NOT FILL --------------------
+# The 07-27 loss mechanism: the maker exit rested (at the loss-cap price, 9c behind the touch) and
+# simply never filled while the market trended — nothing crossed it away from the settlement window,
+# so 42 ct rode from a -$0.59 touch-exit to a -$15.29 settlement. Fixes 1/2 make the exit fillable
+# and stop re-arming the losing side; THIS knob bounds how long an unfilled exit may rest before we
+# pay the spread and get out. Per-ticker clock (persisted in quoter_state, cycles are fresh
+# processes): once a NAKED residual >= STOP_TAKER_MIN_CT has existed for STRAND_CROSS_S seconds,
+# ONE capped IOC pass per cycle fires at the touch — cancel-confirmed first, capped at the FRESH
+# |naked| (re-read inside the pass, never the cycle snapshot), maker exit re-rested for any
+# residual, clock re-armed after every attempt so book-walking is paced (the 07-27 STOP escalation
+# walked DXY 0.52 -> 0.25 in 4 back-to-back IOCs; one pass per clock period cannot).
+# The taker leg needs TAKER_FLATTEN=1 and live mode; otherwise the clock and telemetry still run.
+# Default 30s = the fix-3 proposal on record; operator has NOT yet confirmed the value (Q3 in the
+# 07-27 EOD handoff). 0 disables the mechanism entirely.
+STRAND_CROSS_S = _envf("KALSHI_STRAND_CROSS_S", 30.0)
 # --- selection: prefer BALANCED books (maker-unwind fills) over one-sided drift traps ---
 MAX_SPREAD_TICKS = _envi("KALSHI_MAX_SPREAD_TICKS", 8)      # skip wide/illiquid books
 MIN_DEPTH_SYM = _envf("KALSHI_MIN_DEPTH_SYM", 0.25)         # min(depth)/max(depth) both sides
@@ -1412,6 +1432,13 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     if JOIN_ALWAYS:
         # drill/testing switch: tiny join on both sides of any priceable market,
         # ignoring void/activate economics — exercises place/diff/cancel machinery.
+        # HOLDING => EXIT ONLY applies HERE TOO (leak found in the 2026-07-28 adversarial review of
+        # fix 2): without this guard the drill switch re-arms the accumulating side while holding —
+        # the exact defect the risk rule exists to kill, one env var away. Risk rule wins over drills.
+        if HOLDING_EXIT_ONLY and abs(inv) >= INV_TOLERANCE:
+            if stats is not None:
+                stats["holding_exit_only"] = stats.get("holding_exit_only", 0) + 1
+            return _reducing_quotes(best_y, best_n, inv, cost)
         return [{"side": "yes", "price_dollars": best_y, "count": _capped_join(best_y, best_n), "reason": "join"},
                 {"side": "no", "price_dollars": best_n, "count": _capped_join(best_n, best_y), "reason": "join"}]
     quotes = []
@@ -2081,8 +2108,14 @@ def run_once():
                     # the passive unwind AND suppressed the sysfail alarm — telemetry claimed the
                     # backstop ran while the position rode into settlement. Only a CONFIRMED flat
                     # retires the ticker; a failure falls through to normal maker unwind handling.
-                    standing.pop(t, None)               # its resting orders WERE cancelled either way
+                    # FIX 4 note: "its resting orders WERE cancelled either way" was an ASSUMPTION,
+                    # and the 07-27 tape disproved it (a silent cancel failure left an exit resting
+                    # through a cross). flatten_to_zero now CONFIRMS the cancel or refuses to cross
+                    # — on a False return orders may legitimately still rest, so the ticker stays
+                    # in `standing` and the ordinary reconcile handles them; popping on ok only
+                    # costs a few redundant-cancel fails in the rare crossed-but-residual case.
                     if ok:
+                        standing.pop(t, None)           # confirmed flat -> book truly clear
                         taker_flattens += 1
                         flattened.add(t)
                         held_by.pop(t, None)
@@ -2547,11 +2580,26 @@ def run_once():
         if PRECLOSE_FLATTEN:
             grace_state = st.get("preclose_grace", {})
             try:
-                _preclose_naked_flatten(client, held_by, now, plan, grace_state)
+                _preclose_naked_flatten(client, held_by, now, plan, grace_state,
+                                        costs_by=cost_by)
             except Exception as e:                          # a backstop bug must never abort the cycle
                 plan["preclose_error"] = f"{e!r}"[:160]
                 print(f"WARNING preclose flatten pass RAISED: {e!r} — cycle continues")
             st["preclose_grace"] = grace_state
+
+        # STRAND CROSS (FIX 3, operator-approved 2026-07-27): bounded-time exit for a naked
+        # residual whose maker exit is not filling — the same grace-then-taker mechanism as the
+        # pre-close flatten, without the close-window gate. Runs AFTER the pre-close pass and
+        # re-reads positions fresh inside, so anything the pre-close taker already crossed this
+        # cycle is seen as reduced and skipped (never double-crossed). STRAND_CROSS_S=0 disables.
+        if STRAND_CROSS_S > 0:
+            strand_state = st.get("strand_grace", {})
+            try:
+                _strand_cross(client, naked_by, cost_by, now, plan, strand_state)
+            except Exception as e:                          # a backstop bug must never abort the cycle
+                plan["strand_error"] = f"{e!r}"[:160]
+                print(f"WARNING strand-cross pass RAISED: {e!r} — cycle continues")
+            st["strand_grace"] = strand_state
 
         plan.update({
             "footprint": len(footprint), "quoted_markets": len(desired),
@@ -2716,6 +2764,78 @@ def _touch(ob):
     return yb, (round(1.0 - nb, 4) if nb is not None else None)
 
 
+def _cancel_ticker_resting_confirmed(client, ticker, hint_oids=None):
+    """FIX 4 (operator-approved 2026-07-27): cancel EVERY resting order on `ticker` and CONFIRM
+    against the venue that none remain, before any taker cross is allowed to fire.
+
+    Why confirmation and not best-effort: on 2026-07-27 the STOP escalation crossed KXNDQHUD flat
+    at 19:40:03Z while its 41ct@0.73 maker offset was still resting — the cancel had been attempted
+    (try/except -> _SILENT counter) and the cross proceeded anyway. The stale "exit" filled 7s
+    later for +40.55 ct: a naked ENTRY the instant the position it was exiting stopped existing.
+    An error-classification approach (is this failure a 404-already-gone?) is fragile; the venue's
+    own resting book is the ground truth, so we RE-READ it and require the ticker to be absent.
+
+    hint_oids supplements the read (an order created ms ago can lag into the listing). A cancel of
+    an already-gone order failing is fine — the re-read is the arbiter, not the error. Eventual
+    consistency can only produce a FALSE NEGATIVE (order actually gone, still listed) -> we refuse
+    to cross this pass and the caller retries next pass/cycle: fail-closed in the safe direction.
+    Returns (confirmed_clear, cancels_attempted). Blind reads => (False, n): never cross blind."""
+    try:
+        orders = client.get_orders("resting").get("orders") or []
+    except Exception:
+        _SILENT["flatten_cancel_fail"] += 1
+        return False, 0
+    oids = {o.get("order_id") for o in orders
+            if o.get("ticker") == ticker and o.get("order_id")}
+    oids.update(o for o in (hint_oids or []) if o)
+    n = 0
+    for oid in oids:
+        try:
+            client.cancel_order(oid)
+            n += 1
+        except Exception:
+            _SILENT["flatten_cancel_fail"] += 1     # classified by the re-read below, not the error
+    try:
+        after = client.get_orders("resting").get("orders") or []
+    except Exception:
+        _SILENT["flatten_cancel_fail"] += 1
+        return False, n                             # cannot PROVE the book is clear -> not confirmed
+    return (not any(o.get("ticker") == ticker for o in after)), n
+
+
+def _rest_maker_offset(client, ticker, pos, cost, tag):
+    """Rest ONE passive maker offset on the reducing side of a signed position — the RE-REST leg of
+    the cancel -> cross -> re-rest ordering (FIX 4). Same shape as `_flatten_all` pass 1 (kept
+    inline there: the STOP path's prints/oid bookkeeping are load-bearing); this helper serves the
+    in-cycle cross paths, where a partial/failed IOC must not leave the position with NO exit until
+    the next cycle's unwind pass re-rests one. Returns the order_id or None (best-effort: the
+    normal unwind path re-rests every cycle regardless, so a None here is a gap of one cycle,
+    not a strand)."""
+    try:
+        ob = public_get(f"/trade-api/v2/markets/{ticker}/orderbook").get("orderbook_fp") or {}
+    except Exception:
+        return None
+    by = max((p for p, _ in _levels(ob.get("yes_dollars") or [])[0]), default=None)
+    bn = max((p for p, _ in _levels(ob.get("no_dollars") or [])[0]), default=None)
+    if pos > 0 and _ok_exit_price(bn):
+        side, price, other = "no", bn, (by or bn)
+    elif pos < 0 and _ok_exit_price(by):
+        side, price, other = "yes", by, (bn or by)
+    else:
+        return None
+    price = _unwind_price(price, cost)
+    if not _ok_exit_price(price):
+        return None
+    cnt = _unwind_size(_capped_join(price, other), price, pos)
+    try:
+        r = client.create_quote(ticker, side, price, cnt, post_only=True,
+                                client_order_id=f"mk-{tag}-{int(time.time())}-{side}")
+        o = r.get("order") if isinstance(r, dict) and isinstance(r.get("order"), dict) else {}
+        return o.get("order_id")
+    except Exception:
+        return None
+
+
 def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
     """LAST-RESORT taker de-risk of ONE ticker to flat — the sole taker path. Cancels our
     resting orders on the ticker first (avoid a self-trade cross), then crosses the residual
@@ -2725,12 +2845,21 @@ def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
     at |pos0|, decrementing by the venue's CONFIRMED fill_count each pass (never by a possibly-
     lagging positions re-read — an eventually-consistent read could otherwise re-cross full
     size and flip a long into a short). The get_positions re-poll is a SECONDARY check only.
+
+    FIX 4 (2026-07-27 live defect): the cancel phase must be CONFIRMED, not best-effort. The old
+    loop cancelled only the CALLER-PASSED oids inside try/except and crossed regardless — on
+    2026-07-27 that crossed KXNDQHUD flat while its maker offset still rested, and the stale order
+    re-opened the position 7s later (+40.55 ct). Now: every resting order on the ticker is
+    cancelled (venue read, hint oids supplementary) and the clear book is CONFIRMED by re-read;
+    an unconfirmed cancel ABORTS the cross for this invocation. Behaviour change, deliberate:
+    cross-despite-failed-cancel -> refuse-to-cross. Both callers handle a False return as
+    "position kept, maker exit still working" (settle-taker falls through to maker unwind;
+    STOP escalation prints RESIDUAL/check-manually) — the un-cancelled order IS the maker exit,
+    so nothing is stranded by refusing.
     Returns (flat_bool, n_crossed)."""
-    for oid in (standing_oids or []):
-        try:
-            client.cancel_order(oid)
-        except Exception:
-            _SILENT["flatten_cancel_fail"] += 1   # a maker order may fill DURING the flatten
+    cleared, _n = _cancel_ticker_resting_confirmed(client, ticker, standing_oids)
+    if not cleared:
+        return False, 0                                    # never cross over a possibly-live exit
     try:
         pos0 = _held_cost(client)[1].get(ticker, 0.0)      # STARTING signed position, read ONCE
     except Exception:
@@ -2872,25 +3001,34 @@ def _flatten_all(client):
               f"{'FLAT' if ok else 'RESIDUAL (check manually)'} ({c} crosses)")
 
 
-def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4):
-    """Cross AT MOST cap_ct contracts to the REDUCING side with marketable IOC orders, WITHOUT
-    cancelling ANY resting order — the taker is ADDITIVE (pre-close settlement flatten, reason 3).
+def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4, cost=0.0):
+    """Cross AT MOST cap_ct contracts to the REDUCING side with marketable IOC orders.
+    ORDERING (FIX 4, operator-approved 2026-07-27): CANCEL (confirmed) -> CROSS -> RE-REST.
 
-    Contrast with flatten_to_zero, which (a) reads the ticker's FULL venue position and crosses
-    ALL of it — including a paired leg — and (b) cancels our resting orders FIRST. Here the caller
-    passes cap_ct = |naked| (the UNPAIRED residual only, from ladder_pairing), and NOTHING is
-    cancelled. Crossing is HARD-CAPPED at cap_ct and decremented by the venue's CONFIRMED
-    fill_count each pass (never a lagging positions re-read), so cumulative crossing can PROVABLY
-    never exceed |naked| — a paired leg is never touched (reason 1).
+    Contrast with flatten_to_zero, which reads the ticker's FULL venue position and crosses ALL
+    of it — including a paired leg. Here the caller passes cap_ct = |naked| (the UNPAIRED residual
+    only, from ladder_pairing). Crossing is HARD-CAPPED at cap_ct and decremented by the venue's
+    CONFIRMED fill_count each pass (never a lagging positions re-read), so cumulative crossing can
+    PROVABLY never exceed |naked| — a paired leg is never touched (reason 1).
 
-    NO SELF-TRADE despite the un-cancelled resting exit: our reducing maker quote sits on the
-    COMPLEMENTARY book side (long-yes -> a resting NO bid == a YES ask at 1-bn, ABOVE the YES bid
-    we hit), so a same-side IOC never matches it; and if Kalshi's self-match prevention ever did
-    fire, the taker simply fails to fill and the resting exit REMAINS — which is exactly the
-    desired never-strand outcome. Returns (flat_bool, n_contracts_crossed)."""
+    THE OLD CONTRACT WAS "ADDITIVE — cancels NOTHING", argued on no-self-trade grounds. Self-trade
+    was never the risk. An exit order must not outlive its position: live 2026-07-27 19:40:03Z a
+    taker crossed the position flat and the un-cancelled resting exit filled 7 SECONDS later
+    (+40.55 ct) — a naked ENTRY at the exact moment we thought we were out. The venue's
+    self_trade_prevention_type="taker_at_cross" already prevents self-match, so cancelling first
+    costs nothing. Never-strand (old reason 3) is now provided by the RE-REST leg: a failed or
+    partial cross re-rests the maker exit for the residual, so the position is never left with no
+    working exit — and an UNCONFIRMED cancel aborts the cross entirely (the un-cancelled order IS
+    the exit; refusing to cross strands nothing).
+    `cost` feeds _unwind_price for the re-rested offset (ignored under EXIT_AT_TOUCH; preserves
+    the legacy loss-cap pricing exactly when the flag is off).
+    Returns (flat_bool, n_contracts_crossed)."""
     remaining = int(round(abs(cap_ct)))
     if remaining < max(1, int(INV_TOLERANCE)):
         return True, 0
+    cleared, _n = _cancel_ticker_resting_confirmed(client, ticker)
+    if not cleared:
+        return False, 0                                    # never cross over a possibly-live exit
     crossed = 0
     for _ in range(tries):
         if remaining < max(1, int(INV_TOLERANCE)):
@@ -2922,7 +3060,16 @@ def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4):
                 break                                          # nothing at the touch; don't spin
         except Exception:
             break
-    return remaining < max(1, int(INV_TOLERANCE)), crossed
+    flat = remaining < max(1, int(INV_TOLERANCE))
+    if not flat:
+        # RE-REST (fix 4 leg 3): the cross failed or partially filled and we cancelled the maker
+        # exit above — put one back for the residual so the position keeps a working exit inside
+        # this cycle (the normal unwind path re-rests next cycle regardless).
+        _pos = float(remaining) if long_yes else -float(remaining)
+        if _rest_maker_offset(client, ticker, _pos, cost, "rerest") is None:
+            print(f"WARNING taker-cross residual {remaining} ct on {ticker} and the re-rest "
+                  f"FAILED — no working exit until the next cycle's unwind pass")
+    return flat, crossed
 
 
 def _default_preclose_close_time(ticker):
@@ -2937,7 +3084,7 @@ def _default_preclose_close_time(ticker):
 
 
 def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
-                            close_time_of=_default_preclose_close_time):
+                            close_time_of=_default_preclose_close_time, costs_by=None):
     """NAKED-ONLY PRE-CLOSE SETTLEMENT FLATTEN (2026-07-24). For each event, exit ONLY the naked
     (unpaired, net-directional) ladder residual before the MARKET CLOSES, so it never rides into
     settlement; leave the FLOORED pairs (risk ~ strike gap) to self-hedge. This is the missing
@@ -2952,8 +3099,10 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
          a real naked residual (>= STOP_TAKER_MIN_CT after grace) — not the always-on whole-position
          de-hedge that paid ~8% spread on live pairs.
       3. NEVER-STRANDS-THE-EXIT: MAKER-FIRST (the reducing quote is rested by the unwind path this
-         same cycle) + a STOP_ESCALATE_S grace; the taker is ADDITIVE and cancels NOTHING, so a
-         taker that cannot fill on a one-sided book leaves the resting maker exit in place.
+         same cycle) + a STOP_ESCALATE_S grace; the taker then runs CANCEL(confirmed) -> CROSS ->
+         RE-REST (fix 4, 2026-07-27: the old additive/no-cancel contract let an exit outlive its
+         position and re-open it). A cross that fails or partially fills re-rests the maker exit
+         for the residual; an unconfirmed cancel refuses to cross at all.
 
     grace_state: {ticker: iso_first_seen_naked_in_window}, persisted in quoter_state across cycles
     (a per-cycle process; the clock cannot live in memory). Cleared when a ticker leaves the window
@@ -2996,22 +3145,97 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
             continue                                       # maker grace still running -> no taker
         if abs(npos) < STOP_TAKER_MIN_CT:
             continue                                       # residue below taker threshold -> leave resting
-        # TAKER: cross AT MOST |naked|, additive, cancelling nothing (reasons 1 & 3).
+        # TAKER: cross AT MOST |naked| — cancel-confirmed first, re-rest after (reasons 1 & 3).
         if client.mode == "dry_run":
             continue                                       # never taker in plan-only mode
         try:
-            flat, nc = _taker_cross_capped(client, t, int(round(abs(npos))), npos > 0)
+            flat, nc = _taker_cross_capped(client, t, int(round(abs(npos))), npos > 0,
+                                           cost=(costs_by or {}).get(t, 0.0))
         except Exception as e:
             plan["preclose_taker_failed"] = plan.get("preclose_taker_failed", 0) + 1
             print(f"WARNING preclose flatten RAISED on {t} (naked {npos:+.2f}): {e!r}")
             continue
         plan["preclose_taker_ct"] = round(plan.get("preclose_taker_ct", 0.0) + nc, 2)
         print(f"preclose flatten {t}: naked {npos:+.2f}, {mins:.1f}min to close -> taker crossed "
-              f"{nc} ct ({'FLAT' if flat else 'RESIDUAL — maker exit remains resting'})")
+              f"{nc} ct ({'FLAT' if flat else 'RESIDUAL — maker exit re-rested'})")
         if flat:
             grace_state.pop(t, None)                       # naked cleared -> forget the clock
         else:
             plan["preclose_taker_failed"] = plan.get("preclose_taker_failed", 0) + 1
+
+
+def _strand_cross(client, naked_by, costs_by, now, plan, strand_state):
+    """FIX 3 (operator-approved 2026-07-27): cross a STRANDED exit after a bounded wait.
+
+    The 07-27 loss shape: the maker exit rests, the market trends, the exit never fills, and
+    nothing forces the issue until the settlement window — 42 ct rode from a -$0.59 touch exit to
+    -$15.29 at settlement. The pre-close flatten only arms near MARKET CLOSE; this is the same
+    grace-then-taker mechanism WITHOUT the close-window gate, so a strand is bounded in TIME
+    everywhere, not just at the end of a market's life.
+
+    Mechanics, in order (each one is a pinned test):
+      - per-ticker clock in `strand_state` (persisted as quoter_state['strand_grace']; cycles are
+        fresh processes) stamped when a NAKED residual >= INV_TOLERANCE first appears; cleared
+        when the ticker's naked residual drops below tolerance. The clock is a PROXY for "the
+        exit has been resting unfilled this long" — the unwind path rests the exit on the same
+        cycle the residual appears, so the two clocks are the same to within one cycle.
+      - fires only after STRAND_CROSS_S seconds AND only on residuals >= STOP_TAKER_MIN_CT (the
+        house taker threshold; smaller strands keep their maker exit only).
+      - the taker leg needs live mode AND TAKER_FLATTEN=1 — clock and telemetry run regardless.
+      - ONE capped IOC pass per ticker per firing (tries=1), then the clock RE-ARMS: consecutive
+        crosses are >= STRAND_CROSS_S apart, so a thin book is walked at most one touch-level per
+        period (the 07-27 STOP escalation walked DXY 0.52 -> 0.25 in 4 back-to-back IOCs; this
+        path cannot).
+      - the pass re-reads positions FRESH from the venue and re-derives the naked residual —
+        the cap is min(fresh |naked|), never the cycle-start snapshot (a fill between the
+        snapshot and the cross must shrink the cross, not be crossed again).
+      - _taker_cross_capped supplies fix 4's cancel(confirmed) -> cross -> re-rest ordering, so
+        the exit can never outlive the position and a partial cross never strands the residual."""
+    for t in list(strand_state):
+        if abs(naked_by.get(t, 0.0)) < INV_TOLERANCE:
+            strand_state.pop(t, None)                      # cleared -> forget the clock
+    due = []
+    for t, npos in naked_by.items():
+        if abs(npos) < INV_TOLERANCE:
+            continue
+        first = strand_state.setdefault(t, now.isoformat())
+        try:
+            elapsed = (now - parse_iso(first)).total_seconds()
+        except Exception:
+            strand_state[t] = now.isoformat()              # unparseable stamp -> restart the clock
+            continue
+        if elapsed >= STRAND_CROSS_S and abs(npos) >= STOP_TAKER_MIN_CT:
+            due.append(t)
+    if not due:
+        return
+    plan["strand_due"] = len(due)
+    if client.mode == "dry_run" or not TAKER_FLATTEN:
+        return                                             # clock + telemetry only, never a taker
+    try:
+        fresh_naked = ladder_pairing(_held_cost(client)[1])
+    except Exception:
+        plan["strand_read_failed"] = plan.get("strand_read_failed", 0) + 1
+        return                                             # blind -> do not cross (fail closed)
+    for t in due:
+        npos = fresh_naked.get(t, 0.0)
+        if abs(npos) < STOP_TAKER_MIN_CT:
+            strand_state.pop(t, None)                      # reduced since the snapshot -> stand down
+            continue
+        try:
+            flat, nc = _taker_cross_capped(client, t, int(round(abs(npos))), npos > 0,
+                                           tries=1, cost=(costs_by or {}).get(t, 0.0))
+        except Exception as e:
+            plan["strand_cross_failed"] = plan.get("strand_cross_failed", 0) + 1
+            print(f"WARNING strand cross RAISED on {t} (naked {npos:+.2f}): {e!r}")
+            continue
+        plan["strand_crossed_ct"] = round(plan.get("strand_crossed_ct", 0.0) + nc, 2)
+        print(f"strand cross {t}: naked {npos:+.2f} unfilled >= {STRAND_CROSS_S:.0f}s -> taker "
+              f"crossed {nc} ct ({'FLAT' if flat else 'RESIDUAL — maker exit re-rested'})")
+        if flat:
+            strand_state.pop(t, None)
+        else:
+            plan["strand_cross_failed"] = plan.get("strand_cross_failed", 0) + 1
+            strand_state[t] = now.isoformat()              # re-arm: paces the next pass
 
 
 def naked_held_cost(held_by, cost_by):
