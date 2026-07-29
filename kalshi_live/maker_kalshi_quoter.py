@@ -472,6 +472,16 @@ def _caprank_telemetry(rows, picked, now):
 #       one cycle later. Persisted in quoter_state so a restart cannot amnesty it.
 MKT_DAY_LOSS_EXITONLY_USD = _envf("KALSHI_MKT_DAY_LOSS_EXITONLY_USD", 0.0)   # 0 = OFF
 REENTRY_COOLDOWN_S = _envf("KALSHI_REENTRY_COOLDOWN_S", 0.0)                 # 0 = OFF
+# STOP-flatten pacing (self-audit A2-F4, 2026-07-29): while the STOP sentinel is present, every
+# heartbeat re-ran the FULL flatten — cancel, re-offset, sleep, and a fresh tries=4 taker burst
+# with a fresh slippage anchor — indefinitely, on any residual that would not fill (the C5 review
+# named this "a metronomic taker fire-sale" and fixed only the order-id collision). The first
+# invocation still flattens IMMEDIATELY; repeats are spaced at least this far apart (the maker
+# offsets it rested stay working the whole time). 0 = legacy every-heartbeat behavior.
+STOPFLAT_REPEAT_S = _envf("KALSHI_STOPFLAT_REPEAT_S", 1800.0)
+# stamp path is computed AT USE (not import): freezing it at import is the exact F17
+# import-once class this same audit flagged — and it broke the test harness, which
+# redirects DATA_DIR per test. Sidecar file because the STOP branch runs pre-state.
 
 PRESENCE_GATE = _envi("KALSHI_PRESENCE_GATE", 0)              # 0 = today's exact behavior
 VENUE_PAYOUT_FLOOR_USD = 1.00                                 # Kalshi's documented minimum payout
@@ -2008,8 +2018,26 @@ def run_once():
     client = KalshiOrderClient()          # dry_run unless operator-configured
     if os.path.exists(STOP_FILE):
         # emergency stop: cancel quotes + rest MAKER offsets to flatten passively (never taker).
+        _since = None
+        try:
+            with open(os.path.join(DATA_DIR, "stopflat.last")) as _fh:
+                _since = (now - parse_iso(_fh.read().strip())).total_seconds()
+        except Exception:
+            pass                                     # no/corrupt stamp -> treat as first run
+        if _since is not None and STOPFLAT_REPEAT_S > 0 and _since < STOPFLAT_REPEAT_S:
+            print(f"STOP sentinel present; flatten ran {_since:.0f}s ago "
+                  f"(< {STOPFLAT_REPEAT_S:.0f}s pacing) — offsets resting, standing by")
+            _release_lock(_lock)
+            return 0
         print("STOP sentinel present; maker-flattening (cancel quotes + rest offsets) + exiting")
         if client.mode != "dry_run":
+            try:
+                _sfp = os.path.join(DATA_DIR, "stopflat.last")
+                with open(_sfp + ".tmp", "w") as _fh:
+                    _fh.write(now.isoformat())
+                os.replace(_sfp + ".tmp", _sfp)
+            except Exception:
+                pass                                 # unpaceable is survivable; flatten anyway
             _flatten_all(client)
         _release_lock(_lock)
         return 0
@@ -3278,7 +3306,10 @@ def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
                                           time_in_force="immediate_or_cancel", post_only=False)
             o = resp.get("order") if isinstance(resp.get("order"), dict) else resp
             o = o or {}
-            fill = float(o.get("fill_count") or 0)           # CONFIRMED fill (venue-authoritative)
+            fill = float(o.get("fill_count_fp") or o.get("fill_count") or 0)   # _fp-first: GET-orders
+            # already migrated (probe 2026-07-29T18:50Z: fill_count=None, fill_count_fp set);
+            # the create-response still serves the legacy key (live crosses print nonzero),
+            # so the chain covers both dialects (self-audit A1-F1).           # CONFIRMED fill (venue-authoritative)
             # IOC must never rest. If the venue returned a still-open order (didn't honor IOC),
             # cancel it so a naked, non-post_only taker order can't linger past this pass (fix G).
             if str(o.get("status") or "").lower() in ("resting", "open", "active"):
@@ -3386,7 +3417,14 @@ def _flatten_all(client):
         print(f"flatten: waiting {STOP_ESCALATE_S}s for passive offsets to fill...")
         time.sleep(STOP_ESCALATE_S)
     try:
-        residual = {t: p for t, p in _held_cost(client)[1].items() if abs(p) >= STOP_TAKER_MIN_CT}
+        # NAKED residual only (self-audit A2-F1, 2026-07-29): pass 1 correctly offset only the
+        # unpaired inventory, but this escalation re-read the GROSS position and handed it to
+        # flatten_to_zero — which crosses ALL of it, de-pairing floored ladder pairs and
+        # cascading a second cross on the orphaned sibling. That is the exact defect audit F3
+        # fixed in the settle-taker the same morning; this ports the same fix to the STOP path:
+        # cap at |naked| via _taker_cross_capped so a paired leg is provably never crossed.
+        residual = {t: p for t, p in ladder_pairing(_held_cost(client)[1]).items()
+                    if abs(p) >= STOP_TAKER_MIN_CT}
     except Exception as e:
         print(f"flatten: could NOT re-read positions ({e!r}) — offsets remain resting; check manually")
         return
@@ -3397,10 +3435,14 @@ def _flatten_all(client):
         print(f"flatten: {len(residual)} residual position(s) but TAKER_FLATTEN=0 — left resting, check manually")
         return
     for t, pos in residual.items():
-        oids = [offset_oids[t]] if t in offset_oids else None   # pull our offset first (self-trade guard)
-        ok, c = flatten_to_zero(client, t, oids)
-        print(f"flatten: ESCALATED {t} pos={pos:+.2f} -> taker residual "
-              f"{'FLAT' if ok else 'RESIDUAL (check manually)'} ({c} crosses)")
+        try:
+            ok, c = _taker_cross_capped(client, t, int(round(abs(pos))), pos > 0,
+                                        cost=_costs.get(t, 0.0))
+        except Exception as e:
+            print(f"flatten: ESCALATION RAISED on {t} pos={pos:+.2f}: {e!r} — check manually")
+            continue
+        print(f"flatten: ESCALATED {t} naked={pos:+.2f} -> taker residual "
+              f"{'FLAT' if ok else 'RESIDUAL (check manually)'} ({c} ct crossed)")
 
 
 def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4, cost=0.0):
@@ -3460,7 +3502,10 @@ def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4, cost=0.0):
                                           time_in_force="immediate_or_cancel", post_only=False)
             o = resp.get("order") if isinstance(resp.get("order"), dict) else resp
             o = o or {}
-            fill = float(o.get("fill_count") or 0)             # CONFIRMED fill (venue-authoritative)
+            fill = float(o.get("fill_count_fp") or o.get("fill_count") or 0)   # _fp-first: GET-orders
+            # already migrated (probe 2026-07-29T18:50Z: fill_count=None, fill_count_fp set);
+            # the create-response still serves the legacy key (live crosses print nonzero),
+            # so the chain covers both dialects (self-audit A1-F1).             # CONFIRMED fill (venue-authoritative)
             # IOC must never rest; if the venue left it open (didn't honor IOC), cancel THAT order
             # (never our resting maker exit) so a naked non-post_only taker can't linger (fix G).
             if str(o.get("status") or "").lower() in ("resting", "open", "active"):
@@ -3527,6 +3572,15 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
         return []
     crossed = []       # tickers we PAID a taker to leave -> the caller's re-entry cooldown feed
     naked_by = ladder_pairing(held_by)
+    # STALE-STAMP PRUNE (self-audit A2-F3, 2026-07-29): a ticker that went fully FLAT vanishes
+    # from held_by/naked_by, so the per-ticker loop below never visits it and its grace stamp
+    # lived forever — re-entering that ticker days later, the ancient stamp made grace_elapsed
+    # enormous and the maker-first grace was silently skipped (first window cycle went straight
+    # to taker). Prune exactly like _strand_cross does.
+    for t in list(grace_state):
+        if abs(naked_by.get(t, 0.0)) < INV_TOLERANCE:
+            grace_state.pop(t, None)
+    _pc_taker_mkts = 0     # per-invocation market cap, same budget as the settle-taker
     for t, npos in naked_by.items():
         if abs(npos) < INV_TOLERANCE:
             grace_state.pop(t, None)                       # flat/paired -> forget any grace clock
@@ -3560,6 +3614,8 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
             continue                                       # maker grace still running -> no taker
         if abs(npos) < STOP_TAKER_MIN_CT:
             continue                                       # residue below taker threshold -> leave resting
+        if _pc_taker_mkts >= TAKER_MAX_MKTS:
+            continue                                       # per-invocation cost cap (mirrors settle-taker)
         # TAKER: cross AT MOST |naked| — cancel-confirmed first, re-rest after (reasons 1 & 3).
         if client.mode == "dry_run":
             continue                                       # never taker in plan-only mode
@@ -3572,6 +3628,7 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
             continue
         if nc:
             crossed.append(t)
+        _pc_taker_mkts += 1
         plan["preclose_taker_ct"] = round(plan.get("preclose_taker_ct", 0.0) + nc, 2)
         print(f"preclose flatten {t}: naked {npos:+.2f}, {mins:.1f}min to close -> taker crossed "
               f"{nc} ct ({'FLAT' if flat else 'RESIDUAL — maker exit re-rested'})")
@@ -3579,6 +3636,12 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
             grace_state.pop(t, None)                       # naked cleared -> forget the clock
         else:
             plan["preclose_taker_failed"] = plan.get("preclose_taker_failed", 0) + 1
+            # RE-ARM (self-audit A2-F2, 2026-07-29): without this the elapsed grace stayed far
+            # past STOP_ESCALATE_S forever, so the next daemon cycle (5-8s) fired ANOTHER
+            # tries=4 IOC burst with a fresh slippage anchor — repetition defeated the Q7 slip
+            # bound (the 07-27 STOP escalation walked DXY 0.52 -> 0.25 exactly this way).
+            # Same mechanism as _strand_cross: consecutive bursts >= STOP_ESCALATE_S apart.
+            grace_state[t] = now.isoformat()
     return crossed
 
 
