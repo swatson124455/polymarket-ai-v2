@@ -342,6 +342,58 @@ def _load_scores():
 # loaded ONCE at import and ONLY when the flag is on (flag-off does zero file IO -> provable no-op)
 SCORES = _load_scores() if SCORE_RANK else {}
 
+# --- CAPITAL-AWARE RANKING TELEMETRY (KALSHI_CAPRANK_TELEMETRY, default 0 = OFF, provable no-op) -
+# Operator-ordered 2026-07-29 (task #1), TELEMETRY-FIRST: the current rank is blind to dollars
+# committed per market and to per-market realized fill cost. This block only LOGS the would-be
+# capital-aware ordering alongside the actual one (caprank-YYYYMMDD.jsonl, one row per cycle) so
+# the operator can review the divergence on real cycles. Selection is UNTOUCHED — flipping the
+# live rank to cap_score is a separate, operator-named change. See kalshi_capital_rank.py.
+CAPRANK_TELEMETRY = _envi("KALSHI_CAPRANK_TELEMETRY", 0)
+# receipt-vs-model calibration multiplier on the capture term. STAYS 1.0 until the first real
+# reward credit lands (Thu 2026-07-31 ballot window) — receipts > models.
+CAPRANK_CALIB = _envf("KALSHI_CAPRANK_CALIB", 1.0)
+FILL_COST_PATH = os.environ.get("KALSHI_FILL_COST_PATH",
+                                os.path.join(DATA_DIR, "kalshi_fill_costs.json"))
+
+
+def _load_fill_costs():
+    """Fail-OPEN to {} -> every market costed $0/day; the shadow rank simply has no penalty term."""
+    try:
+        import kalshi_capital_rank
+        return kalshi_capital_rank.load_fill_costs(FILL_COST_PATH)
+    except Exception:
+        return {}
+
+
+# loaded ONCE at import and ONLY when the flag is on (flag-off does zero file IO -> provable no-op)
+FILL_COSTS = _load_fill_costs() if CAPRANK_TELEMETRY else {}
+
+
+def _caprank_telemetry(rows, picked, now):
+    """SHADOW ranking log — observation only, and structurally unable to alter selection: it
+    receives the already-final `picked`, returns nothing, and is wrapped so a telemetry fault
+    (bad row, full disk) can never break a live trading cycle (same contract as MKT_TELEMETRY)."""
+    if not CAPRANK_TELEMETRY or not rows:
+        return
+    try:
+        import kalshi_capital_rank as _kcr
+        shadow = _kcr.shadow_rank(rows, SCORES, FILL_COSTS, MAX_MARKET_CAPITAL, INV_HARD_CT,
+                                  now.timestamp(), calib=CAPRANK_CALIB,
+                                  swing_penalty=SCORE_SWING_PENALTY,
+                                  unknown_bonus=SCORE_UNKNOWN_BONUS)
+        actual = [r["ticker"] for r in picked[:FOOTPRINT_TOP]]
+        top = shadow[:FOOTPRINT_TOP]
+        shadow_t = [d["ticker"] for d in top]
+        row = {"ts": now.isoformat(), "actual": actual, "shadow": shadow_t,
+               "overlap": len(set(actual) & set(shadow_t)),
+               "would_enter": [t for t in shadow_t if t not in actual],
+               "would_exit": [t for t in actual if t not in shadow_t],
+               "components": top}
+        with open(os.path.join(DATA_DIR, f"caprank-{now.strftime('%Y%m%d')}.jsonl"), "a") as fh:
+            fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    except Exception:
+        _SILENT["caprank_fail"] += 1     # surfaced via plan["silent_failures"], never raises
+
 PRESENCE_GATE = _envi("KALSHI_PRESENCE_GATE", 0)              # 0 = today's exact behavior
 VENUE_PAYOUT_FLOOR_USD = 1.00                                 # Kalshi's documented minimum payout
 MIN_CREDIT_USD = _envf("KALSHI_MIN_CREDIT_USD", 1.20)         # venue floor + 20% modelling margin
@@ -967,6 +1019,7 @@ def select_footprint(progs, now):
                 progressed = True
                 if len(picked) >= FOOTPRINT_TOP:
                     break
+        _caprank_telemetry(rows, picked, now)   # observation only; no-op unless flag ON
         return picked
     # ---- PIVOT: density-weighted, over-selected, near-money-ordered candidate pool ----
     # The pool is deliberately LARGER than FOOTPRINT_TOP so the quote loop can read PAST markets
@@ -1010,6 +1063,7 @@ def select_footprint(progs, now):
         per_series[s] += 1
         if len(picked) >= pool_cap:
             break
+    _caprank_telemetry(rows, picked, now)       # observation only; no-op unless flag ON
     return picked
 
 
