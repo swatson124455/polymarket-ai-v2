@@ -83,7 +83,11 @@ def main():
              "?status=active&limit=10000" + (("&cursor=" + cursor) if cursor else ""))
         d = json.load(urllib.request.urlopen(u, timeout=30))
         progs.extend(d.get("incentive_programs", []))
-        cursor = d.get("cursor") or ""
+        # next_cursor, NOT "cursor": the incentive_programs family paginates with next_cursor
+        # (quoter + daemon both use it); "cursor" is the /portfolio family key. Latent today
+        # (limit=10000 covers ~3.3k programs in one page) but self-audit A1-F2 flagged it as
+        # the silent page-1-truncation class the moment the venue shrinks page sizes.
+        cursor = d.get("next_cursor") or ""
         if not cursor:
             break
     rows = candidate_rows(progs, top_n)
