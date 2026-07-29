@@ -76,18 +76,28 @@ def save(path, markets):
     os.replace(tmp, path)
 
 
+# ref_move is PER-CYCLE volatility; an observation after a long gap measures DRIFT, not
+# volatility (operator slate item G, 2026-07-29: a market read every 3h got one huge "move"
+# and was penalized for having been IGNORED, not for swinging). Gaps beyond this skip the
+# fold — the reference still updates, the EWMA just doesn't eat the drift.
+SWING_MAX_GAP_S = 600.0
+
+
 def update(markets, ticker, capture_usd_day, ref_yes, now=None):
     """Fold one observation into the cache. Pure dict mutation, no I/O — the caller owns the file
     so a scoring fault can never interrupt a trading cycle."""
     now = now if now is not None else _now()
     row = markets.get(ticker) or {}
     prev_ref = row.get("ref")
+    prev_ts = row.get("ts")
+    gap_ok = prev_ts is None or (now - float(prev_ts)) <= SWING_MAX_GAP_S
     move = 0.0
     if prev_ref is not None and ref_yes is not None:
         move = abs(float(ref_yes) - float(prev_ref))
     prev_move = row.get("ref_move")
-    row["ref_move"] = (move if prev_move is None
-                       else (EWMA_ALPHA * move + (1 - EWMA_ALPHA) * float(prev_move)))
+    if gap_ok:
+        row["ref_move"] = (move if prev_move is None
+                           else (EWMA_ALPHA * move + (1 - EWMA_ALPHA) * float(prev_move)))
     if ref_yes is not None:
         row["ref"] = float(ref_yes)
     row["capture"] = float(capture_usd_day or 0.0)
@@ -122,7 +132,8 @@ def score(markets, ticker, pool_usd_day, now=None, swing_penalty=1.0, unknown_bo
 
 
 def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,
-         swing_penalty=1.0, unknown_bonus=1.0, explore=0):
+         swing_penalty=1.0, unknown_bonus=1.0, explore=0,
+         incumbents=None, incumbency_bonus=0.0):
     """Order `rows` best-first by score. `explore` reserves that many slots at the FRONT for the
     least-recently-seen unscored markets, so the venue keeps getting swept even while known-good
     markets dominate the ranking. Without it the bot converges on whatever it happened to read
@@ -132,6 +143,12 @@ def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,
     for r in rows:
         s, kind = score(markets, r.get(ticker_key), r.get(pool_key), now,
                         swing_penalty, unknown_bonus)
+        # INCUMBENCY (operator slate item A, 2026-07-29): a market we are currently resting in
+        # holds an ASSET — queue position built by sitting, destroyed on exit — so a challenger
+        # must beat it by the bonus margin, not merely tie. Sunk LOSSES buy no loyalty (the
+        # loss governor handles those); only presence does. 0.0 = provable no-op.
+        if incumbents and incumbency_bonus > 0 and r.get(ticker_key) in incumbents:
+            s *= (1.0 + incumbency_bonus)
         scored.append((s, kind, r))
     scored.sort(key=lambda x: (-x[0], str(x[2].get(ticker_key))))
     if explore <= 0:
@@ -148,6 +165,7 @@ def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,
         return [r for _, _, r in scored]
     picked, seen_ids = [], set()
     for t in pool_of_candidates[:explore]:
+        t[2]["explore"] = True      # mark the sampling picks: probe-sizing (item E) keys on this
         picked.append(t[2])
         seen_ids.add(id(t[2]))
     rest = [r for _, _, r in scored if id(r) not in seen_ids]

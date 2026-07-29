@@ -329,6 +329,16 @@ SCORE_EXPLORE = _envi("KALSHI_SCORE_EXPLORE", 10)     # slots/cycle reserved for
 SCORE_SWING_PENALTY = _envf("KALSHI_SCORE_SWING_PENALTY", 1.0)
 SCORE_UNKNOWN_BONUS = _envf("KALSHI_SCORE_UNKNOWN_BONUS", 1.0)
 SCORE_PATH = os.environ.get("KALSHI_SCORE_PATH", os.path.join(DATA_DIR, "kalshi_market_scores.json"))
+# INCUMBENCY BONUS (operator slate item A, 2026-07-29, weighted heavily by operator): a market
+# we rested in LAST cycle keeps its seat unless a challenger beats it by this margin — the queue
+# position built by sitting is an asset, destroyed on exit. Value is PROVISIONAL (HYPOTHESIS)
+# until the Aug 1-2 receipts price a seat; sunk losses buy no loyalty (loss governor's job).
+INCUMBENCY_BONUS = _envf("KALSHI_INCUMBENCY_BONUS", 0.0)     # 0 = OFF (provable no-op)
+_INCUMBENT_TICKERS = set()          # prev cycle's standing tickers; refreshed each run_once
+# EXPLORE PROBE SIZING (operator slate item E: "$2 bopping around"): exploration slots get
+# probe-sized accumulating orders instead of full _capped_join size, so sampling a market
+# costs a few dollars of collateral, not an earner's full allocation. 0 = OFF (full size).
+EXPLORE_PROBE_CT = _envi("KALSHI_EXPLORE_PROBE_CT", 0)
 
 
 def _load_scores():
@@ -1088,7 +1098,8 @@ def select_footprint(progs, now):
             rows = kalshi_market_scores.rank(
                 SCORES, rows, now=now.timestamp(),
                 swing_penalty=SCORE_SWING_PENALTY, unknown_bonus=SCORE_UNKNOWN_BONUS,
-                explore=SCORE_EXPLORE)
+                explore=SCORE_EXPLORE,
+                incumbents=_INCUMBENT_TICKERS, incumbency_bonus=INCUMBENCY_BONUS)
         except Exception:
             _SILENT["rank_fail"] += 1        # silently fell back to POOL order
     # ROUND-ROBIN across series (review C18): a single high-pot series (50 concurrent hourly temp
@@ -2146,6 +2157,8 @@ def run_once():
             cursor = d.get("next_cursor") or ""
             if not cursor:
                 break
+        _INCUMBENT_TICKERS.clear()
+        _INCUMBENT_TICKERS.update(st.get("prev_standing_tickers") or [])
         footprint = select_footprint(progs, now)
         plan.update(FP_DROPS)                 # drop reasons (empty when a test patches selection)
         plan["programs_seen"] = len(progs)
@@ -2663,6 +2676,13 @@ def run_once():
                 quote_fail += 1
                 if first_quote_err is None:
                     first_quote_err = f"{t}: {e!r}"
+            # EXPLORE PROBE SIZING (item E): a sampling market rests probe-sized accumulating
+            # quotes — data budget, not an earnings seat. Unwind quotes are never shrunk.
+            if q and EXPLORE_PROBE_CT > 0 and m.get("explore"):
+                for _o5 in q:
+                    if _o5.get("reason") != "unwind" and _o5["count"] > EXPLORE_PROBE_CT:
+                        qstats["explore_probe_capped"] = qstats.get("explore_probe_capped", 0) + 1
+                        _o5["count"] = EXPLORE_PROBE_CT
             # LOSS GOVERNOR ENFORCEMENT: a tripped/cooling market keeps ONLY its reducing
             # quotes; accumulating ones are stripped here and the standing diff cancels any
             # already resting. Placed at the choke point every quoted market flows through.
@@ -2710,6 +2730,17 @@ def run_once():
         # unwind above. Rest the REDUCING side at reference so it still flattens passively;
         # the taker backstop only fires near settlement / on a hard breach.
         fp_tickers = {m["ticker"] for m in footprint}
+        # FOOTPRINT RETENTION GAUGE (operator slate item D, 2026-07-29): % of this cycle's
+        # footprint that was also in the last cycle's. THE stickiness meter — churn was only
+        # visible by post-processing jsonl (measured 07-29: median market present <1% of
+        # cycles). Written before any selection change ships so there is a before/after.
+        _prev_fp = set(st.get("prev_footprint") or [])
+        if _prev_fp and fp_tickers:
+            plan["fp_retained_pct"] = round(
+                100.0 * len(fp_tickers & _prev_fp) / len(fp_tickers), 1)
+        st["prev_footprint"] = sorted(fp_tickers)
+        # incumbency feed (item A): next cycle's incumbents = where we ACTUALLY rest now
+        st["prev_standing_tickers"] = sorted(standing.keys())
         for t, pos in list(naked_by.items()):
             if t in fp_tickers or t in flattened or abs(pos) < INV_TOLERANCE:
                 continue
