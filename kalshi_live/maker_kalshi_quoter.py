@@ -558,7 +558,11 @@ INV_HARD_CT = _envf("KALSHI_INV_HARD_CT", 80.0)
 # INVARIANT (fix H): a single JOIN fill must not by itself breach the hard cap, or one fill
 # overshoots the shapeable [SOFT,HARD] band before the next cycle can throttle. Clamp the
 # resting join size to the hard cap so accumulation stays inside the gradient we control.
-if INV_HARD_CT > 0 and JOIN_SIZE > int(INV_HARD_CT):
+# JOIN_SIZE == 0 (operator decision 2026-07-29: "set at any contract amount") means the join
+# has NO contract cap of its own — quote size is governed by DOLLARS (MAX_MARKET_CAPITAL/2 per
+# side) alone, bounded only by the fix-H hard envelope below so one fill still cannot blow
+# through the position ceiling. Positive values keep the legacy per-quote contract cap.
+if JOIN_SIZE > 0 and INV_HARD_CT > 0 and JOIN_SIZE > int(INV_HARD_CT):
     JOIN_SIZE = int(INV_HARD_CT)
 TICK = 0.01
 # --- taker de-risk BACKSTOP (the ONLY place the bot pays a taker fee) ---
@@ -989,9 +993,19 @@ def _levels(raw):
 
 def _capped_join(best, other_price):
     """Contracts to rest at `best` so this side's $ stays within half the
-    per-market cap; >=1 (caller gates unpriceable elsewhere)."""
+    per-market cap; >=1 (caller gates unpriceable elsewhere).
+
+    JOIN_SIZE 0 = no per-quote contract cap (operator 2026-07-29): dollars govern, with the
+    fix-H hard inventory envelope (INV_HARD_CT) as the only contract-level ceiling so a single
+    fill can never breach the position ceiling the throttle enforces."""
+    if best <= 0:
+        return max(1, 0)
     per_side = MAX_MARKET_CAPITAL / 2.0
-    n = min(JOIN_SIZE, int(per_side / best)) if best > 0 else 0
+    dollar_ct = int(per_side / best)
+    if JOIN_SIZE > 0:
+        n = min(JOIN_SIZE, dollar_ct)
+    else:
+        n = min(int(INV_HARD_CT), dollar_ct) if INV_HARD_CT > 0 else dollar_ct
     return max(1, n)
 
 

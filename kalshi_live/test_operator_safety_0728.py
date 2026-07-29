@@ -247,3 +247,28 @@ def test_series_deny_empty_is_a_noop(monkeypatch):
     picked = q.select_footprint([_prog("KXDXYDUD-26JUL29-T101.50")], q.utcnow())
     assert any(m["ticker"].startswith("KXDXY") for m in picked), \
         "empty deny-list must change nothing"
+
+
+# ---- E. JOIN_SIZE=0 = DOLLAR-GOVERNED QUOTES (operator decision 2026-07-29) -------------------
+
+def test_join_size_zero_lets_dollars_govern(monkeypatch):
+    # $40 market cap -> $20/side; at price 0.50 that is 40 ct — the old JOIN_SIZE=20 clipped it.
+    monkeypatch.setattr(q, "JOIN_SIZE", 0)
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 40.0)
+    monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    assert q._capped_join(0.50, 0.49) == 40, "dollars must govern when JOIN_SIZE=0"
+
+
+def test_join_size_zero_still_respects_the_hard_envelope(monkeypatch):
+    # fix-H invariant survives: at price 0.10, $20/side would be 200 ct, but one fill must not
+    # blow through the INV_HARD_CT position ceiling — the envelope is the only contract bound.
+    monkeypatch.setattr(q, "JOIN_SIZE", 0)
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 40.0)
+    monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    assert q._capped_join(0.10, 0.90) == 80, "hard inventory envelope must still cap one fill"
+
+
+def test_positive_join_size_keeps_legacy_cap(monkeypatch):
+    monkeypatch.setattr(q, "JOIN_SIZE", 20)
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 40.0)
+    assert q._capped_join(0.50, 0.49) == 20, "positive JOIN_SIZE must behave exactly as before"
