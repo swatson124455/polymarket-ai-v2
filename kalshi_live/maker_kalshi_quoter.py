@@ -904,7 +904,9 @@ def select_footprint(progs, now):
     # cheap second check on whatever this pass could not price).
     if MAX_DAYS_TO_CLOSE > 0 and rows:
         _kept, _checked = [], 0
-        _budget = FOOTPRINT_TOP * 4                    # bounded first-cycle read cost; cached after
+        # ≤ half the cycle read budget (live 15:15Z: 4x FOOTPRINT starved ctx.build -> hot path
+        # down for the cycle). Cache warms over 2-3 cycles instead of 1; nothing else starves.
+        _budget = min(FOOTPRINT_TOP * 4, max(40, READ_BUDGET_PER_CYCLE // 2))
         for _ri, r in enumerate(rows):
             if len(_kept) >= FOOTPRINT_TOP * 2 or _checked >= _budget:
                 _kept.extend(rows[_ri:])               # tail unchecked -> run_once belt handles it
