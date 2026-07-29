@@ -1032,9 +1032,15 @@ def _unwind_size(base, price, inv):
     int() (truncate), NEVER round(): Kalshi positions are fractional (position_fp e.g. 1.6), and
     round(1.6)=2 rests MORE than held — a full fill would cross THROUGH flat by 0.4 ct (opposite
     dust). Truncating rests 1, leaving 0.6 ct of sub-minimum dust that NO order can act on anyway
-    (venue min order = 1 ct) — provably-never-overshoot."""
-    room = int(MAX_MARKET_CAPITAL / price) if price > 0 else int(abs(inv))
-    return max(1, min(int(abs(inv)), room))
+    (venue min order = 1 ct) — provably-never-overshoot.
+
+    audit F12 (2026-07-29): the `room` dollar bound is GONE. It was harmless in the 20-ct era
+    (room never bound) but at 80-ct fills it clipped the exit to ~53 ct, leaving the tail with
+    no resting exit until the strand cross paid taker fees for it. A reducing order is capped at
+    |inv| (can never overshoot), FREES collateral on fill, and the house doctrine already exempts
+    reducing orders from every capital gate — so dollars must not clip the exit either.
+    `price` is retained for call-site compatibility; it no longer sizes anything."""
+    return max(1, int(abs(inv)))
 
 
 def _ok_entry_price(p):
@@ -1501,10 +1507,16 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         cap = best_y * add_y + best_n * add_n
         if cap > MAX_ACTIVATE_CAPITAL:
             return []                               # too expensive to activate
+        # audit F1 clamp (2026-07-29): activate counts get the SAME fix-H contract ceiling as
+        # joins — without it a $40 activate at low prices could rest hundreds of contracts into
+        # a book that is thin by definition of void, and one fill would dwarf INV_HARD_CT.
+        _acl = int(INV_HARD_CT) if INV_HARD_CT > 0 else 10 ** 9
         if int(add_y) >= 1:
-            quotes.append({"side": "yes", "price_dollars": best_y, "count": int(add_y), "reason": "activate"})
+            quotes.append({"side": "yes", "price_dollars": best_y,
+                           "count": min(int(add_y), _acl), "reason": "activate"})
         if int(add_n) >= 1:
-            quotes.append({"side": "no", "price_dollars": best_n, "count": int(add_n), "reason": "activate"})
+            quotes.append({"side": "no", "price_dollars": best_n,
+                           "count": min(int(add_n), _acl), "reason": "activate"})
     else:
         # HOLDING => EXIT ONLY (operator directive 2026-07-27; made UNCONDITIONAL by the Q1
         # decision 2026-07-28). This is THE line that turned a single adverse fill into a
@@ -2114,7 +2126,10 @@ def run_once():
             hist = [h for h in st.get("held_hist", [])
                     if now.timestamp() - h[0] < BREAKER_WINDOW_S]
             hist.append([now.timestamp(), risk_cost])
-            st["held_hist"] = hist[-max(30, BREAKER_WINDOW_S // 60):]
+            # audit F8 (2026-07-29): retention must cover the WINDOW at the daemon's 5-8s
+            # event-driven cadence, not the retired 60s-timer cadence — 30 samples spanned only
+            # ~2.5-4 min of a 600s window, silently shortening the velocity lookback.
+            st["held_hist"] = hist[-max(150, BREAKER_WINDOW_S // 4):]
             # trips on VELOCITY (rapid growth = adverse accumulation) OR LEVEL (total unpaired
             # held-$ above the day's-rewards-scale ceiling) — either way: reduce-only below.
             breaker = (risk_cost - min(h[1] for h in hist) > BREAKER_HELD_GROWTH_USD
@@ -2171,10 +2186,14 @@ def run_once():
                     # COUNT it so a persistent blind spot in the settlement backstop is visible.
                     plan["settle_check_failed"] = plan.get("settle_check_failed", 0) + 1
                 if near_settle:                         # ONLY genuine last resort: settling soon
-                    # NOTE: flatten_to_zero crosses the ticker's FULL venue position (its own
-                    # fresh read), which can include a paired leg — bounded pennies, rare, and
-                    # never a flip (capped at |pos0|). The TRIGGER is naked-only by design.
-                    ok, nc = flatten_to_zero(client, t, oids_by_t.get(t))
+                    # audit F3 (2026-07-29): was flatten_to_zero on the FULL venue position —
+                    # "paired leg = bounded pennies" was a 20-ct-era claim; at 31-80 ct legs a
+                    # full-position cross de-pairs the ladder and cascades a second cross on the
+                    # orphaned sibling ($5-8/occurrence). Now capped at |naked| via
+                    # _taker_cross_capped (cancel-confirmed -> cross -> re-rest): the paired
+                    # remainder self-hedges to settlement exactly as ladder_pairing intends.
+                    ok, nc = _taker_cross_capped(client, t, int(round(abs(pos))), pos > 0,
+                                                 cost=cost_by.get(t, 0.0))
                     # HONEST OUTCOME (masking audit 07-22): flatten_to_zero cancels the ticker's
                     # resting orders FIRST, so a FAILED flatten (book unreadable / every IOC
                     # rejected / zero liquidity) leaves the position naked with NO reducing quote.
@@ -2189,11 +2208,20 @@ def run_once():
                     # in `standing` and the ordinary reconcile handles them; popping on ok only
                     # costs a few redundant-cancel fails in the rare crossed-but-residual case.
                     if ok:
-                        standing.pop(t, None)           # confirmed flat -> book truly clear
+                        standing.pop(t, None)           # cancel-confirmed -> book truly clear
                         taker_flattens += 1
-                        flattened.add(t)
-                        held_by.pop(t, None)
-                        naked_by.pop(t, None)
+                        naked_by[t] = 0.0               # NAKED cleared; the PAIR may remain
+                        _pair_left = abs(held_by.get(t, 0.0)) - abs(pos)
+                        if _pair_left < INV_TOLERANCE:
+                            # nothing (or dust) remains -> fully retire the ticker as before
+                            flattened.add(t)
+                            held_by.pop(t, None)
+                            naked_by.pop(t, None)
+                        else:
+                            # a self-hedging pair rides to settlement BY DESIGN (F3): keep it in
+                            # held_by so ev_delta/unwind bookkeeping still sees it, and do NOT
+                            # mark it flattened (the strand-unwind loop may keep a maker reduce).
+                            held_by[t] = held_by.get(t, 0.0) - pos
                     else:
                         taker_failed += 1
                         print(f"WARNING taker flatten FAILED on {t} (pos={pos:+.2f}, {nc} crosses) "
@@ -2780,9 +2808,19 @@ def run_once():
                 plan["netev_min_signal"] = round(qstats.get("netev_min_signal", 0.0), 4)
                 plan["netev_skipped_families"] = qstats.get("netev_families", {})
     finally:
-        # bookkeeping ALWAYS runs, even if the cycle body raised
-        append_plan(plan)
-        save_state(st)
+        # bookkeeping ALWAYS runs, even if the cycle body raised.
+        # audit F6 (2026-07-29): each step individually guarded — in the LONG-LIVED daemon a
+        # raise here (e.g. disk full in append_plan) used to skip save_state AND leak the flock
+        # fd, wedging every later cycle into "another instance holds the lock" with live quotes
+        # still resting. Telemetry loss is acceptable; a wedged daemon is not.
+        try:
+            append_plan(plan)
+        except Exception as _fe:
+            print(f"WARNING append_plan FAILED ({_fe!r}) — telemetry row lost, cycle continues")
+        try:
+            save_state(st)
+        except Exception as _fe:
+            print(f"WARNING save_state FAILED ({_fe!r}) — state not persisted this cycle")
         _release_lock(_lock)
     # escalate to WARNING on a SYSTEMATIC failure (not per-item noise): most quotes
     # failing to compute, most creates rejected, or the whole footprint gated out.

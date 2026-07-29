@@ -302,3 +302,68 @@ def test_activate_never_emits_zero_count_orders(monkeypatch):
     assert all(x["count"] >= 1 for x in qs), f"zero-count order emitted: {qs}"
     sides = {x["side"] for x in qs if x["reason"] == "activate"}
     assert sides == {"no"}, f"only the SHORT side should activate, got {qs}"
+
+
+# ---- G. AUDIT SET (operator "do all", 2026-07-29) ---------------------------------------------
+
+def test_activate_counts_clamped_at_hard_envelope(monkeypatch):
+    # F1 clamp: a $40 activate at low prices must never rest more than INV_HARD_CT contracts.
+    monkeypatch.setattr(q, "JOIN_SIZE", 0)
+    monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    monkeypatch.setattr(q, "MAX_ACTIVATE_CAPITAL", 40.0)
+    m = {"ticker": "T1", "target": 300, "end": "2099-01-01T00:00:00Z"}
+    yl = [["0.10", "5"]]                              # thin void book, cheap side
+    nl = [["0.85", "5"]]
+    qs = q.desired_quotes(m, yl, nl, q.utcnow(), inv=0.0)
+    for x in qs:
+        assert x["count"] <= 80, f"activate exceeded the hard envelope: {x}"
+
+
+def test_unwind_size_never_clipped_by_dollars(monkeypatch):
+    # F12: the FULL position must get a resting exit — 80 ct at an 0.75 exit price used to be
+    # clipped to 53 by the room bound, stranding 27 ct for the taker to pay for.
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 40.0)
+    assert q._unwind_size(20, 0.75, 80.0) == 80
+    assert q._unwind_size(20, 0.75, -80.0) == 80      # short polarity identical
+    assert q._unwind_size(20, 0.75, 1.6) == 1         # truncate-not-round overshoot guard intact
+
+
+def test_settle_backstop_crosses_naked_only_keeps_the_pair(monkeypatch, tmp_path):
+    # F3: near settle, a 40-ct pair + 6-ct naked must cross AT MOST 6 — the pair self-hedges.
+    import json as _json
+    _cfg(monkeypatch, join=20, mktcap=40, totcap=280)
+    monkeypatch.setattr(q, "TAKER_FLATTEN", True)
+    monkeypatch.setattr(q, "SETTLE_UNWIND_MIN", 30)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    monkeypatch.setattr(q, "STRAND_CROSS_S", 0)       # isolate the settle path from the strand
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+    calls = []
+    real_tcc = q._taker_cross_capped
+
+    def rec_tcc(client, t, cap_ct, long_yes, **k):
+        calls.append((t, cap_ct, long_yes))
+        return True, cap_ct
+    monkeypatch.setattr(q, "_taker_cross_capped", rec_tcc)
+
+    from datetime import timedelta
+
+    def pg(p):
+        if "incentive" in p:
+            return {"incentive_programs": [], "next_cursor": ""}
+        if p.endswith("/orderbook"):
+            return {"orderbook_fp": {"yes_dollars": [["0.50", "999"]],
+                                     "no_dollars": [["0.49", "999"]]}}
+        if "/markets/" in p:
+            return {"market": {"close_time": (q.utcnow() + timedelta(minutes=10)).isoformat()}}
+        return {}
+    monkeypatch.setattr(q, "public_get", pg)
+    # ladder pair: +46 low strike, -40 high strike -> 40 paired, +6 naked on the low strike
+    c = MockClient(mode="live", positions=[
+        {"ticker": "KXAAAGASW-26JUL29-4.140", "position_fp": "46.0",
+         "market_exposure_dollars": "23.00"},
+        {"ticker": "KXAAAGASW-26JUL29-4.160", "position_fp": "-40.0",
+         "market_exposure_dollars": "20.00"}])
+    _run(monkeypatch, c, str(tmp_path))
+    assert calls, "settle backstop did not fire"
+    for t, cap_ct, _ in calls:
+        assert cap_ct <= 6, f"settle path crossed more than the naked residual: {calls}"

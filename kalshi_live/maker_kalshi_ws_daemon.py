@@ -628,11 +628,43 @@ class Daemon:
         finally:
             self.in_cold = False
 
+    @staticmethod
+    def _bootstrap_ticker():
+        """audit F13 (2026-07-29): the hardcoded bootstrap market expires 2026-07-31. Fetch any
+        open market for the empty-first-cycle case; the hardcoded name is only the last resort."""
+        try:
+            mkts = M.public_get("/trade-api/v2/markets?limit=1&status=open").get("markets") or []
+            if mkts and mkts[0].get("ticker"):
+                return mkts[0]["ticker"]
+        except Exception:
+            pass
+        return "KXB200MON-26JUL31-6.960"
+
+    @staticmethod
+    def _purge_old_telemetry(days=14):
+        """audit F6 (2026-07-29): the event-driven cadence writes 15-25x the timer era's
+        telemetry; unbounded growth is the disk-full trigger for the finally-block wedge the
+        quoter now also guards against. Best-effort, never raises."""
+        import glob as _glob
+        cutoff = time.time() - days * 86400
+        for pat in ("plans-*.jsonl", "quotes-*.jsonl"):
+            for p in _glob.glob(os.path.join(M.DATA_DIR, pat)):
+                try:
+                    if os.path.getmtime(p) < cutoff:
+                        os.unlink(p)
+                except OSError:
+                    pass
+
     async def main(self):
         _log({"ev": "daemon_start", "mode": self.client.mode, "hot": bool(WS_HOT),
               "book_cold": bool(WS_BOOK_COLD), "cold_s": WS_COLD_S})
+        self._purge_old_telemetry()
         tickers = await self._run_cold() or set()
-        watch = sorted(tickers)[:40] or ["KXB200MON-26JUL31-6.960"]
+        # audit F9 (2026-07-29): the [:40] cap predates FOOTPRINT_TOP=60 and truncated
+        # ALPHABETICALLY — markets we actually quote could be off the fast feed entirely (no
+        # mirror, no hot defence). 80 covers the full footprint plus held stragglers, making
+        # the (unordered-set) truncation moot.
+        watch = sorted(tickers)[:80] or [self._bootstrap_ticker()]
         feed = self._new_feed(watch)
         stop_ev = asyncio.Event()
         feed_task = asyncio.create_task(feed.run(stop_event=stop_ev))
@@ -649,8 +681,8 @@ class Daemon:
                 if (triggered and gap_ok) or due:
                     self.cycle_req.clear()
                     new = await self._run_cold()
-                    if new and sorted(new)[:40] != watch:
-                        watch = sorted(new)[:40]      # footprint changed: resubscribe
+                    if new and sorted(new)[:80] != watch:
+                        watch = sorted(new)[:80]      # footprint changed: resubscribe (F9: 80)
                         self.last_refs = {t: v for t, v in self.last_refs.items()
                                           if t in set(watch)}
                         stop_ev.set()

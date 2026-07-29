@@ -478,10 +478,10 @@ def test_unwind_size_never_overshoots_inventory(monkeypatch):
     assert q._unwind_size(80, 0.50, 5) == 5            # capped at |inv|, NOT floored at base=80
     assert q._unwind_size(80, 0.50, 3.4) == 3          # fractional inv rounds, still <= |inv|
     assert q._unwind_size(80, 0.50, 50) == 50          # normal case: rest exactly the position
-    # room bound = FULL MAX_MARKET_CAPITAL now (review C6/C10: reducing side has no paired side to
-    # share the per-market budget). Pinned with == (not <=): the old /2 room returned 126 here, so
-    # a <= assertion would pass on BOTH builds and pin nothing.
-    assert q._unwind_size(80, 0.99, 400) == int(250 / 0.99)         # 252 post-fix; 126 pre-fix
+    # REWRITTEN 2026-07-29 (audit F12, operator "do all"): the room DOLLAR bound is deleted —
+    # it clipped big exits (80 ct @ 0.75 -> 53) and stranded the tail for the taker. The exit
+    # always sizes the FULL |inv|; the overshoot guard (never > |inv|) above is the only cap.
+    assert q._unwind_size(80, 0.99, 400) == 400        # dollars must never clip the exit
     assert q._unwind_size(80, 0.50, 200) == 200        # |inv| within room -> exactly the position
     # end-to-end: a +5 long-yes ticker rests a NO unwind of exactly 5 (no overshoot).
     # (Pre-Q1 the reducing half of a TWO-SIDED quote was ADD+|inv| so a double fill landed
