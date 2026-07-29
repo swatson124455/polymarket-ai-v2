@@ -154,3 +154,31 @@ Ranked by leverage. Tier: state facts MEASURED, reward figures MODEL/unverified.
 - **FIRST RECEIPT unlocks:** #1 promotion, then #13 gates, #6 revisit, #3 cap sizing.
 - **DO NOT do ahead of receipts:** anything receipt-calibrated (#13) or any
   structural change that rides the live cutover unproven.
+
+### 7–12. Session-8 Kalshi-audit ports (E-A…E-F, built 07-29, on branch, default-off)
+Audit: Poly engine vs Kalshi maker (their 07-29 LIVE_SCALED handoff + post-07-22
+commits, read-only design reference; no blind copy; taker/exit machinery = N/A by
+platform). Gate chain: 181 tests, 9 mutants killed, independent adversarial review
+SHIP-WITH-FIXES (all fixes applied), isolated 3-run VPS paper smoke PASS.
+
+- **E-A two-arm halt** (`MAKER_DAY_REALIZED_FLOOR_USD`, 0=off). Elevates: the
+  single mark-fed floor took the paper arm dark twice on NOISE-tier mark swings
+  (07-25: settle_realized −$0.57 of the −$76.20 trip); the REALIZED arm fires on
+  settlement-realized loss only and its kill message self-diagnoses. Hinders:
+  same-day resume re-fires by design (documented in the message); one more knob.
+- **E-B config fail-loud**: `off` disables MAKER_ONESIDED_DERISK (twin of the
+  Stage-A ws_hot footgun); banner echoes caps/derisk/rfloor/clock. Hinders: none
+  found (print + parse-set only).
+- **E-C market-clock veto** (`MAKER_MIN_HOURS_TO_END`/`MAKER_MAX_DAYS_TO_END`,
+  0=off): automates the 07-25 expiring-cluster exclusion at DISCOVERY; fail-closed
+  on unparseable end when enabled. Hinders: staged 24h veto cut 38 of 64
+  allowlisted survivors at review time (MEASURED, reviewer's live-gamma read) —
+  intended, but shrinks the pickable set.
+- **E-D funnel audit** (`mm_funnel_audit.py`, read-only): per-market first-gate
+  waterfall; GAP-4-class diagnosis becomes one command. Hinders: needs engine env.
+- **E-E capital-aware ranking** (softness probe extension): share-model rew/day ÷
+  measured committed capital (both BUY legs ≈ msz·(1−v)); the Kalshi task-#1 shape.
+  Hinders: MODEL until receipts; fill-cost term deferred to post-receipt tape.
+- **E-F signal-only monitor** (`mm_live_monitor.py`, read-only stdin filter):
+  KILL/halt transitions/pnl jumps/derisk1/zombie signals only; validated 7/7
+  against the real 07-25 kill tape. Hinders: none (consumes text).
