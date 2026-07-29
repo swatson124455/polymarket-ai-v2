@@ -367,3 +367,66 @@ def test_settle_backstop_crosses_naked_only_keeps_the_pair(monkeypatch, tmp_path
     assert calls, "settle backstop did not fire"
     for t, cap_ct, _ in calls:
         assert cap_ct <= 6, f"settle path crossed more than the naked residual: {calls}"
+
+
+# ---- H. FALSE-STOP ROOT FIX (operator 2026-07-29: ratchet arm on COST basis) ------------------
+
+def test_mark_oscillation_cannot_tick_the_ratchet(monkeypatch, tmp_path):
+    # The 14:25:25Z false halt: mark flicker walked the ratchet to $41.89 while cash never moved.
+    # Now: bid drops (mark down) but cash+cost unchanged -> down stays 0, no STOP even at $1.
+    _cfg(monkeypatch)
+    _fp(monkeypatch)
+    monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1000.0)   # isolate the ratchet arm
+    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 1.0)
+    monkeypatch.setattr(q, "STOP_ESCALATE_S", 0)
+    c = MockClient(mode="live", positions=_held(pos="50", exposure="25.00"))
+    _run(monkeypatch, c, str(tmp_path))                     # seeds baselines (bid 0.50)
+    crashed = {"orderbook_fp": {"yes_dollars": [["0.30", "9999"]],
+                                "no_dollars": [["0.69", "9999"]]}}
+    monkeypatch.setattr(q, "public_get",
+                        lambda p: {"incentive_programs": [], "next_cursor": ""}
+                        if "incentive" in p else crashed)
+    c2 = MockClient(mode="live", positions=_held(pos="50", exposure="25.00"))
+    row = _run(monkeypatch, c2, str(tmp_path))              # mark -$10, cash unchanged
+    assert not os.path.exists(os.path.join(str(tmp_path), "STOP")), \
+        "mark-only moves must never trip the ratchet arm"
+    assert row.get("daily_down") == 0.0
+
+
+def test_realized_loss_still_ticks_the_ratchet(monkeypatch, tmp_path):
+    # Anti-treadmill guarantee intact: CASH drops (realized) -> ratchet accrues -> STOP.
+    _cfg(monkeypatch)
+    _fp(monkeypatch)
+    monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1000.0)
+    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 5.0)
+    monkeypatch.setattr(q, "STOP_ESCALATE_S", 0)
+    c = MockClient(mode="live", positions=_held())
+    _run(monkeypatch, c, str(tmp_path))                     # balance 100 (mock default)
+
+    class PoorClient(MockClient):
+        def get_balance(self):
+            return {"balance_dollars": "90.0000"}           # -$10 realized
+    c2 = PoorClient(mode="live", positions=_held())
+    _run(monkeypatch, c2, str(tmp_path))
+    assert os.path.exists(os.path.join(str(tmp_path), "STOP")), \
+        "realized cash losses must still ratchet to a halt"
+
+
+def test_down_basis_migration_discards_mark_noise_once(monkeypatch, tmp_path):
+    # A pre-fix state file carries $39 of accumulated mark noise; the migration must zero it
+    # instead of letting the first cost-basis tick push it over the limit.
+    import json as _json
+    _cfg(monkeypatch)
+    _fp(monkeypatch)
+    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 40.0)
+    day = q.utcnow().strftime("%Y%m%d")
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
+        _json.dump({"equity_day": day, "equity_day_start": 105.0, "equity_day_peak": 105.0,
+                    "equity_day_down": 39.0, "equity_prev": 105.0,
+                    "equity_basis": "mark"}, f)
+    c = MockClient(mode="live", positions=_held())
+    _run(monkeypatch, c, str(tmp_path))
+    st = _json.load(open(os.path.join(str(tmp_path), "quoter_state.json")))
+    assert st.get("down_basis") == "cost"
+    assert st.get("equity_day_down") == 0.0
+    assert not os.path.exists(os.path.join(str(tmp_path), "STOP"))

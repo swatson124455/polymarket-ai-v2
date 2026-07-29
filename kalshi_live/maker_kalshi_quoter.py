@@ -2059,34 +2059,46 @@ def run_once():
                 # drop-from-day-start behaviour intact as a FLOOR: the meter is >= the old one on
                 # every input, never weaker.
                 _day = now.strftime("%Y%m%d")
+                _equity_cost = free_cash + held_cost
+                # ROOT FIX (operator order 2026-07-29 "fix false stop issue at the root", after
+                # the live 14:25:25Z false halt: ratchet $41.89 of mark noise vs TRUE drawdown
+                # $18.44). The two arms now measure DIFFERENT BASES — each exactly what it is for:
+                #   dd   (DAILY_LOSS_HALT_USD)  MARK equity vs the day's peak. Sees unrealized
+                #        collapse (the 07-27 gap). "Stop if I'm down $X" in real money.
+                #   down (DAILY_DOWN_HALT_USD)  COST-BASIS equity decreases only. An entry moves
+                #        cash down and held cost up by the SAME amount, so churn and book flicker
+                #        CANNOT tick it — only realized/settled losses do. The false-stop class
+                #        is dead by construction, while the anti-treadmill guarantee stands: a
+                #        realize-loss / recover / realize-again cycle still ratchets.
+                if st.get("down_basis") != "cost":
+                    st["down_basis"] = "cost"          # one-time migration: discard the counter's
+                    st["equity_day_down"] = 0.0        # accumulated MARK noise; re-seed the basis
+                    st["equity_prev_cost"] = _equity_cost
                 if st.get("equity_day") != _day:
                     st["equity_day"] = _day
                     st["equity_day_start"] = _equity
                     st["equity_day_peak"] = _equity
                     st["equity_day_down"] = 0.0
                     st["equity_prev"] = _equity
+                    st["equity_prev_cost"] = _equity_cost
                 else:
                     _start = float(st.get("equity_day_start", _equity))
                     _peak = max(float(st.get("equity_day_peak", _start)), _equity)
-                    _prev = float(st.get("equity_prev", _equity))
-                    _down = float(st.get("equity_day_down", 0.0)) + max(0.0, _prev - _equity)
+                    _prev_cost = float(st.get("equity_prev_cost", _equity_cost))
+                    _down = float(st.get("equity_day_down", 0.0)) + max(0.0, _prev_cost - _equity_cost)
                     st["equity_day_peak"] = _peak
                     st["equity_day_down"] = _down
-                    st["equity_prev"] = _equity
+                    st["equity_prev"] = _equity        # mark-equity telemetry continuity
+                    st["equity_prev_cost"] = _equity_cost
                     _dd = _peak - _equity
                     plan["daily_dd"] = round(_dd, 2)
                     plan["daily_down"] = round(_down, 2)
-                    # TWO DIFFERENT MEASURES, TWO DIFFERENT LIMITS (2026-07-26). These were both
-                    # compared against DAILY_LOSS_HALT_USD via max(), which makes the tighter of
-                    # the two the effective limit for BOTH — and they are not the same quantity:
-                    #   _dd    TRUE DRAWDOWN from the day's peak. Falls back when equity recovers.
-                    #          This is what an operator means by "stop if I'm down $X".
-                    #   _down  CUMULATIVE sum of every per-cycle DECREASE. It RATCHETS and never
-                    #          resets on recovery, so ordinary mark noise walks it upward all day
-                    #          regardless of whether we are actually losing.
-                    # Setting the halt to $10 tripped INSTANTLY on a _down of $21.72 that had been
-                    # accumulating for hours while true drawdown was $4.76 — a mechanically correct
-                    # halt that meant nothing economically.
+                    # TWO DIFFERENT MEASURES, TWO DIFFERENT LIMITS (2026-07-26; bases split
+                    # 2026-07-29):
+                    #   _dd    TRUE DRAWDOWN from the day's peak, MARK basis. Falls back when
+                    #          equity recovers. What an operator means by "stop if I'm down $X".
+                    #   _down  CUMULATIVE sum of per-cycle COST-BASIS decreases. Ratchets on
+                    #          realized/settled losses only; immune to spread accounting.
                     drop = max(_dd, _down)
                     # NAME THE LIMB THAT ACTUALLY BREACHED (2026-07-26). The message used to
                     # render `cumulative-down $X > $DAILY_LOSS_HALT_USD` unconditionally — the
