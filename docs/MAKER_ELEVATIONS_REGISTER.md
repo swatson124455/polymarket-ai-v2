@@ -182,3 +182,25 @@ SHIP-WITH-FIXES (all fixes applied), isolated 3-run VPS paper smoke PASS.
 - **E-F signal-only monitor** (`mm_live_monitor.py`, read-only stdin filter):
   KILL/halt transitions/pnl jumps/derisk1/zombie signals only; validated 7/7
   against the real 07-25 kill tape. Hinders: none (consumes text).
+
+### GAP-4 CAP-SIZING DESIGN PROPOSAL (S8, operator-directed follow-up to the
+### fired derisk1 trigger; PROPOSE-ONLY — no code until receipts + an operator
+### capital number)
+Trigger record (MEASURED, 07-25 journal): derisk1 63->650 in ~10 quoting hours;
+deny market_gross_cap=5901 cumulative; 65/140 markets denied on the live arm
+(07-23 hb) vs 30/140 in the original census — the flat $150 gross cap is the
+binding constraint on the FULL universe (it cannot bind the sub-$150 pilot).
+
+Design (Kalshi capital-aware-ranking shape, re-derived for OUR gate):
+  market_gross_cap_i = clamp(K_msz * msz_i * (1 - v_i), CAP_MIN, CAP_MAX)
+- msz_i*(1-v_i) = measured cost of ONE two-sided min quote (both legs BUY);
+  K_msz = how many min-quote units of inventory a market may accumulate
+  (the current flat $150 at msz=$100 weather ~= K 1.5; at msz=$20 ~= K 7.5 —
+  the flat cap is secretly a WILDLY uneven K, which is the whole defect).
+- CAP_MIN/CAP_MAX + a portfolio budget check (sum of caps vs wallet) are the
+  operator capital decision; sector caps stay as-is on top.
+- Ship telemetry-FIRST (the Kalshi task-1 pattern): log would-be msz-cap
+  denies alongside actual flat-cap denies for >=3 days on the paper arm,
+  THEN flip behind a default-off env knob with the full gate chain.
+Blockers by design: (1) first receipts (income model calibration), (2) the
+operator wallet/budget number, (3) RULE NINE sign-off to activate.
