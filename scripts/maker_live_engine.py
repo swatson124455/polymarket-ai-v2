@@ -624,12 +624,17 @@ def discover(base, cfg):
         picked.extend(ms[:cfg["max_per_sector"]])
     picked.sort(key=lambda x: -x["pool"])
     picked = picked[:cfg["max_markets"]]
-    if allow and not picked and dropped_allow:
+    if not picked and (dropped_allow or dropped_clock):
         # universe.json is only written when picked is non-empty, so this log
-        # line is the ONLY evidence when a typo'd allowlist drops everything
-        print("discovery: sector allowlist %s matched ZERO of %d rewarded "
-              "markets — check MAKER_SECTOR_ALLOWLIST for typos"
-              % (sorted(allow), dropped_allow + dropped_excl), flush=True)
+        # line is the ONLY evidence when the filters drop everything — and it
+        # must name BOTH filters or it misdiagnoses (review S8-F2: a clock
+        # wipe-out would have read as an allowlist typo)
+        print("discovery: ZERO markets survived filters — allowlist %s "
+              "dropped %d, clock veto dropped %d, excluded %d; check "
+              "MAKER_SECTOR_ALLOWLIST / MAKER_MIN_HOURS_TO_END / "
+              "MAKER_MAX_DAYS_TO_END"
+              % (sorted(allow) or "off", dropped_allow, dropped_clock,
+                 dropped_excl), flush=True)
     if picked:
         with open(os.path.join(base, "universe.json"), "w") as f:
             json.dump({"t": time.time(), "markets": picked,
@@ -2551,9 +2556,12 @@ def run(base, cfg):
                               f"{meta.get('settle_realized_day', 0.0):.2f} "
                               f"rfloor=-{cfg['day_realized_floor']:.2f} "
                               f"(settlement-realized loss, NOT mark noise — "
-                              f"real outcomes went against held inventory; "
-                              f"review the settlements ledger before "
-                              f"resuming)")
+                              f"real outcomes went against held inventory. "
+                              f"NOTE a same-day resume RE-FIRES this arm "
+                              f"within a minute: realized loss cannot "
+                              f"un-realize until the UTC day rolls over; "
+                              f"resume after rollover or with a raised "
+                              f"MAKER_DAY_REALIZED_FLOOR_USD)")
 
             _save_state(base, state_path, state)
 

@@ -1531,7 +1531,25 @@ def test_discover_allowlist_zero_match_logs_loudly(tmp_path, monkeypatch, capsys
     page = [_gamma_market("p1", "politics")]
     monkeypatch.setattr(mle, "get", lambda url, timeout=15: page)
     assert mle.discover(str(tmp_path), cfg_over(sector_allowlist={"wether"})) == []
-    assert "matched ZERO" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # message reworded by review S8-F2: it must stay LOUD and now must name
+    # BOTH zero-out filters (allowlist AND clock veto), not just the allowlist
+    assert "ZERO markets survived" in out
+    assert "MAKER_SECTOR_ALLOWLIST" in out and "MAKER_MIN_HOURS_TO_END" in out
+
+
+def test_discover_clock_wipeout_logs_loudly_too(tmp_path, monkeypatch, capsys):
+    """Review S8-F2: a clock veto that eliminates every survivor must NOT
+    read as an allowlist typo — the zero-picked line names the clock counts."""
+    page = [_gamma_market("p1", "politics")]
+    monkeypatch.setattr(mle, "get", lambda url, timeout=15: page)
+    # no allowlist at all; end date unparseable -> fail-closed veto with the
+    # clock knob on -> zero picked, and the log must still fire
+    for m in page:
+        m["endDate"] = "not-a-date"
+    assert mle.discover(str(tmp_path), cfg_over(min_hours_to_end=24.0)) == []
+    out = capsys.readouterr().out
+    assert "ZERO markets survived" in out and "clock veto dropped 1" in out
 
 
 # ── merge-aware capital accounting (the capital deadlock, 07-22) ────────────
@@ -2231,3 +2249,17 @@ def test_config_clock_validation():
     c = mle.load_config(env={"MAKER_MIN_HOURS_TO_END": "24",
                              "MAKER_MAX_DAYS_TO_END": "8"})
     assert c["min_hours_to_end"] == 24.0 and c["max_days_to_end"] == 8.0
+
+
+def test_run_wires_realized_arm_to_settle_realized_day():
+    """Caller-level pin (review S8-F1): the minute loop must consult the
+    REALIZED arm and feed it settle_realized_day — kills the delete-the-elif
+    and wrong-key mutants that guard-only tests cannot see. The live-fire
+    proof is the paper smoke's seeded REALIZED-arm kill."""
+    import inspect
+    src = inspect.getsource(mle.run)
+    assert "day_realized_breached(" in src
+    call = src.split("day_realized_breached(", 1)[1][:120]
+    assert "settle_realized_day" in call, (
+        "REALIZED arm must read meta['settle_realized_day'], not day_pnl")
+    assert "REALIZED arm" in src   # kill-message names the arm
