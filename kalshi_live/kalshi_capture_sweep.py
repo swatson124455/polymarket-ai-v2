@@ -92,7 +92,10 @@ def main():
     out_markets, read_fail = {}, 0
     for r in rows:
         try:
-            ob = c.get_orderbook(r["ticker"]).get("orderbook") or {}
+            # orderbook_fp, NOT the legacy "orderbook" envelope — same key the quoter's own
+            # REST path reads (maker_kalshi_quoter._get_book); plain-name fields are the
+            # canonical Kalshi API-shape trap and parse as empty books.
+            ob = c.get_orderbook(r["ticker"]).get("orderbook_fp") or {}
             cap, ref = prospective_capture(
                 q, r, ob.get("yes_dollars") or [], ob.get("no_dollars") or [], now)
             out_markets[r["ticker"]] = {"capture": round(cap, 4), "ref": ref,
