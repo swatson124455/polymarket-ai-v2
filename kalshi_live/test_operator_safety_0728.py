@@ -272,3 +272,33 @@ def test_positive_join_size_keeps_legacy_cap(monkeypatch):
     monkeypatch.setattr(q, "JOIN_SIZE", 20)
     monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 40.0)
     assert q._capped_join(0.50, 0.49) == 20, "positive JOIN_SIZE must behave exactly as before"
+
+
+# ---- F. AUDIT F2/F10 REGRESSION FIXES (2026-07-29, JOIN_SIZE=0 follow-ups) --------------------
+
+def test_dollar_count_is_quantized_against_tick_churn(monkeypatch):
+    # F10: a 1-tick reference move must NOT change the desired count (queue position is the
+    # earning). 0.50 -> 40 ct; 0.51 -> raw 39 quantizes to 35 only after ~5 ticks of drift.
+    monkeypatch.setattr(q, "JOIN_SIZE", 0)
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 40.0)
+    monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    assert q._capped_join(0.50, 0.49) == 40
+    assert q._capped_join(0.51, 0.48) == 35          # one boundary, not one-per-tick
+    assert q._capped_join(0.52, 0.47) == 35          # ...and stable across the next ticks
+    assert q._capped_join(0.53, 0.46) == 35
+    assert q._capped_join(0.10, 0.89) == 80          # hard clamp unaffected (multiple of 5)
+    assert q._capped_join(0.90, 0.09) >= 1           # tiny counts never quantize to zero
+
+
+def test_activate_never_emits_zero_count_orders(monkeypatch):
+    # F2: one side already meets Target (add=0) -> that side must be SKIPPED, not sent as a
+    # count-0 order the venue rejects every cycle.
+    monkeypatch.setattr(q, "JOIN_SIZE", 0)
+    monkeypatch.setattr(q, "MAX_ACTIVATE_CAPITAL", 150.0)
+    m = {"ticker": "T1", "target": 100, "end": "2099-01-01T00:00:00Z"}
+    yl = [["0.50", "500"]]                           # yes side already deep (ext >= target)
+    nl = [["0.49", "10"]]                            # no side short by 90
+    qs = q.desired_quotes(m, yl, nl, q.utcnow(), inv=0.0)
+    assert all(x["count"] >= 1 for x in qs), f"zero-count order emitted: {qs}"
+    sides = {x["side"] for x in qs if x["reason"] == "activate"}
+    assert sides == {"no"}, f"only the SHORT side should activate, got {qs}"

@@ -1006,6 +1006,14 @@ def _capped_join(best, other_price):
         n = min(JOIN_SIZE, dollar_ct)
     else:
         n = min(int(INV_HARD_CT), dollar_ct) if INV_HARD_CT > 0 else dollar_ct
+        # QUANTIZE (audit F10, 2026-07-29): a dollar-governed count follows the reference price,
+        # so without this a 1-tick move changes the count by 1 and the exact-match diff cancels +
+        # re-places the order — forfeiting queue position (the thing rewards pay for) and
+        # no-oping the Stage-B same-count reprice. Round DOWN to a multiple of 5 (>=5), so the
+        # count only changes when the price has moved ~5+ ticks; the hard clamp (multiple of 5
+        # by construction at the 80 default) and small counts (<5) are unaffected.
+        if n >= 5:
+            n = (n // 5) * 5
     return max(1, n)
 
 
@@ -1484,13 +1492,19 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                     stats["standdown"] = stats.get("standdown", 0) + 1
                     stats["standdown_min_rho"] = min(stats.get("standdown_min_rho", 1e18), _eff)
                 return []                           # reward too thin to justify Target-size activate
-        add_y = max(JOIN_SIZE, target - ext_y)
-        add_n = max(JOIN_SIZE, target - ext_n)
+        # audit F2 (2026-07-29): with JOIN_SIZE=0 the old max(JOIN_SIZE, target-ext) floor could
+        # go to ZERO on a book short on only one side — and this branch appended the count-0
+        # quote unconditionally (venue 400s it every cycle). Floor each side at 0 and only
+        # append sides with a whole contract to add; JOIN_SIZE>0 keeps the legacy floor.
+        add_y = max(JOIN_SIZE, target - ext_y) if JOIN_SIZE > 0 else max(0.0, target - ext_y)
+        add_n = max(JOIN_SIZE, target - ext_n) if JOIN_SIZE > 0 else max(0.0, target - ext_n)
         cap = best_y * add_y + best_n * add_n
         if cap > MAX_ACTIVATE_CAPITAL:
             return []                               # too expensive to activate
-        quotes.append({"side": "yes", "price_dollars": best_y, "count": int(add_y), "reason": "activate"})
-        quotes.append({"side": "no", "price_dollars": best_n, "count": int(add_n), "reason": "activate"})
+        if int(add_y) >= 1:
+            quotes.append({"side": "yes", "price_dollars": best_y, "count": int(add_y), "reason": "activate"})
+        if int(add_n) >= 1:
+            quotes.append({"side": "no", "price_dollars": best_n, "count": int(add_n), "reason": "activate"})
     else:
         # HOLDING => EXIT ONLY (operator directive 2026-07-27; made UNCONDITIONAL by the Q1
         # decision 2026-07-28). This is THE line that turned a single adverse fill into a
