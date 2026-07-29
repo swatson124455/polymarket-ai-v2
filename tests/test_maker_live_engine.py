@@ -2144,3 +2144,90 @@ def test_run_never_rebinds_module_singletons():
         assert name not in locals_, (
             f"{name} is a local in run() -> it is REBOUND somewhere (must be "
             f"mutated in place); this shadows the module global and crashes")
+
+
+# ── session-8 elevations: two-arm halt, off-string, market-clock veto ───────
+def test_config_onesided_derisk_off_string_disables():
+    """'off' must disable — the natural disable word evaluating to ON is the
+    footgun the Stage A review caught on MAKER_WS_HOT (its pre-existing twin
+    here, flagged 07-25, closed now)."""
+    for off in ("off", "OFF", "Off"):
+        assert mle.load_config(
+            env={"MAKER_ONESIDED_DERISK": off})["onesided_derisk"] is False
+    # unset/blank keep the documented ON default
+    assert mle.load_config(env={})["onesided_derisk"] is True
+    assert mle.load_config(
+        env={"MAKER_ONESIDED_DERISK": ""})["onesided_derisk"] is True
+
+
+def test_realized_arm_off_by_default():
+    """Default MAKER_DAY_REALIZED_FLOOR_USD=0 = arm OFF: no realized loss,
+    however large, may fire it (kills the `fl > 0` -> `fl >= 0` mutant)."""
+    g = mle.Guards(mle.load_config(env={}))
+    assert g.cfg["day_realized_floor"] == 0.0
+    assert not g.day_realized_breached(-1e9)
+
+
+def test_realized_arm_fires_on_settle_realized_only():
+    g = mle.Guards(cfg_over(day_realized_floor=15.0))
+    assert not g.day_realized_breached(-14.9)
+    assert not g.day_realized_breached(-15.0)   # strict <, boundary pinned
+    assert g.day_realized_breached(-15.1)
+    assert not g.day_realized_breached(0.0)
+    assert not g.day_realized_breached(20.0)
+
+
+def test_realized_arm_independent_of_mark_floor():
+    """The two arms measure different things: a mark-only loss must not fire
+    the realized arm (the 07-23/07-25 halts: pnl=-76.20 with
+    settle_realized=-0.57 would NOT have tripped a $15 realized arm)."""
+    g = mle.Guards(cfg_over(day_realized_floor=15.0, day_loss_floor=75.0))
+    assert g.day_floor_breached({}, -76.20)
+    assert not g.day_realized_breached(-0.57)
+
+
+def test_config_realized_floor_validation():
+    with pytest.raises(ValueError):
+        mle.load_config(env={"MAKER_DAY_REALIZED_FLOOR_USD": "-1"})
+
+
+def test_clock_veto_off_by_default():
+    """Both knobs 0 => never vetoes, even unparseable end (kills any mutant
+    that fail-closes with the gate disabled)."""
+    now = 1_800_000_000.0
+    assert not mle.clock_vetoed(None, now, 0.0, 0.0)
+    assert not mle.clock_vetoed(now - 999, now, 0.0, 0.0)   # already ended
+    assert not mle.clock_vetoed(now + 1e9, now, 0.0, 0.0)
+
+
+def test_clock_veto_min_hours():
+    now = 1_800_000_000.0
+    assert mle.clock_vetoed(now + 23 * 3600, now, 24.0, 0.0)
+    assert mle.clock_vetoed(now - 100, now, 24.0, 0.0)       # expired
+    assert not mle.clock_vetoed(now + 25 * 3600, now, 24.0, 0.0)
+
+
+def test_clock_veto_max_days():
+    now = 1_800_000_000.0
+    assert mle.clock_vetoed(now + 9 * 86400, now, 0.0, 8.0)
+    assert not mle.clock_vetoed(now + 7 * 86400, now, 0.0, 8.0)
+    assert not mle.clock_vetoed(now + 3600, now, 0.0, 8.0)   # near end: allowed
+
+
+def test_clock_veto_unparseable_end_fails_closed_when_enabled():
+    now = 1_800_000_000.0
+    assert mle.clock_vetoed(None, now, 24.0, 0.0)
+    assert mle.clock_vetoed(None, now, 0.0, 8.0)
+
+
+def test_config_clock_validation():
+    with pytest.raises(ValueError):
+        mle.load_config(env={"MAKER_MIN_HOURS_TO_END": "-1"})
+    with pytest.raises(ValueError):
+        mle.load_config(env={"MAKER_MAX_DAYS_TO_END": "-0.5"})
+    with pytest.raises(ValueError):   # min > max*24: everything vetoed
+        mle.load_config(env={"MAKER_MIN_HOURS_TO_END": "50",
+                             "MAKER_MAX_DAYS_TO_END": "2"})
+    c = mle.load_config(env={"MAKER_MIN_HOURS_TO_END": "24",
+                             "MAKER_MAX_DAYS_TO_END": "8"})
+    assert c["min_hours_to_end"] == 24.0 and c["max_days_to_end"] == 8.0

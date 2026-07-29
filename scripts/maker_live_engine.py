@@ -167,6 +167,24 @@ def load_config(env=None):
         "sector_gross_cap": f("MAKER_SECTOR_GROSS_CAP_USD", 600.0),
         "sector_caps": sector_caps,          # per-sector override of gross cap
         "day_loss_floor": f("MAKER_DAY_LOSS_FLOOR_USD", 75.0),
+        # REALIZED halt arm (Kalshi two-arm halt re-derived Poly-native).
+        # The existing floor above is MARK-fed (portfolio_net includes marks,
+        # which are NOISE-tier): both paper-arm halts (07-23, 07-25) tripped
+        # on mark movement with settle_realized near zero. This second arm
+        # watches settle_realized_day ONLY (on Polymarket realized loss ==
+        # settlement outcomes; positions have no other exit). 0 = arm OFF =
+        # behavior unchanged. When set, size the MARK floor to tolerate mark
+        # noise and this arm to catch real settlement bleed.
+        "day_realized_floor": f("MAKER_DAY_REALIZED_FLOOR_USD", 0.0),
+        # Market-clock selection vetoes (default 0 = OFF = unchanged).
+        # min_hours: drop markets whose end is nearer than this at DISCOVERY
+        # (the 07-25 softness trap: expiring markets carry huge stale daily
+        # rates but ~zero real window + settlement risk). max_days: drop
+        # markets whose end is farther than this (capital locked to
+        # resolution — on Polymarket resolution IS the exit). When a veto is
+        # enabled, an unparseable end date fails CLOSED (vetoed).
+        "min_hours_to_end": f("MAKER_MIN_HOURS_TO_END", 0.0),
+        "max_days_to_end": f("MAKER_MAX_DAYS_TO_END", 0.0),
         "freshness_s": f("MAKER_FRESHNESS_S", 180.0),
         "size_jitter": f("MAKER_SIZE_JITTER", 0.20),
         "px_jitter_ticks": int(f("MAKER_PX_JITTER_TICKS", 1)),
@@ -179,8 +197,11 @@ def load_config(env=None):
         # — two-sided MIN — so this buys risk reduction only, never income.
         # Default ON: it can only add quoting in a state that otherwise
         # produces silence, and it is risk-reducing by construction.
+        # "off" MUST disable: the natural disable word silently evaluating
+        # to ON is the exact footgun the Stage A review caught on MAKER_WS_HOT
+        # (empty string is NOT in the set: unset/blank = the ON default).
         "onesided_derisk": (env.get("MAKER_ONESIDED_DERISK", "1")
-                            .strip().lower() not in ("0", "false", "no")),
+                            .strip().lower() not in ("0", "false", "no", "off")),
         # WS hot path: re-run the guarded cycle ON a book tick instead of a
         # fixed 1 s timer. Default OFF = the unchanged 1 Hz loop (the rollback).
         # ws_min_s (from MAKER_WS_MIN_MS) is the spin-guard floor between cycles.
@@ -216,6 +237,14 @@ def load_config(env=None):
                          "(exclude a sector via MAKER_EXCLUDED_SECTORS)")
     if out["max_markets"] <= 0 or out["max_per_sector"] <= 0:
         raise ValueError("market count knobs must be > 0")
+    if out["day_realized_floor"] < 0:
+        raise ValueError("MAKER_DAY_REALIZED_FLOOR_USD must be >= 0 (0 = off)")
+    if out["min_hours_to_end"] < 0 or out["max_days_to_end"] < 0:
+        raise ValueError("market-clock knobs must be >= 0 (0 = off)")
+    if (out["min_hours_to_end"] > 0 and out["max_days_to_end"] > 0
+            and out["min_hours_to_end"] > out["max_days_to_end"] * 24.0):
+        raise ValueError("MAKER_MIN_HOURS_TO_END exceeds MAKER_MAX_DAYS_TO_END"
+                         " — every market would be vetoed")
     if not (0.0 < out["ws_min_s"] < 1.0):
         raise ValueError("MAKER_WS_MIN_MS must be in (0, 1000)")
     if not (0.0 < out["ws_full_s"] <= 10.0):
@@ -501,6 +530,21 @@ def fetch_tape(cid, since_ts):
     return out
 
 
+def clock_vetoed(end_ts, now, min_hours, max_days):
+    """Market-clock selection veto (pure, testable). 0 = that veto off.
+    With a veto ENABLED, an unparseable end (None) fails CLOSED: a market
+    whose clock we cannot read is not admitted past a clock gate."""
+    if min_hours <= 0 and max_days <= 0:
+        return False
+    if end_ts is None:
+        return True
+    if min_hours > 0 and (end_ts - now) < min_hours * 3600.0:
+        return True
+    if max_days > 0 and (end_ts - now) > max_days * 86400.0:
+        return True
+    return False
+
+
 def discover(base, cfg):
     """Rewarded-universe discovery (v5 semantics) + engine extras: excluded
     sectors filtered OUT (they are policy-excluded, don't spend WS/tape on
@@ -508,7 +552,9 @@ def discover(base, cfg):
     rows, seen = [], set()
     dropped_excl = 0
     dropped_allow = 0
+    dropped_clock = 0
     allow = cfg.get("sector_allowlist") or set()
+    now_disc = time.time()
     for page in range(21):
         q = urllib.parse.urlencode({"active": "true", "closed": "false", "limit": 100,
                                     "offset": page * 100, "order": "volume24hr",
@@ -547,6 +593,13 @@ def discover(base, cfg):
             if allow and sec not in allow:
                 dropped_allow += 1
                 continue
+            # market-clock veto LAST so the allowlist/excluded counters keep
+            # their established meaning; sits BEFORE ranking/truncation so a
+            # shrunk max_markets can never re-admit a clock-dead market
+            if clock_vetoed(parse_iso(m.get("endDate")), now_disc,
+                            cfg["min_hours_to_end"], cfg["max_days_to_end"]):
+                dropped_clock += 1
+                continue
             try:
                 tick = float(m.get("orderPriceMinTickSize") or 0) or 0.001
             except (TypeError, ValueError):
@@ -582,6 +635,7 @@ def discover(base, cfg):
             json.dump({"t": time.time(), "markets": picked,
                        "dropped_excluded": dropped_excl,
                        "dropped_allowlist": dropped_allow,
+                       "dropped_clock": dropped_clock,
                        "sector_allowlist": sorted(allow)}, f)
     return picked
 
@@ -1065,6 +1119,12 @@ class Guards:
 
     def day_floor_breached(self, state, day_pnl):
         return day_pnl < -self.cfg["day_loss_floor"]
+
+    def day_realized_breached(self, settle_realized_day):
+        """REALIZED halt arm: settlement-realized day loss only — immune to
+        NOISE-tier mark swings by construction. Disabled at floor 0."""
+        fl = self.cfg["day_realized_floor"]
+        return fl > 0 and settle_realized_day < -fl
 
 
 def parse_post_orders_resp(resp, n):
@@ -1867,7 +1927,17 @@ def run(base, cfg):
           f"style={cfg['style']} max_mkts={cfg['max_markets']} "
           f"excluded={sorted(cfg['excluded_sectors'])} "
           f"allowlist={sorted(cfg['sector_allowlist']) or 'off'} "
-          f"floor=${cfg['day_loss_floor']:.0f} halted={meta.get('halted', False)} "
+          f"floor=${cfg['day_loss_floor']:.0f} "
+          + (f"rfloor=${cfg['day_realized_floor']:.0f} "
+             if cfg['day_realized_floor'] > 0 else "")
+          + f"caps=${cfg['market_gross_cap']:.0f}/${cfg['event_cap']:.0f}"
+          f"/${cfg['sector_gross_cap']:.0f} "
+          f"derisk={cfg['onesided_derisk']} "
+          + (f"clock=[{cfg['min_hours_to_end']:.0f}h,"
+             f"{cfg['max_days_to_end']:.0f}d] "
+             if (cfg['min_hours_to_end'] > 0 or cfg['max_days_to_end'] > 0)
+             else "")
+          + f"halted={meta.get('halted', False)} "
           f"ws_hot={cfg['ws_hot']}"
           + (f"(min={cfg['ws_min_s']*1000:.0f}ms)" if cfg['ws_hot'] else "")
           + (f" ws_targeted=True(full={cfg['ws_full_s']*1000:.0f}ms)"
@@ -2463,12 +2533,26 @@ def run(base, cfg):
             meta["day_pnl"] = day_pnl        # read by the in-minute guard deny
             if not meta.get("halted") and guards.day_floor_breached(state, day_pnl):
                 kill_sequence(execc, state, base,
-                              f"day loss floor: pnl={day_pnl:.2f} "
+                              f"day loss floor (MARK arm): pnl={day_pnl:.2f} "
                               f"floor=-{cfg['day_loss_floor']:.2f} "
                               f"(of which settle_realized="
                               f"{meta.get('settle_realized_day', 0.0):.2f} — "
                               f"a stale-loss settlement kill is not live "
                               f"bleed; check settlements ledger before "
+                              f"resuming)")
+            elif not meta.get("halted") and guards.day_realized_breached(
+                    meta.get("settle_realized_day", 0.0)):
+                # REALIZED arm: fires only on settlement-realized loss — the
+                # component mark noise cannot touch. Named so the HALT file
+                # self-diagnoses which measure breached.
+                kill_sequence(execc, state, base,
+                              f"day loss floor (REALIZED arm): "
+                              f"settle_realized="
+                              f"{meta.get('settle_realized_day', 0.0):.2f} "
+                              f"rfloor=-{cfg['day_realized_floor']:.2f} "
+                              f"(settlement-realized loss, NOT mark noise — "
+                              f"real outcomes went against held inventory; "
+                              f"review the settlements ledger before "
                               f"resuming)")
 
             _save_state(base, state_path, state)
