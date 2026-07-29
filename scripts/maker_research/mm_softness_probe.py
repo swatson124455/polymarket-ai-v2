@@ -89,9 +89,9 @@ def main():
         # our score: min-size (msz) two-sided, wide (each leg at s = v/2)
         our_leg = S(v, v / 2.0, m["msz"])
         try:
-            _, cy, ny = book_mid_and_score(m["yes"], v)
+            my, cy, ny = book_mid_and_score(m["yes"], v)
             time.sleep(0.15)
-            _, cn, nn = book_mid_and_score(m["no"], v)
+            mn, cn, nn = book_mid_and_score(m["no"], v)
             time.sleep(0.15)
         except Exception as e:            # noqa: BLE001
             print(f"{m['id']:<9} FETCH-FAIL {str(e)[:40]} — SKIP (not 'soft')")
@@ -105,16 +105,36 @@ def main():
         theirs = cy + cn
         share = ours / (ours + theirs) if (ours + theirs) > 0 else 0.0
         rew_day = share * m["pool"]
-        rows.append((share, rew_day, m))
+        # capital a min-size two-sided quote actually COMMITS: both legs are
+        # BUYS (YES bid at mid_y - v/2, NO bid at mid_n - v/2), so
+        # cost ~= msz * (mid_y + mid_n - v) ~= msz * (1 - v). Computed from
+        # the measured mids, not assumed. MODEL tier like rew_day.
+        cost = m["msz"] * max(0.01, (my - v / 2.0) + (mn - v / 2.0))
+        cap_eff = rew_day / cost
+        rows.append((share, rew_day, m, cost, cap_eff))
         print("%-9s %-8s $%-4.0f $%5.0f %8.2f %8.1f%% $%7.2f  %s"
               % (m["id"], m["sector"][:8], m["msz"], m["pool"], theirs,
                  100 * share, rew_day, m["q"][:40]))
     print()
     rows.sort(key=lambda r: -r[0])          # rank by SHARE (softness), not pool
     print("# RANKED BY SHARE (soft = high share = few competitors in the band):")
-    for share, rew_day, m in rows[:8]:
+    for share, rew_day, m, cost, cap_eff in rows[:8]:
         print("  %5.1f%% share  $%6.2f rew/day(model)  %-8s $%-4.0f  %s"
               % (100 * share, rew_day, m["sector"][:8], m["msz"], m["q"][:44]))
+    # CAPITAL-AWARE view (session-8 E-E, Kalshi task-#1 shape re-derived
+    # Poly-native): rew/day per dollar the two-sided min quote commits. The
+    # numerator is the COMPETITION-measured share model — never bare
+    # pool/msz, which the numbers ledger warns anti-predicts realized yield.
+    if rows:
+        print()
+        print("# RANKED BY CAPITAL EFFICIENCY (model $/day per $ committed"
+              " at min size; cost from measured mids):")
+        for share, rew_day, m, cost, cap_eff in \
+                sorted(rows, key=lambda r: -r[4])[:8]:
+            print("  %6.3f $/day/$  ($%5.2f/day / $%5.0f cost)  %5.1f%% share"
+                  "  %-8s  %s"
+                  % (cap_eff, rew_day, cost, 100 * share,
+                     m["sector"][:8], m["q"][:36]))
     if rows:
         print()
         print("# NOTE share is a SNAPSHOT model — competitors' reaction to our")

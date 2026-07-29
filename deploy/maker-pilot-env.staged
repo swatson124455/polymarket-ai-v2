@@ -67,3 +67,13 @@ MAKER_QUOTE_STYLE=wide
 #    it is NEGATIVELY correlated with realized yield (adverse-selection risk,
 #    not quality), so it is NOT used to rank. A real softness measure would
 #    have to be built.
+
+# ── session-8 elevations (2026-07-29, Kalshi-audit ports; operator reviews at cutover)
+# Two-arm halt: the single mark-fed floor tripped the paper arm twice on mark
+# noise (07-25: pnl=-76.20, settle_realized=-0.57). REALIZED arm catches real
+# settlement bleed; the $15 MARK floor above stays as the wallet-protection arm.
+MAKER_DAY_REALIZED_FLOOR_USD=10
+# Market-clock veto: no market entering selection with <24h of life (the 07-25
+# expiring-cluster trap) or >30d to end (capital locked to resolution).
+MAKER_MIN_HOURS_TO_END=24
+MAKER_MAX_DAYS_TO_END=30
