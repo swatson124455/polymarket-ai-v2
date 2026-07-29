@@ -385,6 +385,38 @@ def _load_prospective():
         return {}
 
 
+def _caprank_variants():
+    """The knob-sets the shadow is scored under EVERY cycle — so risk-aversion settings are
+    chosen from logged evidence, not blind (operator 2026-07-29: 'can we shadow on multiple
+    settings, thats a massive change blind'). The 'env' variant is whatever the three
+    KALSHI_CAPRANK_* knobs say (defaults 1.0 = the un-leaned score); 'lean'/'averse' are fixed
+    comparison points. KALSHI_CAPRANK_VARIANTS (a JSON list of {name, risk_lambda,
+    prospective_haircut, unknown_haircut}) REPLACES the two fixed ones; a malformed value
+    fails open to the defaults. The env variant is always first and always present."""
+    variants = [{"name": "env", "risk_lambda": CAPRANK_RISK_LAMBDA,
+                 "prospective_haircut": CAPRANK_PROSPECTIVE_HAIRCUT,
+                 "unknown_haircut": CAPRANK_UNKNOWN_HAIRCUT}]
+    extra = [{"name": "lean", "risk_lambda": 2.0,
+              "prospective_haircut": 0.8, "unknown_haircut": 0.5},
+             {"name": "averse", "risk_lambda": 3.0,
+              "prospective_haircut": 0.6, "unknown_haircut": 0.25}]
+    raw = os.environ.get("KALSHI_CAPRANK_VARIANTS")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            cleaned = []
+            for v in parsed if isinstance(parsed, list) else []:
+                cleaned.append({"name": str(v["name"]),
+                                "risk_lambda": float(v["risk_lambda"]),
+                                "prospective_haircut": float(v["prospective_haircut"]),
+                                "unknown_haircut": float(v["unknown_haircut"])})
+            if cleaned:
+                extra = cleaned
+        except Exception:
+            pass                               # malformed env -> the fixed defaults
+    return variants + extra
+
+
 def _caprank_telemetry(rows, picked, now):
     """SHADOW ranking log — observation only, and structurally unable to alter selection: it
     receives the already-final `picked`, returns nothing, and is wrapped so a telemetry fault
@@ -393,22 +425,30 @@ def _caprank_telemetry(rows, picked, now):
         return
     try:
         import kalshi_capital_rank as _kcr
-        shadow = _kcr.shadow_rank(rows, SCORES, _load_fill_costs(), MAX_MARKET_CAPITAL,
-                                  INV_HARD_CT, now.timestamp(), calib=CAPRANK_CALIB,
-                                  swing_penalty=SCORE_SWING_PENALTY,
-                                  unknown_bonus=SCORE_UNKNOWN_BONUS,
-                                  prospective=_load_prospective(),
-                                  risk_lambda=CAPRANK_RISK_LAMBDA,
-                                  prospective_haircut=CAPRANK_PROSPECTIVE_HAIRCUT,
-                                  unknown_haircut=CAPRANK_UNKNOWN_HAIRCUT)
+        costs = _load_fill_costs()           # read ONCE per cycle, shared by every variant
+        prospective = _load_prospective()
         actual = [r["ticker"] for r in picked[:FOOTPRINT_TOP]]
-        top = shadow[:FOOTPRINT_TOP]
-        shadow_t = [d["ticker"] for d in top]
-        row = {"ts": now.isoformat(), "actual": actual, "shadow": shadow_t,
-               "overlap": len(set(actual) & set(shadow_t)),
-               "would_enter": [t for t in shadow_t if t not in actual],
-               "would_exit": [t for t in actual if t not in shadow_t],
-               "components": top}
+        row = {"ts": now.isoformat(), "actual": actual, "variants": []}
+        for v in _caprank_variants():
+            shadow = _kcr.shadow_rank(rows, SCORES, costs, MAX_MARKET_CAPITAL,
+                                      INV_HARD_CT, now.timestamp(), calib=CAPRANK_CALIB,
+                                      swing_penalty=SCORE_SWING_PENALTY,
+                                      unknown_bonus=SCORE_UNKNOWN_BONUS,
+                                      prospective=prospective,
+                                      risk_lambda=v["risk_lambda"],
+                                      prospective_haircut=v["prospective_haircut"],
+                                      unknown_haircut=v["unknown_haircut"])
+            top = shadow[:FOOTPRINT_TOP]
+            shadow_t = [d["ticker"] for d in top]
+            row["variants"].append(
+                {"name": v["name"],
+                 "params": {k: v[k] for k in
+                            ("risk_lambda", "prospective_haircut", "unknown_haircut")},
+                 "shadow": shadow_t,
+                 "overlap": len(set(actual) & set(shadow_t)),
+                 "would_enter": [t for t in shadow_t if t not in actual],
+                 "would_exit": [t for t in actual if t not in shadow_t],
+                 "components": top})
         with open(os.path.join(DATA_DIR, f"caprank-{now.strftime('%Y%m%d')}.jsonl"), "a") as fh:
             fh.write(json.dumps(row, separators=(",", ":")) + "\n")
     except Exception:

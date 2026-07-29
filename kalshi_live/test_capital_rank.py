@@ -142,11 +142,17 @@ def test_flag_on_logs_and_cannot_alter_selection(monkeypatch, tmp_path):
     assert len(files) == 1
     row = json.loads(open(os.path.join(str(tmp_path), files[0])).read().splitlines()[0])
     assert row["actual"] == ["A", "B"], "actual = the picked order, verbatim"
-    assert set(row["shadow"]) == {"A", "B"}
-    assert row["overlap"] == 2 and row["would_enter"] == [] and row["would_exit"] == []
-    comp = {d["ticker"]: d for d in row["components"]}
+    assert [v["name"] for v in row["variants"]] == ["env", "lean", "averse"], \
+        "every knob-set is shadowed each cycle — settings get chosen from evidence, not blind"
+    env = row["variants"][0]
+    assert set(env["shadow"]) == {"A", "B"}
+    assert env["overlap"] == 2 and env["would_enter"] == [] and env["would_exit"] == []
+    comp = {d["ticker"]: d for d in env["components"]}
     assert comp["B"]["cost_usd_day"] == 3.0
     assert comp["A"]["commit_usd"] > 0
+    lean = row["variants"][1]
+    assert lean["params"] == {"risk_lambda": 2.0, "prospective_haircut": 0.8,
+                              "unknown_haircut": 0.5}
 
 
 def test_selection_is_byte_identical_flag_on_vs_off(monkeypatch, tmp_path):
@@ -277,13 +283,19 @@ def test_env_knobs_actually_reach_the_shadow(monkeypatch, tmp_path):
     q._caprank_telemetry(rows, rows, q.utcnow())
     f = [x for x in os.listdir(tmp_path) if x.startswith("caprank-")][0]
     logged = json.loads(open(os.path.join(str(tmp_path), f)).read().splitlines()[-1])
-    assert logged["shadow"][0] == "CLEAN", "lambda=3 must flip the order INSIDE the quoter"
+    env = logged["variants"][0]
+    assert env["name"] == "env" and env["params"]["risk_lambda"] == 3.0
+    assert env["shadow"][0] == "CLEAN", "lambda=3 must flip the order INSIDE the quoter"
+    # each variant must be scored under ITS OWN params, not the env knobs: at lean's lambda=2,
+    # BLEEDS nets 30-10=20 = CLEAN's 20 -> tie -> ticker order puts BLEEDS first, unlike env.
+    lean = next(v for v in logged["variants"] if v["name"] == "lean")
+    assert lean["shadow"][0] == "BLEEDS", "variant params must reach the variant's own shadow"
     # and a haircut knob must reach it too: unknown pool-guess discounted in the logged row
     monkeypatch.setattr(q, "CAPRANK_UNKNOWN_HAIRCUT", 0.5)
     rows2 = [_row("GUESS", 100)]
     q._caprank_telemetry(rows2, rows2, q.utcnow())
     logged2 = json.loads(open(os.path.join(str(tmp_path), f)).read().splitlines()[-1])
-    assert logged2["components"][0]["base_usd_day"] == pytest.approx(50.0), \
+    assert logged2["variants"][0]["components"][0]["base_usd_day"] == pytest.approx(50.0), \
         "unknown_haircut must reach the logged base"
     # and the sweep feed must reach it: a swept market logs kind=prospective, not a pool guess
     monkeypatch.setattr(q, "_load_prospective",
@@ -291,8 +303,26 @@ def test_env_knobs_actually_reach_the_shadow(monkeypatch, tmp_path):
     rows3 = [_row("SWEPT", 100)]
     q._caprank_telemetry(rows3, rows3, q.utcnow())
     logged3 = json.loads(open(os.path.join(str(tmp_path), f)).read().splitlines()[-1])
-    assert logged3["components"][0]["kind"] == "prospective", \
+    assert logged3["variants"][0]["components"][0]["kind"] == "prospective", \
         "the offline sweep feed must reach the logged shadow"
+
+
+def test_variant_list_env_override_and_fail_open(monkeypatch):
+    """KALSHI_CAPRANK_VARIANTS replaces the fixed lean/averse comparison points; the env
+    variant survives at slot 0 regardless; malformed JSON fails open to the defaults."""
+    monkeypatch.delenv("KALSHI_CAPRANK_VARIANTS", raising=False)
+    names = [v["name"] for v in q._caprank_variants()]
+    assert names == ["env", "lean", "averse"]
+    monkeypatch.setenv("KALSHI_CAPRANK_VARIANTS", json.dumps(
+        [{"name": "custom", "risk_lambda": 5, "prospective_haircut": 0.9,
+          "unknown_haircut": 0.1}]))
+    vs = q._caprank_variants()
+    assert [v["name"] for v in vs] == ["env", "custom"]
+    assert vs[1]["risk_lambda"] == 5.0
+    monkeypatch.setenv("KALSHI_CAPRANK_VARIANTS", "{broken")
+    assert [v["name"] for v in q._caprank_variants()] == ["env", "lean", "averse"]
+    monkeypatch.setenv("KALSHI_CAPRANK_VARIANTS", json.dumps([{"name": "x"}]))  # missing keys
+    assert [v["name"] for v in q._caprank_variants()] == ["env", "lean", "averse"]
 
 
 def test_sweep_capture_matches_live_telemetry_math_exactly():
