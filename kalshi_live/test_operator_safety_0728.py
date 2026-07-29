@@ -217,3 +217,33 @@ def test_taker_cross_capped_refuses_a_collapsing_touch(monkeypatch):
     assert 0.25 not in prices
     assert len(c.crosses) == 2 and not flat and n == 10
     assert any(o["ticker"] == "T1" for o in c.created)
+
+
+# ---- D. SERIES DENY-LIST (operator decision 2026-07-29: exclude the fast index family) --------
+
+def _prog(tk):
+    return {"market_ticker": tk, "incentive_type": "liquidity", "target_size_fp": 1000,
+            "discount_factor_bps": 5000, "period_reward": 800000,
+            "start_date": "2026-07-28T00:00:00Z", "end_date": "2026-07-30T00:00:00Z"}
+
+
+def test_series_deny_excludes_the_family_by_prefix(monkeypatch):
+    monkeypatch.setattr(q, "SERIES_DENY", ["KXDXY", "KXNDQ", "KXINX"])
+    monkeypatch.setattr(q, "SERIES_ALLOW", [])
+    progs = [_prog("KXDXYDUD-26JUL29-T101.50"),      # daily variant  -> denied
+             _prog("KXNDQHUD-26JUL291600-T28000"),   # hourly variant -> denied
+             _prog("KXAAAGASD-26JUL29-4.110")]       # unrelated      -> kept
+    picked = q.select_footprint(progs, q.utcnow())
+    tickers = {m["ticker"] for m in picked}
+    assert "KXAAAGASD-26JUL29-4.110" in tickers
+    assert not any(t.startswith(("KXDXY", "KXNDQ")) for t in tickers), \
+        "denied family prefixes must never be selected"
+    assert q.FP_DROPS.get("drop_series_deny") == 2
+
+
+def test_series_deny_empty_is_a_noop(monkeypatch):
+    monkeypatch.setattr(q, "SERIES_DENY", [])
+    monkeypatch.setattr(q, "SERIES_ALLOW", [])
+    picked = q.select_footprint([_prog("KXDXYDUD-26JUL29-T101.50")], q.utcnow())
+    assert any(m["ticker"].startswith("KXDXY") for m in picked), \
+        "empty deny-list must change nothing"

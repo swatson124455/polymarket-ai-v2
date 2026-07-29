@@ -508,6 +508,15 @@ JOIN_ALWAYS = _envb("KALSHI_JOIN_ALWAYS")   # drill switch (default off)
 # series allowlist: if set, ONLY quote markets whose series (ticker before the first
 # '-') is listed. The pilot scopes to the weather/temp slice; empty = no filter (legacy).
 SERIES_ALLOW = [s for s in os.environ.get("KALSHI_SERIES_ALLOW", "").split(",") if s.strip()]
+# SERIES DENY-LIST (operator decision 2026-07-29, live evidence): comma-separated ticker
+# PREFIXES excluded from selection. The fast index books were the repeat bleeder across both
+# live sessions — 07-29: KXDXYDUD = -$8.44 of the session's -$9.44 realized (venue tape,
+# 01:44:30Z); 07-27: the NDQ/INX hourlies drove the whole loss mechanism. Fast one-way bursts
+# are structurally the worst microstructure for a resting maker, and the reward thesis does not
+# depend on them. PREFIX match (startswith) so one entry covers a family's hourly/daily strike
+# variants. Held inventory in a denied series still unwinds via the strand path (same guarantee
+# as the far-close cap). Empty = no-op.
+SERIES_DENY = [s.strip() for s in os.environ.get("KALSHI_SERIES_DENY", "").split(",") if s.strip()]
 # --- DELTA-NEUTRALITY (inventory control) — the core maker mandate ---
 # TWO signals, distinct jobs:
 #   inv         = OUR signed net on ONE ticker (+long yes / -long no) — what to UNWIND on that
@@ -831,6 +840,9 @@ def select_footprint(progs, now):
         if SERIES_ALLOW and t.split("-")[0] not in SERIES_ALLOW:
             drops["drop_allowlist"] = drops.get("drop_allowlist", 0) + 1
             continue                       # series allowlist (pilot = weather/temp only)
+        if SERIES_DENY and any(t.startswith(p) for p in SERIES_DENY):
+            drops["drop_series_deny"] = drops.get("drop_series_deny", 0) + 1
+            continue                       # operator-excluded family (see SERIES_DENY comment)
         try:
             end = parse_iso(p["end_date"])
             start = parse_iso(p["start_date"])
