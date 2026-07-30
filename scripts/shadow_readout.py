@@ -479,8 +479,17 @@ async def run(args) -> int:
         # contamination the time-out removes. Apply a REAL detect_ts cutoff so
         # the line measures recovery SINCE the bench, which is what gates
         # re-admission. Cohorts are unfiltered (grp_recs is recs) → identical.
+        #
+        # Same cutoff for a cohort whose ledger entry sets `forward_only: true`
+        # (2026-07-30, cohort4 re-admission dry-run): a RE-ADMITTED trader has
+        # roster-era records from before his new epoch, and without a real cut
+        # the "fresh" cohort line silently pools the pre-bench history it was
+        # benched for — the dry-run printed 132 resolved / edge +0.0026 where
+        # the true forward window held 60 / +0.1114. Ledger-driven and opt-in,
+        # so cohort1/2/3 lines are byte-identical.
+        fwd_only = bool((roster_raw.get(name) or {}).get("forward_only"))
         grp_recs = ([r for r in recs if float(r.get("detect_ts") or 0) >= trust]
-                    if is_bench else recs)
+                    if (is_bench or fwd_only) else recs)
         res = cohort_readout(grp_recs, outcomes, trust, ",".join(members), args)
         if is_bench:
             since = datetime.fromtimestamp(trust, timezone.utc).strftime("%m-%d")
@@ -494,6 +503,9 @@ async def run(args) -> int:
             lines.append(fmt_line(f"{label} REDUCED", res, args.min_markets,
                                   diagnostic=True, diag_reason=_DIAG_REDUCED))
         else:
+            if fwd_only:
+                since = datetime.fromtimestamp(trust, timezone.utc).strftime("%m-%d")
+                label = f"{label} FWD-only since {since}"
             lines.append(fmt_line(label, res, args.min_markets))
             all_alerts += alerts_for(label, res, args.min_markets)
         # standing rule: when one trader dominates the sample, ALSO show the
@@ -682,6 +694,19 @@ def _self_test() -> int:
             and fwd[0]["token_id"] == "new")
     print(f"  [cohorts] benched forward cutoff drops pre-bench ladder : {ok5f}")
     ok &= ok5f
+    # forward_only COHORT flag (2026-07-30, cohort4 re-admission): the same
+    # cutoff must arm for a cohort whose ledger entry sets forward_only=true —
+    # a re-admitted trader has roster-era records predating his new epoch, and
+    # the dry-run proved trust_after alone pools them (132 mkts vs the true 60).
+    # Assert run()'s predicate: armed for benched OR forward_only, off else.
+    _arm = lambda roster, name, isb: bool(isb or (roster.get(name) or {}).get("forward_only"))
+    _r4 = {"cohort4": {"forward_only": True}, "cohort3": {}}
+    ok5i = (_arm(_r4, "cohort4", False) is True
+            and _arm(_r4, "cohort3", False) is False
+            and _arm(_r4, "benched", True) is True
+            and _arm({}, "cohortX", False) is False)
+    print(f"  [cohorts] forward_only flag arms cohort cutoff, off default : {ok5i}")
+    ok &= ok5i
     for bad in ({"clean": ["0xA"], "cohort1_original": [], "cohort2": {}},
                 {"clean": ["0xA", "0xB", "0xC", "0xD"],  # admit w/o ledger
                  "cohort1_original": ["0xa", "0xb"],
