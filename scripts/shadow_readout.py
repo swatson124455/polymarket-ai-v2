@@ -398,6 +398,51 @@ def alerts_for(label: str, res: dict, min_markets: int,
     return out
 
 
+class LockError(RuntimeError):
+    """The verdict-lock file is unreadable/corrupt. Fatal by design: silently
+    ignoring it would re-open daily re-adjudication — the optional-stopping
+    hole the lock exists to close."""
+
+
+def load_locks(path: str) -> dict:
+    """{cohort_name: {locked_at, resolved, edge, p, verdict, source}} or {}
+    when the file does not exist yet. Corrupt file raises (never {})."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except (OSError, ValueError) as e:
+        raise LockError(f"verdict-lock file unreadable ({path}): {e}") from e
+    if not isinstance(d, dict):
+        raise LockError(f"verdict-lock file is not an object: {path}")
+    return d
+
+
+def write_lock(path: str, locks: dict, name: str, entry: dict) -> dict:
+    """Add ONE lock and atomically replace the file. Refuses to overwrite an
+    existing lock — a locked verdict is immutable by definition."""
+    if name in locks:
+        raise LockError(f"attempt to re-lock '{name}' — locked verdicts are "
+                        f"immutable; manual operator edit required to change")
+    out = dict(locks)
+    out[name] = entry
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(out, f, indent=1)
+    os.replace(tmp, path)
+    return out
+
+
+def locked_diag_reason(lock: dict) -> str:
+    """The diagnostic tail for a cohort whose verdict is already locked."""
+    return (f"VERDICT LOCKED {lock.get('locked_at')}: {lock.get('verdict')} "
+            f"(edge={lock.get('edge'):+.4f} P={lock.get('p'):.3f} on "
+            f"{lock.get('resolved')} resolved at lock time; today's numbers "
+            f"are DIAGNOSTIC ONLY — the pre-registered test was consumed at "
+            f"first crossing; re-opening it is optional stopping)")
+
+
 def reduced_cohorts(roster: dict) -> set:
     """Cohort names that lost a member to a time-out (`benched.from_cohort`,
     str or list). Such a cohort is a post-hoc cut and must print diagnostic —
@@ -424,6 +469,7 @@ async def run(args) -> int:
     # from that false pass). The benched ledger entry names where each address
     # came from via `from_cohort` (str or list); those cohorts print diagnostic.
     reduced = reduced_cohorts(roster_raw)
+    locks = load_locks(args.locks)  # corrupt file raises — never silently {}
     recs = az.load_records(args.log)
     tokens = sorted({str(r["token_id"]) for r in recs if r.get("token_id")})
     db_outcomes = await fresh_outcomes(tokens)
@@ -506,8 +552,34 @@ async def run(args) -> int:
             if fwd_only:
                 since = datetime.fromtimestamp(trust, timezone.utc).strftime("%m-%d")
                 label = f"{label} FWD-only since {since}"
-            lines.append(fmt_line(label, res, args.min_markets))
-            all_alerts += alerts_for(label, res, args.min_markets)
+            # STOPPING-RULE (operator-approved 2026-07-30): one pre-registered
+            # test per cohort, consumed at FIRST crossing of the power bar.
+            # Before: the verdict was re-computed daily against accumulating
+            # data — a cohort hovering near P=0.95 would eventually touch it
+            # by chance and print SURVIVES unfalsifiably. Now: at first
+            # crossing the verdict is LOCKED to the durable lock file (alert
+            # fires once, at lock time); every later readout prints the locked
+            # verdict + today's numbers as diagnostic. Pre-power negative-
+            # firming alerts are unchanged (they are safety, not the test).
+            if name in locks:
+                lines.append(fmt_line(label, res, args.min_markets,
+                                      diagnostic=True,
+                                      diag_reason=locked_diag_reason(locks[name])))
+            elif (res.get("resolved_mkts", 0) >= args.min_markets
+                  and not args.per_trader):
+                # --per-trader is a DIAGNOSTIC run and must never mutate the
+                # durable record (standing invariant) — locks included.
+                locks = write_lock(args.locks, locks, name, {
+                    "locked_at": stamp, "resolved": res["resolved_mkts"],
+                    "edge": res["shadow_edge"], "p": res["shadow_edge_p"],
+                    "verdict": res["edge_verdict"],
+                    "source": "shadow_readout first-crossing lock"})
+                lines.append(fmt_line(label + " [VERDICT LOCKED THIS RUN]",
+                                      res, args.min_markets))
+                all_alerts += alerts_for(label, res, args.min_markets)
+            else:
+                lines.append(fmt_line(label, res, args.min_markets))
+                all_alerts += alerts_for(label, res, args.min_markets)
         # standing rule: when one trader dominates the sample, ALSO show the
         # cohort WITHOUT them — the pooled number alone is misleading
         top, share = concentration(res)
@@ -917,6 +989,40 @@ def _self_test() -> int:
                 pass
         print(f"  [labels] missing/empty supplement raises, never {{}} : {ok25}")
         ok &= ok25
+        # ---- verdict locks (stopping rule, 2026-07-30) --------------------
+        lp = os.path.join(_d, "locks.json")
+        ok26 = load_locks(lp) == {}          # absent file: no locks yet
+        entry = {"locked_at": "2026-07-23T12:30Z", "resolved": 39,
+                 "edge": 0.0210, "p": 0.648,
+                 "verdict": "NOT DEMONSTRATED (P=0.648 < 0.95)", "source": "t"}
+        lk = write_lock(lp, {}, "cohort2", entry)
+        ok26 = ok26 and load_locks(lp) == lk and "cohort2" in lk
+        print(f"  [locks] roundtrip: absent->empty, write->read-back : {ok26}")
+        ok &= ok26
+        try:                                  # immutability: no re-lock ever
+            write_lock(lp, lk, "cohort2", entry)
+            ok27 = False
+        except LockError:
+            ok27 = True
+        print(f"  [locks] re-lock refused (locked verdict immutable) : {ok27}")
+        ok &= ok27
+        with open(lp, "w") as f:
+            f.write("{corrupt")
+        try:                                  # corrupt file: loud, never {}
+            load_locks(lp)
+            ok28 = False
+        except LockError:
+            ok28 = True
+        print(f"  [locks] corrupt lock file raises, never empty : {ok28}")
+        ok &= ok28
+        dl = locked_diag_reason(entry)
+        ok29 = ("LOCKED 2026-07-23T12:30Z" in dl and "NOT DEMONSTRATED" in dl
+                and "DIAGNOSTIC ONLY" in dl and "optional stopping" in dl)
+        _lkline = fmt_line("cohort2(8)", _won, 30, diagnostic=True,
+                           diag_reason=dl)
+        ok29 = ok29 and "SURVIVES (pre-registered bars met)" not in _lkline
+        print(f"  [locks] locked line: names verdict+date, no fresh pass : {ok29}")
+        ok &= ok29
     # verdict LAST — a case added after this print is invisible to the reader
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
@@ -933,6 +1039,12 @@ if __name__ == "__main__":
     # the cron runs as polymarket and must be able to write here)
     ap.add_argument("--out", default="/opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_log.txt")
     ap.add_argument("--alert", default="/opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_ALERT.txt")
+    ap.add_argument("--locks",
+                    default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
+                            "verdict_locks.json",
+                    help="durable per-cohort verdict locks (stopping rule: one "
+                         "pre-registered test, consumed at first power-bar "
+                         "crossing; later readouts are diagnostic).")
     ap.add_argument("--supplement",
                     default="/opt/pa2-shared/mb_copyable_data/copyable_cache/"
                             "gamma_resolutions.json",
