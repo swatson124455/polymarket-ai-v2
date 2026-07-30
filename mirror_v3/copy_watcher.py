@@ -319,6 +319,13 @@ class WatcherConfig:
     max_chase: float = 0.02
     max_spread: float = 0.05
     poll_s: float = 2.0
+    # RTDS A/B consumer (2026-07-30, operator-approved latency build): OFF
+    # unless MIRROR3_RTDS_AB=1 AND RTDS_WS_URL is set. Writes to its OWN sink
+    # (rtds_sink), never shadow_path — the chain poll stays the canonical
+    # stream, so enabling this cannot change any existing readout.
+    rtds_url: str = ""
+    rtds_sink: str = "/opt/pa2-shared/mirror3_shadow_rtds.jsonl"
+    rtds_ab: bool = False
 
     @classmethod
     def from_env(cls, env) -> "WatcherConfig":
@@ -328,6 +335,12 @@ class WatcherConfig:
             raise ValueError(
                 f"copy watcher enabled but required env missing: {missing} "
                 f"(v3 rule: explicit presence, no code defaults for wiring)")
+        rtds_ab = str(env.get("MIRROR3_RTDS_AB", "")).strip() == "1"
+        rtds_url = str(env.get("RTDS_WS_URL", "")).strip()
+        if rtds_ab and not rtds_url:
+            raise ValueError(
+                "MIRROR3_RTDS_AB=1 but RTDS_WS_URL is empty — refusing a "
+                "silently-disabled A/B (explicit presence rule)")
         return cls(
             roster_path=env["MIRROR3_ROSTER_PATH"],
             rpc_url=env["MIRROR3_RPC_URL"],
@@ -339,6 +352,10 @@ class WatcherConfig:
             max_chase=float(env.get("MIRROR3_MAX_CHASE_C", "2")) / 100.0,
             max_spread=float(env.get("MIRROR3_MAX_SPREAD_C", "5")) / 100.0,
             poll_s=float(env.get("MIRROR3_POLL_S", "2")),
+            rtds_url=rtds_url,
+            rtds_sink=env.get("MIRROR3_RTDS_SHADOW_PATH",
+                              "/opt/pa2-shared/mirror3_shadow_rtds.jsonl"),
+            rtds_ab=rtds_ab,
         )
 
 
@@ -629,3 +646,176 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                         f"first={sig['first_buy']} mult={mult}x")
             # cursor is advanced per-window above (retry-don't-skip); no
             # blanket jump to head here — that was the dropped-window bug
+
+
+# -- RTDS A/B consumer (2026-07-30) ------------------------------------------
+# Polymarket's real-time data socket pushes every trade at match time WITH the
+# trader identity (proxyWallet) and side - measured 2026-07-29/30: delivery lag
+# p50 0.82s / p90 1.2s / max 1.4s (n=9,576) vs this file's chain poll at
+# p50 1.30s / p90 11.6s / max 53.8s (n=12,980). This consumer runs BESIDE the
+# chain poll and writes same-schema records to its OWN sink for A/B: the chain
+# stream stays canonical, so nothing downstream changes until the A/B proves
+# parity and the source swap is separately approved. Design rules:
+#   * NEVER raises out: connect/parse/write failures log + backoff + reconnect.
+#     The chain poll is the function guarantee; this task's death must not
+#     take detection down with it.
+#   * Timeout on EVERY network await (open_timeout, send/recv wait_for).
+#   * Liveness: the firehose runs ~40-60 trades/s; RTDS_SILENT_ALARM_S with no
+#     frames at all means the feed (not the market) is dead - log LOUDLY and
+#     reconnect. A silently-dead subscription is this lane's worst failure mode.
+#   * Separate FirstBuyDedup + TrailingMedians instances - the A/B stream must
+#     not mutate the primary stream's estimand or conviction state.
+RTDS_SILENT_ALARM_S = 60.0
+RTDS_BACKOFF_S = (1.0, 5.0, 15.0, 60.0)  # reconnect schedule, capped at tail
+
+
+def parse_rtds_trades(msg: Any) -> list[dict]:
+    """Trade rows out of one decoded RTDS frame; [] for control/status/other.
+    Never raises on malformed frames - the stream carries occasional empty
+    and non-trade messages (measured: statusCode frames, blank lines)."""
+    if not isinstance(msg, dict) or msg.get("type") != "trades":
+        return []
+    pl = msg.get("payload")
+    items = pl if isinstance(pl, list) else [pl]
+    out = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        w = it.get("proxyWallet")
+        tok = it.get("asset")
+        if not w or not tok:
+            continue
+        try:
+            price = float(it.get("price"))
+            size = float(it.get("size"))
+        except (TypeError, ValueError):
+            continue
+        ts = it.get("timestamp") or msg.get("timestamp")
+        try:
+            ts = int(ts)
+            ts = ts // 1000 if ts > 2e10 else ts
+        except (TypeError, ValueError):
+            ts = None
+        out.append({
+            "trader": str(w).lower(),
+            "token_id": str(tok),
+            "side": str(it.get("side") or "").upper(),
+            "price": price,
+            "size": size,
+            "trade_ts": ts,
+            # lower-cased: the chain path's tx (HexBytes.hex()) is lowercase,
+            # and this is the A/B join key — case mismatch = silent 0 joins
+            "tx": _hex(it.get("transactionHash") or "").lower(),
+        })
+    return out
+
+
+def rtds_sig(row: dict) -> dict:
+    """RTDS row -> the sig shape the chain path feeds shadow_record. was_taker
+    is unknowable from this feed (None, disclosed); whale_size_usd = price*size
+    (RTDS size is shares). NOTE the semantic difference vs the chain path:
+    the chain path merges same-tx clips into one wager before conviction -
+    this stream records per-row. A/B latency joins are by tx, where the
+    difference is invisible; conviction fields here are annotation only."""
+    return {
+        "trader": row["trader"],
+        "token_id": row["token_id"],
+        "whale_price": row["price"],
+        "whale_size_usd": round(row["price"] * row["size"], 6),
+        "was_taker": None,
+        "side": "BUY",
+        "source": "rtds",
+    }
+
+
+async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
+    """RTDS consumer loop. Runs forever; every failure path reconnects."""
+    import aiohttp
+    import websockets
+
+    from mirror_v3.sizing import (
+        TrailingMedians, conviction_multiplier, seed_medians_from_cache)
+
+    roster_set = set(load_roster(cfg.roster_path))
+    if cfg.median_cache and os.path.isdir(cfg.median_cache):
+        medians = seed_medians_from_cache(cfg.median_cache, sorted(roster_set))
+    else:
+        medians = TrailingMedians()
+    dedup = FirstBuyDedup()
+    os.makedirs(os.path.dirname(cfg.rtds_sink) or ".", exist_ok=True)
+    log(f"[rtds_watch] A/B consumer STARTING url={cfg.rtds_url} "
+        f"sink={cfg.rtds_sink} roster={len(roster_set)} "
+        f"silent_alarm={RTDS_SILENT_ALARM_S:.0f}s")
+    attempt = 0
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with websockets.connect(
+                        cfg.rtds_url, ping_interval=20,
+                        open_timeout=12) as ws:
+                    await asyncio.wait_for(ws.send(json.dumps(
+                        {"action": "subscribe", "subscriptions":
+                            [{"topic": "activity", "type": "trades"}]})),
+                        timeout=10)
+                    log("[rtds_watch] connected + subscribed (activity/trades)")
+                    attempt = 0
+                    while True:
+                        try:
+                            raw = await asyncio.wait_for(
+                                ws.recv(), timeout=RTDS_SILENT_ALARM_S)
+                        except asyncio.TimeoutError:
+                            log(f"[rtds_watch] RTDS SILENT ALARM: no frames in "
+                                f"{RTDS_SILENT_ALARM_S:.0f}s on a ~50-trade/s "
+                                f"feed - RECONNECTING (chain poll unaffected)")
+                            break
+                        try:
+                            msg = json.loads(raw)
+                        except (TypeError, ValueError):
+                            continue
+                        for row in parse_rtds_trades(msg):
+                            if row["trader"] not in roster_set:
+                                continue
+                            if row["side"] != "BUY":
+                                continue  # estimand is first BUY, as chain path
+                            now = time.time()
+                            sig = rtds_sig(row)
+                            sig["first_buy"] = dedup.is_first(
+                                sig["trader"], sig["token_id"])
+                            tmed, n_obs = medians.stats(sig["trader"])
+                            mult, r = conviction_multiplier(
+                                sig["whale_size_usd"], tmed, n_obs)
+                            medians.observe(sig["trader"], sig["whale_size_usd"])
+                            sig["trailing_median_usd"] = tmed
+                            sig["conviction_r"] = (round(r, 4)
+                                                   if r is not None else None)
+                            sig["size_multiplier"] = mult
+                            bid, ask = await quote_book(session, sig["token_id"])
+                            sanity = quote_sanity_msg(bid, ask)
+                            if sanity:
+                                log(f"[rtds_watch] {sanity} "
+                                    f"tok={sig['token_id'][:10]}...")
+                            book = await fetch_book(session, sig["token_id"])
+                            verdict, fill = evaluate_gates(
+                                sig["whale_price"], bid, ask,
+                                cfg.max_chase, cfg.max_spread)
+                            rec = shadow_record(
+                                sig, verdict, fill, bid, ask,
+                                block_ts=int(row["trade_ts"] or now),
+                                now_ts=now, tx=row["tx"], book=book)
+                            with open(cfg.rtds_sink, "a") as f:
+                                f.write(json.dumps(rec) + "\n")
+                            log(f"[rtds_watch] {verdict:<15} "
+                                f"{sig['trader'][:10]}... "
+                                f"tok={sig['token_id'][:10]}... "
+                                f"whale={sig['whale_price']:.3f} ask={ask} "
+                                f"lag={rec['detect_lag_s']}s "
+                                f"first={sig['first_buy']}")
+            except asyncio.CancelledError:
+                raise  # shutdown is the only way out
+            except Exception as e:
+                log(f"[rtds_watch] connection error: {type(e).__name__}: "
+                    f"{str(e)[:140]}")
+            delay = RTDS_BACKOFF_S[min(attempt, len(RTDS_BACKOFF_S) - 1)]
+            attempt += 1
+            log(f"[rtds_watch] reconnecting in {delay:.0f}s (attempt {attempt})")
+            await asyncio.sleep(delay)

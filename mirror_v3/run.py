@@ -102,12 +102,23 @@ async def main() -> int:
         # shadow fills only — NO orders, NO DB writes. Opt-in via explicit
         # env; its config errors are boot errors (fail-loud, not silent-off).
         watcher_task = None
+        rtds_task = None
         if os.environ.get("MIRROR3_COPY_WATCHER", "").strip().lower() in ("true", "1", "yes"):
-            from mirror_v3.copy_watcher import WatcherConfig, watch
+            from mirror_v3.copy_watcher import WatcherConfig, rtds_watch, watch
             cfg = WatcherConfig.from_env(os.environ)
             watcher_task = asyncio.create_task(
                 watch(cfg, log=lambda m: print(f"[{BOT_NAME}] {m}", flush=True)))
             print(f"[{BOT_NAME}] copy watcher STARTED (shadow-only)", flush=True)
+            # RTDS A/B consumer (2026-07-30): OWN sink, chain stream untouched.
+            # Not fail-loud: rtds_watch reconnects internally forever, so
+            # .done() means a code bug — alarm every heartbeat, keep running
+            # (the chain poll is the function guarantee).
+            if cfg.rtds_ab:
+                rtds_task = asyncio.create_task(
+                    rtds_watch(cfg, log=lambda m: print(f"[{BOT_NAME}] {m}",
+                                                        flush=True)))
+                print(f"[{BOT_NAME}] RTDS A/B consumer STARTED "
+                      f"(sink={cfg.rtds_sink})", flush=True)
 
         # 4b. Idle heartbeat — strategy slot intentionally empty behind the gate.
         while True:
@@ -117,9 +128,15 @@ async def main() -> int:
                 print(f"[{BOT_NAME}] COPY WATCHER DIED — exiting for systemd "
                       f"restart: {exc!r}", file=sys.stderr)
                 return 1
+            if rtds_task is not None and rtds_task.done():
+                print(f"[{BOT_NAME}] RTDS A/B TASK DIED (chain poll "
+                      f"unaffected): {rtds_task.exception()!r}",
+                      file=sys.stderr, flush=True)
             print(f"[{BOT_NAME}] heartbeat {guards.snapshot()} mode={mode} "
                   f"strategy=EMPTY(gated)"
-                  f"{' watcher=RUNNING(shadow)' if watcher_task else ''}", flush=True)
+                  f"{' watcher=RUNNING(shadow)' if watcher_task else ''}"
+                  f"{' rtds=AB' if rtds_task and not rtds_task.done() else ''}",
+                  flush=True)
             await asyncio.sleep(HEARTBEAT_S)
     finally:
         await db.close()

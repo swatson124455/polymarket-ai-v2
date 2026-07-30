@@ -436,3 +436,69 @@ def test_rpc_call_passes_results_through():
     async def main():
         return await cw.rpc_call(quick())
     assert asyncio.run(main()) == 42
+
+
+# -- RTDS A/B consumer (2026-07-30) ------------------------------------------
+def _rtds_frame(**kw):
+    row = {"proxyWallet": "0xAbC0000000000000000000000000000000000001",
+           "asset": "9" * 20, "side": "BUY", "price": 0.63, "size": 10.0,
+           "timestamp": 1785368141, "transactionHash": "0xTT"}
+    row.update(kw)
+    return {"type": "trades", "payload": row, "timestamp": 1785368141}
+
+
+def test_rtds_parse_trade_row():
+    rows = cw.parse_rtds_trades(_rtds_frame())
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["trader"].startswith("0xabc")            # lower-cased
+    assert r["side"] == "BUY" and r["price"] == 0.63 and r["size"] == 10.0
+    assert r["trade_ts"] == 1785368141
+    assert r["tx"] == "0xtt"                          # _hex lower-cases
+
+
+def test_rtds_parse_rejects_non_trade_frames():
+    assert cw.parse_rtds_trades({"statusCode": 200, "body": ""}) == []
+    assert cw.parse_rtds_trades({"type": "book"}) == []
+    assert cw.parse_rtds_trades(None) == []
+    assert cw.parse_rtds_trades({"type": "trades", "payload": {"foo": 1}}) == []
+    # bad numerics dropped, never raise
+    assert cw.parse_rtds_trades(_rtds_frame(price="x")) == []
+
+
+def test_rtds_parse_list_payload_and_ms_timestamps():
+    f = {"type": "trades", "payload": [
+        _rtds_frame()["payload"],
+        {**_rtds_frame()["payload"], "timestamp": 1785368141000},  # ms
+    ]}
+    rows = cw.parse_rtds_trades(f)
+    assert len(rows) == 2
+    assert rows[0]["trade_ts"] == rows[1]["trade_ts"] == 1785368141
+
+
+def test_rtds_sig_schema_matches_chain_sig():
+    row = cw.parse_rtds_trades(_rtds_frame())[0]
+    sig = cw.rtds_sig(row)
+    # the fields the chain path guarantees before shadow_record
+    for k in ("trader", "token_id", "whale_price", "whale_size_usd",
+              "was_taker", "side"):
+        assert k in sig
+    assert sig["side"] == "BUY" and sig["source"] == "rtds"
+    assert sig["whale_size_usd"] == round(0.63 * 10.0, 6)
+    assert sig["was_taker"] is None  # unknowable from RTDS — disclosed
+
+
+def test_rtds_config_gating():
+    base = {"MIRROR3_ROSTER_PATH": "r.json", "MIRROR3_RPC_URL": "http://x"}
+    # off by default
+    assert cw.WatcherConfig.from_env(dict(base)).rtds_ab is False
+    # on requires the url — refusing a silently-disabled A/B
+    try:
+        cw.WatcherConfig.from_env({**base, "MIRROR3_RTDS_AB": "1"})
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    cfg = cw.WatcherConfig.from_env(
+        {**base, "MIRROR3_RTDS_AB": "1", "RTDS_WS_URL": "wss://x"})
+    assert cfg.rtds_ab is True and cfg.rtds_url == "wss://x"
+    assert cfg.rtds_sink.endswith("mirror3_shadow_rtds.jsonl")
