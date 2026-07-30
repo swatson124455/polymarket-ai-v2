@@ -75,6 +75,25 @@
 > cohort3(6) POWERED +0.0028 P=0.527 NOT DEMONSTRATED (34); ALERT fired for
 > both (per-trader + LOO run + archived same day).
 >
+> **17:00Z ADDENDUM — 'proceed with all recs' EXECUTED (fd6e6dd, e177acf):**
+> (1) **STOPPING RULE LIVE** — verdict locks: one pre-registered test per
+> cohort, consumed at first power-bar crossing; locks BACKFILLED from the
+> durable log's own first crossings (cohort1 07-20 P=0.617; cohort2 07-23
+> +0.0210 P=0.648; cohort3 07-27 −0.0131 P=0.307 — all NOT DEMONSTRATED);
+> later readouts print LOCKED + diagnostic; POWERED re-alert storm gone.
+> Locks file: `deep_dive/verdict_locks.json` (immutable; corrupt = loud).
+> (2) **PER-MARKET FEE IN THE EQUATION** (operator: 'ding market by market')
+> — measured-exemption only: fee_map (508 tokens, 56 zero-fee exempt) built
+> from CLOB `taker_base_fee`; zero-fee tokens not dinged, others keep flat 2%
+> until a rate calibration (separate gate). Header discloses the mode every
+> run. Corrupt map = readout REFUSES (silent equation change is the failure
+> mode). (3) **CRON 11:40Z daily**: label supplement + fee-map refresh before
+> the 12:30Z readout (`label_and_fee_refresh_cron.sh`). (4) **COHORT5
+> PRE-REGISTRATION drafted** (`docs/COHORT5_PREREGISTRATION.md`): copy-edge
+> selection (chain screen + fwd copy edge ≥+0.02 on ≥30 + P≥0.95 single-look
+> + OK-rate ≥75% + ≤50% conc; qualification records start 07-30T17:00Z) —
+> **composition awaits operator sign-off of the criteria.**
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
