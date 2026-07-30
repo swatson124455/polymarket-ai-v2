@@ -583,6 +583,27 @@ def _load_presence_table():
 
 # loaded ONCE at import and ONLY when the flag is on (flag-off does zero file IO -> provable no-op)
 PRESENCE_TABLE = _load_presence_table() if PRESENCE_GATE else {}
+_PRESENCE_MTIME = [0.0]
+
+
+def _presence_table_refresh():
+    """Reload the presence table when its file changes (audit item: import-once staleness with
+    the gate ON live — the gate was judging today's markets with the table frozen at process
+    start). mtime-gated: zero I/O beyond a stat when unchanged; a vanished/broken file KEEPS
+    the last good table (fail-open to stale beats fail-closed to empty, which would zero the
+    gate's floor)."""
+    global PRESENCE_TABLE
+    if not PRESENCE_GATE:
+        return
+    try:
+        m = os.path.getmtime(PRESENCE_TABLE_PATH)
+    except OSError:
+        return
+    if m > _PRESENCE_MTIME[0]:
+        t = _load_presence_table()
+        if t:
+            PRESENCE_TABLE = t
+        _PRESENCE_MTIME[0] = m
 
 
 def _presence_factor(ticker, life_min):
@@ -2165,6 +2186,20 @@ def _alloc_priority(footprint_rows, now, usd_day):
         return usd_day
 
 
+def _fam_concentration(desired):
+    """(top_family, top_family_usd, top_family_pct_of_total) of an intended book. Pure —
+    the concentration gauge (operator-named 2026-07-30) rides every plan row so sibling
+    overload is visible the cycle it forms, not at the next manual audit."""
+    fam = defaultdict(float)
+    for t, qs in desired.items():
+        fam[t.split("-")[0]] += _mkt_capital(qs)
+    tot = sum(fam.values())
+    if tot <= 0:
+        return None, 0.0, 0.0
+    s = max(fam, key=lambda k: fam[k])
+    return s, fam[s], 100.0 * fam[s] / tot
+
+
 def cap_desired(desired, usd_day, incumbents=None):
     """Keep whole markets in strict usd_day priority (highest first), stopping at
     the first ACCUMULATING market that would breach MAX_TOTAL_CAPITAL — keep the
@@ -2333,6 +2368,10 @@ def run_once():
         _ensure_sweeper()     # background venue sweeper — no-op unless KALSHI_SWEEP_ENABLED=1
     except Exception:
         pass                  # a sweeper start fault must never block a trading cycle
+    try:
+        _presence_table_refresh()   # audit fix: presence table no longer frozen at import
+    except Exception:
+        pass
     _lock = _acquire_lock()
     if _lock is False:
         print("WARNING another quoter instance holds the run lock; skipping this run (no order ops)")
@@ -2665,6 +2704,12 @@ def run_once():
                     _down = float(st.get("equity_day_down", 0.0)) + max(0.0, _prev_cost - _equity_cost)
                     st["equity_day_peak"] = _peak
                     st["equity_day_down"] = _down
+                    # PEAK AUDIT TRAIL (defect 2026-07-30: recorded day-peak $299.96 < the
+                    # 12:00Z mark $321.77 — a regression that delayed the halt ~$22; the
+                    # in-process max() cannot regress, so the writer was external. Mechanism
+                    # UNCONFIRMED; this key puts the peak on every plan row so the next
+                    # regression is caught red-handed, cycle-stamped.)
+                    plan["equity_day_peak"] = round(_peak, 2)
                     st["equity_prev"] = _equity        # mark-equity telemetry continuity
                     st["equity_prev_cost"] = _equity_cost
                     _dd = _peak - _equity
@@ -3181,6 +3226,7 @@ def run_once():
         desired, capped_markets = cap_desired(
             desired, alloc_prio,
             incumbents=_INCUMBENT_TICKERS if ALLOC_INCUMBENT_FIRST else None)  # aggregate $ cap
+        fam_top, fam_top_usd, fam_top_pct = _fam_concentration(desired)
         # AMEND-ON-DECREASE: pull out same-price size REDUCTIONS so they keep their queue position
         # instead of being cancelled and rebuilt at the back. `standing` itself is deliberately NOT
         # rebound — everything downstream (committed capital, failed-cancel deferral, the blackout
@@ -3375,6 +3421,8 @@ def run_once():
             "book_src_err": _book_src["src_err"],
             "fetch_failed": fetch_failed, "capped_markets": capped_markets,
             **({"series_cap_dropped": _SERIES_CAP_DROPS[0]} if SERIES_MAX_USD > 0 else {}),
+            **({"fam_top": fam_top, "fam_top_usd": round(fam_top_usd, 2),
+                "fam_top_pct": round(fam_top_pct, 1)} if fam_top else {}),
             "budget_dropped_markets": budget_dropped,
             "cancel_fail": cancel_fail, "create_fail": create_fail,
             "create_skipped": create_skipped,
