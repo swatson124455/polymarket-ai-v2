@@ -1193,7 +1193,17 @@ def select_footprint(progs, now):
         by_series[r["ticker"].split("-")[0]].append(r)
     if not PIVOT_SELECT:
         # ---- LEGACY egalitarian round-robin (bytes unchanged; provable flag-off no-op) ----
-        series_order = sorted(by_series, key=lambda s: (-by_series[s][0]["usd_day"], s))
+        # Phase-3 (KALSHI_ALLOC_KEY=1): rotate series in RANK order — `rows` is already ordered
+        # by the measured-capture rank above, so the series whose best member ranks highest
+        # spins first. Audit issue #3 (series rotation was pool-keyed). Flag OFF -> pool order,
+        # byte-identical.
+        if ALLOC_KEY:
+            _first = {}
+            for _i, _r in enumerate(rows):
+                _first.setdefault(_r["ticker"].split("-")[0], _i)
+            series_order = sorted(by_series, key=lambda s: (_first.get(s, 1 << 30), s))
+        else:
+            series_order = sorted(by_series, key=lambda s: (-by_series[s][0]["usd_day"], s))
         picked, per_series = [], defaultdict(int)
         progressed = True
         while len(picked) < FOOTPRINT_TOP and progressed:
@@ -2103,6 +2113,57 @@ ALLOC_INCUMBENT_FIRST = _envi("KALSHI_ALLOC_INCUMBENT_FIRST", 0)
 SERIES_MAX_USD = _envf("KALSHI_SERIES_MAX_USD", 0.0)
 _SERIES_CAP_DROPS = [0]     # markets skipped by the family cap in the LAST cap_desired call
 
+# UNIFIED ALLOCATION KEY — Phase 3 of the allocation-key audit (operator-named 2026-07-30,
+# BUILT NOT ENABLED). When ON, the capital cut, the create budget, and the series rotation
+# all order by the SAME capital-aware score the caprank shadow has logged every cycle since
+# 07-29 (kalshi_capital_rank.shadow_rank):
+#   cap_score = (base x CAPRank calib  -  risk_lambda x realized fill cost) / committed $
+# where base = measured capture (fresh, decayed) > sweeper prospective x haircut > pool
+# prior x haircut. The "lost money cannot compound" concept (operator 2026-07-30) lives in
+# the cost term: a market that burned real dollars ranks lower for NEW dollars, and
+# ALLOC_RISK_LAMBDA > 1 punishes proven burners harder than their average loss — variance-
+# aversion priced into allocation, not just observed. Fail-OPEN: any fault in scoring falls
+# back to the pool dict (legacy ordering) and counts _SILENT["alloc_key_fail"].
+# Ships OFF (default 0) => every consumer receives the pool dict, byte-identical behavior.
+# Enabling is a separate operator naming AFTER receipts set KALSHI_CAPRANK_CALIB.
+ALLOC_KEY = _envi("KALSHI_ALLOC_KEY", 0)
+ALLOC_RISK_LAMBDA = _envf("KALSHI_ALLOC_RISK_LAMBDA", 1.0)
+ALLOC_PROSPECTIVE_HAIRCUT = _envf("KALSHI_ALLOC_PROSPECTIVE_HAIRCUT", 1.0)
+ALLOC_UNKNOWN_HAIRCUT = _envf("KALSHI_ALLOC_UNKNOWN_HAIRCUT", 1.0)
+# Sweeper pcap older than this is NOT fed into the key (freshness plan: rank correlation is
+# decision-grade to the 6-12h band, measured 2026-07-30; receipts may re-fit this).
+ALLOC_PCAP_MAX_AGE_S = _envf("KALSHI_ALLOC_PCAP_MAX_AGE_S", 21600.0)
+
+
+def _alloc_priority(footprint_rows, now, usd_day):
+    """{ticker: priority} for capital allocation. Flag OFF -> usd_day verbatim (legacy).
+    Flag ON -> cap_score from the shadowed capital-aware key, with the NEW sweeper's pcap
+    (kalshi_market_scores rows, age-cutoff) merged into the prospective feed."""
+    if not ALLOC_KEY:
+        return usd_day
+    try:
+        import kalshi_capital_rank as _kcr
+        costs = _load_fill_costs()
+        prospective = dict(_load_prospective() or {})
+        with SCORES_LOCK:
+            for _t, _r in SCORES.items():
+                if (_t not in prospective and _r.get("pcap") is not None
+                        and _r.get("pts") is not None
+                        and (now.timestamp() - float(_r["pts"])) <= ALLOC_PCAP_MAX_AGE_S):
+                    prospective[_t] = {"capture": _r["pcap"], "ref": _r.get("pref")}
+            comp = _kcr.shadow_rank(footprint_rows, SCORES, costs, MAX_MARKET_CAPITAL,
+                                    INV_HARD_CT, now.timestamp(), calib=CAPRANK_CALIB,
+                                    swing_penalty=SCORE_SWING_PENALTY,
+                                    unknown_bonus=SCORE_UNKNOWN_BONUS,
+                                    prospective=prospective,
+                                    risk_lambda=ALLOC_RISK_LAMBDA,
+                                    prospective_haircut=ALLOC_PROSPECTIVE_HAIRCUT,
+                                    unknown_haircut=ALLOC_UNKNOWN_HAIRCUT)
+        return {d["ticker"]: d["cap_score"] for d in comp}
+    except Exception:
+        _SILENT["alloc_key_fail"] += 1
+        return usd_day
+
 
 def cap_desired(desired, usd_day, incumbents=None):
     """Keep whole markets in strict usd_day priority (highest first), stopping at
@@ -2378,6 +2439,8 @@ def run_once():
                     _fc_keep.append(_m)
             footprint = _fc_keep
         usd_day = {m["ticker"]: m["usd_day"] for m in footprint}
+        # Phase-3 unified allocation key: identical to usd_day while KALSHI_ALLOC_KEY=0.
+        alloc_prio = _alloc_priority(footprint, now, usd_day)
 
         # standing FIRST so activate can size against external (non-own) depth.
         # In demo/live the PUBLIC orderbook already includes our resting orders, so
@@ -3116,7 +3179,7 @@ def run_once():
             except Exception:
                 grace_used = {}
         desired, capped_markets = cap_desired(
-            desired, usd_day,
+            desired, alloc_prio,
             incumbents=_INCUMBENT_TICKERS if ALLOC_INCUMBENT_FIRST else None)  # aggregate $ cap
         # AMEND-ON-DECREASE: pull out same-price size REDUCTIONS so they keep their queue position
         # instead of being cancelled and rebuilt at the back. `standing` itself is deliberately NOT
@@ -3128,7 +3191,7 @@ def run_once():
         if AMEND_DECREASE:
             amends, _std, _des = split_amends(standing, desired)
         cancels, creates = diff_orders(_std, _des)
-        creates, budget_dropped = bound_creates(creates, cancels, usd_day)  # whole-ticker
+        creates, budget_dropped = bound_creates(creates, cancels, alloc_prio)  # whole-ticker
 
         # execute — each order isolated; one failure never aborts the rest
         cancel_fail = create_fail = create_skipped = 0
