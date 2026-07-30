@@ -2085,18 +2085,36 @@ def _mkt_capital(quotes):
     return sum(q["price_dollars"] * q["count"] for q in quotes)
 
 
-def cap_desired(desired, usd_day):
+# INCUMBENT-FIRST CAPITAL (operator-named 2026-07-30: "stay in the markets we are in and let
+# them naturally extinguish then slowly build new markets with new rules" — BUILT, NOT ENABLED).
+# When ON, cap_desired funds markets we are ALREADY standing in before any new entrant, so a
+# rank/allocation-rule change can phase in without ripping up queue positions: incumbents keep
+# their dollars until their reward windows close; freed capital then enters under whatever key
+# orders the non-incumbent group. Ships OFF (default 0) => cap_desired ordering byte-identical.
+ALLOC_INCUMBENT_FIRST = _envi("KALSHI_ALLOC_INCUMBENT_FIRST", 0)
+
+
+def cap_desired(desired, usd_day, incumbents=None):
     """Keep whole markets in strict usd_day priority (highest first), stopping at
     the first ACCUMULATING market that would breach MAX_TOTAL_CAPITAL — keep the
     most valuable, cut the tail. REDUCING (any 'unwind' quote) markets are kept
     UNCONDITIONALLY: a risk-reducing order can never over-commit the account, so
-    the cap must not drop it (polarity-aware, fix A). Returns (kept, dropped_count)."""
+    the cap must not drop it (polarity-aware, fix A). Returns (kept, dropped_count).
+
+    `incumbents` (optional, default None => legacy ordering byte-identical): a set of
+    tickers we are currently standing in. When provided, incumbents outrank every
+    non-incumbent (pool order WITHIN each group is unchanged) — the phased-migration
+    ordering above. The allocation-key audit (2026-07-30) lists this site as issue #1;
+    the pool key for the NON-incumbent group is replaced in Phase 3, receipts-calibrated."""
     kept, total = {}, 0.0
     for t, qs in desired.items():
         if any(q.get("reason") == "unwind" for q in qs):
             kept[t] = qs
             total += _mkt_capital(qs)
-    order = [t for t in sorted(desired, key=lambda t: -usd_day.get(t, 0)) if t not in kept]
+    inc = incumbents or set()
+    order = [t for t in sorted(desired,
+                               key=lambda t: (0 if t in inc else 1, -usd_day.get(t, 0)))
+             if t not in kept]
     for i, t in enumerate(order):
         c = _mkt_capital(desired[t])
         if total + c > MAX_TOTAL_CAPITAL:
@@ -3078,7 +3096,9 @@ def run_once():
                     (load_state().get("drop_grace") or {}), DROP_GRACE)
             except Exception:
                 grace_used = {}
-        desired, capped_markets = cap_desired(desired, usd_day)     # aggregate $ cap
+        desired, capped_markets = cap_desired(
+            desired, usd_day,
+            incumbents=_INCUMBENT_TICKERS if ALLOC_INCUMBENT_FIRST else None)  # aggregate $ cap
         # AMEND-ON-DECREASE: pull out same-price size REDUCTIONS so they keep their queue position
         # instead of being cancelled and rebuilt at the back. `standing` itself is deliberately NOT
         # rebound — everything downstream (committed capital, failed-cancel deferral, the blackout
