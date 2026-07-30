@@ -225,9 +225,14 @@ def test_taker_cross_capped_refuses_a_collapsing_touch(monkeypatch):
 # ---- D. SERIES DENY-LIST (operator decision 2026-07-29: exclude the fast index family) --------
 
 def _prog(tk):
+    # dates are RELATIVE to now — hardcoded dates rotted at 2026-07-30T00:00Z and failed the
+    # deny-list/prefilter tests on the calendar, not on behavior (caught in batch-3 session)
+    from datetime import timedelta
+    _now = q.utcnow()
     return {"market_ticker": tk, "incentive_type": "liquidity", "target_size_fp": 1000,
             "discount_factor_bps": 5000, "period_reward": 800000,
-            "start_date": "2026-07-28T00:00:00Z", "end_date": "2026-07-30T00:00:00Z"}
+            "start_date": (_now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_date": (_now + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
 def test_series_deny_excludes_the_family_by_prefix(monkeypatch):

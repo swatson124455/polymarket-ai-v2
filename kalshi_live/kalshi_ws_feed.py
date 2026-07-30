@@ -186,7 +186,13 @@ class Feed:
     """Owns the WS connection + mirrors. on_book(ticker, mirror) and
     on_fill(msg) are sync callbacks (must be fast; daemon does the work)."""
 
-    def __init__(self, tickers, on_book=None, on_fill=None, want_fills=False):
+    def __init__(self, tickers, on_book=None, on_fill=None, want_fills=False,
+                 initial_fails=0):
+        # audit batch 3 (J7, operator-approved 2026-07-29): the fail counter lives on the
+        # instance so a rebuild (footprint resubscribe / watchdog) can CARRY it into the new
+        # Feed — a fresh object during a venue outage used to reset the backoff to 2s and
+        # turn footprint churn into a reconnect storm.
+        self.fails = int(initial_fails)
         self.tickers = list(tickers)
         self.mirrors = {t: BookMirror(t) for t in self.tickers}
         self.on_book = on_book
@@ -286,7 +292,8 @@ class Feed:
         """Connect/subscribe/dispatch until stop_event set or max_seconds up.
         Reconnects (fresh snapshots re-seed mirrors) on any socket error."""
         deadline = time.monotonic() + max_seconds if max_seconds else None
-        fails = 0                                     # consecutive failures -> escalating backoff
+        # J7: self.fails (consecutive failures -> escalating backoff) lives on the instance so
+        # a rebuilt Feed inherits the prior backoff state instead of resetting to 2s.
         while True:
             if stop_event is not None and stop_event.is_set():
                 return
@@ -312,13 +319,13 @@ class Feed:
                         if not ok:
                             # BACKOFF ON THIS PATH TOO (re-review: the break path had no
                             # sleep -> a persistent error frame produced ~19k connects/s).
-                            fails += 1
-                            backoff = min(2.0 * (2 ** min(fails - 1, 5)), 60.0)
-                            print(f"WS seq gap/error — reconnect (fail #{fails}, "
+                            self.fails += 1
+                            backoff = min(2.0 * (2 ** min(self.fails - 1, 5)), 60.0)
+                            print(f"WS seq gap/error — reconnect (fail #{self.fails}, "
                                   f"backoff {backoff:.0f}s)")
                             await asyncio.sleep(backoff)
                             break                     # reconnect loop re-subscribes
-                        fails = 0                     # clean dispatch = healthy connection
+                        self.fails = 0                # clean dispatch = healthy connection
                 finally:
                     self._sub_seq = None
                     self.confirmed_channels = set()
@@ -327,11 +334,11 @@ class Feed:
             # malformed frame must cost ONE reconnect, never silently kill the feed
             # task (the daemon would degrade to a dumb timer with no signal).
             except Exception as e:
-                fails += 1
+                self.fails += 1
                 for m in self.mirrors.values():
                     m.dirty = True                   # stale on disconnect — never trust across gaps
-                backoff = min(2.0 * (2 ** min(fails - 1, 5)), 60.0)
-                print(f"WS reconnect after {e!r} (fail #{fails}, backoff {backoff:.0f}s)")
+                backoff = min(2.0 * (2 ** min(self.fails - 1, 5)), 60.0)
+                print(f"WS reconnect after {e!r} (fail #{self.fails}, backoff {backoff:.0f}s)")
                 await asyncio.sleep(backoff)
 
 

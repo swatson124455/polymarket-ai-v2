@@ -89,6 +89,13 @@ WS_STOP_COLD_S = M._envi("KALSHI_WS_STOP_COLD_S", 60)
 WS_FILL_COOLDOWN_S = M._envf("KALSHI_WS_FILL_COOLDOWN_S", 3.0)  # hot stand-down after a fill
 _INV_MARGIN = M._envf("KALSHI_WS_INV_MARGIN_CT", 0.0)   # extra conservatism below INV_TOLERANCE
 WS_CYCLE_MIN_GAP_S = M._envi("KALSHI_WS_CYCLE_MIN_GAP_S", 5)   # full-cycle debounce
+# J3 (batch 3): telemetry purge cadence + ws_daemon_log rotation bound
+WS_PURGE_EVERY_S = M._envi("KALSHI_WS_PURGE_EVERY_S", 6 * 3600)
+WS_LOG_MAX_BYTES = M._envi("KALSHI_WS_LOG_MAX_BYTES", 256 * 1024 * 1024)
+# J7 (batch 3): minimum interval between footprint-driven feed rebuilds (hysteresis). A rebuild
+# drops every mirror, so churn must not translate 1:1 into resubscribes. New footprint markets
+# are still quoted by the cold cycle immediately — they only JOIN the fast feed paced.
+WS_RESUB_MIN_S = M._envi("KALSHI_WS_RESUB_MIN_S", 120)
 WS_HOT = M._envi("KALSHI_WS_HOT", 0)                  # Stage B flag — DEFAULT OFF
 WS_HOT_DEBOUNCE_MS = M._envi("KALSHI_WS_HOT_DEBOUNCE_MS", 250)
 WS_HOT_WRITES_PER_S = M._envf("KALSHI_WS_HOT_WRITES_PER_S", 3.0)
@@ -269,6 +276,7 @@ class Daemon:
         self.cycle_req = threading.Event()            # a book/fill event wants a cycle
         self.stopping = threading.Event()
         self.last_cycle_mono = 0.0
+        self.last_resub_mono = 0.0                    # J7: paces footprint-driven feed rebuilds
         self.last_refs = {}                           # ticker -> (best_yes, best_no)
         self.ctx = HotContext()
         self.bucket = TokenBucket(WS_HOT_WRITES_PER_S, WS_HOT_BURST)
@@ -612,8 +620,12 @@ class Daemon:
         self.cycle_req.set()                          # full guard pass immediately
 
     def _new_feed(self, watch):
+        # J7 (batch 3): carry the prior feed's consecutive-fail count so a rebuild during a
+        # venue outage keeps its backoff instead of resetting to 2s (reconnect storm).
+        carry = getattr(getattr(self, "feed", None), "fails", 0)
         feed = Feed(watch, on_book=self.on_book, on_fill=self.on_fill,
-                    want_fills=self.client.mode != "dry_run")
+                    want_fills=self.client.mode != "dry_run",
+                    initial_fails=carry)
         self.feed = feed
         return feed
 
@@ -644,21 +656,31 @@ class Daemon:
     def _purge_old_telemetry(days=14):
         """audit F6 (2026-07-29): the event-driven cadence writes 15-25x the timer era's
         telemetry; unbounded growth is the disk-full trigger for the finally-block wedge the
-        quoter now also guards against. Best-effort, never raises."""
+        quoter now also guards against. Best-effort, never raises.
+        audit batch 3 (J3, operator-approved 2026-07-29): also purges caprank-*.jsonl (52MB on
+        day one — the biggest writer was not on the list) and rotates ws_daemon_log.jsonl by
+        size (single undated file, previously never purged at all)."""
         import glob as _glob
         cutoff = time.time() - days * 86400
-        for pat in ("plans-*.jsonl", "quotes-*.jsonl"):
+        for pat in ("plans-*.jsonl", "quotes-*.jsonl", "caprank-*.jsonl"):
             for p in _glob.glob(os.path.join(M.DATA_DIR, pat)):
                 try:
                     if os.path.getmtime(p) < cutoff:
                         os.unlink(p)
                 except OSError:
                     pass
+        log_path = os.path.join(M.DATA_DIR, "ws_daemon_log.jsonl")
+        try:
+            if os.path.getsize(log_path) > WS_LOG_MAX_BYTES:
+                os.replace(log_path, log_path + ".1")   # keep one generation
+        except OSError:
+            pass
 
     async def main(self):
         _log({"ev": "daemon_start", "mode": self.client.mode, "hot": bool(WS_HOT),
               "book_cold": bool(WS_BOOK_COLD), "cold_s": WS_COLD_S})
         self._purge_old_telemetry()
+        last_purge_mono = time.monotonic()   # J3: re-purge periodically, not just at start
         tickers = await self._run_cold() or set()
         # audit F9 (2026-07-29): the [:40] cap predates FOOTPRINT_TOP=60 and truncated
         # ALPHABETICALLY — markets we actually quote could be off the fast feed entirely (no
@@ -681,7 +703,14 @@ class Daemon:
                 if (triggered and gap_ok) or due:
                     self.cycle_req.clear()
                     new = await self._run_cold()
-                    if new and sorted(new)[:80] != watch:
+                    if (new and sorted(new)[:80] != watch
+                            # J7 (batch 3): HYSTERESIS — a footprint-driven rebuild tears down
+                            # every mirror (Stage C falls back to REST until re-warmed), so a
+                            # single flapping ticker must not rebuild the feed every cycle.
+                            # Paced rebuilds only; the cold cycle still quotes new markets, they
+                            # just join the fast feed on the next paced rebuild.
+                            and time.monotonic() - self.last_resub_mono >= WS_RESUB_MIN_S):
+                        self.last_resub_mono = time.monotonic()
                         watch = sorted(new)[:80]      # footprint changed: resubscribe (F9: 80)
                         self.last_refs = {t: v for t, v in self.last_refs.items()
                                           if t in set(watch)}
@@ -693,6 +722,9 @@ class Daemon:
                         stop_ev = asyncio.Event()
                         feed = self._new_feed(watch)
                         feed_task = asyncio.create_task(feed.run(stop_event=stop_ev))
+                if time.monotonic() - last_purge_mono >= WS_PURGE_EVERY_S:   # J3
+                    self._purge_old_telemetry()
+                    last_purge_mono = time.monotonic()
                 if feed_task.done():
                     # WATCHDOG (review F5a): the feed must never die silently —
                     # log the exception and rebuild; Stage A degrades to the

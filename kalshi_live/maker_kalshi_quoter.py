@@ -59,6 +59,48 @@ LOCK_FILE = os.path.join(DATA_DIR, "quoter.lock")
 # Counting only. NO control flow is changed by this — swallowing is often the right behaviour;
 # doing it INVISIBLY is not.
 _SILENT = defaultdict(int)          # defaultdict, not Counter: only `defaultdict` is imported here
+_SILENT_PREV = {}                   # audit batch 3 (J2): last cycle's snapshot -> per-cycle delta
+# audit batch 3 (J6, operator-approved 2026-07-29): a market whose creates the venue rejects
+# every cycle (bad params, closed, restricted) was retried forever, burning write tokens and
+# spamming create_fail. After CREATE_FAIL_RATCHET_N consecutive failures the ticker's
+# ACCUMULATING creates cool off exponentially; reducing/unwind creates are NEVER ratcheted
+# (risk-reducing orders must always be attempted). In-memory by design: a restart retries
+# once and re-ratchets — cheap, and it avoids another quoter_state amnesty landmine.
+# ticker -> [consecutive_fails, next_try_mono]
+_CREATE_FAIL_RATCHET = {}
+CREATE_FAIL_RATCHET_N = 3
+CREATE_FAIL_RATCHET_BASE_S = 60.0
+CREATE_FAIL_RATCHET_MAX_S = 3600.0
+
+
+def _create_ratchet_blocked(ticker, reducing):
+    """J6: True when this ticker's ACCUMULATING creates are cooling off."""
+    r = _CREATE_FAIL_RATCHET.get(ticker)
+    return bool(r and not reducing and r[0] >= CREATE_FAIL_RATCHET_N
+                and time.monotonic() < r[1])
+
+
+def _create_ratchet_fail(ticker):
+    """J6: record one consecutive create failure; arm/extend the cool-off past N."""
+    r = _CREATE_FAIL_RATCHET.setdefault(ticker, [0, 0.0])
+    r[0] += 1
+    if r[0] >= CREATE_FAIL_RATCHET_N:
+        r[1] = time.monotonic() + min(
+            CREATE_FAIL_RATCHET_BASE_S * (2 ** (r[0] - CREATE_FAIL_RATCHET_N)),
+            CREATE_FAIL_RATCHET_MAX_S)
+
+
+def _silent_report(plan):
+    """J2: silent_failures = what fired THIS cycle; *_total keeps the lifetime dict."""
+    if not _SILENT:
+        return
+    delta = {k: v - _SILENT_PREV.get(k, 0) for k, v in _SILENT.items()
+             if v - _SILENT_PREV.get(k, 0) > 0}
+    if delta:
+        plan["silent_failures"] = delta
+    plan["silent_failures_total"] = dict(_SILENT)
+    _SILENT_PREV.clear()
+    _SILENT_PREV.update(_SILENT)
 _REALIZED_BY = {}                   # ticker -> venue realized_pnl_dollars; refreshed by _held_cost
 
 
@@ -854,7 +896,35 @@ STOP_TAKER_MIN_CT = _envf("KALSHI_STOP_TAKER_MIN_CT", 5.0)  # escalate only if |
 FLATTEN_MAX_SLIP = _envf("KALSHI_FLATTEN_MAX_SLIP", 0.10)
 # market close_time cache for the far-close market-clock cap (static per market; the daemon is
 # a long-lived process so steady-state cost is ~zero reads).
+# audit batch 3 (J1, operator-approved 2026-07-29): entries are (close_time_or_"", stamp).
+# A payload with NO close_time used to cache "" FOREVER — bool("") is never "far", so one bad
+# read permanently re-admitted a far market past the market-clock cap. Negative entries now
+# expire (re-fetched after the TTL) and the cache is bounded (the daemon sees thousands of
+# rotating programs; unbounded growth is the same class as the SCORES/telemetry leaks).
 _CLOSE_TIME_CACHE = {}
+CLOSE_CACHE_NEG_TTL_S = 3600.0
+CLOSE_CACHE_MAX = 8192
+
+
+def _close_cache_get(ticker):
+    """close_time str, "" (recent negative), or None (absent/expired -> caller re-fetches)."""
+    v = _CLOSE_TIME_CACHE.get(ticker)
+    if v is None:
+        return None
+    ct, stamp = v
+    if not ct and (time.monotonic() - stamp) > CLOSE_CACHE_NEG_TTL_S:
+        _CLOSE_TIME_CACHE.pop(ticker, None)
+        return None
+    return ct
+
+
+def _close_cache_put(ticker, close_time):
+    if len(_CLOSE_TIME_CACHE) >= CLOSE_CACHE_MAX:
+        # evict the oldest 1/8 by stamp; O(n log n) only when the bound is hit
+        for k, _ in sorted(_CLOSE_TIME_CACHE.items(),
+                           key=lambda kv: kv[1][1])[:CLOSE_CACHE_MAX // 8]:
+            _CLOSE_TIME_CACHE.pop(k, None)
+    _CLOSE_TIME_CACHE[ticker] = (close_time or "", time.monotonic())
 # --- PRE-CLOSE SETTLEMENT FLATTEN (2026-07-24 measured loss): a market CLOSES (trading ends) at
 # its close_time but SETTLES hours later; after close we CANNOT trade, so whatever NAKED (unpaired,
 # net-directional) ladder inventory we hold AT CLOSE rides to settlement and resolves against us
@@ -1070,13 +1140,13 @@ def select_footprint(progs, now):
                 _kept.extend(rows[_ri:])               # tail unchecked -> run_once belt handles it
                 break
             _t3 = r["ticker"]
-            _ct3 = _CLOSE_TIME_CACHE.get(_t3)
+            _ct3 = _close_cache_get(_t3)
             if _ct3 is None:
                 _checked += 1
                 try:
                     _ct3 = public_get(f"/trade-api/v2/markets/{_t3}"
                                       ).get("market", {}).get("close_time")
-                    _CLOSE_TIME_CACHE[_t3] = _ct3 or ""
+                    _close_cache_put(_t3, _ct3)
                 except Exception:
                     _kept.append(r)                    # unreadable clock -> keep (fail-open)
                     continue
@@ -2008,6 +2078,14 @@ def bound_creates(creates, cancels, usd_day):
 
 
 BLACKOUT_CANCEL_AFTER = _envi("KALSHI_BLACKOUT_CANCEL_AFTER", 2)  # consecutive blind cycles
+# audit batch 3 (J5, operator-approved 2026-07-29): during a sustained blackout the guard
+# re-attempted EVERY failed cancel EVERY cycle — under the event-driven daemon (cycles can be
+# seconds apart) a network partition became a cancel storm against a venue that is already
+# refusing us. Attempts now back off exponentially (in-memory: a restart retries immediately,
+# which is correct — a fresh process should probe once). [attempt_count, next_try_mono]
+_BLACKOUT_BACKOFF = [0, 0.0]
+BLACKOUT_RETRY_BASE_S = _envf("KALSHI_BLACKOUT_RETRY_BASE_S", 30.0)
+BLACKOUT_RETRY_MAX_S = _envf("KALSHI_BLACKOUT_RETRY_MAX_S", 600.0)
 
 
 def _blackout_guard(client, st, plan):
@@ -2024,6 +2102,9 @@ def _blackout_guard(client, st, plan):
     if not oids:
         print("WARNING blackout persists but no last-known order ids — nothing to cancel")
         return
+    if time.monotonic() < _BLACKOUT_BACKOFF[1]:        # J5: paced retry, not a cancel storm
+        plan["blackout_retry_paced"] = 1
+        return
     ok, remaining = 0, []
     for oid in oids:
         try:
@@ -2035,6 +2116,12 @@ def _blackout_guard(client, st, plan):
             # lands here and is harmlessly retried next blackout cycle.
     plan["blackout_cancelled"] = ok
     st["last_oids"] = remaining                     # keep only the ones we could NOT cancel
+    if remaining:                                   # J5: only failed attempts escalate the pace
+        _BLACKOUT_BACKOFF[0] += 1
+        _BLACKOUT_BACKOFF[1] = time.monotonic() + min(
+            BLACKOUT_RETRY_BASE_S * (2 ** (_BLACKOUT_BACKOFF[0] - 1)), BLACKOUT_RETRY_MAX_S)
+    else:
+        _BLACKOUT_BACKOFF[:] = [0, 0.0]
     print(f"WARNING read blackout x{st['read_fail_streak']} — best-effort cancelled "
           f"{ok}/{len(oids)} last-known quotes ({len(remaining)} left to retry)")
 
@@ -2176,12 +2263,12 @@ def run_once():
             _fc_keep = []
             for _m in footprint:
                 _t2 = _m["ticker"]
-                _ct = _CLOSE_TIME_CACHE.get(_t2)
+                _ct = _close_cache_get(_t2)
                 if _ct is None:
                     try:
                         _ct = public_get(f"/trade-api/v2/markets/{_t2}"
                                          ).get("market", {}).get("close_time")
-                        _CLOSE_TIME_CACHE[_t2] = _ct or ""
+                        _close_cache_put(_t2, _ct)
                     except Exception:
                         plan["farclose_check_failed"] = plan.get("farclose_check_failed", 0) + 1
                         _fc_keep.append(_m)
@@ -2260,6 +2347,7 @@ def run_once():
                 return 0
             # BOTH reads succeeded -> a complete cycle; only NOW clear the blackout streak.
             st["read_fail_streak"] = 0
+            _BLACKOUT_BACKOFF[:] = [0, 0.0]           # J5: healthy reads re-arm an instant retry
             # PER-MARKET LOSS GOVERNORS (see config block): build the exit-only set for this
             # cycle (initialized empty above the mode branch). Governor faults fail OPEN (a
             # parse fault must not block trading — the global halts still stand behind them).
@@ -3002,6 +3090,10 @@ def run_once():
         for i, c in enumerate(creates):
             cost = c["price_dollars"] * c["count"]
             reducing = c.get("reason") == "unwind"
+            if _create_ratchet_blocked(c["ticker"], reducing):
+                create_skipped += 1                     # J6: venue keeps rejecting this ticker
+                plan["create_ratchet_skipped"] = plan.get("create_ratchet_skipped", 0) + 1
+                continue
             if c["ticker"] in failed_cancel_tickers:
                 # accumulating creates always deferred on a failed-cancel ticker; a reducing
                 # (unwind) create is exempt UNLESS a same-side stale reducing order still rests
@@ -3033,10 +3125,12 @@ def run_once():
                     ro = resp.get("order") if isinstance(resp.get("order"), dict) else resp
                     oid = (ro or {}).get("order_id") or oid
                 created_ok.append((c, oid)); committed += cost
+                _CREATE_FAIL_RATCHET.pop(c["ticker"], None)   # J6: success clears the ratchet
                 if funding_gate_on and not reducing:
                     funding_committed += cost           # a filled accumulating buy would draw cash
             except Exception as e:
                 create_fail += 1
+                _create_ratchet_fail(c["ticker"])   # J6
                 if first_create_err is None:        # anonymous create_fail hid WHAT was rejected
                     first_create_err = f"{c['ticker']}/{c['side']}/{c.get('reason')}: {e!r}"[:160]
 
@@ -3172,6 +3266,7 @@ def run_once():
         if SCORE_RANK:
             try:
                 import kalshi_market_scores as _kms
+                _kms.evict(SCORES, now=now.timestamp())   # J4: age-out + hard bound
                 _kms.save(SCORE_PATH, SCORES)
                 plan["scored_markets"] = len(SCORES)
                 plan["score_explore"] = SCORE_EXPLORE
@@ -3183,8 +3278,11 @@ def run_once():
         if DROP_GRACE > 0:
             st["drop_grace"] = grace_used
             plan["grace_retained"] = len(grace_used)
-        if _SILENT:
-            plan["silent_failures"] = dict(_SILENT)   # audited swallowers that actually fired
+        # audit batch 3 (J2, operator-approved 2026-07-29): the counters are LIFETIME under
+        # the long-lived daemon, so one old failure made every later plan row look actively
+        # failing. silent_failures is now what fired THIS cycle; the lifetime total keeps
+        # its own key so nothing is lost.
+        _silent_report(plan)
         if AMEND_DECREASE:
             plan["amends"] = len(amends)
             plan["amend_fail"] = amend_fail

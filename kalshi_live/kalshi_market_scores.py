@@ -76,6 +76,29 @@ def save(path, markets):
     os.replace(tmp, path)
 
 
+# audit batch 3 (J4, operator-approved 2026-07-29): the cache accumulates one row per market
+# ever scored and never forgets — thousands of rotating weekly programs = unbounded file and
+# memory growth. A row past EVICT_AGE_S is long past STALE_S (it already scores as pool-prior),
+# so dropping it changes no ranking outcome; the count bound is a backstop for pathological
+# churn. Mutates in place, returns evicted count; caller persists via save() as usual.
+EVICT_AGE_S = 7 * 86400.0
+EVICT_MAX_ROWS = 8192
+
+
+def evict(markets, now=None, max_age_s=EVICT_AGE_S, max_rows=EVICT_MAX_ROWS):
+    now = now if now is not None else _now()
+    dead = [t for t, r in markets.items()
+            if r.get("ts") is None or (now - float(r["ts"])) > max_age_s]
+    for t in dead:
+        del markets[t]
+    if len(markets) > max_rows:
+        oldest = sorted(markets, key=lambda t: float(markets[t].get("ts") or 0.0))
+        for t in oldest[:len(markets) - max_rows]:
+            del markets[t]
+            dead.append(t)
+    return len(dead)
+
+
 # ref_move is PER-CYCLE volatility; an observation after a long gap measures DRIFT, not
 # volatility (operator slate item G, 2026-07-29: a market read every 3h got one huge "move"
 # and was penalized for having been IGNORED, not for swinging). Gaps beyond this skip the
