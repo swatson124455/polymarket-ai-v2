@@ -10,13 +10,77 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-23 (local steward session, ~02:35 UTC — the daily readout was still reading DB-only labels and printing flattered edges; merged the CLOB supplement under the DB, then closed the shadow-set label gap with a targeted CLOB pass (262/262 reachable, 135 new labels, 80/80 independent cross-check). cohort2 is now POWERED and NOT DEMONSTRATED. ADMIT re-review still in flight, unaffected. HANDOFF: read the 2026-07-23 block in §0 first) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-07-30 (local steward session, ~16:45 UTC — full audit + operator 'proceed with all': re-review complete 20/20 FLIPPED:0; fee truth measured (2% haircut ~right, phantom-fee dead); cohort4 re-admission executed w/ new forward_only readout flag; RTDS A/B consumer LIVE beside the chain poll. HANDOFF: read the 2026-07-30 block in SS0 first) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
 ## 0. IMMEDIATE RESUME (read this block first)
+
+> ## 2026-07-30 (~16:45Z) — FULL AUDIT + "PROCEED WITH ALL": fee truth, cohort4 re-admission, RTDS A/B LIVE
+>
+> **Operator directive:** full state audit + path-to-profit; then "proceed with
+> all" on (1) benched re-admission, (2) fee + copyability measurements,
+> (3) RTDS latency build. All three EXECUTED this session.
+>
+> **RE-REVIEW COMPLETE (the 07-22 key deliverable): 20/20, FLIPPED: 0** —
+> roster-complete via strict `rereview_diff.py` (rc=0). Chain edges survive
+> complete labels: +0.0101 → +0.0749 per trader. No roster removals.
+>
+> **FEE TRUTH (kills the phantom-fee hypothesis):** CLOB per-market
+> `taker_base_fee`: **145/148 resolvable shadow markets = 1000, 3 = 0**;
+> weighted by our OK first-buy fills: 181 fee-bearing / 6 zero-fee / 877
+> unmappable-via-cache (fee-known subset only — disclosed). Live RTDS fee
+> field: fee/(price×size) p50 ≈ **0.028** (n=1,826, dominated by crypto
+> 5-min up/down + esports — cohort3's exact hunting ground). ⇒ the readout's
+> 2% haircut is roughly RIGHT; the measured near-zero copy edges STAND.
+> Money path = copyability selection + latency, not a fee correction.
+>
+> **COPYABILITY (the structural insight):** whale chain edge ≠ our copy edge.
+> Diagnostic arms (post-hoc, Bonferroni-flagged): `0x84dbb710` chain +0.0199
+> vs copy **−0.0432** (57 mkts); `0x4ad6cade` −0.0305; `0x216509be` −0.0364 —
+> vs `0xc660ae71` +0.0450, `0xee00ba33` +0.0826, `0xecb14ac6` +0.0428.
+> Snapshot artifact: `deep_dive/copyability_snapshot_20260730.txt`. NEXT: a
+> pre-registered copy-edge-selected cohort (criteria to be registered BEFORE
+> composition; chain deep-dive stays as the fraud/skill screen).
+>
+> **COHORT4 RE-ADMISSION EXECUTED (operator go):** benched `0x44886115` met
+> his pre-registered bar (fwd-since-bench **+0.1114, P=0.972, 60 resolved**
+> vs bar ≥+0.02 / ≥0.90 / ≥20; readout 07-30 12:30Z). Ledger: benched →
+> `cohort4`, epoch 2026-07-30T16:22:32Z, **`forward_only: true`**, benched
+> emptied w/ history entry, clean=30 unchanged (watcher restart not needed
+> for the ledger — detection set identical). Backup
+> `chain_audit.json.pre-cohort4-20260730`. **Dry-run caught the trap:**
+> without forward_only the "fresh" cohort pooled his pre-bench history (132
+> mkts +0.0026 vs true 60 / +0.1114) — `trust_after` is NOT a time filter.
+> New ledger-driven `forward_only` flag in `shadow_readout.py` applies the
+> real detect_ts cutoff; label prints `FWD-only since 07-30`; cohort1/2/3
+> byte-identical (verified same-instant). Epoch = re-admission time, NOT
+> bench time — the bar-meeting window was admission EVIDENCE; reusing it as
+> the verdict window would select and verify on the same data.
+>
+> **RTDS A/B LIVE (cd29962):** `rtds_watch()` beside the chain poll —
+> match-time detection w/ identity (measured RTDS delivery p50 0.82s/p90
+> 1.2s/no tail vs chain p50 1.30s/p90 11.6s). OWN sink
+> `mirror3_shadow_rtds.jsonl`, source=rtds, chain stream canonical +
+> untouched. Env `MIRROR3_RTDS_AB=1`. Deployed 16:31:55Z, connected
+> 16:32:53Z, heartbeat `rtds=AB`, 0 alarms, 56/56 pytest. ⚠ A/B must answer
+> BEFORE any swap: (a) coverage — RTDS may emit taker-side only (maker-side
+> roster fills chain-only?); (b) fill-parity on the same tx; (c) realized
+> tax/lag delta. Judge by tx join once roster hits accrue (~1 day).
+>
+> **12:30Z readout state (07-30):** cohort1(15,REDUCED) −0.0067 P=0.446 (92
+> mkts); cohort2(8) POWERED **+0.0129 P=0.616 NOT DEMONSTRATED** (76);
+> cohort3(6) POWERED +0.0028 P=0.527 NOT DEMONSTRATED (34); ALERT fired for
+> both (per-trader + LOO run + archived same day).
+>
+> **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
+> single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
+> power daily; operator go still needed); backfill poison-batch;
+> `end_date_iso` NULLs; 123h force-exit loop; docs-sync PR (pushed, needs
+> operator click: `claude/mb-docs-sync-20260723`); label residual 730/1062
+> tokens (re-run `shadow_label_supplement.py --write` after resolutions).
 
 > ## 2026-07-23 (~02:30Z) — THE DAILY READOUT WAS STILL FLATTERED. FIXED.
 >
