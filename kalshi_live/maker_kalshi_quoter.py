@@ -32,6 +32,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 import urllib.request
 from collections import defaultdict
@@ -395,6 +396,14 @@ def _load_scores():
 # loaded ONCE at import and ONLY when the flag is on (flag-off does zero file IO -> provable no-op)
 SCORES = _load_scores() if SCORE_RANK else {}
 
+# SCORES is now touched from TWO threads: the trading cycle (run_once on the daemon's worker
+# thread) and the background venue sweeper (freshness root-fix 2026-07-30, Phase 1). Every
+# SCORES touchpoint — rank, shadow_rank, update, evict+save, and the sweeper's writes — takes
+# this lock. Hold times are dict-op tiny; evict() iterates the dict and would RuntimeError on
+# a concurrent resize, which is exactly what the lock prevents.
+SCORES_LOCK = threading.Lock()
+_SWEEPER = None      # set by _ensure_sweeper(); stays None when KALSHI_SWEEP_ENABLED=0
+
 # --- CAPITAL-AWARE RANKING TELEMETRY (KALSHI_CAPRANK_TELEMETRY, default 0 = OFF, provable no-op) -
 # Operator-ordered 2026-07-29 (task #1), TELEMETRY-FIRST: the current rank is blind to dollars
 # committed per market and to per-market realized fill cost. This block only LOGS the would-be
@@ -483,14 +492,15 @@ def _caprank_telemetry(rows, picked, now):
         actual = [r["ticker"] for r in picked[:FOOTPRINT_TOP]]
         row = {"ts": now.isoformat(), "actual": actual, "variants": []}
         for v in _caprank_variants():
-            shadow = _kcr.shadow_rank(rows, SCORES, costs, MAX_MARKET_CAPITAL,
-                                      INV_HARD_CT, now.timestamp(), calib=CAPRANK_CALIB,
-                                      swing_penalty=SCORE_SWING_PENALTY,
-                                      unknown_bonus=SCORE_UNKNOWN_BONUS,
-                                      prospective=prospective,
-                                      risk_lambda=v["risk_lambda"],
-                                      prospective_haircut=v["prospective_haircut"],
-                                      unknown_haircut=v["unknown_haircut"])
+            with SCORES_LOCK:
+                shadow = _kcr.shadow_rank(rows, SCORES, costs, MAX_MARKET_CAPITAL,
+                                          INV_HARD_CT, now.timestamp(), calib=CAPRANK_CALIB,
+                                          swing_penalty=SCORE_SWING_PENALTY,
+                                          unknown_bonus=SCORE_UNKNOWN_BONUS,
+                                          prospective=prospective,
+                                          risk_lambda=v["risk_lambda"],
+                                          prospective_haircut=v["prospective_haircut"],
+                                          unknown_haircut=v["unknown_haircut"])
             top = shadow[:FOOTPRINT_TOP]
             shadow_t = [d["ticker"] for d in top]
             row["variants"].append(
@@ -1165,11 +1175,12 @@ def select_footprint(progs, now):
     if SCORE_RANK and rows:
         try:
             import kalshi_market_scores
-            rows = kalshi_market_scores.rank(
-                SCORES, rows, now=now.timestamp(),
-                swing_penalty=SCORE_SWING_PENALTY, unknown_bonus=SCORE_UNKNOWN_BONUS,
-                explore=SCORE_EXPLORE,
-                incumbents=_INCUMBENT_TICKERS, incumbency_bonus=INCUMBENCY_BONUS)
+            with SCORES_LOCK:
+                rows = kalshi_market_scores.rank(
+                    SCORES, rows, now=now.timestamp(),
+                    swing_penalty=SCORE_SWING_PENALTY, unknown_bonus=SCORE_UNKNOWN_BONUS,
+                    explore=SCORE_EXPLORE,
+                    incumbents=_INCUMBENT_TICKERS, incumbency_bonus=INCUMBENCY_BONUS)
         except Exception:
             _SILENT["rank_fail"] += 1        # silently fell back to POOL order
     # ROUND-ROBIN across series (review C18): a single high-pot series (50 concurrent hourly temp
@@ -1497,6 +1508,49 @@ def _prospective_capture(m, yl, nl, best_y, best_n, target):
         return 0.0
     snap = (ry / (1.0 + ry) + rn / (1.0 + rn)) / 2.0
     return snap * float(m.get("usd_day", 0.0) or 0.0)
+
+
+# ---------------- BACKGROUND VENUE SWEEPER glue (freshness root-fix 2026-07-30, Phase 1) ---------
+# The sweeper (kalshi_market_sweeper.py) is pure scheduling/pacing; the three callables below are
+# the ONLY seams between it and the quoter. It stores PROSPECTIVE capture in its own cache keys
+# (pcap/pref/pts) — live ranking does NOT consume them yet (Phase 3, operator-gated), so with the
+# flag on this is data collection only, and with KALSHI_SWEEP_ENABLED=0 (the default) none of it
+# runs at all.
+
+def _sweep_ages():
+    """{ticker: last-observed epoch} snapshot for the sweeper's oldest-first queue."""
+    import kalshi_market_scores as _kms
+    with SCORES_LOCK:
+        return {t: a for t, r in SCORES.items()
+                if (a := _kms._obs_ts(r)) is not None}
+
+
+def _sweep_store(ticker, pcap, ref_yes):
+    import kalshi_market_scores as _kms
+    with SCORES_LOCK:
+        _kms.update_prospective(SCORES, ticker, pcap, ref_yes)
+
+
+def _sweep_measure(m, ob):
+    """orderbook_fp -> (prospective capture $/day, ref_yes). The same M7 join-at-reference model
+    the join gate uses, on the same _levels parse. A book missing either side measures $0 (R3:
+    a one-sided snapshot pays nobody) — that IS the observation, not a decline."""
+    yl, _ = _levels(ob.get("yes_dollars") or [])
+    nl, _ = _levels(ob.get("no_dollars") or [])
+    by = max((p for p, _ in yl), default=None)
+    bn = max((p for p, _ in nl), default=None)
+    if by is None or bn is None:
+        return 0.0, by
+    return _prospective_capture(m, yl, nl, by, bn, float(m.get("target") or 0.0)), by
+
+
+def _ensure_sweeper():
+    """Start the sweeper thread once per process. No-op unless KALSHI_SWEEP_ENABLED=1."""
+    global _SWEEPER
+    if _SWEEPER is None:
+        import kalshi_market_sweeper as _kmsw
+        _SWEEPER = _kmsw.start(_sweep_ages, _sweep_measure, _sweep_store)
+    return _SWEEPER
 
 
 def _qualifying_breakdown(bids, target, df):
@@ -2177,6 +2231,10 @@ def _refresh_safety_knobs():
 def run_once():
     os.chdir(DATA_DIR)
     _refresh_safety_knobs()
+    try:
+        _ensure_sweeper()     # background venue sweeper — no-op unless KALSHI_SWEEP_ENABLED=1
+    except Exception:
+        pass                  # a sweeper start fault must never block a trading cycle
     _lock = _acquire_lock()
     if _lock is False:
         print("WARNING another quoter instance holds the run lock; skipping this run (no order ops)")
@@ -2799,8 +2857,9 @@ def run_once():
                     # cycle rank on measured capture instead of pool size.
                     if SCORE_RANK:
                         import kalshi_market_scores as _kms
-                        _kms.update(SCORES, t, _row.get("capture_usd_day"),
-                                    _row.get("y_ref"), now=now.timestamp())
+                        with SCORES_LOCK:
+                            _kms.update(SCORES, t, _row.get("capture_usd_day"),
+                                        _row.get("y_ref"), now=now.timestamp())
                 except Exception:
                     pass
 
@@ -3266,10 +3325,21 @@ def run_once():
         if SCORE_RANK:
             try:
                 import kalshi_market_scores as _kms
-                _kms.evict(SCORES, now=now.timestamp())   # J4: age-out + hard bound
-                _kms.save(SCORE_PATH, SCORES)
-                plan["scored_markets"] = len(SCORES)
+                with SCORES_LOCK:
+                    _kms.evict(SCORES, now=now.timestamp())   # J4: age-out + hard bound
+                    _kms.save(SCORE_PATH, SCORES)
+                    plan["scored_markets"] = len(SCORES)
+                    # FRESHNESS GAUGE (root-fix plan Phase 4): observation age p50/p90 across
+                    # the cache, minutes, using max(actual, prospective) per row. A freshness
+                    # number nobody watches goes stale itself — this one rides every plan row.
+                    _ages = sorted(now.timestamp() - a for r in SCORES.values()
+                                   if (a := _kms._obs_ts(r)) is not None)
+                    if _ages:
+                        plan["score_age_p50_m"] = round(_ages[len(_ages) // 2] / 60.0, 1)
+                        plan["score_age_p90_m"] = round(_ages[int(len(_ages) * 0.9)] / 60.0, 1)
                 plan["score_explore"] = SCORE_EXPLORE
+                if _SWEEPER is not None:
+                    plan["sweep"] = dict(_SWEEPER.stats)      # additive keys, observation only
             except Exception:
                 pass
         # DROP GRACE: carry the per-ticker counter into the next cycle. Tickers absent from

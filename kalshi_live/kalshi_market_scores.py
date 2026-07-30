@@ -85,14 +85,24 @@ EVICT_AGE_S = 7 * 86400.0
 EVICT_MAX_ROWS = 8192
 
 
+def _obs_ts(r):
+    """A row's LAST OBSERVATION time — actual (ts) or prospective (pts), whichever is newer.
+    Sweeper-only rows have pts but no ts; evicting them on the missing ts would delete every
+    sweep measurement each cycle (sweeper root-fix 2026-07-30). None when never observed."""
+    ts, pts = r.get("ts"), r.get("pts")
+    if ts is None and pts is None:
+        return None
+    return max(float(ts or 0.0), float(pts or 0.0))
+
+
 def evict(markets, now=None, max_age_s=EVICT_AGE_S, max_rows=EVICT_MAX_ROWS):
     now = now if now is not None else _now()
     dead = [t for t, r in markets.items()
-            if r.get("ts") is None or (now - float(r["ts"])) > max_age_s]
+            if _obs_ts(r) is None or (now - _obs_ts(r)) > max_age_s]
     for t in dead:
         del markets[t]
     if len(markets) > max_rows:
-        oldest = sorted(markets, key=lambda t: float(markets[t].get("ts") or 0.0))
+        oldest = sorted(markets, key=lambda t: _obs_ts(markets[t]) or 0.0)
         for t in oldest[:len(markets) - max_rows]:
             del markets[t]
             dead.append(t)
@@ -126,6 +136,25 @@ def update(markets, ticker, capture_usd_day, ref_yes, now=None):
     row["capture"] = float(capture_usd_day or 0.0)
     row["ts"] = now
     row["n"] = int(row.get("n", 0)) + 1
+    markets[ticker] = row
+    return row
+
+
+def update_prospective(markets, ticker, pcap_usd_day, ref_yes, now=None):
+    """Fold one SWEEPER observation into the cache (freshness root-fix 2026-07-30, Phase 1).
+
+    Prospective capture is a MODEL (the M7 join-at-reference walk; over-predicts 2-6x vs
+    actual) — so it lives in its OWN keys (pcap/pref/pts/pn) and this function NEVER touches
+    the actual-measurement keys (capture/ts/ref/ref_move/n). Nothing in rank()/score()
+    consumes pcap yet: wiring it into live ranking is Phase 3 (haircut + age cutoff in one
+    change, operator-gated). Until then these rows are data collection only."""
+    now = now if now is not None else _now()
+    row = markets.get(ticker) or {}
+    if ref_yes is not None:
+        row["pref"] = float(ref_yes)
+    row["pcap"] = float(pcap_usd_day or 0.0)
+    row["pts"] = now
+    row["pn"] = int(row.get("pn", 0)) + 1
     markets[ticker] = row
     return row
 
