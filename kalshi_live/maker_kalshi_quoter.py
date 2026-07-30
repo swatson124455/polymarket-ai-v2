@@ -2092,6 +2092,16 @@ def _mkt_capital(quotes):
 # their dollars until their reward windows close; freed capital then enters under whatever key
 # orders the non-incumbent group. Ships OFF (default 0) => cap_desired ordering byte-identical.
 ALLOC_INCUMBENT_FIRST = _envi("KALSHI_ALLOC_INCUMBENT_FIRST", 0)
+# PER-FAMILY DOLLAR CAP (operator-named 2026-07-30, from the sibling-overload finding: resting
+# concentration measured 19:30:47Z was 32% of $346.78 in ONE family, and no dollar-level family
+# cap existed — PER_SERIES_CAP bounds slots only and is live-set to 100). Max accumulating
+# dollars per series (ticker family); a sibling that would push its family past the cap is
+# SKIPPED (capital flows on to the next family — unlike the total cap's tail-cut). Reducing
+# (unwind) orders are NEVER blocked, but their dollars DO count toward the family total, so a
+# heavy family stops accepting new siblings first — the conservative direction. 0 = OFF
+# (default) => cap_desired behavior byte-identical.
+SERIES_MAX_USD = _envf("KALSHI_SERIES_MAX_USD", 0.0)
+_SERIES_CAP_DROPS = [0]     # markets skipped by the family cap in the LAST cap_desired call
 
 
 def cap_desired(desired, usd_day, incumbents=None):
@@ -2107,21 +2117,30 @@ def cap_desired(desired, usd_day, incumbents=None):
     ordering above. The allocation-key audit (2026-07-30) lists this site as issue #1;
     the pool key for the NON-incumbent group is replaced in Phase 3, receipts-calibrated."""
     kept, total = {}, 0.0
+    _SERIES_CAP_DROPS[0] = 0
+    fam = defaultdict(float)                   # accumulating+unwind $ per ticker family
     for t, qs in desired.items():
         if any(q.get("reason") == "unwind" for q in qs):
             kept[t] = qs
-            total += _mkt_capital(qs)
+            c = _mkt_capital(qs)
+            total += c
+            fam[t.split("-")[0]] += c
     inc = incumbents or set()
     order = [t for t in sorted(desired,
                                key=lambda t: (0 if t in inc else 1, -usd_day.get(t, 0)))
              if t not in kept]
     for i, t in enumerate(order):
         c = _mkt_capital(desired[t])
+        if SERIES_MAX_USD > 0 and fam[t.split("-")[0]] + c > SERIES_MAX_USD:
+            _SERIES_CAP_DROPS[0] += 1          # family full: skip THIS sibling, keep going —
+            continue                           # the dollars stay available to other families
         if total + c > MAX_TOTAL_CAPITAL:
-            return kept, len(order) - i        # everything from here down is dropped
+            # everything from here down is dropped (family-skips above already counted)
+            return kept, (len(order) - i) + _SERIES_CAP_DROPS[0]
         kept[t] = desired[t]
         total += c
-    return kept, 0
+        fam[t.split("-")[0]] += c
+    return kept, _SERIES_CAP_DROPS[0]
 
 
 def bound_creates(creates, cancels, usd_day):
@@ -3292,6 +3311,7 @@ def run_once():
             "book_mirror": _book_src["mirror"], "book_rest": _book_src["rest"],
             "book_src_err": _book_src["src_err"],
             "fetch_failed": fetch_failed, "capped_markets": capped_markets,
+            **({"series_cap_dropped": _SERIES_CAP_DROPS[0]} if SERIES_MAX_USD > 0 else {}),
             "budget_dropped_markets": budget_dropped,
             "cancel_fail": cancel_fail, "create_fail": create_fail,
             "create_skipped": create_skipped,

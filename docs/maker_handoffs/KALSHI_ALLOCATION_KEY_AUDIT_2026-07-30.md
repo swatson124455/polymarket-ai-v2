@@ -52,6 +52,21 @@ via the existing caprank variants; flip only on operator naming after the Aug 2-
 set CAPRANK_CALIB. Rank-key consistency test to pin all sites to ONE shared key function so
 this class of divergence cannot recur.
 
+## MIGRATION SAFEGUARDS — BUILT DARK same day (operator-named, both default OFF)
+
+1. **Incumbent-first capital** (`KALSHI_ALLOC_INCUMBENT_FIRST`, commit `685b2c4`): markets we
+   already stand in keep their dollars until their windows close; freed capital enters under
+   the new rule. Kills the flip's churn/queue-loss/experiment-destruction risks.
+2. **Per-family dollar cap** (`KALSHI_SERIES_MAX_USD`, this commit): hard ceiling on
+   accumulating dollars per ticker family; a sibling over the cap is SKIPPED and the money
+   flows to the next family (no tail-cut). Unwinds never blocked, but count toward the family
+   total. Addresses the measured concentration (32% of $346.78 resting in ONE family,
+   19:30:47Z read) and the new key's observed sibling-clustering habit — this is the D3 item
+   (tabled 07-29) landing as a capital guard instead of a rank term.
+   Telemetry: `series_cap_dropped` per plan row when enabled.
+   Both compose: incumbents first, then family-capped fill; exits exempt from everything.
+   Enabling either, and the cap dollar value, are separate operator namings — receipts first.
+
 ## Why this wasn't caught on 07-29
 The wrong-key finding was fixed at the site where it was found (selection) without a
 codebase sweep for other consumers of `usd_day` ordering — the pattern-completeness defect
