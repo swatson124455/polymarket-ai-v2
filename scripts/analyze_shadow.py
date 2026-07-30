@@ -162,7 +162,16 @@ def cluster_bootstrap_p(edges_by_token: dict[str, list[float]],
 
 def analyze(records: list[dict], outcomes: Optional[dict[str, int]],
             fee: float, econ_floor: float, p_min: float,
-            min_markets: int) -> dict:
+            min_markets: int, fee_map: Optional[dict] = None) -> dict:
+    """fee_map (optional, 2026-07-30 operator-approved): token_id ->
+    taker_base_fee bps from the CLOB (build_fee_map.py). When provided, a
+    token measured at 0 bps is NOT dinged; every other token (fee-bearing or
+    unmapped) keeps the flat `fee` haircut — MEASURED exemption only, the
+    conservative charge stays the default. (Measured 2026-07-30: 145/148
+    resolvable shadow markets = 1000 bps, 3 = 0; fee magnitude on fee-bearing
+    markets ~2.8% of notional p50, n=1,826 — a calibrated per-market RATE is a
+    separate, gated step; this only stops charging fees that provably do not
+    exist.) Omitted => byte-identical to the pre-2026-07-30 equation."""
     firsts = [r for r in records if r.get("first_buy")]
     verd = Counter(r.get("verdict") for r in firsts)
     lags = [float(r["detect_lag_s"]) for r in records
@@ -191,13 +200,19 @@ def analyze(records: list[dict], outcomes: Optional[dict[str, int]],
     if outcomes is not None:
         edges_by_token: dict[str, list[float]] = defaultdict(list)
         unresolved = 0
+        fee_exempt = 0
         for r in ok:
             o = outcomes.get(str(r.get("token_id")))
             if o is None:
                 unresolved += 1
                 continue
             fill = float(r["shadow_fill"])
-            edges_by_token[str(r["token_id"])].append(o - fill - fee * fill)
+            tok = str(r["token_id"])
+            r_fee = fee
+            if fee_map is not None and fee_map.get(tok) == 0:
+                r_fee = 0.0  # measured zero-fee market — do not invent a ding
+                fee_exempt += 1
+            edges_by_token[tok].append(o - fill - r_fee * fill)
         vals = [e for es in edges_by_token.values() for e in es]
         n_mkts = len(edges_by_token)
         p = cluster_bootstrap_p(edges_by_token)
@@ -212,7 +227,7 @@ def analyze(records: list[dict], outcomes: Optional[dict[str, int]],
             verdict = f"NOT DEMONSTRATED (P={p:.3f} < {p_min})"
         res.update({"resolved_mkts": n_mkts, "unresolved_ok_fills": unresolved,
                     "shadow_edge": edge, "shadow_edge_p": p,
-                    "edge_verdict": verdict})
+                    "edge_verdict": verdict, "fee_exempt_fills": fee_exempt})
     return res
 
 

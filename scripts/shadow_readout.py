@@ -259,8 +259,12 @@ def cohort_readout(records, outcomes, trust_after, traders, cfg) -> dict:
     # that yields empty members is safe, not just the two we enumerated.
     recs = az.filter_traders(records, traders) if traders.strip() else []
     recs, _ = az.repair_records(recs, cfg.max_chase, cfg.max_spread, trust_after)
+    # fee_map_data rides on cfg (2026-07-30, operator-approved): token->bps
+    # from build_fee_map.py; measured-zero-fee tokens are not dinged, all
+    # others keep the flat cfg.fee. Absent attribute/None => legacy equation.
     return az.analyze(recs, outcomes, cfg.fee, cfg.econ_floor, cfg.p_min,
-                      cfg.min_markets)
+                      cfg.min_markets,
+                      fee_map=getattr(cfg, "fee_map_data", None))
 
 
 def per_trader_lines(recs, outcomes, trust, members, label, cfg) -> list[str]:
@@ -499,6 +503,22 @@ async def run(args) -> int:
         return 2
     outcomes = merge_outcomes(db_outcomes, supp)
     provenance = label_provenance(tokens, db_outcomes, outcomes)
+    # Per-market fee exemption (operator-approved 2026-07-30). Absent map =>
+    # legacy flat-fee equation, disclosed either way. A CORRUPT map fails loud
+    # (same class as the label supplement — silence would quietly change the
+    # equation back without anyone seeing it).
+    args.fee_map_data = None
+    fee_note = f"fee=flat {args.fee:.2f} (no fee map)"
+    if args.fee_map and os.path.exists(args.fee_map):
+        with open(args.fee_map) as f:
+            args.fee_map_data = json.load(f)
+        if not isinstance(args.fee_map_data, dict) or not args.fee_map_data:
+            print(f"FATAL: fee map {args.fee_map} empty/not an object — "
+                  f"refusing a silent equation change", file=sys.stderr)
+            return 2
+        zeros = sum(1 for v in args.fee_map_data.values() if v == 0)
+        fee_note = (f"fee=per-market (map: {len(args.fee_map_data)} tokens, "
+                    f"{zeros} zero-fee exempt; others flat {args.fee:.2f})")
     OBS = ("probe", "benched")  # observation-only groups: never a cohort count
     counts = "+".join(str(len(a)) for n, a, _ in cohorts if n not in OBS)
     for obs in OBS:
@@ -509,7 +529,7 @@ async def run(args) -> int:
              f"{len(outcomes) // 2} resolved markets among {len(tokens)} shadow "
              f"tokens; cohorts from {os.path.basename(args.roster)}: "
              f"{counts}) =====",
-             f"  [{provenance}]"]
+             f"  [{provenance} | {fee_note}]"]
     all_alerts: list[str] = []
     for name, members, trust in cohorts:
         label = f"{name}({len(members)})"
@@ -1039,6 +1059,13 @@ if __name__ == "__main__":
     # the cron runs as polymarket and must be able to write here)
     ap.add_argument("--out", default="/opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_log.txt")
     ap.add_argument("--alert", default="/opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_ALERT.txt")
+    ap.add_argument("--fee-map", dest="fee_map",
+                    default="/opt/pa2-shared/mb_copyable_data/copyable_cache/"
+                            "fee_map.json",
+                    help="token->taker_base_fee bps map (build_fee_map.py). "
+                         "Measured zero-fee tokens are not dinged; all others "
+                         "keep the flat --fee. Missing file => legacy flat "
+                         "equation (disclosed in the header either way).")
     ap.add_argument("--locks",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
                             "verdict_locks.json",
