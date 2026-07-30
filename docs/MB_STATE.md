@@ -94,6 +94,24 @@
 > + OK-rate ≥75% + ≤50% conc; qualification records start 07-30T17:00Z) —
 > **composition awaits operator sign-off of the criteria.**
 >
+> **~17:30Z ADDENDUM 2 — CANDIDATE HUNT RESUMED (operator 'proceed'):**
+> (1) **INSUFFICIENT re-grade IN FLIGHT** — `/tmp/insuff_regrade.sh` (pid on
+> VPS, log `/tmp/insuff_regrade_main.log`, out-dir
+> `deep_dive_insuff_regrade/`): the 10 most label-starved INSUFFICIENTs
+> (9 with >80% of evidence unlabelable + `0x70d94a` at 65.7%; roster
+> `/tmp/insuff_regrade_roster.txt`; `0xfbfd14dd` has no API cache — dive
+> fetches). Gates mirror admit_rereview3: RPC-free → CLOB-supplement THEIR
+> cids (reuses `/tmp/clob_sup.py` via `/tmp/label_gap_cids.txt`) → coverage
+> verify → dive → strict roster-complete diff (`rereview_diff.py`, rc=4 on
+> any gap). ~2.2h/trader ⇒ ~22h. **Verdict changes are PROPOSALS ONLY.**
+> First launch died on a stale root-owned `/tmp/label_gap_cids.txt`
+> (PermissionError) — cleared and relaunched.
+> (2) **RTDS SCOUT RECORDER RUNNING** — `/tmp/rtds_scout.py`, 6h capture of
+> the FULL firehose (wallet/side/price/size/cid/ts) →
+> `rtds_scout/scout_20260730.jsonl`, then auto-ranks top non-roster wallets
+> by trades/notional/markets (roster excluded; 0 rows = FAILURE not empty
+> ranking). Output = future dive candidates, no roster impact.
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
