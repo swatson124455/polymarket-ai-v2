@@ -550,6 +550,25 @@ def _caprank_telemetry(rows, picked, now):
 #       is exit-only for this many seconds — a book that just ran us over must not be rejoined
 #       one cycle later. Persisted in quoter_state so a restart cannot amnesty it.
 MKT_DAY_LOSS_EXITONLY_USD = _envf("KALSHI_MKT_DAY_LOSS_EXITONLY_USD", 0.0)   # 0 = OFF
+# TIERED LOSS LADDER (operator-named 2026-07-31 "do 3$ then 5$ then out", superseding the
+# same-day one-strike-out): a market whose realized day-loss reaches the EXITONLY threshold
+# (live $3) goes exit-only for the day and records a strike; any day its realized day-loss
+# reaches MKT_OUT_LOSS_USD (live $5) it is OUT -- permanent, prune-exempt, persisted in
+# quoter_state['mkt_out']; only an operator clearing the entry (or market close) ends it.
+# Markets banned under the earlier one-strike rule were grandfathered into mkt_out at the
+# first cycle this shipped. Count-based strike bans are now OFF by default (STRIKES_OUT=0);
+# the knob remains for the operator's 2026-08-03 re-review.
+MKT_OUT_LOSS_USD = _envf("KALSHI_MKT_OUT_LOSS_USD", 5.0)
+# TAKER-CROSS BEHAVIORAL GOVERNOR (operator-named 2026-07-31 "A do it and go live with it"):
+# >= TAKER_GOV_CROSSES paid taker exits on a ticker in one day AND realized day-loss <=
+# -TAKER_GOV_LOSS_USD -> exit-only for the day + strike. Encodes the measured era fingerprint
+# (repeatedly PAYING to leave = the toxicity receipt: -$176.01 of -$182.06 era realized on
+# taker legs; this compound trip would have saved $98-122 of that era, COMPUTED). Counter is
+# incremented at the single point every paid exit passes (_taker_cross_capped), mirrored in
+# quoter_state['mkt_taker_xn'], reset at the UTC day roll. TAKER_GOV_CROSSES=0 disables.
+TAKER_GOV_CROSSES = _envi("KALSHI_TAKER_GOV_CROSSES", 3)
+TAKER_GOV_LOSS_USD = _envf("KALSHI_TAKER_GOV_LOSS_USD", 1.0)
+_TAKER_XN = {}                               # ticker -> paid-exit count today (st mirror)
 # STRIKE LADDER (operator-named 2026-07-31, tightened same day: "one strike your out for
 # anything costing over 5 dollars until 8-3 rereview"). A market that trips the $/day governor
 # STRIKES_OUT times is OUT: banned with NO expiry, EXEMPT from memory pruning — only an
@@ -564,7 +583,7 @@ MKT_DAY_LOSS_EXITONLY_USD = _envf("KALSHI_MKT_DAY_LOSS_EXITONLY_USD", 0.0)   # 0
 # realized) showed a single day can cost 5x the threshold.
 TWO_STRIKES = _envi("KALSHI_TWO_STRIKES", 1)
 TWO_STRIKES_MEMORY_D = _envi("KALSHI_TWO_STRIKES_MEMORY_D", 14)
-STRIKES_OUT = _envi("KALSHI_STRIKES_OUT", 1)
+STRIKES_OUT = _envi("KALSHI_STRIKES_OUT", 0)   # 0 = count-based bans OFF (E ladder rules)
 
 
 def _two_strikes(hist, tripped_today, day, now):
@@ -585,7 +604,7 @@ def _two_strikes(hist, tripped_today, day, now):
     cut = (now - timedelta(days=TWO_STRIKES_MEMORY_D)).strftime("%Y-%m-%d")
     banned = set()
     for t in list(hist):
-        if len(hist[t]) >= STRIKES_OUT:
+        if STRIKES_OUT > 0 and len(hist[t]) >= STRIKES_OUT:
             banned.add(t)                   # OUT — no prune, no expiry
             continue
         hist[t] = [d for d in hist[t] if d >= cut]
@@ -2258,6 +2277,23 @@ ALLOC_INCUMBENT_FIRST = _envi("KALSHI_ALLOC_INCUMBENT_FIRST", 0)
 # heavy family stops accepting new siblings first — the conservative direction. 0 = OFF
 # (default) => cap_desired behavior byte-identical.
 SERIES_MAX_USD = _envf("KALSHI_SERIES_MAX_USD", 0.0)
+# FAMILY CAP = 25% OF CAPITAL (operator-named 2026-07-31 "25% capital per family at a time"):
+# the per-family budget is SERIES_PCT of live capital (the portfolio-tracking equity the total
+# cap uses), with env SERIES_MAX_USD kept as a static ceiling when set. VERIFIED in the entry
+# formula: cap_desired skips a sibling BEFORE any create when the family budget is full, and
+# families are seeded with HELD dollars, so fills never reopen headroom. SERIES_PCT=0 falls
+# back to the static SERIES_MAX_USD alone.
+SERIES_PCT = _envf("KALSHI_SERIES_PCT", 0.25)
+
+
+def _series_cap():
+    eq = _TOTAL_CAP_EFF[0]
+    dyn = SERIES_PCT * float(eq) if (eq is not None and SERIES_PCT > 0) else None
+    if dyn is not None and SERIES_MAX_USD > 0:
+        return min(SERIES_MAX_USD, dyn)
+    if dyn is not None:
+        return dyn
+    return SERIES_MAX_USD
 _SERIES_CAP_DROPS = [0]     # markets skipped by the family cap in the LAST cap_desired call
 
 # UNIFIED ALLOCATION KEY — Phase 3 of the allocation-key audit (operator-named 2026-07-30,
@@ -2377,9 +2413,10 @@ def cap_desired(desired, usd_day, incumbents=None, fam_held=None):
     tail_cut = 0
     for i, t in enumerate(order):
         c = _mkt_capital(desired[t])
-        if SERIES_MAX_USD > 0 and fam[t.split("-")[0]] + c > SERIES_MAX_USD:
-            _SERIES_CAP_DROPS[0] += 1          # family full: skip THIS sibling, keep going —
-            if c > SERIES_MAX_USD:             # would never fit even alone: the footgun signature
+        _fcap = _series_cap()
+        if _fcap > 0 and fam[t.split("-")[0]] + c > _fcap:
+            _SERIES_CAP_DROPS[0] += 1          # family full: skip THIS sibling, keep going
+            if c > _fcap:                      # would never fit even alone: the footgun signature
                 _SERIES_CAP_SOLO[0] += 1
             continue                           # the dollars stay available to other families
         if total + c > _total_cap():   # portfolio-tracking cap (operator 2026-07-31)
@@ -2493,7 +2530,12 @@ def _refresh_safety_knobs():
              "KALSHI_REENTRY_COOLDOWN_S": ("REENTRY_COOLDOWN_S", float),
              "KALSHI_HALT_CONFIRM_N": ("HALT_CONFIRM_N", int),
              "KALSHI_EXIT_LADDER_STEPS": ("EXIT_LADDER_STEPS", int),
-             "KALSHI_EXIT_CHEAP_CROSS_USD": ("EXIT_CHEAP_CROSS_USD", float)}
+             "KALSHI_EXIT_CHEAP_CROSS_USD": ("EXIT_CHEAP_CROSS_USD", float),
+             "KALSHI_MKT_OUT_LOSS_USD": ("MKT_OUT_LOSS_USD", float),
+             "KALSHI_TAKER_GOV_CROSSES": ("TAKER_GOV_CROSSES", int),
+             "KALSHI_TAKER_GOV_LOSS_USD": ("TAKER_GOV_LOSS_USD", float),
+             "KALSHI_SERIES_PCT": ("SERIES_PCT", float),
+             "KALSHI_STRIKES_OUT": ("STRIKES_OUT", int)}
     try:
         g = globals()
         with open(path) as fh:
@@ -2579,6 +2621,8 @@ def run_once():
     # portfolio-tracking total cap until this cycle's balance read refreshes it.
     _STRAND_STEP.clear()
     _STRAND_STEP.update(st.get("strand_step") or {})
+    _TAKER_XN.clear()
+    _TAKER_XN.update(st.get("mkt_taker_xn") or {})
     if st.get("equity_prev") is not None:
         _TOTAL_CAP_EFF[0] = st.get("equity_prev")
     plan = {"ts": now.isoformat(), "mode": client.mode}
@@ -2740,20 +2784,39 @@ def run_once():
                         _realized = dict(_REALIZED_BY)
                     _base = st.get("mkt_realized_base") or {}
                     _tripped = set(st.get("mkt_loss_tripped") or [])
+                    if "mkt_out" in st:
+                        _out4 = set(st.get("mkt_out") or [])
+                    else:
+                        # E-migration (operator "3$ then 5$ then out"): markets banned under
+                        # the earlier one-strike-out rule stay banned -- grandfather every
+                        # struck ticker into the permanent OUT set exactly once.
+                        _out4 = set(st.get("mkt_strike_hist") or {})
                     if st.get("mkt_realized_day") != _day_mkt:
                         st["mkt_realized_day"] = _day_mkt
                         _base = dict(_realized)          # fresh day -> fresh baseline
                         _tripped = set()                 # trips are per-day
+                        _TAKER_XN.clear()                # paid-exit counts are per-day too
                     for _t4, _v4 in _realized.items():
                         # first seen mid-day -> baseline NOW: lifetime realized from prior days
                         # must not trip today's governor (fail-open by construction)
                         _base.setdefault(_t4, _v4)
-                        if _v4 - _base[_t4] <= -MKT_DAY_LOSS_EXITONLY_USD:
+                        _d4 = _v4 - _base[_t4]
+                        if _d4 <= -MKT_DAY_LOSS_EXITONLY_USD:
                             _tripped.add(_t4)            # LATCH: stays for the day even if flat
+                        if MKT_OUT_LOSS_USD > 0 and _d4 <= -MKT_OUT_LOSS_USD:
+                            _out4.add(_t4)               # $5 rung: OUT -- permanent, no expiry
+                        if (TAKER_GOV_CROSSES > 0
+                                and _TAKER_XN.get(_t4, 0) >= TAKER_GOV_CROSSES
+                                and _d4 <= -TAKER_GOV_LOSS_USD):
+                            _tripped.add(_t4)            # behavioral trip: paying to leave x3
                     st["mkt_realized_base"] = _base
                     st["mkt_loss_tripped"] = sorted(_tripped)
-                    _exit_only_mkts |= _tripped
+                    st["mkt_out"] = sorted(_out4)
+                    st["mkt_taker_xn"] = dict(_TAKER_XN)
+                    _exit_only_mkts |= _tripped | _out4
                     plan["loss_exitonly"] = len(_tripped)
+                    if _out4:
+                        plan["mkt_out"] = len(_out4)
                     if TWO_STRIKES:
                         _hist, _strike2 = _two_strikes(st.get("mkt_strike_hist") or {},
                                                        _tripped, _day_mkt, now)
@@ -4157,6 +4220,10 @@ def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4, cost=0.0):
                     _SILENT["ioc_cancel_fail"] += 1   # a NAKED taker order may now be resting
             remaining -= int(round(fill))
             crossed += int(round(fill))
+            if fill > 0:
+                # A-governor feed: one PAID exit event per filled IOC pass (module mirror;
+                # persisted via the governor block's st['mkt_taker_xn'] write-through)
+                _TAKER_XN[ticker] = _TAKER_XN.get(ticker, 0) + 1
             if fill <= 0:
                 break                                          # nothing at the touch; don't spin
         except Exception:

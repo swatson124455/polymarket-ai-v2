@@ -85,6 +85,9 @@ def _pivot_cfg(monkeypatch, *, pivot, foot=5, per_series=10, pool_mult=2, totcap
     monkeypatch.setattr(q, "SERIES_ALLOW", [])
     monkeypatch.setattr(q, "JOIN_SIZE", 20)
     monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 250.0)
+    # keep capital non-binding: the 25%-of-capital family cap (operator 2026-07-31) would trim
+    # a 5-sibling gas footprint at mock equity; its ON-path is pinned in test_loss_ladder_v2
+    monkeypatch.setattr(q, "SERIES_PCT", 0.0)
     monkeypatch.setattr(q, "MAX_TOTAL_CAPITAL", float(totcap))
 
 

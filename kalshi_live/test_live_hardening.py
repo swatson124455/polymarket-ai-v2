@@ -383,6 +383,10 @@ def _cfg(monkeypatch, join=20, mktcap=15, totcap=40):
     monkeypatch.setattr(q, "JOIN_SIZE", join)
     monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", float(mktcap))
     monkeypatch.setattr(q, "MAX_TOTAL_CAPITAL", float(totcap))
+    # the 25%-of-capital family cap (operator 2026-07-31) is default-ON in code; these
+    # fixtures predate it and assume family-cap-off (mock equity $100 -> $25/family would
+    # trim most two-market scenarios). Its ON-path is pinned in test_loss_ladder_v2.
+    monkeypatch.setattr(q, "SERIES_PCT", 0.0)
     monkeypatch.setattr(q, "public_get", lambda p: {"incentive_programs": [], "next_cursor": ""}
                         if "incentive" in p else
                         {"orderbook_fp": {"yes_dollars": [["0.50", "9999"]], "no_dollars": [["0.49", "9999"]]}})
