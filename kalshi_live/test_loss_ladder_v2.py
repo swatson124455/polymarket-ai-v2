@@ -164,3 +164,57 @@ class TestFamilyCap25Pct:
                 "second $20 sibling must be skipped once the $25 family budget is full"
         finally:
             q._TOTAL_CAP_EFF[0] = None
+
+
+class TestM3TripSnapshot:
+    """M3 (operator 2026-07-31): "$3 timeout, then open up, and if $5 then out for good" --
+    losses realized DURING the timeout (our forced exits) never escalate to the $5 rung;
+    a one-shot burn already at/past $5 at trip time still goes OUT immediately."""
+
+    def test_timeout_exits_do_not_escalate_to_permanent(self, monkeypatch, tmp_path):
+        _arm(monkeypatch)
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="0.00")]),
+             str(tmp_path))
+        # cycle 2: -$3.20 -> timeout (snapshot frozen at -3.20)
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="-3.20")]),
+             str(tmp_path))
+        # cycle 3: forced exits realize down to -$6 WHILE tripped -> must NOT go permanent
+        row3 = _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="-6.00")]),
+                    str(tmp_path))
+        assert row3.get("loss_exitonly") == 1
+        assert _state(tmp_path).get("mkt_out") == [],             "exit costs during the timeout must not trigger the permanent ban"
+
+    def test_one_shot_burn_still_goes_out_immediately(self, monkeypatch, tmp_path):
+        _arm(monkeypatch)
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="0.00")]),
+             str(tmp_path))
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="-25.00")]),
+             str(tmp_path))
+        assert _state(tmp_path).get("mkt_out") == ["T1"],             "a burn already past $5 at trip time is OUT (MLABELSHARE class)"
+
+    def test_after_reopen_fresh_counting_can_ban(self, monkeypatch, tmp_path):
+        _arm(monkeypatch)
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="0.00")]),
+             str(tmp_path))
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="-3.20")]),
+             str(tmp_path))
+        st = _state(tmp_path)
+        st["mkt_realized_day"] = "2020-01-01"            # timeout expires: day rolls
+        with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as fh:
+            json.dump(st, fh)
+        # day-roll cycle re-baselines at the current lifetime value (-3.20)...
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="-3.20")]),
+             str(tmp_path))
+        # ...then the reopened market burns a fresh -$5.10 -> out for good
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="-8.30")]),
+             str(tmp_path))
+        assert _state(tmp_path).get("mkt_out") == ["T1"],             "post-reopen losses count fresh: $5 after reopening = out for good"
+
+    def test_snapshots_reset_at_day_roll(self, monkeypatch, tmp_path):
+        _arm(monkeypatch)
+        with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as fh:
+            json.dump({"mkt_realized_day": "2020-01-01",
+                       "mkt_trip_snap": {"T9": -3.2}}, fh)
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="0.00")]),
+             str(tmp_path))
+        assert _state(tmp_path).get("mkt_trip_snap") == {},             "trip snapshots are per-day state and must not accumulate"

@@ -2894,29 +2894,43 @@ def run_once():
                         # the earlier one-strike-out rule stay banned -- grandfather every
                         # struck ticker into the permanent OUT set exactly once.
                         _out4 = set(st.get("mkt_strike_hist") or {})
+                    _snap = st.get("mkt_trip_snap") or {}
                     if st.get("mkt_realized_day") != _day_mkt:
                         st["mkt_realized_day"] = _day_mkt
                         _base = dict(_realized)          # fresh day -> fresh baseline
                         _tripped = set()                 # trips are per-day
+                        _snap = {}                       # M3: trip snapshots are per-day too
                         _TAKER_XN.clear()                # paid-exit counts are per-day too
                     for _t4, _v4 in _realized.items():
                         # first seen mid-day -> baseline NOW: lifetime realized from prior days
                         # must not trip today's governor (fail-open by construction)
                         _base.setdefault(_t4, _v4)
                         _d4 = _v4 - _base[_t4]
+                        # M3 (operator-clarified 2026-07-31: "3 timeout then open up and if 5
+                        # then out for good"): losses realized WHILE serving the $3 timeout
+                        # (our own forced exits) must not escalate to the $5 permanent rung.
+                        # The rung is judged on the loss frozen AT the trip; a one-shot burn
+                        # arriving already at/past $5 still goes OUT immediately. Snapshots
+                        # reset at the day roll -- after reopening, fresh counting applies.
+                        _was_tripped4 = _t4 in _tripped
+                        _eff4 = _snap.get(_t4, _d4) if _was_tripped4 else _d4
                         if _d4 <= -MKT_DAY_LOSS_EXITONLY_USD:
                             _tripped.add(_t4)            # LATCH: stays for the day even if flat
-                        if MKT_OUT_LOSS_USD > 0 and _d4 <= -MKT_OUT_LOSS_USD:
+                            _snap.setdefault(_t4, _d4)   # freeze the pre-timeout loss
+                        if MKT_OUT_LOSS_USD > 0 and _eff4 <= -MKT_OUT_LOSS_USD:
                             _out4.add(_t4)               # $5 rung: OUT -- permanent, no expiry
                         if (TAKER_GOV_CROSSES > 0
                                 and _TAKER_XN.get(_t4, 0) >= TAKER_GOV_CROSSES
                                 and _d4 <= -TAKER_GOV_LOSS_USD):
-                            _tripped.add(_t4)            # behavioral trip: paying to leave x3
-                            plan["taker_gov_tripped"] = plan.get("taker_gov_tripped", 0) + 1
+                            if _t4 not in _tripped:
+                                _tripped.add(_t4)        # behavioral trip: paying to leave x3
+                                _snap.setdefault(_t4, _d4)
+                                plan["taker_gov_tripped"] = plan.get("taker_gov_tripped", 0) + 1
                     st["mkt_realized_base"] = _base
                     st["mkt_loss_tripped"] = sorted(_tripped)
                     _out4 |= _mkt_out_backup_union(_out4)   # amnesty guard (separate file)
                     st["mkt_out"] = sorted(_out4)
+                    st["mkt_trip_snap"] = _snap
                     st["mkt_taker_xn"] = dict(_TAKER_XN)
                     _exit_only_mkts |= _tripped | _out4
                     plan["loss_exitonly"] = len(_tripped)
