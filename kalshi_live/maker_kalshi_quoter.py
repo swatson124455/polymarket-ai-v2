@@ -2348,6 +2348,20 @@ SERIES_MAX_USD = _envf("KALSHI_SERIES_MAX_USD", 0.0)
 # families are seeded with HELD dollars, so fills never reopen headroom. SERIES_PCT=0 falls
 # back to the static SERIES_MAX_USD alone.
 SERIES_PCT = _envf("KALSHI_SERIES_PCT", 0.25)
+# L2 PAIR-CARRY MAKER UNWIND (operator-named 2026-07-31 "DO if guarded + blast-radius-
+# verified"; BUILT DARK, default 0 = OFF => byte-identical). A floored ladder pair (long
+# yes-low + long no-high) stays exempt from every TAKER de-risk path — crossing out pays two
+# spreads to shed penny risk. This adds the PASSIVE lane: MAKER reduce-orders on both legs
+# (buy no on the yes-leg, buy yes on the no-leg — Kalshi self-nets each leg to $1), whole
+# contracts only, ONLY when both legs' books were read fresh this cycle, and ONLY when the
+# combined proceeds beat the $1 settlement floor: (1-pn_A)+(1-py_B) >= 1 + MIN_EDGE. Each
+# leg rests at its own inside (1 - opposite best bid = that leg's touch), so a lone fill
+# leaves the partner NAKED at a touch-priced sale — the normal naked machinery (skew,
+# strand clock) takes over, bounded. Orders carry reason='unwind': every polarity-aware
+# gate (capital-cap keep, probe clamp, exit-only strips, breaker shape) already treats
+# them as risk-reducing.
+PAIR_UNWIND = _envi("KALSHI_PAIR_UNWIND", 0)
+PAIR_UNWIND_MIN_EDGE = _envf("KALSHI_PAIR_UNWIND_MIN_EDGE", 0.02)
 
 
 def _series_cap():
@@ -2608,7 +2622,9 @@ def _refresh_safety_knobs():
              "KALSHI_TAKER_GOV_CROSSES": ("TAKER_GOV_CROSSES", int),
              "KALSHI_TAKER_GOV_LOSS_USD": ("TAKER_GOV_LOSS_USD", float),
              "KALSHI_SERIES_PCT": ("SERIES_PCT", float),
-             "KALSHI_STRIKES_OUT": ("STRIKES_OUT", int)}
+             "KALSHI_STRIKES_OUT": ("STRIKES_OUT", int),
+             "KALSHI_PAIR_UNWIND": ("PAIR_UNWIND", int),
+             "KALSHI_PAIR_UNWIND_MIN_EDGE": ("PAIR_UNWIND_MIN_EDGE", float)}
     try:
         g = globals()
         with open(path) as fh:
@@ -3630,6 +3646,49 @@ def run_once():
             print(f"WARNING breaker: naked ${plan.get('naked_held_usd', 0):.2f} of "
                   f"${held_cost:.2f} held (growth>{BREAKER_HELD_GROWTH_USD:.0f}"
                   f"/{BREAKER_WINDOW_S}s or level>{HELD_MAX_USD:.0f}) — REDUCE-ONLY cycle")
+
+        # L2 PAIR-CARRY MAKER UNWIND (dark, KALSHI_PAIR_UNWIND=1 to enable; see config block)
+        if PAIR_UNWIND and held_by:
+            try:
+                _pu_n = 0
+                _pu_edge = 0.0
+                for _lt6, _st6, _qty6 in _ladder_pairs(held_by):
+                    _ct6 = int(_qty6)                    # whole contracts only — never flips
+                    if _ct6 < 1:
+                        continue
+                    _rl6, _rs6 = book_refs.get(_lt6), book_refs.get(_st6)
+                    if not _rl6 or not _rs6:
+                        continue                         # BOTH books must be fresh this cycle
+                    _pn6 = _rl6[1]                       # buy NO on the long-yes leg (its touch)
+                    _py6 = _rs6[0]                       # buy YES on the long-no leg (its touch)
+                    if not (_ok_exit_price(_pn6) and _ok_exit_price(_py6)):
+                        continue
+                    _edge6 = (1.0 - _pn6) + (1.0 - _py6) - 1.0
+                    if _edge6 < PAIR_UNWIND_MIN_EDGE:
+                        continue                         # settlement floor already pays >= this
+                    for _t6, _side6, _px6 in ((_lt6, "no", _pn6), (_st6, "yes", _py6)):
+                        _same6 = [o for o in desired.get(_t6, [])
+                                  if o.get("side") == _side6]
+                        if _same6:
+                            # never rest two prices on one ticker+side: top up an existing
+                            # same-price unwind, else this leg stands down (its partner is
+                            # still a touch-priced maker reduce on its own book — safe alone)
+                            if (len(_same6) == 1 and _same6[0].get("reason") == "unwind"
+                                    and abs(_same6[0]["price_dollars"] - _px6) < TICK / 2):
+                                _same6[0]["count"] += _ct6
+                            else:
+                                continue
+                        else:
+                            desired.setdefault(_t6, []).append(
+                                {"side": _side6, "price_dollars": _px6, "count": _ct6,
+                                 "reason": "unwind"})
+                        _pu_n += 1
+                    _pu_edge += _edge6 * _ct6
+                if _pu_n:
+                    plan["pair_unwind_quotes"] = _pu_n
+                    plan["pair_unwind_edge_usd"] = round(_pu_edge, 2)
+            except Exception:
+                _SILENT["pair_unwind_fail"] += 1
 
         # REWARD-CREDIT TELEMETRY: LIP pays DiscountFactor^ticks-from-reference x size, so money
         # resting AT the touch earns full credit while money parked/stepped back earns 0.5^n (or
@@ -4852,6 +4911,40 @@ def ladder_pairing(held_by, stats=None):
             if naked[st_] == 0:
                 j += 1
     return naked
+
+
+def _ladder_pairs(held_by):
+    """The MATCHED pairs ladder_pairing nets out, as [(long_ticker, short_ticker, qty)] —
+    the SAME greedy walk (lowest longs vs highest shorts, strictly long_strike <
+    short_strike; the unfloored combo is never matched). Kept in lockstep with
+    ladder_pairing by a property test: pairs + naked must reconstruct held exactly."""
+    naked = dict(held_by)
+    by_event = defaultdict(list)
+    for t, n in (held_by or {}).items():
+        if not n:
+            continue
+        s = _strike_of(t)
+        if s is not None:
+            by_event[_event_key(t)].append((s, t))
+    out = []
+    for rows in by_event.values():
+        pos = sorted((s, t) for s, t in rows if naked.get(t, 0) > 0)
+        neg = sorted(((s, t) for s, t in rows if naked.get(t, 0) < 0), reverse=True)
+        i = j = 0
+        while i < len(pos) and j < len(neg):
+            ls, lt = pos[i]
+            ss, st_ = neg[j]
+            if ls >= ss:
+                break
+            m = min(naked[lt], -naked[st_])
+            naked[lt] -= m
+            naked[st_] += m
+            out.append((lt, st_, m))
+            if naked[lt] == 0:
+                i += 1
+            if naked[st_] == 0:
+                j += 1
+    return out
 
 
 def _is_ladder_event(tickers):
