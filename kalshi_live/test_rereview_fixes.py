@@ -113,7 +113,25 @@ def test_m5_halt_confirm_n6_still_halts(monkeypatch, tmp_path):
     assert os.path.exists(stop), "M5: 6 sustained breaches at N=6 must write STOP"
 
 
-def test_m6_incumbent_in_out_series_keeps_full_size(monkeypatch, tmp_path):
+def test_m6_all_siblings_of_banned_series_probe_sized(monkeypatch, tmp_path):
+    """REVERSED 2026-07-31 18:51Z on live evidence (UMG/WMG churn at full size): incumbents
+    of a banned series are probe-sized too; only held unwinds keep full size."""
+    _cfg(monkeypatch)
+    monkeypatch.setattr(q, "EXPLORE_PROBE_CT", 5)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "KXBURN-INC-1", "usd_day": 100.0, "target": 1,
+         "end": "2099-01-01T00:00:00Z"}])
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as fh:
+        json.dump({"mkt_out": ["KXBURN-OLD-1"],
+                   "prev_standing_tickers": ["KXBURN-INC-1"]}, fh)
+    c = MockClient(mode="live", positions=[])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("series_probe") == 1
+    mine = [x for x in c.created if x["ticker"] == "KXBURN-INC-1"]
+    assert mine and all(x["count"] <= 5 for x in mine),         "incumbents of a burned series must probe-size (UMG/WMG lesson)"
+
+
+def _superseded_m6(monkeypatch, tmp_path):
     _cfg(monkeypatch)
     monkeypatch.setattr(q, "EXPLORE_PROBE_CT", 5)
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: [

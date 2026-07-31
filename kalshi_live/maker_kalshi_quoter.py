@@ -2740,13 +2740,15 @@ def run_once():
         if EXPLORE_PROBE_CT > 0:
             _out_series = {t5.split("-")[0] for t5 in (st.get("mkt_out") or [])}
             if _out_series:
-                _standing5 = set(st.get("prev_standing_tickers") or [])
                 for _r5 in footprint:
                     if (not _r5.get("explore")
-                            and _r5.get("ticker", "").split("-")[0] in _out_series
-                            and _r5.get("ticker") not in _standing5):
-                        # M6 re-review fix: only NEWCOMERS probe-size (as announced) --
-                        # established incumbents in the series keep full size
+                            and _r5.get("ticker", "").split("-")[0] in _out_series):
+                        # LIVE-EVIDENCE REVERSAL of the M6 incumbent exemption (2026-07-31
+                        # 18:06-18:51Z: MLABELSHARE siblings UMG+WMG -- standing incumbents
+                        # of a banned series -- churned 21 fills/19 taker at full size,
+                        # -$10.88 equity in 45min). EVERY sibling of a series with a
+                        # permanently-OUT member quotes probe-sized; held positions keep
+                        # their full unwind (the probe clamp exempts reason=='unwind').
                         _r5["explore"] = True
                         plan["series_probe"] = plan.get("series_probe", 0) + 1
         plan.update(FP_DROPS)                 # drop reasons (empty when a test patches selection)
