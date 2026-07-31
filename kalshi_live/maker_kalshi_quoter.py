@@ -2426,10 +2426,15 @@ def _alloc_priority(footprint_rows, now, usd_day):
         return usd_day
 
 
-def _fam_concentration(desired):
-    """(top_family, top_family_usd, top_family_pct_of_total) of an intended book. Pure —
+def _fam_concentration(desired, denom=None):
+    """(top_family, top_family_usd, top_family_pct) of an intended book. Pure —
     the concentration gauge (operator-named 2026-07-30) rides every plan row so sibling
-    overload is visible the cycle it forms, not at the next manual audit."""
+    overload is visible the cycle it forms, not at the next manual audit.
+    denom: when supplied (>0), pct is computed against IT — the live call passes the
+    capital basis _series_cap() caps against, so fam_top_pct is directly comparable to
+    SERIES_PCT (runtime-review F1 2026-07-31: pct-of-intended-book read 33.8% while the
+    true capital share was 12.1% — the gauge looked like a cap breach that wasn't).
+    Without denom (legacy/tests): pct of the intended-book total, as before."""
     fam = defaultdict(float)
     for t, qs in desired.items():
         fam[t.split("-")[0]] += _mkt_capital(qs)
@@ -2437,7 +2442,8 @@ def _fam_concentration(desired):
     if tot <= 0:
         return None, 0.0, 0.0
     s = max(fam, key=lambda k: fam[k])
-    return s, fam[s], 100.0 * fam[s] / tot
+    base = denom if (denom is not None and denom > 0) else tot
+    return s, fam[s], 100.0 * fam[s] / base
 
 
 _SERIES_CAP_SOLO = [0]      # blind-review fix 2026-07-31: markets whose OWN notional exceeds
@@ -2859,6 +2865,18 @@ def run_once():
             # cycle (initialized empty above the mode branch). Governor faults fail OPEN (a
             # parse fault must not block trading — the global halts still stand behind them).
             _day_mkt = now.strftime("%Y-%m-%d")
+            # Blind-review D2 (2026-07-31): ALREADY-KNOWN bans are enforced HERE, before and
+            # outside the governor try — a fault in the day-governor body used to skip the
+            # _exit_only_mkts union entirely, so permanently-OUT markets quoted full
+            # accumulating size for up to 2 cycles until the fail-closed streak caught it.
+            # The governor block below only ADDS this cycle's new trips. Day-latches are
+            # enforced only for TODAY's state (a rolled day reopens them, same as the body).
+            try:
+                _exit_only_mkts |= set(st.get("mkt_out") or []) | _mkt_out_backup_union(set())
+                if st.get("mkt_realized_day") == _day_mkt:
+                    _exit_only_mkts |= set(st.get("mkt_loss_tripped") or [])
+            except Exception:
+                _SILENT["mkt_out_enforce_fail"] += 1
             if MKT_DAY_LOSS_EXITONLY_USD > 0:
                 try:
                     # BURN-AND-RUN ROOT FIX (operator-named 2026-07-31): the governor's feed is
@@ -2874,13 +2892,20 @@ def run_once():
                         _realized = client.get_realized_by_market()
                         _REALIZED_LAST_GOOD.clear()
                         _REALIZED_LAST_GOOD.update(_realized)
+                        # Blind-review D3 (2026-07-31): the last-good snapshot must survive a
+                        # daemon restart, or a deploy during a feed outage re-opens the
+                        # burn-and-run blind spot (fallback would be the flat-dropping side
+                        # channel). One float per traded ticker — tiny.
+                        st["realized_last_good"] = dict(_realized)
                     except Exception:
                         # F3 (2026-07-31): prefer the LAST-GOOD all-traded snapshot -- the
                         # open-positions side channel drops flat markets (the burn-and-run
                         # blind spot) and is only the bootstrap fallback. Re-review M4: this
                         # degradation was SILENT -- now counted, surfaced, and feeding the
                         # same fail-closed streak as any other governor fault.
-                        _realized = dict(_REALIZED_LAST_GOOD) or dict(_REALIZED_BY)
+                        _realized = (dict(_REALIZED_LAST_GOOD)
+                                     or dict(st.get("realized_last_good") or {})
+                                     or dict(_REALIZED_BY))
                         _SILENT["realized_feed_fail"] += 1
                         plan["realized_feed_fallback"] = 1
                         st["gov_fail_streak"] = int(st.get("gov_fail_streak", 0)) + 1
@@ -2930,14 +2955,22 @@ def run_once():
                                 plan["taker_gov_tripped"] = plan.get("taker_gov_tripped", 0) + 1
                     st["mkt_realized_base"] = _base
                     st["mkt_loss_tripped"] = sorted(_tripped)
-                    _out4 |= _mkt_out_backup_union(_out4)   # amnesty guard (separate file)
+                    _bk4 = _mkt_out_backup_union(_out4)     # amnesty guard (separate file)
+                    _re4 = _bk4 - _out4
+                    if _re4:
+                        # Blind-review D4 (2026-07-31): an operator clearing quoter_state's
+                        # mkt_out WITHOUT editing mkt_out_backup.json gets the ban silently
+                        # re-applied — say it out loud so the un-ban procedure failure is
+                        # visible, not mistaken for a standing ban.
+                        print(f"WARNING mkt_out amnesty guard RE-APPLIED {sorted(_re4)} from "
+                              f"mkt_out_backup.json — clearing a ban requires editing BOTH "
+                              f"quoter_state.json AND mkt_out_backup.json")
+                    _out4 |= _bk4
                     st["mkt_out"] = sorted(_out4)
                     st["mkt_trip_snap"] = _snap
                     st["mkt_taker_xn"] = dict(_TAKER_XN)
                     _exit_only_mkts |= _tripped | _out4
                     plan["loss_exitonly"] = len(_tripped)
-                    if plan.get("taker_gov_tripped"):
-                        pass                                 # key set at trip site below
                     if _out4:
                         plan["mkt_out"] = len(_out4)
                     if TWO_STRIKES:
@@ -3636,10 +3669,12 @@ def run_once():
             except Exception:
                 grace_used = {}
         _fam_held = None
-        if SERIES_MAX_USD > 0:
+        if SERIES_MAX_USD > 0 or SERIES_PCT > 0:
             # HELD-inventory dollars per family, $1/contract conservative (same reserve
             # convention as committed capital) — blind-review fix: fills must not reopen
-            # family headroom.
+            # family headroom. Gate matches _series_cap()'s activation (blind-review D1
+            # 2026-07-31: gating on SERIES_MAX_USD alone left the pure-SERIES_PCT config
+            # seeding families with quote notional only — fills reopened headroom).
             _fam_held = defaultdict(float)
             for _t5, _p5 in held_by.items():
                 _fam_held[_t5.split("-")[0]] += abs(_p5)
@@ -3647,7 +3682,12 @@ def run_once():
             desired, alloc_prio,
             incumbents=_INCUMBENT_TICKERS if ALLOC_INCUMBENT_FIRST else None,
             fam_held=_fam_held)                                                # aggregate $ cap
-        fam_top, fam_top_usd, fam_top_pct = _fam_concentration(desired)
+        try:
+            _fam_denom = float(_TOTAL_CAP_EFF[0]) if _TOTAL_CAP_EFF[0] is not None else None
+        except (TypeError, ValueError):
+            _fam_denom = None
+        fam_top, fam_top_usd, fam_top_pct = _fam_concentration(
+            desired, denom=_fam_denom)    # pct on the SAME equity basis _series_cap() uses
         # AMEND-ON-DECREASE: pull out same-price size REDUCTIONS so they keep their queue position
         # instead of being cancelled and rebuilt at the back. `standing` itself is deliberately NOT
         # rebound — everything downstream (committed capital, failed-cancel deferral, the blackout
@@ -3843,9 +3883,10 @@ def run_once():
             "book_mirror": _book_src["mirror"], "book_rest": _book_src["rest"],
             "book_src_err": _book_src["src_err"],
             "fetch_failed": fetch_failed, "capped_markets": capped_markets,
-            **({"series_cap_dropped": _SERIES_CAP_DROPS[0]} if SERIES_MAX_USD > 0 else {}),
+            **({"series_cap_dropped": _SERIES_CAP_DROPS[0]}
+               if (SERIES_MAX_USD > 0 or SERIES_PCT > 0) else {}),
             **({"series_cap_solo": _SERIES_CAP_SOLO[0]}
-               if SERIES_MAX_USD > 0 and _SERIES_CAP_SOLO[0] else {}),
+               if (SERIES_MAX_USD > 0 or SERIES_PCT > 0) and _SERIES_CAP_SOLO[0] else {}),
             **({"fam_top": fam_top, "fam_top_usd": round(fam_top_usd, 2),
                 "fam_top_pct": round(fam_top_pct, 1)} if fam_top else {}),
             "budget_dropped_markets": budget_dropped,
