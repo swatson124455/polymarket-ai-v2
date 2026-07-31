@@ -13,7 +13,7 @@ q = _load("maker_kalshi_quoter")
 class MockClient:
     def __init__(self, mode="live", resting=None, positions=None,
                  cancel_fail_ids=(), create_raises=False, get_orders_raises=False,
-                 get_positions_raises=False):
+                 get_positions_raises=False, traded=None, get_realized_raises=False):
         self.mode = mode
         self._resting = resting or []
         self._positions = positions or []
@@ -21,6 +21,11 @@ class MockClient:
         self._create_raises = create_raises
         self._get_orders_raises = get_orders_raises
         self._get_positions_raises = get_positions_raises
+        # traded = rows for the governor's ALL-TRADED feed (count_filter=total_traded). None
+        # (the default) mirrors positions, so every pre-existing test sees the old behavior;
+        # a burn-and-run test passes a FLAT row here that positions no longer carries.
+        self._traded = traded
+        self._get_realized_raises = get_realized_raises
         self.created = []
         self.cancelled = []
         self.crosses = []
@@ -36,6 +41,17 @@ class MockClient:
         if getattr(self, "_frozen_positions", None) is not None:
             return {"market_positions": list(self._frozen_positions)}
         return {"market_positions": list(self._positions)}
+    def get_realized_by_market(self):
+        if self._get_realized_raises:
+            raise RuntimeError("realized read 500")
+        rows = self._traded if self._traded is not None else self._positions
+        out = {}
+        for p in rows:
+            try:
+                out[p.get("ticker")] = float(p.get("realized_pnl_dollars") or 0.0)
+            except (TypeError, ValueError):
+                pass
+        return out
     def get_balance(self):
         return {"balance_dollars": "100.0000"}
     def cancel_order(self, oid):

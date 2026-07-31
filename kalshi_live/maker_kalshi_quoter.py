@@ -533,27 +533,34 @@ def _caprank_telemetry(rows, picked, now):
 #       is exit-only for this many seconds — a book that just ran us over must not be rejoined
 #       one cycle later. Persisted in quoter_state so a restart cannot amnesty it.
 MKT_DAY_LOSS_EXITONLY_USD = _envf("KALSHI_MKT_DAY_LOSS_EXITONLY_USD", 0.0)   # 0 = OFF
-# TWO-STRIKES RULE (operator-named 2026-07-31: "2 strikes and you are out for 2x current").
-# The day-latch above is strike 1 and clears at midnight UTC; a market that trips the $/day
-# governor AGAIN on a later day serves DOUBLE — exit-only through the END of the day AFTER its
-# second trip (2 calendar days vs the single day-latch). Strike history persists in
-# quoter_state (per-market trip dates, pruned at TWO_STRIKES_MEMORY_D so the file stays
-# bounded and ancient sins expire). Rides the same governor: inert unless
-# MKT_DAY_LOSS_EXITONLY_USD > 0. Born 2026-07-31 00:00-02:32Z: the midnight reset re-admitted
-# all five of yesterday's tripped markets and they burned another ~$10.6 in 2.5h (fills API).
+# STRIKE LADDER (operator-named 2026-07-31, tightened same day: "one strike your out for
+# anything costing over 5 dollars until 8-3 rereview"). A market that trips the $/day governor
+# STRIKES_OUT times is OUT: banned with NO expiry, EXEMPT from memory pruning — only an
+# operator clearing quoter_state's mkt_strike_hist entry (or the market's own close) ends it.
+# STRIKES_OUT=1 (the live setting) means one trip = permanent ban; the day-latch and the ban
+# coincide. The knob exists so the operator's 2026-08-03 policy re-review can retune without a
+# code deploy. Strike history persists in quoter_state (per-market trip dates; entries BELOW
+# the OUT threshold are pruned at TWO_STRIKES_MEMORY_D so the file stays bounded). Rides the
+# same governor: inert unless MKT_DAY_LOSS_EXITONLY_USD > 0. Born 2026-07-31 00:00-02:32Z: the
+# midnight reset re-admitted all five of yesterday's tripped markets and they burned another
+# ~$10.6 in 2.5h (fills API); tightened to 1 the same day after MLABELSHARE (-25.76 venue
+# realized) showed a single day can cost 5x the threshold.
 TWO_STRIKES = _envi("KALSHI_TWO_STRIKES", 1)
 TWO_STRIKES_MEMORY_D = _envi("KALSHI_TWO_STRIKES_MEMORY_D", 14)
+STRIKES_OUT = _envi("KALSHI_STRIKES_OUT", 1)
 
 
 def _two_strikes(hist, tripped_today, day, now):
     """Pure strike bookkeeping. hist: {ticker: [iso dates]}; returns (hist, banned_set).
-    Strike ladder (operator-named 2026-07-31):
-      1 strike  -> the existing day-latch only (handled by the caller, clears at midnight)
-      2 strikes -> exit-only until (last trip date + 2 days) 00:00Z — the remainder of the
-                   trip day plus the ENTIRE following day ("2x current")
-      3 strikes -> OUT ("3x youre out"): banned with NO expiry and EXEMPT from memory
-                   pruning — only an operator clearing quoter_state's mkt_strike_hist entry
-                   (or the market's own close) ends it."""
+    Strike ladder (operator-named 2026-07-31, tightened same day to "one strike your out
+    ... until 8-3 rereview" — STRIKES_OUT is the knob for that re-review):
+      >= STRIKES_OUT strikes -> OUT: banned with NO expiry and EXEMPT from memory pruning —
+                   only an operator clearing quoter_state's mkt_strike_hist entry (or the
+                   market's own close) ends it.
+      below the threshold    -> no ban here (at STRIKES_OUT=1 this branch only ever holds
+                   markets from a former multi-strike era); entries prune at
+                   TWO_STRIKES_MEMORY_D. The same-day trip is still exit-only via the
+                   caller's day-latch regardless."""
     for t in tripped_today:
         dl = hist.setdefault(t, [])
         if day not in dl:
@@ -561,20 +568,12 @@ def _two_strikes(hist, tripped_today, day, now):
     cut = (now - timedelta(days=TWO_STRIKES_MEMORY_D)).strftime("%Y-%m-%d")
     banned = set()
     for t in list(hist):
-        if len(hist[t]) >= 3:
-            banned.add(t)                   # 3 strikes: OUT — no prune, no expiry
+        if len(hist[t]) >= STRIKES_OUT:
+            banned.add(t)                   # OUT — no prune, no expiry
             continue
         hist[t] = [d for d in hist[t] if d >= cut]
         if not hist[t]:
             hist.pop(t)
-            continue
-        if len(hist[t]) >= 2:
-            try:
-                ban_end = parse_iso(hist[t][-1] + "T00:00:00+00:00") + timedelta(days=2)
-                if now < ban_end:
-                    banned.add(t)
-            except Exception:
-                pass                        # unparseable date -> fail open, day-latch still stands
     return hist, banned
 REENTRY_COOLDOWN_S = _envf("KALSHI_REENTRY_COOLDOWN_S", 0.0)                 # 0 = OFF
 # STOP-flatten pacing (self-audit A2-F4, 2026-07-29): while the STOP sentinel is present, every
@@ -2666,13 +2665,26 @@ def run_once():
             _day_mkt = now.strftime("%Y-%m-%d")
             if MKT_DAY_LOSS_EXITONLY_USD > 0:
                 try:
+                    # BURN-AND-RUN ROOT FIX (operator-named 2026-07-31): the governor's feed is
+                    # a dedicated ALL-TRADED read (count_filter=total_traded), NOT the open-
+                    # positions side channel. count_filter=position drops a market the cycle it
+                    # goes fully flat, so a market that burned and flattened within one cycle
+                    # realized 5x the threshold with zero trips/strikes on record
+                    # (KXMLABELSHARE-W3026JUL30-SME, -$25.76 venue-attributed). Flat rows keep
+                    # realized_pnl_dollars in the total_traded read (probe 13:15:36Z 07-31).
+                    # Read failure falls back to the side channel — never worse than the old
+                    # feed, and the governor's fail-OPEN doctrine is unchanged.
+                    try:
+                        _realized = client.get_realized_by_market()
+                    except Exception:
+                        _realized = dict(_REALIZED_BY)
                     _base = st.get("mkt_realized_base") or {}
                     _tripped = set(st.get("mkt_loss_tripped") or [])
                     if st.get("mkt_realized_day") != _day_mkt:
                         st["mkt_realized_day"] = _day_mkt
-                        _base = dict(_REALIZED_BY)       # fresh day -> fresh baseline
+                        _base = dict(_realized)          # fresh day -> fresh baseline
                         _tripped = set()                 # trips are per-day
-                    for _t4, _v4 in _REALIZED_BY.items():
+                    for _t4, _v4 in _realized.items():
                         # first seen mid-day -> baseline NOW: lifetime realized from prior days
                         # must not trip today's governor (fail-open by construction)
                         _base.setdefault(_t4, _v4)

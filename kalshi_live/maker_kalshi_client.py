@@ -355,6 +355,25 @@ class KalshiOrderClient:
         return self._get_paginated(f"{API_ROOT}/portfolio/positions", "market_positions",
                                    {"count_filter": "position"})
 
+    def get_realized_by_market(self):
+        """{ticker: venue realized_pnl_dollars} over ALL traded markets, INCLUDING fully flat
+        ones. count_filter=total_traded keeps flat rows with their realized_pnl_dollars — the
+        venue's own attribution — so the per-market loss governor can see a market that burned
+        and fully flattened within one cycle (the burn-and-run hole: count_filter=position
+        drops the row before the loss is ever read). Probe 2026-07-31T13:15:36Z: 12/12 flat
+        rows carry realized_pnl_dollars; a settled row was still present 10h after settlement.
+        The inventory read above stays count_filter=position ON PURPOSE — settled noise must
+        never push real inventory off a page; this is a separate governor-only feed."""
+        d = self._get_paginated(f"{API_ROOT}/portfolio/positions", "market_positions",
+                                {"count_filter": "total_traded"})
+        out = {}
+        for p in (d.get("market_positions") or []):
+            try:
+                out[p.get("ticker")] = float(p.get("realized_pnl_dollars") or 0.0)
+            except (TypeError, ValueError):
+                pass
+        return out
+
     # ---------------- public reads (no auth) ----------------
 
     def get_orderbook(self, ticker):

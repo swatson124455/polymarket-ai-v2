@@ -238,3 +238,78 @@ def test_realized_side_channel_populated_by_held_cost():
     q._held_cost(c)
     assert q._REALIZED_BY["T1"] == -3.25
     assert q._REALIZED_BY["T2"] == 9.0, "flat-but-present rows still report (API may include)"
+
+
+# ---- BURN-AND-RUN ROOT FIX (operator-named 2026-07-31): governor feeds from the ALL-TRADED
+# read (count_filter=total_traded), so a market that burns and goes FULLY FLAT within one
+# cycle can no longer escape the trip + strike ladder (KXMLABELSHARE-W3026JUL30-SME realized
+# -$25.76 venue-attributed with zero strikes on record — the hole this closes). ----
+
+def test_burn_and_run_flat_in_one_cycle_still_trips(monkeypatch, tmp_path):
+    _cfg(monkeypatch)
+    _fp1(monkeypatch)
+    monkeypatch.setattr(q, "MKT_DAY_LOSS_EXITONLY_USD", 5.0)
+    # cycle 1: T1 quoted, small position, realized 0 -> baseline 0
+    _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="0.00")]),
+         str(tmp_path))
+    # cycle 2: T1 burned -$21 and went FULLY FLAT within the cycle. The open-positions read
+    # (count_filter=position) no longer carries the row; only the ALL-TRADED feed does.
+    c2 = MockClient(mode="live", positions=[],
+                    traded=[_pos(pos="0.00", realized="-21.00")])
+    row2 = _run(monkeypatch, c2, str(tmp_path))
+    assert row2.get("loss_exitonly") == 1, "burn-and-run must trip the governor"
+    assert c2.created == [], "a tripped market must not receive accumulating quotes"
+    st = _state(tmp_path)
+    assert st.get("mkt_loss_tripped") == ["T1"]
+    assert "T1" in (st.get("mkt_strike_hist") or {}), "the trip must also strike the ladder"
+
+
+def test_burn_and_run_first_sight_mid_day_baselines_not_trips(monkeypatch, tmp_path):
+    """Lifetime realized from BEFORE today must not trip via the all-traded feed either:
+    a flat market first seen mid-day baselines at its current value (fail-open unchanged)."""
+    _cfg(monkeypatch)
+    _fp1(monkeypatch)
+    monkeypatch.setattr(q, "MKT_DAY_LOSS_EXITONLY_USD", 5.0)
+    c = MockClient(mode="live", positions=[_pos(realized="0.00")],
+                   traded=[_pos(pos="0.00", realized="0.00"),
+                           {"ticker": "T-OLD", "position_fp": "0.00",
+                            "realized_pnl_dollars": "-50.00"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("loss_exitonly") == 0, "history is not today's bleed"
+    assert len(c.created) > 0
+
+
+def test_real_client_realized_feed_uses_total_traded_filter(monkeypatch):
+    """Pins the REAL client method: the governor feed must query count_filter=total_traded
+    (flat rows keep realized_pnl_dollars there — probe 2026-07-31T13:15:36Z) and parse rows
+    into {ticker: float}, skipping unparseable values."""
+    import maker_kalshi_client as mkc
+    c = mkc.KalshiOrderClient.__new__(mkc.KalshiOrderClient)   # no creds/env needed
+    seen = {}
+    def _pg(base_path, item_key, params=None):
+        seen["path"], seen["key"], seen["params"] = base_path, item_key, dict(params or {})
+        return {item_key: [
+            {"ticker": "FLAT-1", "position_fp": "0.00", "realized_pnl_dollars": "-25.760000"},
+            {"ticker": "OPEN-1", "position_fp": "3.00", "realized_pnl_dollars": "1.50"},
+            {"ticker": "BAD-1", "position_fp": "0.00", "realized_pnl_dollars": "not-a-number"},
+        ], "cursor": ""}
+    monkeypatch.setattr(c, "_get_paginated", _pg)
+    out = c.get_realized_by_market()
+    assert seen["params"] == {"count_filter": "total_traded"}
+    assert seen["key"] == "market_positions" and seen["path"].endswith("/portfolio/positions")
+    assert out == {"FLAT-1": -25.76, "OPEN-1": 1.5}
+
+
+def test_realized_read_failure_falls_back_to_side_channel(monkeypatch, tmp_path):
+    """The dedicated feed failing must degrade to the OLD behavior (open-positions side
+    channel), never to a blind governor."""
+    _cfg(monkeypatch)
+    _fp1(monkeypatch)
+    monkeypatch.setattr(q, "MKT_DAY_LOSS_EXITONLY_USD", 5.0)
+    _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="0.00")],
+                                 get_realized_raises=True), str(tmp_path))
+    c2 = MockClient(mode="live", positions=[_pos(realized="-7.00")],
+                    get_realized_raises=True)
+    row2 = _run(monkeypatch, c2, str(tmp_path))
+    assert row2.get("loss_exitonly") == 1, "fallback feed must still trip"
+    assert c2.created == []
