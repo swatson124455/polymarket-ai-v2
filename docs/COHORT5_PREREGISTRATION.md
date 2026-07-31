@@ -2,8 +2,13 @@
 
 **Registered:** 2026-07-30 (criteria registered BEFORE composition; composition
 happens only after operator sign-off, from data that post-dates this file).
-**Status:** DRAFT — awaiting operator approval of the criteria. No roster
-change until then.
+**Status:** **APPROVED — operator ratified 2026-07-30 (~22:45Z): "cohort
+approved to collect full data."** The qualification window is OPEN: forward
+records (`detect_ts` ≥ 2026-07-30T17:00:00Z) now count toward the bars below.
+Composition (actually admitting qualifiers into a live cohort5) remains a
+separate operator go when qualifiers exist. Tracker:
+`scripts/cohort5_qualification.py` (per-trader forward line vs the bars;
+single-look verdict locks in `deep_dive/cohort5_qual_locks.json`).
 
 ## Why this cohort exists
 
