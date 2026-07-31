@@ -58,8 +58,8 @@ def build(positions, fills, now=None):
         t = p.get("ticker")
         if not t:
             continue
-        if p.get("realized_pnl_dollars") is None and p.get("fees_paid_dollars") is None:
-            missing_fields += 1
+        if p.get("realized_pnl_dollars") is None or p.get("fees_paid_dollars") is None:
+            missing_fields += 1     # blind-review: EITHER field renamed silently zeroes money
         try:
             realized = float(p.get("realized_pnl_dollars") or 0.0)
             fees = float(p.get("fees_paid_dollars") or 0.0)

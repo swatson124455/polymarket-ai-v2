@@ -599,10 +599,12 @@ def _presence_table_refresh():
         m = os.path.getmtime(PRESENCE_TABLE_PATH)
     except OSError:
         return
-    if m > _PRESENCE_MTIME[0]:
+    if m != _PRESENCE_MTIME[0]:      # != not >: a backup-restored file has an OLDER mtime
         t = _load_presence_table()
         if t:
             PRESENCE_TABLE = t
+        else:
+            _SILENT["presence_table_stale_kept"] += 1   # blind-review: stale-keep must count
         _PRESENCE_MTIME[0] = m
 
 
@@ -727,10 +729,12 @@ def _netev_table_refresh():
         m = os.path.getmtime(NETEV_TABLE_PATH)
     except OSError:
         return
-    if m > _NETEV_MTIME[0]:
+    if m != _NETEV_MTIME[0]:         # != not >: a backup-restored file has an OLDER mtime
         t = _load_netev_table()
         if t:
             NETEV_TABLE = t
+        else:
+            _SILENT["netev_table_stale_kept"] += 1
         _NETEV_MTIME[0] = m
 # FUNDING GATE (KALSHI_FUNDING_GATE, default 0 = OFF, provable no-op). When OFF the accumulating
 # capital gate is the legacy `committed (= surviving resting notional + held_cost) vs
@@ -1231,16 +1235,19 @@ def select_footprint(progs, now):
     by_series = defaultdict(list)
     for r in rows:
         by_series[r["ticker"].split("-")[0]].append(r)
+    # Phase-3 (KALSHI_ALLOC_KEY=1): rotate series in RANK order — `rows` is already ordered by
+    # the measured-capture rank above, so the series whose best member ranks highest spins
+    # first. Audit issue #3 (series rotation was pool-keyed). Computed ONCE here because BOTH
+    # selection branches need it (blind-review 2026-07-31: the PIVOT branch was uncovered —
+    # the exact split-key inconsistency the audit condemned, reintroduced). Flag OFF -> pool
+    # order, byte-identical, in both branches.
+    _first = {}
+    if ALLOC_KEY:
+        for _i, _r in enumerate(rows):
+            _first.setdefault(_r["ticker"].split("-")[0], _i)
     if not PIVOT_SELECT:
         # ---- LEGACY egalitarian round-robin (bytes unchanged; provable flag-off no-op) ----
-        # Phase-3 (KALSHI_ALLOC_KEY=1): rotate series in RANK order — `rows` is already ordered
-        # by the measured-capture rank above, so the series whose best member ranks highest
-        # spins first. Audit issue #3 (series rotation was pool-keyed). Flag OFF -> pool order,
-        # byte-identical.
         if ALLOC_KEY:
-            _first = {}
-            for _i, _r in enumerate(rows):
-                _first.setdefault(_r["ticker"].split("-")[0], _i)
             series_order = sorted(by_series, key=lambda s: (_first.get(s, 1 << 30), s))
         else:
             series_order = sorted(by_series, key=lambda s: (-by_series[s][0]["usd_day"], s))
@@ -1283,13 +1290,19 @@ def select_footprint(progs, now):
         return abs(s - _med[r["ticker"].split("-")[0]]) if s is not None else 1e9
     for s, rs in by_series.items():
         rs.sort(key=lambda r: (_prox(r), r["ticker"]))          # near-money first, then ticker
-    series_order = sorted(by_series, key=lambda s: (-by_series[s][0]["usd_day"], s))
+    if ALLOC_KEY:
+        # PIVOT branch on the SAME key (blind-review fix): series rotation and the density
+        # remainder follow the rank order of `rows`; near-money still sorts within series.
+        series_order = sorted(by_series, key=lambda s: (_first.get(s, 1 << 30), s))
+    else:
+        series_order = sorted(by_series, key=lambda s: (-by_series[s][0]["usd_day"], s))
     picked, per_series = [], defaultdict(int)
     for s in series_order:              # 1) COVERAGE floor: >=PIVOT_COVERAGE per active series
         for r in by_series[s][:PIVOT_COVERAGE]:
             picked.append(r)
             per_series[s] += 1
-    dens = sorted(rows, key=lambda r: (-r["usd_day"], _prox(r), r["ticker"]))  # 2) REMAINDER by density
+    dens = (list(rows) if ALLOC_KEY else                    # rank order IS the density order
+            sorted(rows, key=lambda r: (-r["usd_day"], _prox(r), r["ticker"])))  # 2) REMAINDER
     seen = {id(r) for r in picked}
     for r in dens:
         if id(r) in seen:
@@ -1599,7 +1612,8 @@ def _ensure_sweeper():
     global _SWEEPER
     if _SWEEPER is None:
         import kalshi_market_sweeper as _kmsw
-        _SWEEPER = _kmsw.start(_sweep_ages, _sweep_measure, _sweep_store)
+        _SWEEPER = _kmsw.start(_sweep_ages, _sweep_measure, _sweep_store,
+                               score_rank_on=bool(SCORE_RANK))
     return _SWEEPER
 
 
@@ -2184,13 +2198,24 @@ def _alloc_priority(footprint_rows, now, usd_day):
     try:
         import kalshi_capital_rank as _kcr
         costs = _load_fill_costs()
-        prospective = dict(_load_prospective() or {})
+        now_ts = now.timestamp()
+        # EVIDENCE FRESHNESS, one bar for BOTH sources (blind-review fix 2026-07-31): the
+        # offline sweep file gets the SAME age cutoff as the live sweeper, and where both
+        # have a row the NEWER observation wins — a days-old file must never shadow a
+        # minutes-old sweeper measurement.
+        prospective = {}
+        for _t, _r in (_load_prospective() or {}).items():
+            _fts = _r.get("ts")
+            if _fts is not None and (now_ts - float(_fts)) > ALLOC_PCAP_MAX_AGE_S:
+                continue
+            prospective[_t] = _r
         with SCORES_LOCK:
             for _t, _r in SCORES.items():
-                if (_t not in prospective and _r.get("pcap") is not None
-                        and _r.get("pts") is not None
-                        and (now.timestamp() - float(_r["pts"])) <= ALLOC_PCAP_MAX_AGE_S):
-                    prospective[_t] = {"capture": _r["pcap"], "ref": _r.get("pref")}
+                if (_r.get("pcap") is not None and _r.get("pts") is not None
+                        and (now_ts - float(_r["pts"])) <= ALLOC_PCAP_MAX_AGE_S):
+                    _cur = prospective.get(_t)
+                    if _cur is None or float(_cur.get("ts") or 0.0) < float(_r["pts"]):
+                        prospective[_t] = {"capture": _r["pcap"], "ref": _r.get("pref")}
             comp = _kcr.shadow_rank(footprint_rows, SCORES, costs, MAX_MARKET_CAPITAL,
                                     INV_HARD_CT, now.timestamp(), calib=CAPRANK_CALIB,
                                     swing_penalty=SCORE_SWING_PENALTY,
@@ -2219,7 +2244,12 @@ def _fam_concentration(desired):
     return s, fam[s], 100.0 * fam[s] / tot
 
 
-def cap_desired(desired, usd_day, incumbents=None):
+_SERIES_CAP_SOLO = [0]      # blind-review fix 2026-07-31: markets whose OWN notional exceeds
+                            # SERIES_MAX_USD even with an empty family — the config-footgun
+                            # signature (cap set below per-market size blocks ALL new entries)
+
+
+def cap_desired(desired, usd_day, incumbents=None, fam_held=None):
     """Keep whole markets in strict usd_day priority (highest first), stopping at
     the first ACCUMULATING market that would breach MAX_TOTAL_CAPITAL — keep the
     most valuable, cut the tail. REDUCING (any 'unwind' quote) markets are kept
@@ -2233,7 +2263,14 @@ def cap_desired(desired, usd_day, incumbents=None):
     the pool key for the NON-incumbent group is replaced in Phase 3, receipts-calibrated."""
     kept, total = {}, 0.0
     _SERIES_CAP_DROPS[0] = 0
-    fam = defaultdict(float)                   # accumulating+unwind $ per ticker family
+    _SERIES_CAP_SOLO[0] = 0
+    # Family EXPOSURE, not just quote-notional (blind-review fix 2026-07-31): seed each family
+    # with its HELD-inventory dollars (caller passes them, $1/contract conservative — the same
+    # reserve convention committed capital uses), so fills don't open headroom the cap was
+    # supposed to close. fam_held=None (tests/legacy callers) => quote-notional-only, as before.
+    fam = defaultdict(float)
+    for k, v in (fam_held or {}).items():
+        fam[k] += v
     for t, qs in desired.items():
         if any(q.get("reason") == "unwind" for q in qs):
             kept[t] = qs
@@ -2244,18 +2281,24 @@ def cap_desired(desired, usd_day, incumbents=None):
     order = [t for t in sorted(desired,
                                key=lambda t: (0 if t in inc else 1, -usd_day.get(t, 0)))
              if t not in kept]
+    tail_cut = 0
     for i, t in enumerate(order):
         c = _mkt_capital(desired[t])
         if SERIES_MAX_USD > 0 and fam[t.split("-")[0]] + c > SERIES_MAX_USD:
             _SERIES_CAP_DROPS[0] += 1          # family full: skip THIS sibling, keep going —
+            if c > SERIES_MAX_USD:             # would never fit even alone: the footgun signature
+                _SERIES_CAP_SOLO[0] += 1
             continue                           # the dollars stay available to other families
         if total + c > MAX_TOTAL_CAPITAL:
-            # everything from here down is dropped (family-skips above already counted)
-            return kept, (len(order) - i) + _SERIES_CAP_DROPS[0]
+            tail_cut = len(order) - i
+            break
         kept[t] = desired[t]
         total += c
         fam[t.split("-")[0]] += c
-    return kept, _SERIES_CAP_DROPS[0]
+    # SEMANTIC UN-DRIFT (blind-review 2026-07-31): the returned count is the TOTAL-CAPITAL
+    # tail-cut ONLY — its meaning before the family cap existed. Family skips are reported
+    # exclusively via series_cap_dropped; summing the two plan keys no longer double-counts.
+    return kept, tail_cut
 
 
 def bound_creates(creates, cancels, usd_day):
@@ -2386,15 +2429,21 @@ def run_once():
     try:
         _ensure_sweeper()     # background venue sweeper — no-op unless KALSHI_SWEEP_ENABLED=1
     except Exception:
-        pass                  # a sweeper start fault must never block a trading cycle
+        _SILENT["sweeper_start_fail"] += 1    # blind-review: swallowed faults must count
     try:
         _presence_table_refresh()   # audit fix: presence table no longer frozen at import
     except Exception:
-        pass
+        _SILENT["presence_refresh_fail"] += 1
     try:
         _netev_table_refresh()      # audit fix: same staleness class (gate OFF live = no-op)
     except Exception:
-        pass
+        _SILENT["netev_refresh_fail"] += 1
+    if SERIES_MAX_USD > 0 and SERIES_MAX_USD < MAX_MARKET_CAPITAL:
+        # config footgun (blind-review): a family cap below the per-market cap can block EVERY
+        # new entry venue-wide; loud each run so a mid-incident env edit cannot hide it.
+        print(f"WARNING KALSHI_SERIES_MAX_USD ({SERIES_MAX_USD}) < KALSHI_MAX_MARKET_CAPITAL "
+              f"({MAX_MARKET_CAPITAL}) — single markets may never fit their family cap "
+              f"(watch series_cap_solo)")
     _lock = _acquire_lock()
     if _lock is False:
         print("WARNING another quoter instance holds the run lock; skipping this run (no order ops)")
@@ -3246,9 +3295,18 @@ def run_once():
                     (load_state().get("drop_grace") or {}), DROP_GRACE)
             except Exception:
                 grace_used = {}
+        _fam_held = None
+        if SERIES_MAX_USD > 0:
+            # HELD-inventory dollars per family, $1/contract conservative (same reserve
+            # convention as committed capital) — blind-review fix: fills must not reopen
+            # family headroom.
+            _fam_held = defaultdict(float)
+            for _t5, _p5 in held_by.items():
+                _fam_held[_t5.split("-")[0]] += abs(_p5)
         desired, capped_markets = cap_desired(
             desired, alloc_prio,
-            incumbents=_INCUMBENT_TICKERS if ALLOC_INCUMBENT_FIRST else None)  # aggregate $ cap
+            incumbents=_INCUMBENT_TICKERS if ALLOC_INCUMBENT_FIRST else None,
+            fam_held=_fam_held)                                                # aggregate $ cap
         fam_top, fam_top_usd, fam_top_pct = _fam_concentration(desired)
         # AMEND-ON-DECREASE: pull out same-price size REDUCTIONS so they keep their queue position
         # instead of being cancelled and rebuilt at the back. `standing` itself is deliberately NOT
@@ -3444,6 +3502,8 @@ def run_once():
             "book_src_err": _book_src["src_err"],
             "fetch_failed": fetch_failed, "capped_markets": capped_markets,
             **({"series_cap_dropped": _SERIES_CAP_DROPS[0]} if SERIES_MAX_USD > 0 else {}),
+            **({"series_cap_solo": _SERIES_CAP_SOLO[0]}
+               if SERIES_MAX_USD > 0 and _SERIES_CAP_SOLO[0] else {}),
             **({"fam_top": fam_top, "fam_top_usd": round(fam_top_usd, 2),
                 "fam_top_pct": round(fam_top_pct, 1)} if fam_top else {}),
             "budget_dropped_markets": budget_dropped,
@@ -3501,16 +3561,26 @@ def run_once():
                 import kalshi_market_scores as _kms
                 with SCORES_LOCK:
                     _kms.evict(SCORES, now=now.timestamp())   # J4: age-out + hard bound
-                    _kms.save(SCORE_PATH, SCORES)
-                    plan["scored_markets"] = len(SCORES)
-                    # FRESHNESS GAUGE (root-fix plan Phase 4): observation age p50/p90 across
-                    # the cache, minutes, using max(actual, prospective) per row. A freshness
-                    # number nobody watches goes stale itself — this one rides every plan row.
-                    _ages = sorted(now.timestamp() - a for r in SCORES.values()
-                                   if (a := _kms._obs_ts(r)) is not None)
-                    if _ages:
-                        plan["score_age_p50_m"] = round(_ages[len(_ages) // 2] / 60.0, 1)
-                        plan["score_age_p90_m"] = round(_ages[int(len(_ages) * 0.9)] / 60.0, 1)
+                    # snapshot rows under the lock; the DISK write happens outside it so a
+                    # slow disk cannot stall the sweeper thread (blind-review LOW 2026-07-31)
+                    _snap = {t: dict(r) for t, r in SCORES.items()}
+                # everything below runs on the consistent snapshot, lock released
+                _kms.save(SCORE_PATH, _snap)
+                plan["scored_markets"] = len(_snap)
+                # FRESHNESS GAUGES (root-fix plan Phase 4; SPLIT per blind-review 2026-07-31:
+                # the live rank consumes ONLY actual measurements (ts), so score_age_* must
+                # not be pacified by sweeper model observations (pts) — those get their own
+                # keys. A gauge fed by the tool built alongside it is a gauge that can lie.)
+                _ages = sorted(now.timestamp() - float(r["ts"]) for r in _snap.values()
+                               if r.get("ts") is not None)
+                if _ages:
+                    plan["score_age_p50_m"] = round(_ages[len(_ages) // 2] / 60.0, 1)
+                    plan["score_age_p90_m"] = round(_ages[int(len(_ages) * 0.9)] / 60.0, 1)
+                _pages = sorted(now.timestamp() - float(r["pts"]) for r in _snap.values()
+                                if r.get("pts") is not None)
+                if _pages:
+                    plan["pcap_age_p50_m"] = round(_pages[len(_pages) // 2] / 60.0, 1)
+                    plan["pcap_age_p90_m"] = round(_pages[int(len(_pages) * 0.9)] / 60.0, 1)
                 plan["score_explore"] = SCORE_EXPLORE
                 if _SWEEPER is not None:
                     plan["sweep"] = dict(_SWEEPER.stats)      # additive keys, observation only

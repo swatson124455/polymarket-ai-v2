@@ -47,9 +47,21 @@ class TestPresenceReload:
         monkeypatch.setattr(q, "PRESENCE_TABLE", {"old": 1})
         calls = []
         monkeypatch.setattr(q, "_load_presence_table", lambda: calls.append(1) or {"new": 2})
-        q._PRESENCE_MTIME[0] = os.path.getmtime(str(p)) + 10
+        q._PRESENCE_MTIME[0] = os.path.getmtime(str(p))    # exact match = unchanged
         q._presence_table_refresh()
         assert not calls and q.PRESENCE_TABLE == {"old": 1}
+
+    def test_reload_on_mtime_REGRESSION(self, tmp_path, monkeypatch):
+        # blind-review fix: a backup-restored file has an OLDER mtime — must still reload
+        p = tmp_path / "pt.json"
+        p.write_text("{}")
+        monkeypatch.setattr(q, "PRESENCE_GATE", 1)
+        monkeypatch.setattr(q, "PRESENCE_TABLE_PATH", str(p))
+        monkeypatch.setattr(q, "PRESENCE_TABLE", {"old": 1})
+        monkeypatch.setattr(q, "_load_presence_table", lambda: {"restored": 2})
+        q._PRESENCE_MTIME[0] = os.path.getmtime(str(p)) + 10   # file LOOKS older than memory
+        q._presence_table_refresh()
+        assert q.PRESENCE_TABLE == {"restored": 2}
 
     def test_broken_load_keeps_last_good(self, tmp_path, monkeypatch):
         p = tmp_path / "pt.json"
@@ -144,4 +156,7 @@ class TestAuditProbes:
         fc.build([{"ticker": "T"}], [])
         assert fc.MISSING_FIELD_ROWS[0] == 1
         fc.build([{"ticker": "T", "realized_pnl_dollars": 1.0}], [])
+        assert fc.MISSING_FIELD_ROWS[0] == 1   # blind-review: EITHER missing field counts
+        fc.build([{"ticker": "T", "realized_pnl_dollars": 1.0,
+                   "fees_paid_dollars": 0.0}], [])
         assert fc.MISSING_FIELD_ROWS[0] == 0

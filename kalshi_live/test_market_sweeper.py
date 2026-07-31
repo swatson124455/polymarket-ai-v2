@@ -275,3 +275,115 @@ class TestConcurrency:
             stop.set()
             th.join(timeout=5)
         assert not errs
+
+
+class TestBlindReviewFixes0731:
+    def test_program_fetch_paginates(self):
+        pages = {"": ({"incentive_programs": [{"market_ticker": "A", "period_reward": 10000,
+                                               "target_size_fp": 10}], "next_cursor": "c2"}),
+                 "c2": ({"incentive_programs": [{"market_ticker": "B", "period_reward": 10000,
+                                                 "target_size_fp": 10}], "next_cursor": ""})}
+
+        def get(path):
+            cur = path.split("cursor=")[1] if "cursor=" in path else ""
+            return pages[cur]
+
+        sw, _ = _mk_sweeper(get)
+        sw._refresh_programs()
+        assert sorted(r["ticker"] for r in sw._progs) == ["A", "B"]
+
+    def test_dead_ticker_does_not_abort_chunk(self):
+        calls = {"n": 0}
+        stored = []
+
+        def get(path):
+            if "incentive_programs" in path:
+                return {"incentive_programs": [
+                    {"market_ticker": "DEAD", "period_reward": 10000, "target_size_fp": 10},
+                    {"market_ticker": "OK", "period_reward": 10000, "target_size_fp": 10}]}
+            if "DEAD" in path:
+                raise urllib.error.HTTPError(path, 404, "gone", {}, None)
+            return {"orderbook_fp": {"yes_dollars": [], "no_dollars": []}}
+
+        sw, _ = _mk_sweeper(get, store=lambda t, p, r: stored.append((t, p)))
+        sw._refresh_programs()
+
+        def one_chunk_then_stop():
+            calls["n"] += 1
+            if calls["n"] > 1:
+                sw.stop_event.set()
+            return {}
+
+        sw.ages_fn = one_chunk_then_stop
+        sw.run()
+        assert ("OK", 1.0) in stored                       # chunk survived the 404
+        assert ("DEAD", 0.0) in stored                     # dead ticker demoted, not pinned
+        assert sw.stats["err_other"] >= 1
+
+    def test_429_backoff_via_real_run_loop(self):
+        calls = {"n": 0}
+
+        def get(path):
+            calls["n"] += 1
+            if calls["n"] > 3:
+                raise urllib.error.HTTPError(path, 429, "too many", {}, None)
+            if "incentive_programs" in path:
+                return {"incentive_programs": [{"market_ticker": "A", "period_reward": 10000,
+                                                "target_size_fp": 10}]}
+            return {"orderbook_fp": {}}
+
+        sw, clock = _mk_sweeper(get)
+        real_sleep = sw.sleep
+
+        def sleep_and_stop(s):
+            real_sleep(s)
+            if sw.stats["err_429"] >= 2:
+                sw.stop_event.set()
+
+        sw.sleep = sleep_and_stop
+        sw._progs_ts = -10**9        # force refresh attempts
+        sw._progs = []
+        sw.run()
+        assert sw.stats["err_429"] >= 2
+        assert sw._backoff >= ksw.SWEEP_BACKOFF_BASE_S     # real handler set it
+
+    def test_start_refuses_without_score_rank(self, monkeypatch):
+        monkeypatch.setattr(ksw, "SWEEP_ENABLED", 1)
+        assert ksw.start(lambda: {}, lambda m, ob: None, lambda t, p, r: None,
+                         score_rank_on=False) is None
+
+    def test_unreadable_book_counted(self):
+        def get(path):
+            if "incentive_programs" in path:
+                return {"incentive_programs": [{"market_ticker": "A", "period_reward": 10000,
+                                                "target_size_fp": 10}]}
+            return {"orderbook_fp": {"renamed_dialect": []}}
+
+        sw, _ = _mk_sweeper(get)
+        sw._refresh_programs()
+        sw._sweep_one(sw._progs[0])
+        assert sw.stats.get("empty_or_unreadable_books") == 1
+
+    def test_429_inside_chunk_escalates_to_backoff(self):
+        calls = {"n": 0}
+
+        def get(path):
+            if "incentive_programs" in path:
+                return {"incentive_programs": [{"market_ticker": "A", "period_reward": 10000,
+                                                "target_size_fp": 10}]}
+            raise urllib.error.HTTPError(path, 429, "too many", {}, None)
+
+        sw, _ = _mk_sweeper(get)
+        real_sleep = sw.sleep
+
+        def sleep_and_stop(s):
+            real_sleep(s)
+            # terminate under EITHER outcome so a mutated (swallowing) handler FAILS the
+            # assertions instead of hanging the suite
+            if sw.stats["err_429"] >= 1 or sw.stats["err_other"] >= 2 or sw.stats["passes"] >= 3:
+                sw.stop_event.set()
+
+        sw.sleep = sleep_and_stop
+        sw.run()
+        assert sw.stats["err_429"] >= 1            # escalated, NOT swallowed as err_other
+        assert sw.stats["err_other"] == 0

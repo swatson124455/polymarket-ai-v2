@@ -105,3 +105,60 @@ class TestSeriesRotationRankOrder:
         monkeypatch.setattr(q, "ALLOC_KEY", 0)
         picked = q.select_footprint(self._progs(), NOW)
         assert picked[0]["ticker"] == "BIGPOOL-1"           # legacy: pool order
+
+
+class TestFreshnessPreference0731:
+    def test_newer_sweeper_pcap_beats_older_file_entry(self, monkeypatch):
+        monkeypatch.setattr(q, "ALLOC_KEY", 1)
+        scores = {}
+        kms.update_prospective(scores, "T-1", 9.0, 0.4, now=NOW.timestamp() - 60)
+        monkeypatch.setattr(q, "SCORES", scores)
+        monkeypatch.setattr(q, "_load_fill_costs", lambda: {})
+        monkeypatch.setattr(q, "_load_prospective",
+                            lambda: {"T-1": {"capture": 1.0, "ref": 0.4,
+                                             "ts": NOW.timestamp() - 3600}})
+        seen = {}
+
+        def spy(rows, sc, costs, mc, ih, now, **kw):
+            seen.update(kw.get("prospective") or {})
+            return []
+
+        monkeypatch.setattr(kcr, "shadow_rank", spy)
+        q._alloc_priority([{"ticker": "T-1", "usd_day": 5.0}], NOW, {"T-1": 5.0})
+        assert seen["T-1"]["capture"] == 9.0       # newer sweeper datum wins
+
+    def test_newer_file_entry_beats_older_pcap(self, monkeypatch):
+        monkeypatch.setattr(q, "ALLOC_KEY", 1)
+        scores = {}
+        kms.update_prospective(scores, "T-1", 9.0, 0.4, now=NOW.timestamp() - 3600)
+        monkeypatch.setattr(q, "SCORES", scores)
+        monkeypatch.setattr(q, "_load_fill_costs", lambda: {})
+        monkeypatch.setattr(q, "_load_prospective",
+                            lambda: {"T-1": {"capture": 1.0, "ref": 0.4,
+                                             "ts": NOW.timestamp() - 60}})
+        seen = {}
+
+        def spy(rows, sc, costs, mc, ih, now, **kw):
+            seen.update(kw.get("prospective") or {})
+            return []
+
+        monkeypatch.setattr(kcr, "shadow_rank", spy)
+        q._alloc_priority([{"ticker": "T-1", "usd_day": 5.0}], NOW, {"T-1": 5.0})
+        assert seen["T-1"]["capture"] == 1.0       # newer file datum wins
+
+    def test_stale_file_entry_cut_by_age(self, monkeypatch):
+        monkeypatch.setattr(q, "ALLOC_KEY", 1)
+        monkeypatch.setattr(q, "SCORES", {})
+        monkeypatch.setattr(q, "_load_fill_costs", lambda: {})
+        monkeypatch.setattr(q, "_load_prospective",
+                            lambda: {"T-1": {"capture": 1.0, "ref": 0.4,
+                                             "ts": NOW.timestamp() - q.ALLOC_PCAP_MAX_AGE_S - 1}})
+        seen = {}
+
+        def spy(rows, sc, costs, mc, ih, now, **kw):
+            seen.update(kw.get("prospective") or {})
+            return []
+
+        monkeypatch.setattr(kcr, "shadow_rank", spy)
+        q._alloc_priority([{"ticker": "T-1", "usd_day": 5.0}], NOW, {"T-1": 5.0})
+        assert "T-1" not in seen                   # same freshness bar as sweeper rows

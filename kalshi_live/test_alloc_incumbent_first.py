@@ -51,9 +51,13 @@ class TestIncumbentFirst:
         desired = _desired(I_LO=(0.5, 100), I_HI=(0.5, 100), N_HI=(0.5, 100))
         usd = {"I_LO": 5, "I_HI": 500, "N_HI": 9999}
         kept, _ = q.cap_desired(dict(desired), usd, incumbents={"I_LO", "I_HI"})
-        # both incumbents funded (pool order between them irrelevant at this cap),
-        # the huge-pool newcomer is the one cut
+        # both incumbents funded, the huge-pool newcomer cut — and WITHIN the incumbent
+        # group pool order must hold (blind-review: assert the ordering, not just the set):
+        # with cap 110 both incumbents fit; shrink to 60 and only the HIGHER-pool one stays.
         assert set(kept) == {"I_HI", "I_LO"}
+        q.MAX_TOTAL_CAPITAL = 60.0
+        kept, _ = q.cap_desired(dict(desired), usd, incumbents={"I_LO", "I_HI"})
+        assert set(kept) == {"I_HI"}          # pool order within the incumbent group
 
     def test_unwind_still_unconditional(self):
         q.MAX_TOTAL_CAPITAL = 10.0

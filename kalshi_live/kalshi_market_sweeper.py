@@ -145,17 +145,35 @@ class Sweeper:
     def _refresh_programs(self):
         if self._progs and (self.now() - self._progs_ts) < SWEEP_PROGS_REFRESH_S:
             return
-        self._pace()
-        data = self.get("/trade-api/v2/incentive_programs?status=active&limit=10000")
-        self._progs = self.rows_from_programs(data.get("incentive_programs"))
+        # PAGINATED (blind-review HIGH, 2026-07-31): a single unfollowed page silently shrinks
+        # "every active program" to "page 1 forever" the day the venue caps the page — the
+        # exact coverage bias this module exists to kill. Cursor loop, bounded like the
+        # quoter's own 5-page defensive walk (20 here: venue ~3.8k programs / page cap unknown).
+        progs, cursor = [], ""
+        for _ in range(20):
+            self._pace()
+            url = "/trade-api/v2/incentive_programs?status=active&limit=10000"
+            data = self.get(url + (f"&cursor={cursor}" if cursor else ""))
+            progs.extend(data.get("incentive_programs") or [])
+            cursor = data.get("next_cursor") or ""
+            if not cursor:
+                break
+        else:
+            self.stats["progs_pages_capped"] = self.stats.get("progs_pages_capped", 0) + 1
+        self._progs = self.rows_from_programs(progs)
         self._progs_ts = self.now()
         self.stats["progs"] = len(self._progs)
 
     def _sweep_one(self, m):
         self._pace()
-        ob = (self.get(f"/trade-api/v2/markets/{m['ticker']}/orderbook")
-              .get("orderbook_fp") or {})
+        raw = self.get(f"/trade-api/v2/markets/{m['ticker']}/orderbook")
+        ob = raw.get("orderbook_fp") or {}
         self.stats["reads"] += 1
+        # RENAME TRIPWIRE (blind-review 2026-07-31): a venue rename of orderbook_fp/side keys
+        # would make every book measure $0 while reads/stored look healthy. Count the shape.
+        if not ob or (ob.get("yes_dollars") is None and ob.get("no_dollars") is None):
+            self.stats["empty_or_unreadable_books"] = \
+                self.stats.get("empty_or_unreadable_books", 0) + 1
         res = self.measure(m, ob)
         if res is not None:
             pcap, ref_yes = res
@@ -178,7 +196,21 @@ class Sweeper:
                 for m in work:
                     if self.stop_event.is_set():
                         return
-                    self._sweep_one(m)
+                    try:
+                        self._sweep_one(m)
+                    except urllib.error.HTTPError as e:
+                        # PER-ITEM isolation (blind-review livelock fix 2026-07-31): one dead
+                        # ticker (404 mid-window) must not abort the whole chunk every pass.
+                        # 429 still escalates to the outer backoff; anything else: count, mark
+                        # the ticker OBSERVED via the store (pcap 0) so it falls to the back of
+                        # the oldest-first queue instead of pinning the head, and move on.
+                        if getattr(e, "code", None) == 429:
+                            raise
+                        self.stats["err_other"] += 1
+                        try:
+                            self.store(m["ticker"], 0.0, None)
+                        except Exception:
+                            pass
                 self.stats["passes"] += 1
             except urllib.error.HTTPError as e:
                 if getattr(e, "code", None) == 429:
@@ -195,10 +227,16 @@ class Sweeper:
                 self.sleep(max(self._backoff, SWEEP_BACKOFF_BASE_S))
 
 
-def start(ages_fn, measure, store):
+def start(ages_fn, measure, store, score_rank_on=True):
     """Spawn the sweeper daemon thread. Returns the Sweeper (for stats) or None when disabled.
-    Ships OFF (KALSHI_SWEEP_ENABLED=0) => provable no-op."""
+    Ships OFF (KALSHI_SWEEP_ENABLED=0) => provable no-op. Refuses to start when the score-rank
+    persistence layer is off (blind-review 2026-07-31: SWEEP=1 + SCORE_RANK=0 would burn ~86K
+    reads/day into an in-memory dict that is never saved and never surfaced)."""
     if not SWEEP_ENABLED:
+        return None
+    if not score_rank_on:
+        print("WARNING KALSHI_SWEEP_ENABLED=1 but KALSHI_SCORE_RANK=0 — sweeper NOT started "
+              "(its data would never be persisted or surfaced)")
         return None
     sw = Sweeper(ages_fn, measure, store)
     th = threading.Thread(target=sw.run, name="kalshi-market-sweeper", daemon=True)
