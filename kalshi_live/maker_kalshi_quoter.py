@@ -570,6 +570,28 @@ TAKER_GOV_CROSSES = _envi("KALSHI_TAKER_GOV_CROSSES", 3)
 TAKER_GOV_LOSS_USD = _envf("KALSHI_TAKER_GOV_LOSS_USD", 1.0)
 _TAKER_XN = {}                               # ticker -> paid-exit count today (st mirror)
 _REALIZED_LAST_GOOD = {}                     # last successful all-traded realized snapshot
+def _mkt_out_backup_union(current):
+    """Amnesty guard (re-review, bleed-F9 class): permanent bans ALSO live in a tiny separate
+    file, unioned on every governor pass — losing/corrupting quoter_state.json can no longer
+    silently re-admit permanently-OUT markets. Writes only on change; read+union is cheap.
+    Failure never blocks trading (returns what it knows)."""
+    path = os.path.join(DATA_DIR, "mkt_out_backup.json")   # call-time: DATA_DIR is
+    known = set()                                           # test-patched per harness
+    try:
+        if os.path.exists(path):
+            known = set(json.load(open(path)) or [])
+    except Exception:
+        _SILENT["mkt_out_backup_read_fail"] += 1
+    merged = known | set(current)
+    if merged != known:
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(sorted(merged), fh)
+            os.replace(tmp, path)
+        except Exception:
+            _SILENT["mkt_out_backup_write_fail"] += 1
+    return merged
 # STRIKE LADDER (operator-named 2026-07-31, tightened same day: "one strike your out for
 # anything costing over 5 dollars until 8-3 rereview"). A market that trips the $/day governor
 # STRIKES_OUT times is OUT: banned with NO expiry, EXEMPT from memory pruning — only an
@@ -1851,7 +1873,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     ev = float(event_delta or 0.0)
     # EXIT LOSS-MIN LADDER (operator-named 2026-07-31): a ticker the strand clock has stepped
     # gets its resting exit priced that many ticks inside the spread (see _improved_exit).
-    _improve = int(_STRAND_STEP.get(m.get("ticker"), 0) or 0)
+    _improve = int(_STRAND_STEP.get(m.get("ticker"), 0) or 0) if EXIT_LADDER_STEPS > 0 else 0
     (yl, bad_y), (nl, bad_n) = _levels(yes_levels), _levels(no_levels)
     if stats is not None:
         stats["dropped_book_rows"] = stats.get("dropped_book_rows", 0) + bad_y + bad_n
@@ -2329,8 +2351,11 @@ SERIES_PCT = _envf("KALSHI_SERIES_PCT", 0.25)
 
 
 def _series_cap():
-    eq = _TOTAL_CAP_EFF[0]
-    dyn = SERIES_PCT * float(eq) if (eq is not None and SERIES_PCT > 0) else None
+    try:
+        eq = _TOTAL_CAP_EFF[0]
+        dyn = SERIES_PCT * float(eq) if (eq is not None and SERIES_PCT > 0) else None
+    except (TypeError, ValueError):
+        dyn = None
     if dyn is not None and SERIES_MAX_USD > 0:
         return min(SERIES_MAX_USD, dyn)
     if dyn is not None:
@@ -2715,9 +2740,13 @@ def run_once():
         if EXPLORE_PROBE_CT > 0:
             _out_series = {t5.split("-")[0] for t5 in (st.get("mkt_out") or [])}
             if _out_series:
+                _standing5 = set(st.get("prev_standing_tickers") or [])
                 for _r5 in footprint:
                     if (not _r5.get("explore")
-                            and _r5.get("ticker", "").split("-")[0] in _out_series):
+                            and _r5.get("ticker", "").split("-")[0] in _out_series
+                            and _r5.get("ticker") not in _standing5):
+                        # M6 re-review fix: only NEWCOMERS probe-size (as announced) --
+                        # established incumbents in the series keep full size
                         _r5["explore"] = True
                         plan["series_probe"] = plan.get("series_probe", 0) + 1
         plan.update(FP_DROPS)                 # drop reasons (empty when a test patches selection)
@@ -2846,8 +2875,16 @@ def run_once():
                     except Exception:
                         # F3 (2026-07-31): prefer the LAST-GOOD all-traded snapshot -- the
                         # open-positions side channel drops flat markets (the burn-and-run
-                        # blind spot) and is only the bootstrap fallback.
+                        # blind spot) and is only the bootstrap fallback. Re-review M4: this
+                        # degradation was SILENT -- now counted, surfaced, and feeding the
+                        # same fail-closed streak as any other governor fault.
                         _realized = dict(_REALIZED_LAST_GOOD) or dict(_REALIZED_BY)
+                        _SILENT["realized_feed_fail"] += 1
+                        plan["realized_feed_fallback"] = 1
+                        st["gov_fail_streak"] = int(st.get("gov_fail_streak", 0)) + 1
+                        if st["gov_fail_streak"] >= 3:
+                            _exit_only_all = True
+                            plan["governor_fail_reduce_only"] = 1
                     _base = st.get("mkt_realized_base") or {}
                     _tripped = set(st.get("mkt_loss_tripped") or [])
                     if "mkt_out" in st:
@@ -2875,12 +2912,16 @@ def run_once():
                                 and _TAKER_XN.get(_t4, 0) >= TAKER_GOV_CROSSES
                                 and _d4 <= -TAKER_GOV_LOSS_USD):
                             _tripped.add(_t4)            # behavioral trip: paying to leave x3
+                            plan["taker_gov_tripped"] = plan.get("taker_gov_tripped", 0) + 1
                     st["mkt_realized_base"] = _base
                     st["mkt_loss_tripped"] = sorted(_tripped)
+                    _out4 |= _mkt_out_backup_union(_out4)   # amnesty guard (separate file)
                     st["mkt_out"] = sorted(_out4)
                     st["mkt_taker_xn"] = dict(_TAKER_XN)
                     _exit_only_mkts |= _tripped | _out4
                     plan["loss_exitonly"] = len(_tripped)
+                    if plan.get("taker_gov_tripped"):
+                        pass                                 # key set at trip site below
                     if _out4:
                         plan["mkt_out"] = len(_out4)
                     if TWO_STRIKES:
@@ -2900,7 +2941,19 @@ def run_once():
                         _exit_only_all = True
                         plan["governor_fail_reduce_only"] = 1
                 else:
-                    st["gov_fail_streak"] = 0
+                    if not plan.get("realized_feed_fallback"):
+                        st["gov_fail_streak"] = 0    # M4: a feed-fallback cycle is NOT clean
+            if MKT_DAY_LOSS_EXITONLY_USD <= 0:
+                # coverage fix: PERMANENT bans must not die when the day-governor knob is
+                # zeroed -- enforce mkt_out (incl. the amnesty backup) unconditionally.
+                try:
+                    _out4b = set(st.get("mkt_out") or []) | _mkt_out_backup_union(set())
+                    if _out4b:
+                        st["mkt_out"] = sorted(_out4b)
+                        _exit_only_mkts |= _out4b
+                        plan["mkt_out"] = len(_out4b)
+                except Exception:
+                    _SILENT["mkt_out_enforce_fail"] += 1
             if REENTRY_COOLDOWN_S > 0:
                 try:
                     _cool = st.get("reentry_cool") or {}
@@ -3078,7 +3131,8 @@ def run_once():
                     # F1 (operator-named 2026-07-31): N-of-5 WINDOW, not a hard-reset streak
                     # -- an oscillating mark used to reset the streak to 0 on any single
                     # non-breach cycle, deferring confirmation forever under real losses.
-                    _bh = [int(b) for b in (st.get("halt_breach_hist") or [])][-4:]
+                    _bhw = max(5, int(HALT_CONFIRM_N))   # M5: window >= knob or the halt
+                    _bh = [int(b) for b in (st.get("halt_breach_hist") or [])][-(_bhw - 1):]
                     _bh.append(1 if _breaches else 0)
                     st["halt_breach_hist"] = _bh
                     st["halt_breach_streak"] = sum(_bh)          # key name kept (state compat)
@@ -3915,6 +3969,10 @@ def run_once():
         except Exception as _fe:
             print(f"WARNING append_plan FAILED ({_fe!r}) — telemetry row lost, cycle continues")
         try:
+            st["mkt_taker_xn"] = dict(_TAKER_XN)   # H1 re-review fix: crosses happen AFTER
+            # the governor block; without this late re-sync every paid-exit count was
+            # clobbered by the next cycle's reload (governor A was INERT — both blind
+            # reviewers, live-verified 16:44Z: journal paid exits vs mkt_taker_xn {}).
             save_state(st)
         except Exception as _fe:
             print(f"WARNING save_state FAILED ({_fe!r}) — state not persisted this cycle")
@@ -4304,14 +4362,15 @@ def _taker_cross_capped(client, ticker, cap_ct, long_yes, tries=4, cost=0.0):
                     _SILENT["ioc_cancel_fail"] += 1   # a NAKED taker order may now be resting
             remaining -= int(round(fill))
             crossed += int(round(fill))
-            if fill > 0:
-                # A-governor feed: one PAID exit event per filled IOC pass (module mirror;
-                # persisted via the governor block's st['mkt_taker_xn'] write-through)
-                _TAKER_XN[ticker] = _TAKER_XN.get(ticker, 0) + 1
             if fill <= 0:
                 break                                          # nothing at the touch; don't spin
         except Exception:
             break
+    if crossed > 0:
+        # A-governor feed: ONE paid-exit episode per invocation with any fill (re-review L10:
+        # per-IOC-pass counting made a single 3-slice flatten look like 3 episodes). Persisted
+        # by the pre-save re-sync (H1 fix).
+        _TAKER_XN[ticker] = _TAKER_XN.get(ticker, 0) + 1
     flat = remaining < max(1, int(INV_TOLERANCE))
     if not flat:
         # RE-REST (fix 4 leg 3): the cross failed or partially filled and we cancelled the maker
@@ -4471,6 +4530,8 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_stat
             strand_state.pop(t, None)                      # cleared -> forget the clock
             if step_state is not None:
                 step_state.pop(t, None)                    # ...and the exit ladder step with it
+            if touch_state is not None:
+                touch_state.pop(t, None)                   # H2: stale anchors poison future exits
     due = []
     for t, npos in naked_by.items():
         if abs(npos) < INV_TOLERANCE:
@@ -4500,6 +4561,8 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_stat
             strand_state.pop(t, None)                      # reduced since the snapshot -> stand down
             if step_state is not None:
                 step_state.pop(t, None)
+            if touch_state is not None:
+                touch_state.pop(t, None)
             continue
         # EXIT LOSS-MIN CALCULATOR (operator-named 2026-07-31): compute the EXACT cost of
         # crossing right now (half-spread + receipt-verified fee) before paying it. Cheap or
@@ -4518,7 +4581,8 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_stat
             except Exception:
                 _rec = None
             if (_rec is not None and touch_state is not None and SWEEP_VETO_TICKS > 0):
-                _prev5 = touch_state.get(t)
+              try:                                   # L9: one corrupt entry must not kill the
+                _prev5 = touch_state.get(t)          # taker backstop book-wide
                 _mv5 = 0.0
                 if _prev5:
                     # against-us motion: long yes exits at the yes BID (falling = against);
@@ -4536,6 +4600,9 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_stat
                     print(f"exit-calc {t}: touch moved {_mv5:.2f} against in one period — "
                           f"sweep veto, deferring one pass (next fast move crosses)")
                     continue
+              except Exception:
+                touch_state.pop(t, None)             # self-heal the corrupt entry, cross legacy
+                _SILENT["strand_touch_parse_fail"] += 1
             if _rec is not None and not _force_cross:
                 _step5 = int(step_state.get(t, 0) or 0)
                 if kalshi_exit_calc.decide(_rec, _step5, EXIT_LADDER_STEPS,
@@ -4544,11 +4611,16 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_stat
                     _STRAND_STEP[t] = _step5 + 1           # same-cycle mirror for desired_quotes
                     strand_state[t] = now.isoformat()      # re-arm: a ladder step, not a cross
                     plan["exit_ladder_stepped"] = plan.get("exit_ladder_stepped", 0) + 1
+                    plan["exit_ladder_would_pay_usd"] = round(
+                        plan.get("exit_ladder_would_pay_usd", 0.0)
+                        + _rec["taker_cost_usd"], 4)       # receipt-validation telemetry
                     print(f"exit-calc {t}: cross {abs(npos):.0f} ct would cost "
                           f"${_rec['taker_cost_usd']:.2f} (spread {_rec['spread_ticks']}t "
                           f"${_rec['half_spread_usd']:.2f} + fee ${_rec['fee_usd']:.2f}) — "
                           f"maker ladder step {_step5 + 1}/{EXIT_LADDER_STEPS} instead")
                     continue
+        if _rec is None:
+            plan["exit_cross_unpriced"] = plan.get("exit_cross_unpriced", 0) + 1
         try:
             flat, nc = _taker_cross_capped(client, t, int(round(abs(npos))), npos > 0,
                                            tries=1, cost=(costs_by or {}).get(t, 0.0))
@@ -4571,6 +4643,8 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_stat
             strand_state.pop(t, None)
             if step_state is not None:
                 step_state.pop(t, None)
+            if touch_state is not None:
+                touch_state.pop(t, None)
         else:
             plan["strand_cross_failed"] = plan.get("strand_cross_failed", 0) + 1
             strand_state[t] = now.isoformat()              # re-arm: paces the next pass
