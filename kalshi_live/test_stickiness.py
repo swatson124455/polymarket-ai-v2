@@ -94,6 +94,9 @@ def test_probe_sizing_caps_explore_accumulating_quotes(monkeypatch, tmp_path):
          "end": "2099-01-01T00:00:00Z", "explore": True},
         {"ticker": "TFULL", "usd_day": 90.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
     c = MockClient(mode="live")
+    # the portfolio-tracking total cap (operator 2026-07-31) would trim TFULL at the default
+    # $100 mock equity — lift equity so this test keeps pinning PROBE SIZING, not the cap
+    monkeypatch.setattr(c, "get_balance", lambda: {"balance_dollars": "1000.0000"})
     _run(monkeypatch, c, str(tmp_path))
     probe = [x for x in c.created if x["ticker"] == "TPROBE"]
     full = [x for x in c.created if x["ticker"] == "TFULL"]

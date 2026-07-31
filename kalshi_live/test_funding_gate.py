@@ -113,7 +113,10 @@ def test_hard_ceiling_refuses_beyond_free_cash_even_with_huge_cap(monkeypatch, t
     c = BalMockClient(mode="live", resting=[], positions=[], balance="5.0000")
     row = _run(monkeypatch, c, str(tmp_path))
     assert len(_t1(c.created)) == 0                       # refused: would draw more than $5 free
-    assert row.get("create_skipped", 0) >= 1
+    # Since the portfolio-tracking total cap (operator 2026-07-31), $5 equity trims the market
+    # at cap_desired BEFORE the funding gate can count a create_skipped — the refusal happens
+    # EARLIER, not weaker. Either counter proves the invariant: never overdraw free cash.
+    assert row.get("create_skipped", 0) >= 1 or row.get("capped_markets", 0) >= 1
     assert row.get("funding_gate") == 1 and row.get("free_cash_usd") == 5.0
 
 

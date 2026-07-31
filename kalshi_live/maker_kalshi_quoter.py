@@ -40,6 +40,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from maker_kalshi_client import KalshiOrderClient, API_ROOT, PROD_BASE  # noqa: E402
+import kalshi_exit_calc  # noqa: E402  (pure exit-cost arithmetic; receipt-verified fee model)
 
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(DATA_DIR, "STOP")
@@ -236,6 +237,22 @@ STANDDOWN_VOID_MULT = _envf("KALSHI_STANDDOWN_VOID_MULT", 0.5)        # R3 disco
 MAX_ACTIVATE_CAPITAL = _envf("KALSHI_MAX_ACTIVATE_CAPITAL", 150.0)  # $/void market
 MAX_MARKET_CAPITAL = _envf("KALSHI_MAX_MARKET_CAPITAL", 250.0)  # $ cap per market (both sides)
 MAX_TOTAL_CAPITAL = _envf("KALSHI_MAX_TOTAL_CAPITAL", 10000.0)  # $ cap on the whole resting book
+
+# TOTAL CAP TRACKS THE PORTFOLIO (operator directive 2026-07-31: "base total capital on total
+# portfolio until further notice"). The whole-book capital cap is live MARK EQUITY (the same
+# cash+marked-positions read the day-meters use), refreshed every healthy balance cycle, with
+# the env MAX_TOTAL_CAPITAL kept as a static ceiling on top — min(equity, env) binds. Before
+# any equity has ever been observed (first cycle of a fresh install) the env cap alone binds.
+# A balance-fail cycle keeps the LAST-GOOD equity (persisted equity_prev) — never a guess.
+_TOTAL_CAP_EFF = [None]                      # [0] = last-known mark equity (list: 3.13 scoping)
+
+
+def _total_cap():
+    eq = _TOTAL_CAP_EFF[0]
+    try:
+        return min(MAX_TOTAL_CAPITAL, float(eq)) if eq is not None else MAX_TOTAL_CAPITAL
+    except (TypeError, ValueError):
+        return MAX_TOTAL_CAPITAL
 # --- CAPTURE GATE (KALSHI_CAPTURE_GATE, default 0 = OFF, provable no-op) -------------------------
 # The market-quality BRAIN the unqualifiable/selection gates lack. Those two ask "can ANYONE earn
 # here?" (is the BOOK two-sided at Target Size). This asks "can WE earn here?" — our PROSPECTIVE R4
@@ -1057,6 +1074,19 @@ PRECLOSE_FLATTEN_MIN = _envf("KALSHI_PRECLOSE_FLATTEN_MIN", 15.0)  # act within 
 # shorter wait exits cheaper in exactly the trends that hurt. Effective exit latency is this
 # clock + up to one cycle (~5-8s live). 0 disables the mechanism entirely.
 STRAND_CROSS_S = _envf("KALSHI_STRAND_CROSS_S", 15.0)
+# EXIT LOSS-MIN CALCULATOR (operator-named 2026-07-31 "make one for exits that is beyond
+# reproach"; module kalshi_exit_calc, arithmetic receipt-verified). Before the strand clock
+# pays a taker, the EXACT cross cost (half-spread + the venue's exact 0.07*C*P*(1-P) fee) is
+# computed from the live touches. Cheap or unavoidable crosses (1-tick spread, cost <=
+# EXIT_CHEAP_CROSS_USD, or ladder exhausted) pay immediately, exactly as before; otherwise the
+# resting maker exit is IMPROVED one tick per strand period (EXIT_LADDER_STEPS periods max) —
+# giving up a tick beats paying half the spread + fee on mean-reverting books, and the era
+# receipts put -$176.01 of -$182.06 realized on taker legs. Bounded time is preserved: worst
+# case adds EXIT_LADDER_STEPS * STRAND_CROSS_S seconds before the taker backstop fires.
+# EXIT_LADDER_STEPS=0 restores the legacy cross-at-first-strand behavior byte-for-byte.
+EXIT_LADDER_STEPS = _envi("KALSHI_EXIT_LADDER_STEPS", 2)
+EXIT_CHEAP_CROSS_USD = _envf("KALSHI_EXIT_CHEAP_CROSS_USD", 0.25)
+_STRAND_STEP = {}                            # ticker -> ladder step; mirror of st['strand_step']
 # --- selection: prefer BALANCED books (maker-unwind fills) over one-sided drift traps ---
 MAX_SPREAD_TICKS = _envi("KALSHI_MAX_SPREAD_TICKS", 8)      # skip wide/illiquid books
 MIN_DEPTH_SYM = _envf("KALSHI_MIN_DEPTH_SYM", 0.25)         # min(depth)/max(depth) both sides
@@ -1450,9 +1480,27 @@ def _ok_exit_price(p):
     return p is not None and EXIT_MIN_PRICE_DOLLARS <= p <= EXIT_MAX_PRICE_DOLLARS
 
 
-def _reducing_quotes(best_y, best_n, inv, cost):
+def _improved_exit(touch, opposite, improve):
+    """Ladder-improved exit price: `touch` + `improve` ticks toward the opposite side, never
+    at/through it (post-only survives), never below the touch. `opposite` is the OTHER side's
+    best bid (so this side's ask = 1 - opposite); with no opposite bid the bound is unknowable
+    and the touch is returned unchanged (never guess a bound)."""
+    if improve <= 0 or touch is None:
+        return touch
+    if opposite is None:
+        return touch
+    bound = round(1.0 - opposite - kalshi_exit_calc.TICK, 2)
+    if bound <= touch:
+        return touch
+    return round(min(touch + kalshi_exit_calc.TICK * improve, bound), 2)
+
+
+def _reducing_quotes(best_y, best_n, inv, cost, improve=0):
     """THE reducing-side quote builder — long yes -> a NO bid, long no -> a YES bid,
     priced AT the reference by _unwind_price and never larger than |inv| (_unwind_size).
+    `improve` (exit loss-min ladder, operator-named 2026-07-31) prices the exit that many
+    ticks INSIDE the spread instead of at the touch — bounded post-only by _improved_exit;
+    0 (the default) is byte-for-byte the legacy touch pricing.
 
     Extracted 2026-07-26. This block existed in FIVE byte-identical copies inside
     desired_quotes (wind-down, presence gate, net-EV gate, capture gate, void/activate), and
@@ -1472,14 +1520,14 @@ def _reducing_quotes(best_y, best_n, inv, cost):
     if inv > 0:
         if best_n is None:
             return []
-        up = _unwind_price(best_n, cost)
+        up = _improved_exit(_unwind_price(best_n, cost), best_y, improve)
         if not _ok_exit_price(up):
             return []
         return [{"side": "no", "price_dollars": up,
                  "count": _unwind_size(_capped_join(up, best_y), up, inv), "reason": "unwind"}]
     if best_y is None:
         return []
-    up = _unwind_price(best_y, cost)
+    up = _improved_exit(_unwind_price(best_y, cost), best_n, improve)
     if not _ok_exit_price(up):
         return []
     return [{"side": "yes", "price_dollars": up,
@@ -1740,6 +1788,9 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     own = own or {"yes": 0.0, "no": 0.0}
     inv = float(inv or 0.0)
     ev = float(event_delta or 0.0)
+    # EXIT LOSS-MIN LADDER (operator-named 2026-07-31): a ticker the strand clock has stepped
+    # gets its resting exit priced that many ticks inside the spread (see _improved_exit).
+    _improve = int(_STRAND_STEP.get(m.get("ticker"), 0) or 0)
     (yl, bad_y), (nl, bad_n) = _levels(yes_levels), _levels(no_levels)
     if stats is not None:
         stats["dropped_book_rows"] = stats.get("dropped_book_rows", 0) + bad_y + bad_n
@@ -1763,7 +1814,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # books where it most needed to be. _reducing_quotes checks the ONE side it rests on,
         # at venue bounds.
         if abs(inv) >= INV_TOLERANCE:
-            return _reducing_quotes(best_y, best_n, inv, cost)
+            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
         return []                                   # wind_down (flat -> pull entirely)
     # CROSSED BOOK IS CHECKED FIRST, and refuses BOTH entry and exit. A crossed book
     # (yes_bid + no_bid >= 1.0) is a stale/degenerate quote, not a price — a yes bid @best_y
@@ -1779,9 +1830,9 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     # book got NO exit order at all, which is precisely the book a losing position ends on.
     # Flat -> still nothing. Holding -> rest the reducing side and stop.
     if best_y is None or best_n is None:            # one-sided: cannot JOIN, can still EXIT
-        return _reducing_quotes(best_y, best_n, inv, cost) if abs(inv) >= INV_TOLERANCE else []
+        return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve) if abs(inv) >= INV_TOLERANCE else []
     if not (_ok_entry_price(best_y) and _ok_entry_price(best_n)):
-        return _reducing_quotes(best_y, best_n, inv, cost) if abs(inv) >= INV_TOLERANCE else []
+        return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve) if abs(inv) >= INV_TOLERANCE else []
     # external depth = public depth minus our own resting order on that side
     ext_y = max(0.0, sum(s for _, s in yl) - float(own.get("yes", 0)))
     ext_n = max(0.0, sum(s for _, s in nl) - float(own.get("no", 0)))
@@ -1841,7 +1892,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                         stats.get("presence_skipped_late_entry", 0) + 1
             if abs(inv) < INV_TOLERANCE:
                 return []                           # FLAT + cannot clear $1 -> never open
-            return _reducing_quotes(best_y, best_n, inv, cost)
+            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
     # NET-EV GATE (KALSHI_NETEV_GATE, default 0 = provable no-op) — the RECEIPT-CALIBRATED brain, and
     # the COMPLETE signal that supersedes the reward-only capture gate + pool-only stand-down. Look up
     # this market's FAMILY net-EV (credits − fill P&L − fees, per kalshi_netev_calibrate). A family
@@ -1869,7 +1920,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                 _nf[fam] = _nf.get(fam, 0) + 1
             if abs(inv) < INV_TOLERANCE:
                 return []                                   # FLAT + net-negative-for-us -> skip
-            return _reducing_quotes(best_y, best_n, inv, cost)
+            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
     # CAPTURE GATE (KALSHI_CAPTURE_GATE, default 0 = provable no-op) — the market-quality brain the
     # unqualifiable/selection gates lack: they check the BOOK can pay; this checks WE get paid. On a
     # two-sided JOIN book, compute our PROSPECTIVE R4 capture $/day (our_size scored at ref / (book
@@ -1889,7 +1940,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                 stats["capture_skipped"] = stats.get("capture_skipped", 0) + 1
             if abs(inv) < INV_TOLERANCE:
                 return []                           # FLAT + poor-for-us -> skip
-            return _reducing_quotes(best_y, best_n, inv, cost)
+            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
     # SELECTION GATE (only when ~flat — if we hold inventory we must keep quoting to unwind):
     # skip WIDE or ONE-SIDED books. A balanced two-sided book is where the maker-unwind
     # reliably fills; a one-directional/wide book is the gas-ladder trap that adverse-selects
@@ -1909,7 +1960,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if abs(inv) >= INV_TOLERANCE:
             if stats is not None:
                 stats["holding_exit_only"] = stats.get("holding_exit_only", 0) + 1
-            return _reducing_quotes(best_y, best_n, inv, cost)
+            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
         return [{"side": "yes", "price_dollars": best_y, "count": _capped_join(best_y, best_n), "reason": "join"},
                 {"side": "no", "price_dollars": best_n, "count": _capped_join(best_n, best_y), "reason": "join"}]
     quotes = []
@@ -1918,7 +1969,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # blanket-pull (that removes the $0 maker unwind AND leaves the taker unreachable while
         # inv is frozen) — rest ONLY the reducing side to unwind passively.
         if abs(inv) >= INV_TOLERANCE:
-            return _reducing_quotes(best_y, best_n, inv, cost)
+            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
         if abs(ev) > INV_SOFT_CT:
             return []                               # event already directional -> don't ADD via activate
         if STANDDOWN:                               # STAND-DOWN: don't commit activate depth into a
@@ -1962,7 +2013,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if abs(inv) >= INV_TOLERANCE:
             if stats is not None:
                 stats["holding_exit_only"] = stats.get("holding_exit_only", 0) + 1
-            return _reducing_quotes(best_y, best_n, inv, cost)
+            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
         # JOIN: external depth meets Target both sides, so shaping OUR size never voids it.
         # BOTH sides ALWAYS rest here (never pulled to zero) — the resting quotes are what earns
         # the rewards; inventory earns nothing. Reachable only when FLAT (sub-tolerance dust):
@@ -2331,7 +2382,7 @@ def cap_desired(desired, usd_day, incumbents=None, fam_held=None):
             if c > SERIES_MAX_USD:             # would never fit even alone: the footgun signature
                 _SERIES_CAP_SOLO[0] += 1
             continue                           # the dollars stay available to other families
-        if total + c > MAX_TOTAL_CAPITAL:
+        if total + c > _total_cap():   # portfolio-tracking cap (operator 2026-07-31)
             tail_cut = len(order) - i
             break
         kept[t] = desired[t]
@@ -2440,7 +2491,9 @@ def _refresh_safety_knobs():
              "KALSHI_NETEV_GATE": ("NETEV_GATE", int),
              "KALSHI_MKT_DAY_LOSS_EXITONLY_USD": ("MKT_DAY_LOSS_EXITONLY_USD", float),
              "KALSHI_REENTRY_COOLDOWN_S": ("REENTRY_COOLDOWN_S", float),
-             "KALSHI_HALT_CONFIRM_N": ("HALT_CONFIRM_N", int)}
+             "KALSHI_HALT_CONFIRM_N": ("HALT_CONFIRM_N", int),
+             "KALSHI_EXIT_LADDER_STEPS": ("EXIT_LADDER_STEPS", int),
+             "KALSHI_EXIT_CHEAP_CROSS_USD": ("EXIT_CHEAP_CROSS_USD", float)}
     try:
         g = globals()
         with open(path) as fh:
@@ -2521,6 +2574,13 @@ def run_once():
     _book_src.update(mirror=0, rest=0, src_err=0)   # per-cycle book-source attribution
     cyc = int(now.timestamp())            # per-cycle nonce for unique order ids
     st = load_state()
+    # side-channel mirrors for helpers that don't receive st (same pattern as _REALIZED_BY):
+    # the exit ladder steps feed desired_quotes' unwind pricing; last-good equity feeds the
+    # portfolio-tracking total cap until this cycle's balance read refreshes it.
+    _STRAND_STEP.clear()
+    _STRAND_STEP.update(st.get("strand_step") or {})
+    if st.get("equity_prev") is not None:
+        _TOTAL_CAP_EFF[0] = st.get("equity_prev")
     plan = {"ts": now.isoformat(), "mode": client.mode}
     # CONFIG VISIBILITY (2026-07-26): a knob absent from live.env takes its code default
     # silently. That class of defect hid KALSHI_THROTTLE_SMART (OFF in production) and
@@ -2770,6 +2830,8 @@ def run_once():
                         _marked += _mv
                     _equity = free_cash + _marked
                     plan["equity_mark_usd"] = round(_equity, 2)
+                    _TOTAL_CAP_EFF[0] = _equity          # portfolio-tracking total cap refresh
+                    plan["total_cap_eff"] = round(_total_cap(), 2)
                     if _mark_fb:
                         plan["mark_fallback_tickers"] = _mark_fb
                 except Exception as _me:
@@ -3458,10 +3520,10 @@ def run_once():
                 #              MAX_TOTAL_CAPITAL stays a backstop -> whichever is smaller binds.
                 #   Flag OFF : byte-for-byte the legacy `committed vs MAX_TOTAL_CAPITAL` gate.
                 if funding_gate_on:
-                    if funding_committed + cost > min(free_cash, MAX_TOTAL_CAPITAL):
+                    if funding_committed + cost > min(free_cash, _total_cap()):
                         create_skipped += 1
                         continue
-                elif committed + cost > MAX_TOTAL_CAPITAL:
+                elif committed + cost > _total_cap():   # portfolio-tracking cap
                     create_skipped += 1                 # cap gates ACCUMULATING orders only
                     continue
             try:
@@ -3535,7 +3597,8 @@ def run_once():
         if STRAND_CROSS_S > 0:
             strand_state = st.get("strand_grace", {})
             try:
-                _crossed4 = _strand_cross(client, naked_by, cost_by, now, plan, strand_state)
+                _crossed4 = _strand_cross(client, naked_by, cost_by, now, plan, strand_state,
+                                          step_state=st.setdefault("strand_step", {}))
                 # RE-ENTRY COOLDOWN feed: a ticker we just PAID a taker to leave starts its
                 # exit-only clock; the governor block above enforces it from next cycle on.
                 if REENTRY_COOLDOWN_S > 0 and _crossed4:
@@ -3737,7 +3800,7 @@ def run_once():
           f"reads={_reads[0]} books={_book_src['mirror']}ws/{_book_src['rest']}rest"
           + (f"/{_book_src['src_err']}ERR" if _book_src["src_err"] else "")
           + f" committed=${plan.get('committed_usd', plan.get('est_capital_usd',0)):,.2f}"
-          f"/{MAX_TOTAL_CAPITAL:,.0f} held=${plan.get('held_cost_usd',0):,.2f}"
+          f"/{_total_cap():,.0f} held=${plan.get('held_cost_usd',0):,.2f}"
           + (f" first_err={plan.get('first_quote_err')}" if plan.get("first_quote_err") else ""))
     return 0
 
@@ -4224,7 +4287,7 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
     return crossed
 
 
-def _strand_cross(client, naked_by, costs_by, now, plan, strand_state):
+def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_state=None):
     """FIX 3 (operator-approved 2026-07-27): cross a STRANDED exit after a bounded wait.
 
     The 07-27 loss shape: the maker exit rests, the market trends, the exit never fills, and
@@ -4254,6 +4317,8 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state):
     for t in list(strand_state):
         if abs(naked_by.get(t, 0.0)) < INV_TOLERANCE:
             strand_state.pop(t, None)                      # cleared -> forget the clock
+            if step_state is not None:
+                step_state.pop(t, None)                    # ...and the exit ladder step with it
     due = []
     for t, npos in naked_by.items():
         if abs(npos) < INV_TOLERANCE:
@@ -4281,7 +4346,37 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state):
         npos = fresh_naked.get(t, 0.0)
         if abs(npos) < STOP_TAKER_MIN_CT:
             strand_state.pop(t, None)                      # reduced since the snapshot -> stand down
+            if step_state is not None:
+                step_state.pop(t, None)
             continue
+        # EXIT LOSS-MIN CALCULATOR (operator-named 2026-07-31): compute the EXACT cost of
+        # crossing right now (half-spread + receipt-verified fee) before paying it. Cheap or
+        # unavoidable -> cross exactly as before. Otherwise step the maker exit ladder: the
+        # unwind quote re-prices one tick inside the spread next cycle (_STRAND_STEP mirror ->
+        # desired_quotes), and the clock re-arms — bounded at EXIT_LADDER_STEPS periods, then
+        # the taker backstop fires regardless. Receipt failure (one-sided/unreadable book)
+        # falls through to the legacy cross: the calculator must never BLOCK a bounded exit.
+        _rec = None
+        if step_state is not None and EXIT_LADDER_STEPS > 0:
+            try:
+                _ob5 = public_get(f"/trade-api/v2/markets/{t}/orderbook").get("orderbook_fp") or {}
+                _yb5, _ya5 = _touch(_ob5)
+                _rec = kalshi_exit_calc.cross_receipt(abs(npos), npos > 0, _yb5, _ya5)
+            except Exception:
+                _rec = None
+            if _rec is not None:
+                _step5 = int(step_state.get(t, 0) or 0)
+                if kalshi_exit_calc.decide(_rec, _step5, EXIT_LADDER_STEPS,
+                                           EXIT_CHEAP_CROSS_USD) == "improve":
+                    step_state[t] = _step5 + 1
+                    _STRAND_STEP[t] = _step5 + 1           # same-cycle mirror for desired_quotes
+                    strand_state[t] = now.isoformat()      # re-arm: a ladder step, not a cross
+                    plan["exit_ladder_stepped"] = plan.get("exit_ladder_stepped", 0) + 1
+                    print(f"exit-calc {t}: cross {abs(npos):.0f} ct would cost "
+                          f"${_rec['taker_cost_usd']:.2f} (spread {_rec['spread_ticks']}t "
+                          f"${_rec['half_spread_usd']:.2f} + fee ${_rec['fee_usd']:.2f}) — "
+                          f"maker ladder step {_step5 + 1}/{EXIT_LADDER_STEPS} instead")
+                    continue
         try:
             flat, nc = _taker_cross_capped(client, t, int(round(abs(npos))), npos > 0,
                                            tries=1, cost=(costs_by or {}).get(t, 0.0))
@@ -4292,10 +4387,18 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state):
         if nc:
             crossed.append(t)
         plan["strand_crossed_ct"] = round(plan.get("strand_crossed_ct", 0.0) + nc, 2)
+        if _rec is not None and nc:
+            # exact-cost receipt for the contracts actually crossed (auditable ledger line)
+            _paid5 = round(_rec["per_ct_usd"] * nc, 4)
+            plan["exit_cross_cost_usd"] = round(plan.get("exit_cross_cost_usd", 0.0) + _paid5, 4)
+            print(f"exit-calc {t}: PAID ~${_paid5:.2f} to cross {nc} ct "
+                  f"(spread {_rec['spread_ticks']}t, fee-rate exact)")
         print(f"strand cross {t}: naked {npos:+.2f} unfilled >= {STRAND_CROSS_S:.0f}s -> taker "
               f"crossed {nc} ct ({'FLAT' if flat else 'RESIDUAL — maker exit re-rested'})")
         if flat:
             strand_state.pop(t, None)
+            if step_state is not None:
+                step_state.pop(t, None)
         else:
             plan["strand_cross_failed"] = plan.get("strand_cross_failed", 0) + 1
             strand_state[t] = now.isoformat()              # re-arm: paces the next pass
