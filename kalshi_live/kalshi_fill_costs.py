@@ -28,6 +28,11 @@ import sys
 SCHEMA = 1          # must match kalshi_capital_rank.SCHEMA (reader fails open on mismatch)
 
 
+MISSING_FIELD_ROWS = [0]     # audit probe 2026-07-30: positions rows with BOTH pnl/fee fields
+                             # absent in the last build() — venue-rename tripwire for the feed
+                             # that ranks capital. Module counter so build() stays pure-return.
+
+
 def _iso(s):
     return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
 
@@ -48,10 +53,13 @@ def build(positions, fills, now=None):
         lo, hi = span.get(t, (w, w))
         span[t] = (min(lo, w), max(hi, w))
     markets = {}
-    for p in positions:
+    missing_fields = 0        # audit probe 2026-07-30: venue rename of the pnl/fee fields would
+    for p in positions:       # silently zero the whole cost feed (which ranks capital!)
         t = p.get("ticker")
         if not t:
             continue
+        if p.get("realized_pnl_dollars") is None and p.get("fees_paid_dollars") is None:
+            missing_fields += 1
         try:
             realized = float(p.get("realized_pnl_dollars") or 0.0)
             fees = float(p.get("fees_paid_dollars") or 0.0)
@@ -65,6 +73,7 @@ def build(positions, fills, now=None):
                       "active_days": round(days, 3),
                       "cost_usd_day": round(max(0.0, -realized) / days, 4),
                       "ts": now.isoformat()}
+    MISSING_FIELD_ROWS[0] = missing_fields
     return markets
 
 
@@ -83,6 +92,9 @@ def main():
     with open(tmp, "w") as fh:
         json.dump({"schema": SCHEMA, "markets": markets}, fh, separators=(",", ":"))
     os.replace(tmp, out)
+    if MISSING_FIELD_ROWS[0]:
+        print(f"WARNING {MISSING_FIELD_ROWS[0]} positions rows missing BOTH pnl/fee fields — "
+              f"venue field rename? Feed may be under-costing.")
     costed = sorted(markets.items(), key=lambda kv: -kv[1]["cost_usd_day"])
     print(f"wrote {out}: {len(markets)} markets, "
           f"{sum(1 for _, v in costed if v['cost_usd_day'] > 0)} with cost > 0")

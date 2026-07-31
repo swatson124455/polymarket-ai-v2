@@ -305,6 +305,13 @@ def collect():
     if baseline:
         fw = max([f.get("created_time") or fw for f in all_fills] + [fw])
         sw = max([s.get("settled_time") or sw for s in all_settles] + [sw])
+    # AUDIT PROBE (2026-07-30, watermark rename hazard): `or ""` makes a venue rename of the
+    # timestamp fields silently drop EVERY row forever ("" is never > watermark). Count and warn.
+    _no_ts = sum(1 for s in all_settles if s.get("settled_time") is None) + \
+             sum(1 for f in all_fills if f.get("created_time") is None)
+    if _no_ts:
+        print(f"WARNING {_no_ts} fills/settlements rows have NO timestamp field — venue "
+              f"rename? Those rows are being DROPPED from the ledger window.")
     settles = [s for s in all_settles if (s.get("settled_time") or "") > sw]
 
     # Cash is POSITION-AWARE (see the CASH-FLOW MODEL block), so it must be replayed from the

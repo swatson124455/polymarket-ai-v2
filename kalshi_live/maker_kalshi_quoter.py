@@ -713,6 +713,25 @@ def _load_netev_table():
 
 # loaded ONCE at import, and ONLY when the flag is on (flag-off does zero file IO -> provable no-op)
 NETEV_TABLE = _load_netev_table() if NETEV_GATE else {}
+_NETEV_MTIME = [0.0]
+
+
+def _netev_table_refresh():
+    """Reload the net-EV table when its file changes (audit item: import-once staleness, same
+    fix as the presence table 2026-07-30). Gate OFF => never runs; empty/broken load keeps the
+    last good table."""
+    global NETEV_TABLE
+    if not NETEV_GATE:
+        return
+    try:
+        m = os.path.getmtime(NETEV_TABLE_PATH)
+    except OSError:
+        return
+    if m > _NETEV_MTIME[0]:
+        t = _load_netev_table()
+        if t:
+            NETEV_TABLE = t
+        _NETEV_MTIME[0] = m
 # FUNDING GATE (KALSHI_FUNDING_GATE, default 0 = OFF, provable no-op). When OFF the accumulating
 # capital gate is the legacy `committed (= surviving resting notional + held_cost) vs
 # MAX_TOTAL_CAPITAL`, byte-for-byte. When ON it STOPS counting already-spent held_cost (that cash
@@ -2370,6 +2389,10 @@ def run_once():
         pass                  # a sweeper start fault must never block a trading cycle
     try:
         _presence_table_refresh()   # audit fix: presence table no longer frozen at import
+    except Exception:
+        pass
+    try:
+        _netev_table_refresh()      # audit fix: same staleness class (gate OFF live = no-op)
     except Exception:
         pass
     _lock = _acquire_lock()

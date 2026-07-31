@@ -57,6 +57,9 @@ def _mkt(ticker, usd_day=50.0, target=1000):
 def _netev_cfg(monkeypatch, *, on, table=_TABLE, margin=0.0):
     monkeypatch.setattr(q, "NETEV_GATE", 1 if on else 0)
     monkeypatch.setattr(q, "NETEV_TABLE", table)
+    # 2026-07-30 mtime-reload fix: point the reload at a nonexistent file so the in-cycle
+    # refresh cannot replace this fixture table with the repo's real one mid-test.
+    monkeypatch.setattr(q, "NETEV_TABLE_PATH", "/nonexistent/netev_table_test.json")
     monkeypatch.setattr(q, "NETEV_MIN_MARGIN_PCT", margin)
     monkeypatch.setattr(q, "NETEV_MODEL_HAIRCUT", 3.0)
     monkeypatch.setattr(q, "NETEV_FINGERPRINT_USD_DAY", 5.0)
@@ -142,6 +145,8 @@ def test_fix_pin_via_cycle_skips_and_reports(monkeypatch, tmp_path):
         _cfg(monkeypatch, join=100, mktcap=250, totcap=100000)
         monkeypatch.setattr(q, "NETEV_GATE", 1 if on else 0)
         monkeypatch.setattr(q, "NETEV_TABLE", _TABLE)
+        # 2026-07-30 mtime-reload fix: pin path so the in-cycle refresh can't swap the fixture
+        monkeypatch.setattr(q, "NETEV_TABLE_PATH", "/nonexistent/netev_table_test.json")
         monkeypatch.setattr(q, "NETEV_MIN_MARGIN_PCT", 0.0)
         monkeypatch.setattr(q, "public_get", _pg({"yes_dollars": _YL, "no_dollars": _NL}, _TEMP_TKR))
         monkeypatch.setattr(q, "select_footprint", lambda progs, now: [

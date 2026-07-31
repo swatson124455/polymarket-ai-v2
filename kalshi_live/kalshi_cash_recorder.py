@@ -103,8 +103,16 @@ def fill_cash(f):
     return -sign * _f(f.get("count_fp")) * _f(f.get("yes_price_dollars")) - _f(f.get("fee_cost"))
 
 
+MISSING_VALUE_FIELDS = [0]   # audit probe 2026-07-30: settlements lacking `value` — a venue
+                             # rename would silently zero every payout in the cash model
+
+
 def settlement_payout(s):
     """NET position only. Gross/paired model refuted 2026-07-27."""
+    if s.get("value") is None:
+        MISSING_VALUE_FIELDS[0] += 1
+        print(f"WARNING settlement missing `value` field (ticker={s.get('ticker')}) — "
+              f"payout treated as 0; venue field rename? total={MISSING_VALUE_FIELDS[0]}")
     v = _f(s.get("value")) / 100.0
     net = _f(s.get("yes_count_fp")) - _f(s.get("no_count_fp"))
     pay = (net * v) if net > 0 else ((-net) * (1.0 - v))

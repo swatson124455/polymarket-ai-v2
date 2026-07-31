@@ -78,6 +78,7 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import maker_kalshi_quoter as M                      # noqa: E402  (UNCHANGED quoter)
 from kalshi_ws_feed import Feed                      # noqa: E402
+import kalshi_ws_feed as _wsf                        # noqa: E402  (PARSE_FAILS gauge)
 
 # ---- knobs (env-overridable; defaults are the safe ones) ----
 WS_COLD_S = M._envi("KALSHI_WS_COLD_S", 60)           # heartbeat full cycle
@@ -387,7 +388,9 @@ class Daemon:
               # silently back on REST — the whole point of counting it is that "it got slow again"
               # must be readable here, not re-derived from a stopwatch.
               "book_ws": M._book_src["mirror"], "book_rest": M._book_src["rest"],
-              "book_src_err": M._book_src["src_err"]})
+              "book_src_err": M._book_src["src_err"],
+              # audit probe 2026-07-30: WS dialect-drift gauge (kalshi_ws_feed.PARSE_FAILS)
+              "feed_parse_fails": _wsf.PARSE_FAILS[0]})
         return tickers
 
     # ---------------- hot path (Stage B) ----------------

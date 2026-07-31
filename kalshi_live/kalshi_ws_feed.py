@@ -87,6 +87,13 @@ def _side_rows(msg, side):
     return None
 
 
+# Audit probe 2026-07-30: count of WS messages the mirror could NOT parse (unknown side key,
+# unpriceable price/delta after both dialect fallbacks). Each one fails SAFE (book marked dirty,
+# re-snapshot) but a venue dialect migration would tick this on every delta — the silent-degrade
+# gauge the 07-29 audit asked for. Surfaced in ws_daemon_log cold_cycle rows.
+PARSE_FAILS = [0]
+
+
 class BookMirror:
     """Local orderbook replica for one ticker. yes/no maps: price->size.
     dirty=True means the mirror CANNOT be trusted (seq gap / never seeded):
@@ -108,6 +115,7 @@ class BookMirror:
             # NO recognized side key at all (next dialect migration): this is a
             # book we cannot read, not an empty book — refuse to claim clean.
             # (One-sided books legitimately send only one key — live-verified.)
+            PARSE_FAILS[0] += 1     # audit probe 2026-07-30: dialect drift must be countable
             self.dirty = True
             return
         self.yes = _norm_rows(yr)
@@ -127,6 +135,10 @@ class BookMirror:
         delta = _f(msg.get("delta_fp") if "delta_fp" in msg else msg.get("delta"))
         book = self.yes if side == "yes" else self.no if side == "no" else None
         if book is None or price <= 0:
+            # Fails SAFE (dirty -> re-snapshot) but used to fail SILENT: a venue key rename
+            # (price_dollars/delta_fp -> next dialect) would cold every book with no gauge
+            # (audit probe 2026-07-30). Counted module-wide; surfaced in ws_daemon_log.
+            PARSE_FAILS[0] += 1
             self.dirty = True                        # unparseable delta -> refuse to guess
             return
         new = book.get(price, 0.0) + delta
