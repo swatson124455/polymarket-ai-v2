@@ -52,15 +52,16 @@ def test_halt_requires_sustained_breach(monkeypatch, tmp_path):
         row = _run(monkeypatch, _BalClient(250.0, mode="live"), str(tmp_path))
         assert not os.path.exists(stop), f"breach cycle {i} must not halt yet"
         assert row.get("halt_breach_streak") == i
-    # recovery cycle: back inside the arm -> streak resets
+    # recovery cycle: back inside the arm -> no stop; F1 (operator-named 2026-07-31):
+    # the breach count is now an N-of-5 WINDOW, not a hard-reset streak -- one recovery
+    # cycle no longer erases the evidence (the sawtooth-mark escape this fix closed)
     _run(monkeypatch, _BalClient(295.0, mode="live"), str(tmp_path))
     assert not os.path.exists(stop)
     st = json.load(open(os.path.join(str(tmp_path), "quoter_state.json")))
-    assert st.get("halt_breach_streak") == 0, "recovery must reset the streak"
-    # three consecutive breaches -> STOP written on the third
-    for i in (1, 2, 3):
-        _run(monkeypatch, _BalClient(250.0, mode="live"), str(tmp_path))
-    assert os.path.exists(stop), "a sustained breach must still halt"
+    assert st.get("halt_breach_streak") == 2, "window keeps the two breaches in memory"
+    # the NEXT breach makes 3-of-5 -> STOP confirms (a sawtooth can no longer defer it)
+    _run(monkeypatch, _BalClient(250.0, mode="live"), str(tmp_path))
+    assert os.path.exists(stop), "breach/recover/breach sawtooth must still confirm"
 
 
 def test_halt_confirm_default_and_legacy_mode(monkeypatch, tmp_path):

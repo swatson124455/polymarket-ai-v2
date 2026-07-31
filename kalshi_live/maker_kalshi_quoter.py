@@ -569,6 +569,7 @@ MKT_OUT_LOSS_USD = _envf("KALSHI_MKT_OUT_LOSS_USD", 5.0)
 TAKER_GOV_CROSSES = _envi("KALSHI_TAKER_GOV_CROSSES", 3)
 TAKER_GOV_LOSS_USD = _envf("KALSHI_TAKER_GOV_LOSS_USD", 1.0)
 _TAKER_XN = {}                               # ticker -> paid-exit count today (st mirror)
+_REALIZED_LAST_GOOD = {}                     # last successful all-traded realized snapshot
 # STRIKE LADDER (operator-named 2026-07-31, tightened same day: "one strike your out for
 # anything costing over 5 dollars until 8-3 rereview"). A market that trips the $/day governor
 # STRIKES_OUT times is OUT: banned with NO expiry, EXEMPT from memory pruning — only an
@@ -2715,6 +2716,7 @@ def run_once():
         # cycle with UnboundLocalError (self-audit F18, 2026-07-29, same-day regression of the
         # loss-governor commit). Dry-run keeps it empty: no fills, nothing to govern.
         _exit_only_mkts = set()
+        _exit_only_all = False               # F2/F3: whole-book reduce-only for this cycle
         if client.mode == "dry_run":
             standing = st.get("simulated_standing", {})
             own = {}
@@ -2780,8 +2782,13 @@ def run_once():
                     # feed, and the governor's fail-OPEN doctrine is unchanged.
                     try:
                         _realized = client.get_realized_by_market()
+                        _REALIZED_LAST_GOOD.clear()
+                        _REALIZED_LAST_GOOD.update(_realized)
                     except Exception:
-                        _realized = dict(_REALIZED_BY)
+                        # F3 (2026-07-31): prefer the LAST-GOOD all-traded snapshot -- the
+                        # open-positions side channel drops flat markets (the burn-and-run
+                        # blind spot) and is only the bootstrap fallback.
+                        _realized = dict(_REALIZED_LAST_GOOD) or dict(_REALIZED_BY)
                     _base = st.get("mkt_realized_base") or {}
                     _tripped = set(st.get("mkt_loss_tripped") or [])
                     if "mkt_out" in st:
@@ -2826,6 +2833,15 @@ def run_once():
                             plan["strike2_exitonly"] = len(_strike2)
                 except Exception:
                     _SILENT["loss_governor_fail"] += 1
+                    st["gov_fail_streak"] = int(st.get("gov_fail_streak", 0)) + 1
+                    if st["gov_fail_streak"] >= 3:
+                        # F3 (operator-named 2026-07-31): three consecutive faulted governor
+                        # cycles -> reduce-only until a clean pass (fail-open became a
+                        # standing blind spot; unwinds/exits untouched)
+                        _exit_only_all = True
+                        plan["governor_fail_reduce_only"] = 1
+                else:
+                    st["gov_fail_streak"] = 0
             if REENTRY_COOLDOWN_S > 0:
                 try:
                     _cool = st.get("reentry_cool") or {}
@@ -2915,6 +2931,11 @@ def run_once():
                 # fails closed with a WARNING; this one used to fail open silently.
                 print(f"WARNING balance read failed x{st['balance_fail_streak']} ({e!r}) — "
                       f"DAILY LOSS KILL DISARMED this cycle")
+                if st["balance_fail_streak"] >= 2:
+                    # F2 (operator-named 2026-07-31): the last-resort loss guard is blind --
+                    # stop ACQUIRING until it can see again. Unwinds/exits are untouched.
+                    _exit_only_all = True
+                    plan["balance_fail_reduce_only"] = 1
             else:
                 st["balance_fail_streak"] = 0
             if _equity is not None:
@@ -2995,12 +3016,15 @@ def run_once():
                     if _down > DAILY_DOWN_HALT_USD:
                         _breaches.append(f"CUMULATIVE-DOWN ${_down:.2f} > ${DAILY_DOWN_HALT_USD:.2f} "
                                          f"(ratcheting sum, never resets)")
-                    if _breaches:
-                        st["halt_breach_streak"] = int(st.get("halt_breach_streak", 0)) + 1
-                        plan["halt_breach_streak"] = st["halt_breach_streak"]
-                    else:
-                        st["halt_breach_streak"] = 0
-                    if _breaches and st["halt_breach_streak"] >= max(1, HALT_CONFIRM_N):
+                    # F1 (operator-named 2026-07-31): N-of-5 WINDOW, not a hard-reset streak
+                    # -- an oscillating mark used to reset the streak to 0 on any single
+                    # non-breach cycle, deferring confirmation forever under real losses.
+                    _bh = [int(b) for b in (st.get("halt_breach_hist") or [])][-4:]
+                    _bh.append(1 if _breaches else 0)
+                    st["halt_breach_hist"] = _bh
+                    st["halt_breach_streak"] = sum(_bh)          # key name kept (state compat)
+                    plan["halt_breach_streak"] = st["halt_breach_streak"]
+                    if _breaches and sum(_bh) >= max(1, HALT_CONFIRM_N):
                         _why = " AND ".join(_breaches)
                         plan["daily_loss_halt"] = round(drop, 2)
                         plan["daily_halt_reason"] = _why
@@ -3196,7 +3220,7 @@ def run_once():
                     # resting orders survived on any transient fetch error. Strip them here
                     # too — for a governed market, cancelling the accumulating side is the
                     # governor doing its job, not a stranding risk (unwind copies survive).
-                    if t in _exit_only_mkts:
+                    if _exit_only_all or t in _exit_only_mkts:
                         desired[t] = [o for o in desired[t] if o.get("reason") == "unwind"]
                         if not desired[t]:
                             desired.pop(t, None)
@@ -3236,7 +3260,7 @@ def run_once():
             # LOSS GOVERNOR ENFORCEMENT: a tripped/cooling market keeps ONLY its reducing
             # quotes; accumulating ones are stripped here and the standing diff cancels any
             # already resting. Placed at the choke point every quoted market flows through.
-            if q and t in _exit_only_mkts:
+            if q and (_exit_only_all or t in _exit_only_mkts):
                 _kept4 = [o for o in q if o.get("reason") == "unwind"]
                 if len(_kept4) != len(q):
                     qstats["loss_exitonly_stripped"] = (
@@ -3394,7 +3418,7 @@ def run_once():
             # (fresh collateral, its own comment below) after the loop that enforces the
             # exit-only set — so a loss-tripped or cooling t2 could be re-entered through it.
             # Gate it like any other opening order, and COUNT the gate so it is never silent.
-            if t2 in _exit_only_mkts:
+            if _exit_only_all or t2 in _exit_only_mkts:
                 plan["ladder_cross_gated"] = plan.get("ladder_cross_gated", 0) + 1
                 continue
             uws[0]["count"] = keep                      # keep+cross <= c0 <= |naked|: flip-safe

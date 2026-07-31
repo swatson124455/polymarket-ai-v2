@@ -306,6 +306,8 @@ def test_realized_read_failure_falls_back_to_side_channel(monkeypatch, tmp_path)
     _cfg(monkeypatch)
     _fp1(monkeypatch)
     monkeypatch.setattr(q, "MKT_DAY_LOSS_EXITONLY_USD", 5.0)
+    q._REALIZED_LAST_GOOD.clear()      # F3: last-good snapshot outranks the side channel;
+                                       # clear cross-test leakage so this pins the BOOTSTRAP path
     _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="0.00")],
                                  get_realized_raises=True), str(tmp_path))
     c2 = MockClient(mode="live", positions=[_pos(realized="-7.00")],
