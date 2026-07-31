@@ -2607,7 +2607,6 @@ def run_once():
     _refresh_safety_knobs()
     try:
         _ensure_sweeper()     # background venue sweeper — no-op unless KALSHI_SWEEP_ENABLED=1
-        _refresh_fill_costs(client)   # I: hourly fill-cost feed refresh (mtime-gated, fail-soft)
     except Exception:
         _SILENT["sweeper_start_fail"] += 1    # blind-review: swallowed faults must count
     try:
@@ -2630,6 +2629,10 @@ def run_once():
         return 0
     now = utcnow()
     client = KalshiOrderClient()          # dry_run unless operator-configured
+    try:
+        _refresh_fill_costs(client)       # I: hourly fill-cost feed refresh (mtime-gated)
+    except Exception:
+        _SILENT["fillcost_refresh_fail"] += 1   # helper is fail-soft; this is belt+suspenders
     if os.path.exists(STOP_FILE):
         # emergency stop: cancel quotes + rest MAKER offsets to flatten passively (never taker).
         _since = None

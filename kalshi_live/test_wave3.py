@@ -142,3 +142,22 @@ class TestFillCostRefresh:
         before = open(out).read()
         q._refresh_fill_costs(_Boom(mode="live"))        # must not raise
         assert open(out).read() == before, "failed refresh keeps the stale file intact"
+
+
+    def test_cycle_actually_triggers_the_refresh(self, monkeypatch, tmp_path):
+        """Regression pin (own defect, caught live 16:24Z 07-31): the helper was first wired
+        at a point where `client` did not exist yet -- NameError swallowed by an adjacent
+        try/except, feed stayed stale. The refresh must fire through a REAL cycle."""
+        _cfg(monkeypatch)
+        monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])
+        out = os.path.join(str(tmp_path), "fill_costs.json")
+        monkeypatch.setattr(q, "FILL_COST_PATH", out)
+        monkeypatch.setattr(q, "FILLCOST_REFRESH_S", 3600.0)
+        calls = []
+
+        class _C(MockClient):
+            def _get_paginated(self, path, key, params=None):
+                calls.append(key)
+                return {key: []}
+        _run(monkeypatch, _C(mode="live"), str(tmp_path))
+        assert os.path.exists(out) and calls, "a live cycle must refresh a stale feed"
