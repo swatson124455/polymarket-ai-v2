@@ -1106,6 +1106,15 @@ STRAND_CROSS_S = _envf("KALSHI_STRAND_CROSS_S", 15.0)
 # EXIT_LADDER_STEPS=0 restores the legacy cross-at-first-strand behavior byte-for-byte.
 EXIT_LADDER_STEPS = _envi("KALSHI_EXIT_LADDER_STEPS", 2)
 EXIT_CHEAP_CROSS_USD = _envf("KALSHI_EXIT_CHEAP_CROSS_USD", 0.25)
+# J (operator-named 2026-07-31): touch-motion discipline on the paid exit. Between strand
+# evaluations (>= STRAND_CROSS_S apart) the exec-side touch is tracked per ticker:
+#   one FAST move against us (>= SWEEP_VETO_TICKS)      -> SPIKE: defer this pass entirely
+#       (a whale sweep's worst prints revert; measured ~$6.7 lost buying 35-ct slices of
+#       700-1200 ct sweeps). Deferral is bounded: it cannot repeat consecutively.
+#   two CONSECUTIVE fast moves                          -> TREND: cross IMMEDIATELY, skip the
+#       maker ladder (patience in a real trend is how -$5-in-44s happens).
+# SWEEP_VETO_TICKS=0 disables both arms (byte-identical strand behavior).
+SWEEP_VETO_TICKS = _envi("KALSHI_SWEEP_VETO_TICKS", 3)
 _STRAND_STEP = {}                            # ticker -> ladder step; mirror of st['strand_step']
 # --- selection: prefer BALANCED books (maker-unwind fills) over one-sided drift traps ---
 MAX_SPREAD_TICKS = _envi("KALSHI_MAX_SPREAD_TICKS", 8)      # skip wide/illiquid books
@@ -1715,6 +1724,38 @@ def _sweep_measure(m, ob):
     if by is None or bn is None:
         return 0.0, by
     return _prospective_capture(m, yl, nl, by, bn, float(m.get("target") or 0.0)), by
+
+
+FILLCOST_REFRESH_S = _envf("KALSHI_FILLCOST_REFRESH_S", 3600.0)   # 0 = off
+
+
+def _refresh_fill_costs(client):
+    """I (operator-named 2026-07-31): keep the per-market fill-cost feed FRESH in-process —
+    the standalone kalshi_fill_costs.py script was manual-run only, so the feed sat stale at
+    07-29 values carrying costs ~10x under reality (TOPMODEL -3.19 vs -19.42 final) — the
+    landmine under any future ALLOC_KEY enable. Rewrites at most once per FILLCOST_REFRESH_S
+    (mtime-gated, ~2 paginated reads/hour), atomic replace, fail-soft: a failed refresh keeps
+    the stale file and counts _SILENT (telemetry feed — must never block trading)."""
+    if FILLCOST_REFRESH_S <= 0:
+        return
+    try:
+        if (os.path.exists(FILL_COST_PATH)
+                and (time.time() - os.path.getmtime(FILL_COST_PATH)) < FILLCOST_REFRESH_S):
+            return
+    except OSError:
+        pass
+    try:
+        import kalshi_fill_costs as _kfc
+        positions = client._get_paginated(f"{API_ROOT}/portfolio/positions",
+                                          "market_positions")["market_positions"]
+        fills = client._get_paginated(f"{API_ROOT}/portfolio/fills", "fills")["fills"]
+        markets = _kfc.build(positions, fills)
+        tmp = FILL_COST_PATH + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"schema": _kfc.SCHEMA, "markets": markets}, fh, separators=(",", ":"))
+        os.replace(tmp, FILL_COST_PATH)
+    except Exception:
+        _SILENT["fillcost_refresh_fail"] += 1
 
 
 def _ensure_sweeper():
@@ -2566,6 +2607,7 @@ def run_once():
     _refresh_safety_knobs()
     try:
         _ensure_sweeper()     # background venue sweeper — no-op unless KALSHI_SWEEP_ENABLED=1
+        _refresh_fill_costs(client)   # I: hourly fill-cost feed refresh (mtime-gated, fail-soft)
     except Exception:
         _SILENT["sweeper_start_fail"] += 1    # blind-review: swallowed faults must count
     try:
@@ -2661,6 +2703,20 @@ def run_once():
         _INCUMBENT_TICKERS.clear()
         _INCUMBENT_TICKERS.update(st.get("prev_standing_tickers") or [])
         footprint = select_footprint(progs, now)
+        # L3 (operator-named 2026-07-31, series probe insurance): a NEW ticker whose series
+        # already has a permanently-OUT member ($5 rung) enters PROBE-SIZED (the explore
+        # clamp, EXPLORE_PROBE_CT) instead of at full join — the strike ladder is per-ticker
+        # and the venue mints fresh siblings daily; this bounds the fresh sibling's first
+        # burn to probe scale. Incumbent/held tickers are untouched (their unwind sizing
+        # must never shrink; the explore clamp already exempts reason=='unwind').
+        if EXPLORE_PROBE_CT > 0:
+            _out_series = {t5.split("-")[0] for t5 in (st.get("mkt_out") or [])}
+            if _out_series:
+                for _r5 in footprint:
+                    if (not _r5.get("explore")
+                            and _r5.get("ticker", "").split("-")[0] in _out_series):
+                        _r5["explore"] = True
+                        plan["series_probe"] = plan.get("series_probe", 0) + 1
         plan.update(FP_DROPS)                 # drop reasons (empty when a test patches selection)
         plan["programs_seen"] = len(progs)
         # FAR-CLOSE CAP ON THE MARKET CLOCK (operator Q6 decision 2026-07-28). select_footprint's
@@ -3685,7 +3741,8 @@ def run_once():
             strand_state = st.get("strand_grace", {})
             try:
                 _crossed4 = _strand_cross(client, naked_by, cost_by, now, plan, strand_state,
-                                          step_state=st.setdefault("strand_step", {}))
+                                          step_state=st.setdefault("strand_step", {}),
+                                          touch_state=st.setdefault("strand_touch", {}))
                 # RE-ENTRY COOLDOWN feed: a ticker we just PAID a taker to leave starts its
                 # exit-only clock; the governor block above enforces it from next cycle on.
                 if REENTRY_COOLDOWN_S > 0 and _crossed4:
@@ -4378,7 +4435,8 @@ def _preclose_naked_flatten(client, held_by, now, plan, grace_state,
     return crossed
 
 
-def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_state=None):
+def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_state=None,
+                  touch_state=None):
     """FIX 3 (operator-approved 2026-07-27): cross a STRANDED exit after a bounded wait.
 
     The 07-27 loss shape: the maker exit rests, the market trends, the exit never fills, and
@@ -4448,6 +4506,7 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_stat
         # the taker backstop fires regardless. Receipt failure (one-sided/unreadable book)
         # falls through to the legacy cross: the calculator must never BLOCK a bounded exit.
         _rec = None
+        _force_cross = False
         if step_state is not None and EXIT_LADDER_STEPS > 0:
             try:
                 _ob5 = public_get(f"/trade-api/v2/markets/{t}/orderbook").get("orderbook_fp") or {}
@@ -4455,7 +4514,26 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_stat
                 _rec = kalshi_exit_calc.cross_receipt(abs(npos), npos > 0, _yb5, _ya5)
             except Exception:
                 _rec = None
-            if _rec is not None:
+            if (_rec is not None and touch_state is not None and SWEEP_VETO_TICKS > 0):
+                _prev5 = touch_state.get(t)
+                _mv5 = 0.0
+                if _prev5:
+                    # against-us motion: long yes exits at the yes BID (falling = against);
+                    # long no exits at the yes ASK (rising = against)
+                    _mv5 = (float(_prev5[0]) - _rec["exec_price"]) if npos > 0                         else (_rec["exec_price"] - float(_prev5[0]))
+                _fast5 = _prev5 is not None and _mv5 >= SWEEP_VETO_TICKS * 0.01
+                _consec5 = (int(_prev5[1]) + 1 if _fast5 else 0) if _prev5 else 0
+                touch_state[t] = [_rec["exec_price"], _consec5]
+                if _fast5 and _consec5 >= 2:
+                    _force_cross = True              # TREND: pay now, skip the ladder
+                    plan["exit_trend_cross"] = plan.get("exit_trend_cross", 0) + 1
+                elif _fast5:
+                    strand_state[t] = now.isoformat()    # SPIKE: defer ONE pass, clock re-arms
+                    plan["exit_sweep_veto"] = plan.get("exit_sweep_veto", 0) + 1
+                    print(f"exit-calc {t}: touch moved {_mv5:.2f} against in one period — "
+                          f"sweep veto, deferring one pass (next fast move crosses)")
+                    continue
+            if _rec is not None and not _force_cross:
                 _step5 = int(step_state.get(t, 0) or 0)
                 if kalshi_exit_calc.decide(_rec, _step5, EXIT_LADDER_STEPS,
                                            EXIT_CHEAP_CROSS_USD) == "improve":
