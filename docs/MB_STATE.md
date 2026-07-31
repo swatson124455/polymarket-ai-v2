@@ -112,6 +112,25 @@
 > by trades/notional/markets (roster excluded; 0 rows = FAILURE not empty
 > ranking). Output = future dive candidates, no roster impact.
 >
+> **~03:15Z 07-31 ADDENDUM 3 — 'proceed with all you can':**
+> (1) **SCOUT DIVE QUEUE LAUNCHED** (`/tmp/scout_queue.sh`, gated behind the
+> running re-grade): 9 candidates selected from the finished 6h scout
+> (983,755 trades / 26,123 wallets) by pre-stated filter notional ≥ $250k AND
+> markets ≥ 100 AND trades ≥ 500. EXCLUDED + disclosed: the 5-wallet
+> identical-fingerprint cluster (10 trades / $100,099 each — sybil pattern)
+> and single-market whales. No API caches for these wallets → dives run
+> chain-only reconstruction with `cache_status=missing` disclosed per
+> verdict; a targeted cache-build mode for `find_copyable_traders.py` is a
+> noted enhancement. Verdicts = PROPOSALS. Out-dir `deep_dive_scout/`.
+> (2) **A/B INTERIM (n=717 joined fills, ~10h)**: coverage — RTDS saw
+> **717/804 chain fills (89.2%), chain-only=87, rtds-only=0** (strict
+> subset, no phantoms; the maker-side blind spot is REAL). Latency —
+> rtds−chain detect p50 **−0.56s** (min −10.9s, max +3.76s). Parity —
+> verdict 712/717, fill 702/717. ⇒ interim read: a pure SWAP would lose
+> ~11% of fills; the candidate architecture is HYBRID first-seen (RTDS for
+> speed + chain for completeness) — decision with the full-data report.
+> (3) Re-grade 8/10 done at 02:45Z; diff auto-runs at completion.
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
