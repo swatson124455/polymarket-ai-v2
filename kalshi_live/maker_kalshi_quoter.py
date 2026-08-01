@@ -1958,6 +1958,11 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     try:
         end = parse_iso(m["end"])
     except Exception:
+        # D2 (selection review 2026-08-01): 50.7% of quote rows emitted no price and no
+        # counter — every priceless exit below now says why (gate_* family; the caller's
+        # qstats diff turns each into that row's `gates` entry).
+        if stats is not None:
+            stats["gate_bad_clock"] = stats.get("gate_bad_clock", 0) + 1
         return []            # unusable clock -> quote nothing here (stress: "garbage end").
                              # select_footprint already drops unparseable dates, so this is
                              # defence in depth, not the primary guard.
@@ -1974,6 +1979,8 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # at venue bounds.
         if abs(inv) >= INV_TOLERANCE:
             return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
+        if stats is not None:
+            stats["gate_wind_down_flat"] = stats.get("gate_wind_down_flat", 0) + 1
         return []                                   # wind_down (flat -> pull entirely)
     # CROSSED BOOK IS CHECKED FIRST, and refuses BOTH entry and exit. A crossed book
     # (yes_bid + no_bid >= 1.0) is a stale/degenerate quote, not a price — a yes bid @best_y
@@ -1983,14 +1990,23 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     # resting exits onto crossed books, which the strand path explicitly refuses
     # ("crossed/stale — do not chase"). Both paths now agree.
     if best_y is not None and best_n is not None and best_y + best_n >= 1.0:
+        if stats is not None:
+            stats["gate_crossed_book"] = stats.get("gate_crossed_book", 0) + 1
         return []
     # THE NEXT TWO GATES REJECT AN *ENTRY*. Each used to `return []`, which also discarded
     # the reducing quote built further down — so a held position on a one-sided or extreme
     # book got NO exit order at all, which is precisely the book a losing position ends on.
     # Flat -> still nothing. Holding -> rest the reducing side and stop.
     if best_y is None or best_n is None:            # one-sided: cannot JOIN, can still EXIT
+        if stats is not None:
+            stats["gate_one_sided_book"] = stats.get("gate_one_sided_book", 0) + 1
         return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve) if abs(inv) >= INV_TOLERANCE else []
     if not (_ok_entry_price(best_y) and _ok_entry_price(best_n)):
+        # the KXMAMDANIEO mechanism: best_y + best_n < 1 means a YES ref below MIN_PRICE
+        # forces NO above MAX_PRICE — both sides fail together, excluding the whole
+        # longshot category. Now it excludes it OUT LOUD.
+        if stats is not None:
+            stats["gate_entry_band"] = stats.get("gate_entry_band", 0) + 1
         return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve) if abs(inv) >= INV_TOLERANCE else []
     # external depth = public depth minus our own resting order on that side
     ext_y = max(0.0, sum(s for _, s in yl) - float(own.get("yes", 0)))
@@ -2109,6 +2125,8 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         spread_ticks = (1.0 - best_n - best_y) / TICK   # any inventory in [TOL,SOFT) must keep
         sym = min(ext_y, ext_n) / max(ext_y, ext_n, 1e-9)   # quoting the reducing side to unwind
         if spread_ticks > MAX_SPREAD_TICKS or sym < MIN_DEPTH_SYM:
+            if stats is not None:
+                stats["gate_wide_or_asym"] = stats.get("gate_wide_or_asym", 0) + 1
             return []                               # one-sided / wide -> unwind-unreliable, skip
     if JOIN_ALWAYS:
         # drill/testing switch: tiny join on both sides of any priceable market,
@@ -2130,6 +2148,8 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if abs(inv) >= INV_TOLERANCE:
             return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
         if abs(ev) > INV_SOFT_CT:
+            if stats is not None:
+                stats["gate_event_directional"] = stats.get("gate_event_directional", 0) + 1
             return []                               # event already directional -> don't ADD via activate
         if STANDDOWN:                               # STAND-DOWN: don't commit activate depth into a
             _sd, _eff = _standdown_market(m, True)  # thin-reward void book (flat here -> strands
@@ -2146,6 +2166,8 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         add_n = max(JOIN_SIZE, target - ext_n) if JOIN_SIZE > 0 else max(0.0, target - ext_n)
         cap = best_y * add_y + best_n * add_n
         if cap > MAX_ACTIVATE_CAPITAL:
+            if stats is not None:
+                stats["gate_activate_cost"] = stats.get("gate_activate_cost", 0) + 1
             return []                               # too expensive to activate
         # audit F1 clamp (2026-07-29): activate counts get the SAME fix-H contract ceiling as
         # joins — without it a $40 activate at low prices could rest hundreds of contracts into
