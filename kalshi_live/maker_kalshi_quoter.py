@@ -2723,6 +2723,14 @@ def _refresh_safety_knobs():
              "KALSHI_STRIKES_OUT": ("STRIKES_OUT", int),
              "KALSHI_PAIR_UNWIND": ("PAIR_UNWIND", int),
              "KALSHI_PAIR_UNWIND_MIN_EDGE": ("PAIR_UNWIND_MIN_EDGE", float)}
+    # Gov-D9 (1.1 review 2026-07-31): these four LOOK hot-reloadable (they sit in the same
+    # env file) but are import-time only — an operator editing them mid-flight got a silent
+    # no-op, the exact defect class KALSHI_THROTTLE_SMART hid. Changed-but-not-applied is
+    # now loud every cycle it remains true. Applying them live stays a deploy decision.
+    restart_only = {"KALSHI_SWEEP_VETO_TICKS": ("SWEEP_VETO_TICKS", int),
+                    "KALSHI_EXPLORE_PROBE_CT": ("EXPLORE_PROBE_CT", int),
+                    "KALSHI_SERIES_MAX_USD": ("SERIES_MAX_USD", float),
+                    "KALSHI_FILLCOST_REFRESH_S": ("FILLCOST_REFRESH_S", float)}
     try:
         g = globals()
         with open(path) as fh:
@@ -2732,6 +2740,17 @@ def _refresh_safety_knobs():
                     continue
                 k, _, v = line.partition("=")
                 k = k.strip()
+                if k in restart_only:
+                    gname, cast = restart_only[k]
+                    try:
+                        nv = cast(v.strip())
+                    except (TypeError, ValueError):
+                        continue
+                    if g.get(gname) != nv:
+                        print(f"WARNING RESTART-ONLY knob {gname} changed in {path} "
+                              f"({g.get(gname)} -> {nv}) but NOT applied — this knob needs "
+                              f"a service restart")
+                    continue
                 if k not in watch:
                     continue
                 gname, cast = watch[k]
@@ -3084,6 +3103,20 @@ def run_once():
                     st["mkt_trip_snap"] = _snap
                     st["mkt_taker_xn"] = dict(_TAKER_XN)
                     _exit_only_mkts |= _tripped | _out4
+                    # Gov-D5 (1.1 review 2026-07-31): the L3 sibling probe clamp ran at
+                    # SELECTION time against LAST cycle's mkt_out — a market banned at the
+                    # $5 rung THIS cycle left its series siblings quoting full-size for one
+                    # extra cycle (the exact MLABELSHARE burn window L3 exists to bound).
+                    # Re-apply the clamp here, after this cycle's bans are written and
+                    # before the quote loop reads footprint. Same rules as L3: unwind
+                    # sizing is exempt via the probe clamp's reason=='unwind' carve-out.
+                    if EXPLORE_PROBE_CT > 0:
+                        _out_series5 = {_t7.split("-")[0] for _t7 in _out4}
+                        for _r7 in footprint:
+                            if (not _r7.get("explore")
+                                    and _r7.get("ticker", "").split("-")[0] in _out_series5):
+                                _r7["explore"] = True
+                                plan["series_probe"] = plan.get("series_probe", 0) + 1
                     plan["loss_exitonly"] = len(_tripped)
                     if _out4:
                         plan["mkt_out"] = len(_out4)
@@ -3206,6 +3239,16 @@ def run_once():
                 except Exception as _me:
                     plan["mark_failed"] = repr(_me)[:120]
                     _equity = free_cash + held_cost       # old meter, never disarmed
+                    if _TOTAL_CAP_EFF[0] is None:
+                        # Gov-D10 (1.1 review 2026-07-31): fresh process + lost state
+                        # (equity_prev gone) + a failed mark read left the portfolio-
+                        # tracking equity None for the cycle — the SERIES_PCT family cap
+                        # degraded to static-only (or fully OFF in a pure-PCT config,
+                        # since cap_desired treats cap<=0 as no gate). Cost basis is a
+                        # worse mark but a far better denominator than nothing. A
+                        # last-good (non-None) value is never overwritten here.
+                        _TOTAL_CAP_EFF[0] = _equity
+                        plan["total_cap_seeded_cost_basis"] = 1
                 # ONE-TIME BASIS MIGRATION: day baselines written by the cost-basis meter would
                 # register the bid-ask spread as an instant "loss" under marks. Re-baseline ONCE
                 # on the definition change (this is not a deposit re-baseline; the deposit-proof
