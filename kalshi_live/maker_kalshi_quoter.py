@@ -608,6 +608,75 @@ TWO_STRIKES = _envi("KALSHI_TWO_STRIKES", 1)
 TWO_STRIKES_MEMORY_D = _envi("KALSHI_TWO_STRIKES_MEMORY_D", 14)
 STRIKES_OUT = _envi("KALSHI_STRIKES_OUT", 0)   # 0 = count-based bans OFF (E ladder rules)
 
+# ANY-LOSS COOLDOWN SHADOW — WATCH-ONLY (operator-named 2026-08-01, option A: "A review next
+# handoff though. we can handle drips and we make money on drips").
+# GAP MEASURED: the re-entry cooldown is fed ONLY by taker-cross exits (":549", the three
+# cross sites); the day-loss ladder starts at MKT_DAY_LOSS_EXITONLY_USD (live $3). A market
+# that bleeds UNDER the rung without a cross exit gets no brake and can be re-joined the next
+# cycle. Measured 2026-08-01T00:33:59Z (scope: the 31 markets in the venue positions feed):
+# sub-$3 band = 22 markets / $22.70; the 4 markets over $5 carry $68.47 and already trip.
+# WHY WATCH-ONLY: benching a market removes the book presence that earns the reward, and the
+# operator's standing framing is that drips are acceptable and reward-positive. This exists to
+# PRICE that trade-off (how many markets would be benched, for how long, and how much they
+# actually bled) — never to act on it. Enabling requires operator naming plus receipts showing
+# the benched markets were reward-negative.
+# INVARIANT: writes ONLY st["anyloss_shadow"] and plan["anyloss_sh_*"] telemetry. It must never
+# touch reentry_cool, _exit_only_mkts, mkt_out, or any trip set. Faults are swallowed by the
+# caller's nested guard so a shadow bug cannot fault the real governor.
+ANYLOSS_SHADOW_FLOORS = (0.25, 0.5, 1.0, 2.0)
+ANYLOSS_SHADOW_MAX_TICKERS = 200          # per floor per day — keeps quoter_state bounded
+
+
+def _anyloss_shadow(st, realized, base, tripped, out, cooling, now, day, plan):
+    """Pure shadow bookkeeping for the any-loss cooldown. Returns nothing; mutates only
+    st["anyloss_shadow"] and plan telemetry keys. `cooling` is the REAL reentry_cool key set.
+
+    Per floor, a ticker whose realized day-delta is <= -floor and that is not already inside
+    a shadow cooldown "trips": it is counted NEW if no existing brake (day-latch, permanent
+    OUT, or real cross-fed cooldown) already covers it, REDUNDANT otherwise. Only NEW trips
+    represent behaviour this feature would add.
+    """
+    sh = st.get("anyloss_shadow") or {}
+    if sh.get("day") != day:
+        sh = {"day": day, "floors": {}}       # shadow counters are per-UTC-day, like the rungs
+    floors = sh.get("floors") or {}
+    cool_s = REENTRY_COOLDOWN_S if REENTRY_COOLDOWN_S > 0 else 3600.0
+    for _f in ANYLOSS_SHADOW_FLOORS:
+        fkey = "%.2f" % _f
+        rec = floors.get(fkey) or {"active": {}, "trips": 0, "new": 0, "redundant": 0,
+                                   "bled_usd": 0.0, "tickers": []}
+        _still = {}
+        for _t, _exp in (rec.get("active") or {}).items():
+            try:
+                if parse_iso(_exp) > now:
+                    _still[_t] = _exp          # unparseable stamps simply expire: shadow only
+            except Exception:
+                pass
+        for _t, _v in realized.items():
+            _d = _v - base.get(_t, _v)         # same day-delta basis as the real governor
+            if _d > -_f or _t in _still:
+                continue
+            rec["trips"] = int(rec.get("trips", 0)) + 1
+            if _t in tripped or _t in out or _t in cooling:
+                rec["redundant"] = int(rec.get("redundant", 0)) + 1
+            else:
+                rec["new"] = int(rec.get("new", 0)) + 1
+                rec["bled_usd"] = round(float(rec.get("bled_usd", 0.0)) + _d, 4)
+                if (_t not in rec["tickers"]
+                        and len(rec["tickers"]) < ANYLOSS_SHADOW_MAX_TICKERS):
+                    rec["tickers"].append(_t)
+            _still[_t] = (now + timedelta(seconds=cool_s)).isoformat()
+        rec["active"] = _still
+        floors[fkey] = rec
+        # active = markets this floor would have benched RIGHT NOW (the presence cost);
+        # new = cumulative trips today that no existing brake already covered.
+        plan["anyloss_sh_%s_active" % fkey] = len(_still)
+        plan["anyloss_sh_%s_new" % fkey] = int(rec.get("new", 0))
+        plan["anyloss_sh_%s_redundant" % fkey] = int(rec.get("redundant", 0))
+        plan["anyloss_sh_%s_bled" % fkey] = round(float(rec.get("bled_usd", 0.0)), 2)
+    sh["floors"] = floors
+    st["anyloss_shadow"] = sh
+
 
 def _two_strikes(hist, tripped_today, day, now):
     """Pure strike bookkeeping. hist: {ticker: [iso dates]}; returns (hist, banned_set).
@@ -3039,6 +3108,21 @@ def run_once():
                     plan["reentry_cooldown"] = len(_active)
                 except Exception:
                     _SILENT["loss_governor_fail"] += 1
+            # ANY-LOSS COOLDOWN SHADOW (operator-named 4b, 2026-08-01): watch-only pricing of
+            # the sub-rung drip gap. Reads the governor's own st keys (post-write, so trips/
+            # bans/cooldowns are this cycle's truth) and writes ONLY st["anyloss_shadow"] +
+            # plan telemetry. A shadow fault must never fault the real governor.
+            if MKT_DAY_LOSS_EXITONLY_USD > 0:
+                try:
+                    _anyloss_shadow(st,
+                                    _realized,
+                                    st.get("mkt_realized_base") or {},
+                                    set(st.get("mkt_loss_tripped") or []),
+                                    set(st.get("mkt_out") or []),
+                                    set(st.get("reentry_cool") or {}),
+                                    now, _day_mkt, plan)
+                except Exception:
+                    _SILENT["anyloss_shadow_fail"] += 1
             # VELOCITY CIRCUIT BREAKER: compare held-$ now vs the LOWEST held-$ inside the
             # window. Rapid growth = adverse accumulation -> the whole book goes REDUCE-ONLY
             # below (only unwind quotes survive; accumulating quotes cancelled by the diff).
