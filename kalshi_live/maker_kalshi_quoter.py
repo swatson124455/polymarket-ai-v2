@@ -1456,6 +1456,11 @@ def select_footprint(progs, now):
                 progressed = True
                 if len(picked) >= FOOTPRINT_TOP:
                     break
+        if len(rows) > len(picked):
+            # D10 (selection review 2026-08-01): the funnel's largest drop stage had no
+            # counter — rows past the last slot vanished with zero reason codes, leaving a
+            # viable market indistinguishable in telemetry from one never discovered.
+            drops["drop_not_selected"] = len(rows) - len(picked)
         _caprank_telemetry(rows, picked, now)   # observation only; no-op unless flag ON
         return picked
     # ---- PIVOT: density-weighted, over-selected, near-money-ordered candidate pool ----
@@ -1506,6 +1511,8 @@ def select_footprint(progs, now):
         per_series[s] += 1
         if len(picked) >= pool_cap:
             break
+    if len(rows) > len(picked):
+        drops["drop_not_selected"] = len(rows) - len(picked)   # D10, same as legacy branch
     _caprank_telemetry(rows, picked, now)       # observation only; no-op unless flag ON
     return picked
 
