@@ -4359,9 +4359,14 @@ def _rest_maker_offset(client, ticker, pos, cost, tag):
     the next cycle's unwind pass re-rests one. Returns the order_id or None (best-effort: the
     normal unwind path re-rests every cycle regardless, so a None here is a gap of one cycle,
     not a strand)."""
+    # RF2 (1.1 review 2026-07-31, diagnosed 2026-08-01): 117 re-rest failures since 07-30
+    # (journal), every one on a rout ticker later permanently banned — and the four None
+    # paths below were indistinguishable in the tape, so the root cause could not be
+    # established from logs. Each path now counts separately (_SILENT -> plan row).
     try:
         ob = public_get(f"/trade-api/v2/markets/{ticker}/orderbook").get("orderbook_fp") or {}
     except Exception:
+        _SILENT["rerest_fail_book_read"] += 1
         return None
     by = max((p for p, _ in _levels(ob.get("yes_dollars") or [])[0]), default=None)
     bn = max((p for p, _ in _levels(ob.get("no_dollars") or [])[0]), default=None)
@@ -4370,9 +4375,11 @@ def _rest_maker_offset(client, ticker, pos, cost, tag):
     elif pos < 0 and _ok_exit_price(by):
         side, price, other = "yes", by, (bn or by)
     else:
+        _SILENT["rerest_fail_unpriceable"] += 1
         return None
     price = _unwind_price(price, cost)
     if not _ok_exit_price(price):
+        _SILENT["rerest_fail_band_adjusted"] += 1
         return None
     cnt = _unwind_size(_capped_join(price, other), price, pos)
     try:
@@ -4381,6 +4388,7 @@ def _rest_maker_offset(client, ticker, pos, cost, tag):
         o = r.get("order") if isinstance(r, dict) and isinstance(r.get("order"), dict) else {}
         return o.get("order_id")
     except Exception:
+        _SILENT["rerest_fail_create"] += 1
         return None
 
 
