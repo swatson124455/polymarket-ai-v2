@@ -124,12 +124,88 @@
 > noted enhancement. Verdicts = PROPOSALS. Out-dir `deep_dive_scout/`.
 > (2) **A/B INTERIM (n=717 joined fills, ~10h)**: coverage — RTDS saw
 > **717/804 chain fills (89.2%), chain-only=87, rtds-only=0** (strict
-> subset, no phantoms; the maker-side blind spot is REAL). Latency —
+> subset, no phantoms). **[SUPERSEDED 2026-08-01 — see CORRECTION below;
+> the maker-side blind-spot reading was WRONG]**. Latency —
 > rtds−chain detect p50 **−0.56s** (min −10.9s, max +3.76s). Parity —
 > verdict 712/717, fill 702/717. ⇒ interim read: a pure SWAP would lose
 > ~11% of fills; the candidate architecture is HYBRID first-seen (RTDS for
 > speed + chain for completeness) — decision with the full-data report.
 > (3) Re-grade 8/10 done at 02:45Z; diff auto-runs at completion.
+>
+> ## 2026-08-01 00:30Z — CORRECTION + 4 VERIFIED FINDINGS (workflow, 8 agents,
+> every finding independently refutation-tested; all 4 survived)
+>
+> **⛔ CORRECTION — I WAS WRONG ON THE RECORD.** The 07-31 addendum called the
+> RTDS coverage gap STRUCTURAL ("RTDS emits taker-side only; the maker-side
+> blind spot is REAL"). **That reading is REFUTED.** The gap is our own
+> consumer's DOWNTIME:
+> * **360/364 (98.90%)** of chain-only roster fills fall INSIDE a measured
+>   RTDS outage window (either clock, ±5s). True unexplained residue = **4
+>   fills = 0.13%** of 3,075 in-window chain fills.
+> * When RTDS is provably connected: **maker-side capture 98.39%**
+>   (2,440/2,480) vs taker-side 99.62% (259/260) — a **1.2pp** spread. Maker
+>   fills are NOT invisible. Captured population is **90.4% maker**, mirroring
+>   the chain population (90.9%) — the opposite of a taker-only feed.
+> * Controls that make it decisive: **base-rate** (captured fills landing
+>   inside outages 0.48% vs a 9.21% outage base rate = 19x depletion);
+>   **placebo** (time-shifting the outage windows drops the hit rate from
+>   88.7% to 3.6–15.7%); **regime capture** 3.88% inside vs **98.50%** outside.
+> * Window 2026-07-30T16:32:53Z → 2026-08-01T00:11:33Z (31.64h); outage total
+>   10,500s = **9.21%**; observed miss **11.84%** (364/3,075).
+> ⇒ **The hybrid-vs-swap question is REOPENED and must be re-measured AFTER
+> the keepalive fix.** No architecture decision on the old premise.
+> (Earlier 804/717 counts were an ~10.5h snapshot of live-appending sinks;
+> the 31.6h re-measure supersedes them. The MISS RATE agrees, 10.8% vs 11.8%.)
+>
+> **ROOT CAUSE OF THE OUTAGES — a defect in OUR consumer, fix identified.**
+> `rtds_watch` never sends the application-level `"PING"` text frame this
+> venue requires. **This repo's own reference consumer already documents it:**
+> `base_engine/data/rtds_websocket.py:22` `_PING_INTERVAL = 5  # RTDS requires
+> keep-alive pings`, `:75-76` `ping_interval=None  # we handle pings manually
+> (RTDS protocol)`, `:115` `await self.ws.send("PING")`, `:170` PONG handling.
+> `copy_watcher.py:753-755` does the OPPOSITE (`ping_interval=20`, protocol-
+> level only; the ONLY `ws.send` in the loop is the one-time subscribe).
+> Signature: **83 silent alarms vs 2 ConnectionClosedError in 13.92h** —
+> transport alive, data dead (protocol pongs don't wake `ws.recv()`).
+> **The "slow consumer blocks the socket" hypothesis is REFUTED**: detect_lag
+> p50 0.9s / max 5.7s / **0 of 2,191 over 15s**; busy connections live **8.6x
+> LONGER** (med 729s with ≥5 records vs 85s with 0); **17/83** alarm-killed
+> connections logged ZERO records (no inline HTTP ran at all).
+>
+> **ADMISSION FLIP EXPLAINED — and it has a serious objection.**
+> `0xfbfd14dd` INSUFFICIENT→ADMIT. The "edge fell while verdict improved"
+> paradox is FALSE: the original +0.0160 was the mean of **ONE** market
+> (`n_labeled=1`) — never a measurement. The single gate that changed is
+> `skill_gradeable` (chain_deep_dive.py:482 soft branch); n_labeled 1 → 1090.
+> Every hard gate already passed before. Now mkts=1090, **P=0.96, edge
+> +0.0103**. **BUT: `maker_frac = 0.886`** — the edge is earned at MAKER
+> prices by an 88.6%-maker account, and we copy as a TAKER crossing the
+> spread. Also `incomplete_cache_sweep=TRUE` (both runs), the "100%" backing
+> is 99.789%, the copier-forensic leg never ran, and the hidden-activity check
+> was DISABLED (`hidden=null` ≠ zero hidden). Edge +0.0103 is also below our
+> +0.02 copy floor. NOT-MEASURED (flagged): maker fraction among the 1,090
+> GRADED first-buys — if that subset is taker-heavy the objection weakens.
+>
+> **SCOUT RELAUNCH — root cause found + a material correction.** Failure was
+> cwd: launched from `/home/ubuntu` (0750 ubuntu:ubuntu; polymarket in no
+> shared group) so pydantic's relative `env_file=".env"`
+> (`config/settings.py:1604`) hit EACCES. Verified: same import from
+> cwd=`/opt/polymarket-ai-v2` → IMPORT_OK. **CORRECTION to the 07-31 entry:**
+> the 9 candidates DO have API caches — but STALE (2026-07-10) and TRUNCATED
+> (500 rows, `status="hft"`). The dive would silently reuse them
+> (`chain_deep_dive.py:1283-1291` cache-hit short-circuit), producing verdicts
+> with the SAME `incomplete_cache_sweep=TRUE` weakness as `0xfbfd14dd`.
+> A cache refresh before diving is the difference between a real verdict and
+> a repeat of that weakness.
+>
+> **⚠ VPS REBOOTED 2026-08-01 00:08:51Z — `/tmp` WAS WIPED.** All 5 services
+> back active; every persistent artifact survived (`deep_dive_insuff_regrade`
+> 10/10, `verdict_locks.json`, both sinks, ledger). Lost: the ad-hoc `/tmp`
+> orchestration scripts + rosters (`insuff_regrade.sh`, `scout_queue.sh`,
+> `scout_dive_roster.txt`, and the prior session's `clob_sup.py`). **Lesson:
+> orchestration scripts belong in the repo, not `/tmp`** (the §7 landmine
+> "all copy-trader data is in /tmp — one reboot erases it" just came true for
+> the scripts).
 >
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
