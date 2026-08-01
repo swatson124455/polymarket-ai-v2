@@ -1508,7 +1508,10 @@ def test_categorical_inventory_is_flagged_in_the_plan_row(monkeypatch, tmp_path)
         {"ticker": "KXWORDLE-26JUL23-WORLD", "position_fp": "-20", "market_exposure_dollars": "10.00"}])
     row = _run(monkeypatch, c, str(tmp_path))
     assert row.get("nonladder_events") == 1          # un-nettable event visible in telemetry
-    assert row.get("strike_parse_failed") == 2       # and the unpairable inventory is LOUD
+    # RF3 split (2026-08-01): categorical inventory counts under its own BY-DESIGN key;
+    # strike_parse_failed (and its loud warning) is reserved for structural failures.
+    assert row.get("strike_categorical") == 2
+    assert not row.get("strike_parse_failed")
 
 
 # ---- Q2: _strike_of must parse the real ticker shapes, and fail LOUDLY ----
@@ -1535,12 +1538,16 @@ def test_strike_parse_failure_is_counted_not_silent():
     stats = {}
     naked = q.ladder_pairing({"KXWORDLE-26JUL23-HELLO": 5.0,
                               "KXAAAGASD-26JUL23-4.050": 5.0}, stats)
-    assert stats.get("strike_parse_failed") == 1     # only the categorical one
+    assert stats.get("strike_categorical") == 1      # RF3: categorical = BY-DESIGN key
+    assert not stats.get("strike_parse_failed")      # the loud key stays structural-only
     assert naked["KXWORDLE-26JUL23-HELLO"] == 5.0    # and it stays fully naked, by design
     # zero-position tickers are not counted (no inventory => nothing went dark)
     stats2 = {}
     q.ladder_pairing({"KXWORDLE-26JUL23-HELLO": 0.0}, stats2)
     assert stats2 == {}
+    # STRUCTURAL failure (digit-bearing tail that still fails) keeps the loud counter
+    assert q._strike_of("KXBAD-26JUL23-4..0.5", stats2) is None
+    assert stats2.get("strike_parse_failed") == 1
 
 
 # ---- Q3: the daily-loss quota must measure an UNINFLATABLE drawdown ----

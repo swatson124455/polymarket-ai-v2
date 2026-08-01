@@ -4983,9 +4983,9 @@ def _strike_of(ticker, stats=None):
     must never be ordered, and must never be paired. That is not an error — but it IS invisible,
     so every failure bumps stats['strike_parse_failed'] when a stats dict is supplied. Without
     the counter a fully dark pairing pass is indistinguishable from 'no pairs were available'."""
-    def _fail():
+    def _fail(key="strike_parse_failed"):
         if stats is not None:
-            stats["strike_parse_failed"] = stats.get("strike_parse_failed", 0) + 1
+            stats[key] = stats.get(key, 0) + 1
         return None
     try:
         fields = ticker.split("-")
@@ -4996,9 +4996,16 @@ def _strike_of(ticker, stats=None):
     fields = fields[2:]
     while len(fields) > 1 and fields[0].isalpha() and fields[0] != "T":
         fields.pop(0)                      # 'US' in KXAAAGASM-25MAR31-US-4.00
+    tail = "-".join(fields).lstrip("T")
     try:
-        return float("-".join(fields).lstrip("T"))
+        return float(tail)
     except (ValueError, TypeError):
+        # RF3 counter split (1.1 review 2026-07-31): a digit-free tail is a CATEGORICAL
+        # outcome (-HELLO, -LAL) — unpairable BY DESIGN, ~250/day, and it was drowning the
+        # loud warning that exists for STRUCTURAL failures (a digit-bearing tail that still
+        # won't parse = shape change = pairing gone dark). Two counters, one warning.
+        if not any(c.isdigit() for c in tail):
+            return _fail("strike_categorical")
         return _fail()
 
 
