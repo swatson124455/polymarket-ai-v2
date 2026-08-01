@@ -11,14 +11,30 @@ per-market numbers for old settled markets must NOT be reconstructed that way).
 re-rule MECHANISM rows to DEFECT/STRUCTURAL only with evidence; never edit a sourced
 number in place — correct by a new dated line.
 
-**DATED CORRECTION 2026-08-01 (per the no-edit-in-place rule):** the original maintenance
-line above read "payout = day after that market closes, operator-stated 2026-07-31". The
-first full receipt pull [H] does NOT support that model. Credits post in a daily batch at
-**05:15–06:58 UTC** paying for the PRIOR DAY'S PRESENCE, including on markets that are
-still OPEN. Decisive counter-example: `KXCHIPBURRITO-26AUG02` credited 2026-08-01T06:27Z —
-the day BEFORE its event date, so it cannot be a post-close payout. The close+1 model and
-the Aug 2–9 payout calendar derived from it are therefore SUSPECT. Reported to operator
-2026-08-01; superseding model not yet operator-ruled — do not treat either as settled.
+**DATED CORRECTION 2026-08-01 #1 — ⛔ ITSELF WRONG, RETRACTED BY #2 BELOW. Kept visible per
+the no-edit-in-place rule; DO NOT CITE.** It claimed the close+1 model was unsupported and
+that credits pay daily for the prior day's presence, on the strength of one row
+(`KXCHIPBURRITO-26AUG02` credited before its event date). It was written before the
+presence↔credit join existed.
+
+**DATED CORRECTION 2026-08-01 #2 (supersedes #1) — close+1 is SUPPORTED; the daily-accrual
+claim is REFUTED.** Source [I], the presence↔credit join:
+- **Presence 2026-07-29 → credits 2026-07-30: ZERO.** 17 events resting, incl. MLABELSHARE
+  (587 resting-rows, mean share 0.866), MUSKNW (536 rows, 0.648), TOPMODEL (1,368 rows).
+- **Presence 2026-07-30 → credits 2026-07-31: ZERO.** 13 events resting, incl. MLABELSHARE
+  (1,818 rows, mean 135.7 ct), EURUSDAW (429 rows), MUSKNW (475 rows).
+  Daily accrual paid next morning cannot produce two consecutive zero days at that presence.
+- **Paid events pay ONCE, in a lump, at/after close, aggregating multi-day presence:**
+  MLABELSHARE-W3026JUL30 accrued 07-29 + 07-30 + 07-31 → single $16.15 credit on 08-01.
+  KXCLUBF*-26JUL26ERKHIL (close 07-26) → paid 07-27. KXINXHUD/KXNDQHUD-26JUL271600
+  (close 07-27 16:00) → paid 07-28.
+⇒ The operator's 2026-07-31 framing (payout = per market, the day after that market closes)
+is the model the receipts support. **The Aug 2–9 payout calendar stands.**
+⚠ ONE UNEXPLAINED EXCEPTION, not a model-breaker: `KXCHIPBURRITO-26AUG02` credited $1.14 on
+2026-08-01T06:27Z while still being quoted on 08-01. Unresolved; do not build on it.
+**AGENT DEFECT OWNED:** correction #1 was published to canon off a single anomalous row
+without running the cheap join that refuted it. Root cause = asserting a model change at
+Q&A tempo (RULE THIRTEEN §1). Caught and retracted same session.
 
 ## Sources
 - [A] venue realized-by-market read 2026-07-31T23:46:54Z (fee-incl; covers UNSETTLED
@@ -41,6 +57,13 @@ the Aug 2–9 payout calendar derived from it are therefore SUSPECT. Reported to
   API surface. Raw rows: `scratchpad/kalshi_credit_history_20260801.md`.
   LIMIT: `reason` names the EVENT only, never the strike — per-strike attribution is NOT
   available from this feed (nor from the UI, which shows identical event labels).
+- [I] **presence↔credit join 2026-08-01 ~13:40Z** — `quotes-2026*.jsonl` aggregated per
+  (UTC day, EVENT) where EVENT = first two dash-segments of the ticker (join key validated
+  against every credited event), joined to [H]. Metrics per event-day: resting-rows
+  (`n_rest_ct`+`y_rest_ct` > 0), qual-rows (`n_qual` or `y_qual`), max/mean resting
+  contracts, `usd_day` pool, mean observed share. COVERAGE GAP: quotes logs exist only for
+  07-26, 07-27, 07-29, 07-30, 07-31, 08-01 — **07-28 is missing**, and 07-21..07-25 predate
+  the logs, so 6 of the 12 credit-days cannot be joined.
 
 ## 1. Per-market ledger — scaled era, markets closed 2026-07-31 (payout due 2026-08-01)
 
