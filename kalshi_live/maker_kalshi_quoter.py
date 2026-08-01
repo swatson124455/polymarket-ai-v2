@@ -608,6 +608,17 @@ TWO_STRIKES = _envi("KALSHI_TWO_STRIKES", 1)
 TWO_STRIKES_MEMORY_D = _envi("KALSHI_TWO_STRIKES_MEMORY_D", 14)
 STRIKES_OUT = _envi("KALSHI_STRIKES_OUT", 0)   # 0 = count-based bans OFF (E ladder rules)
 
+# INCUMBENT-ONLY GATE (operator directive 2026-08-01: "just stop doing new markets and keep
+# all else equal"; option c — a real gate — operator-named same day). ON: the set of markets
+# with a resting order or held position is captured ONCE, persisted to state
+# (incumbent_only_set), and every OTHER market keeps only its unwind quotes — accumulating
+# quotes are stripped at the same choke point the loss governor uses, so selection, scoring,
+# sizing, and exits are all byte-identical ("keep all else equal"). Held inventory always
+# unwinds; new markets simply never open. Flipping OFF clears the captured set, so the next
+# enable re-captures fresh. HOT-RELOADABLE (in _refresh_safety_knobs' watch list) — the
+# directive's original blocker was that no selection knob could hot-apply.
+INCUMBENT_ONLY = _envi("KALSHI_INCUMBENT_ONLY", 0)
+
 # ANY-LOSS COOLDOWN SHADOW — WATCH-ONLY (operator-named 2026-08-01, option A: "A review next
 # handoff though. we can handle drips and we make money on drips").
 # GAP MEASURED: the re-entry cooldown is fed ONLY by taker-cross exits (":549", the three
@@ -2722,7 +2733,8 @@ def _refresh_safety_knobs():
              "KALSHI_SERIES_PCT": ("SERIES_PCT", float),
              "KALSHI_STRIKES_OUT": ("STRIKES_OUT", int),
              "KALSHI_PAIR_UNWIND": ("PAIR_UNWIND", int),
-             "KALSHI_PAIR_UNWIND_MIN_EDGE": ("PAIR_UNWIND_MIN_EDGE", float)}
+             "KALSHI_PAIR_UNWIND_MIN_EDGE": ("PAIR_UNWIND_MIN_EDGE", float),
+             "KALSHI_INCUMBENT_ONLY": ("INCUMBENT_ONLY", int)}
     # Gov-D9 (1.1 review 2026-07-31): these four LOOK hot-reloadable (they sit in the same
     # env file) but are import-time only — an operator editing them mid-flight got a silent
     # no-op, the exact defect class KALSHI_THROTTLE_SMART hid. Changed-but-not-applied is
@@ -3401,6 +3413,25 @@ def run_once():
         # ladder pairing: floored cross-strike pairs are ~riskless (see ladder_pairing) — every
         # de-risk mechanism below targets the NAKED remainder, never the paired quantity.
         naked_by = ladder_pairing(held_by, plan)     # plan collects 'strike_parse_failed'
+        # INCUMBENT-ONLY GATE capture (see the knob comment): the incumbent set is standing
+        # orders + held positions + last cycle's resting tickers (blackout-edge widening,
+        # conservative toward "keep existing"), captured ONCE and persisted. The strip lives
+        # in the quote loop below, beside the loss-governor strip.
+        _incumbent_only = None
+        if INCUMBENT_ONLY:
+            _cap9 = st.get("incumbent_only_set")
+            if _cap9 is None:
+                _cap9 = sorted(set(standing)
+                               | {_t9 for _t9, _p9 in held_by.items()
+                                  if abs(_p9) >= INV_TOLERANCE}
+                               | set(st.get("prev_standing_tickers") or []))
+                st["incumbent_only_set"] = _cap9
+                print(f"INCUMBENT-ONLY gate ARMED: {len(_cap9)} incumbent market(s) captured "
+                      f"— no new markets will be opened while the gate is on")
+            _incumbent_only = set(_cap9)
+            plan["incumbent_only_n"] = len(_incumbent_only)
+        elif "incumbent_only_set" in st:
+            st.pop("incumbent_only_set", None)       # OFF -> next enable re-captures fresh
         if plan.get("strike_parse_failed"):
             # LOUD: held inventory whose strike would not parse can never be paired, so 100% of
             # it stays naked with no error. Silent darkness here is indistinguishable from
@@ -3604,6 +3635,16 @@ def run_once():
                         qstats.get("loss_exitonly_stripped", 0) + len(q) - len(_kept4))
                     _q_fullsize = None              # stripped -> the full-size copy is fiction
                 q = _kept4
+            # INCUMBENT-ONLY enforcement: a market outside the captured set keeps ONLY its
+            # unwind quotes (same strip as the loss governor above — de-risk never blocked,
+            # accumulation never allowed). Flat non-incumbents strip to [] = never opened.
+            if q and _incumbent_only is not None and t not in _incumbent_only:
+                _kept9 = [o for o in q if o.get("reason") == "unwind"]
+                if len(_kept9) != len(q):
+                    qstats["incumbent_only_stripped"] = (
+                        qstats.get("incumbent_only_stripped", 0) + len(q) - len(_kept9))
+                    _q_fullsize = None
+                q = _kept9
             if q:
                 desired[t] = q
             # PER-MARKET REWARD TELEMETRY — observation only, and deliberately the LAST thing in the
