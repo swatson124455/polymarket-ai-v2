@@ -3543,9 +3543,12 @@ def run_once():
                     first_quote_err = f"{t}: {e!r}"
             # EXPLORE PROBE SIZING (item E): a sampling market rests probe-sized accumulating
             # quotes — data budget, not an earnings seat. Unwind quotes are never shrunk.
+            _q_fullsize = None                      # D8: pre-clamp copy for the score cache
             if q and EXPLORE_PROBE_CT > 0 and m.get("explore"):
                 for _o5 in q:
                     if _o5.get("reason") != "unwind" and _o5["count"] > EXPLORE_PROBE_CT:
+                        if _q_fullsize is None:
+                            _q_fullsize = [dict(_o6) for _o6 in q]
                         qstats["explore_probe_capped"] = qstats.get("explore_probe_capped", 0) + 1
                         _o5["count"] = EXPLORE_PROBE_CT
             # LOSS GOVERNOR ENFORCEMENT: a tripped/cooling market keeps ONLY its reducing
@@ -3556,6 +3559,7 @@ def run_once():
                 if len(_kept4) != len(q):
                     qstats["loss_exitonly_stripped"] = (
                         qstats.get("loss_exitonly_stripped", 0) + len(q) - len(_kept4))
+                    _q_fullsize = None              # stripped -> the full-size copy is fiction
                 q = _kept4
             if q:
                 desired[t] = q
@@ -3574,11 +3578,27 @@ def run_once():
                     # SCORE CACHE: fold this book into the rolling rank. Free — capture_usd_day and
                     # the reference price are already computed above. This is what lets the NEXT
                     # cycle rank on measured capture instead of pool size.
-                    if SCORE_RANK:
+                    # D4 (selection review 2026-08-01): fold ONLY real quoting attempts. A
+                    # gated-out market (q == []) is OUR decision, not a measurement — writing
+                    # it as "capture $0, fresh ts" locked gated markets out of the explore
+                    # quota for 30 min on a measurement that never happened (69.3% of all
+                    # timestamped rows were these fake zeros). Ungated rows stay unknown/
+                    # stale in the cache and remain explore-eligible, as documented.
+                    if SCORE_RANK and q:
+                        _cache_row = _row
+                        if _q_fullsize is not None:
+                            # D8: the probe rests EXPLORE_PROBE_CT contracts, but the cache
+                            # ranks markets by what NORMAL-size quoting would capture — the
+                            # probe-sized value was stored as the market's full-size worth
+                            # (sampled inflation up to 116x). Recompute at intended size;
+                            # the telemetry ROW above still records what actually rested.
+                            _cache_row = _market_telemetry_row(
+                                cyc, now, m, _byl, _bnl, _q_fullsize,
+                                own.get(t), naked_by.get(t, 0.0), _gates)
                         import kalshi_market_scores as _kms
                         with SCORES_LOCK:
-                            _kms.update(SCORES, t, _row.get("capture_usd_day"),
-                                        _row.get("y_ref"), now=now.timestamp())
+                            _kms.update(SCORES, t, _cache_row.get("capture_usd_day"),
+                                        _cache_row.get("y_ref"), now=now.timestamp())
                 except Exception:
                     pass
 
