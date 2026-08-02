@@ -1419,8 +1419,19 @@ def select_footprint(progs, now):
         # down for the cycle). Cache warms over 2-3 cycles instead of 1; nothing else starves.
         _budget = min(FOOTPRINT_TOP * 4, max(40, READ_BUDGET_PER_CYCLE // 2))
         for _ri, r in enumerate(rows):
-            if len(_kept) >= FOOTPRINT_TOP * 2 or _checked >= _budget:
-                _kept.extend(rows[_ri:])               # tail unchecked -> run_once belt handles it
+            # D1 ROOT FIX (selection review 2026-08-01; operator-named Option C
+            # 2026-08-02): the old `len(_kept) >= FOOTPRINT_TOP*2` early stop made the
+            # read budget inert once the cache held ~80 head rows — every cycle appended
+            # ~3,300 permanently-unchecked rows, the round-robin drew most of its 40
+            # picks from them, and the belt killed ~28 (footprint p50 12/40 in
+            # 2,277/2,277 cycles). Now the scan continues through the WHOLE list: cached
+            # clocks filter exactly at zero cost, paid reads stay budget-bounded, and
+            # only the genuinely-unpriceable remainder is kept fail-open (belt = second
+            # check), COUNTED so telemetry shows it shrinking to zero as the persistent
+            # cache covers the universe.
+            if _checked >= _budget:
+                drops["close_unchecked_tail"] = len(rows) - _ri
+                _kept.extend(rows[_ri:])               # cache still warming -> fail-open
                 break
             _t3 = r["ticker"]
             _ct3 = _close_cache_get(_t3)
