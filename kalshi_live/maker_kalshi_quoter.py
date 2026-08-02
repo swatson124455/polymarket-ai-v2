@@ -1823,11 +1823,18 @@ def _prospective_capture(m, yl, nl, best_y, best_n, target):
 # runs at all.
 
 def _sweep_ages():
-    """{ticker: last-observed epoch} snapshot for the sweeper's oldest-first queue."""
-    import kalshi_market_scores as _kms
+    """{ticker: last-MEASURED epoch} snapshot for the sweeper's oldest-first queue.
+    Measurement times only (ts/pts) — attempt stamps (ats, D9) must NOT push a market the
+    quoter merely TRIED to measure to the back of the sweep queue: the sweeper exists to
+    measure exactly what the quoter couldn't (D9 review fix #2, 2026-08-02)."""
     with SCORES_LOCK:
-        return {t: a for t, r in SCORES.items()
-                if (a := _kms._obs_ts(r)) is not None}
+        out = {}
+        for t, r in SCORES.items():
+            ts, pts = r.get("ts"), r.get("pts")
+            if ts is None and pts is None:
+                continue
+            out[t] = max(float(ts or 0.0), float(pts or 0.0))
+        return out
 
 
 def _sweep_store(ticker, pcap, ref_yes):
@@ -3620,6 +3627,17 @@ def run_once():
                         desired[t] = [o for o in desired[t] if o.get("reason") == "unwind"]
                         if not desired[t]:
                             desired.pop(t, None)
+                if SCORE_RANK and m.get("explore"):
+                    # D9 review fix #1 (2026-08-02): a fetch TRY is an attempt. Without this
+                    # stamp a dead ticker (404 mid-window, the sweeper's documented livelock
+                    # case) stays never-attempted forever, pins the front of the sweep queue,
+                    # and re-wedges the explore quota through the fetch-fail path.
+                    try:
+                        import kalshi_market_scores as _kms
+                        with SCORES_LOCK:
+                            _kms.touch_attempt(SCORES, t, now=now.timestamp())
+                    except Exception:
+                        _SILENT["explore_stamp_fail"] += 1
                 fetch_failed += 1
                 continue
             # book refs for the ladder escape hatch below (cheap re-parse of small lists)
@@ -3678,6 +3696,17 @@ def run_once():
                 q = _kept9
             if q:
                 desired[t] = q
+            # D9 (operator-named 2026-08-02): stamp every explore ATTEMPT — priced, gated,
+            # or stripped — so the full-sweep frontier advances. Deliberately OUTSIDE the
+            # MKT_TELEMETRY block (D9 review fix #3): frontier progress must not depend on
+            # telemetry config or telemetry write health. Attempt != measurement (D4).
+            if SCORE_RANK and m.get("explore"):
+                try:
+                    import kalshi_market_scores as _kms
+                    with SCORES_LOCK:
+                        _kms.touch_attempt(SCORES, t, now=now.timestamp())
+                except Exception:
+                    _SILENT["explore_stamp_fail"] += 1
             # PER-MARKET REWARD TELEMETRY — observation only, and deliberately the LAST thing in the
             # loop body: it reads state, writes one line, and can never alter `desired`. Wrapped so a
             # telemetry fault (bad row, full disk) can never break a live trading cycle.
@@ -3699,13 +3728,6 @@ def run_once():
                     # quota for 30 min on a measurement that never happened (69.3% of all
                     # timestamped rows were these fake zeros). Ungated rows stay unknown/
                     # stale in the cache and remain explore-eligible, as documented.
-                    # D9 (operator-named 2026-08-02): stamp every explore ATTEMPT — priced or
-                    # not — so the full-sweep frontier advances past gated/unpriceable
-                    # markets instead of wedging on them. Attempt != measurement (D4).
-                    if SCORE_RANK and m.get("explore"):
-                        import kalshi_market_scores as _kms
-                        with SCORES_LOCK:
-                            _kms.touch_attempt(SCORES, t, now=now.timestamp())
                     # blind review 2026-08-01 (lens A #4): "q non-empty" was half the D4 rule —
                     # a market STRIPPED to unwind-only (loss governor / incumbent gate /
                     # holding_exit_only) still folded a halved capture as if measured. Fold
@@ -4276,7 +4298,11 @@ def run_once():
                     _snap = {t: dict(r) for t, r in SCORES.items()}
                 # everything below runs on the consistent snapshot, lock released
                 _kms.save(SCORE_PATH, _snap)
-                plan["scored_markets"] = len(_snap)
+                # measurement-bearing rows only (D9 review fix #5): attempt-only rows would
+                # inflate this gauge toward universe size regardless of measurement progress
+                plan["scored_markets"] = sum(
+                    1 for _r8 in _snap.values()
+                    if _r8.get("ts") is not None or _r8.get("pts") is not None)
                 # FRESHNESS GAUGES (root-fix plan Phase 4; SPLIT per blind-review 2026-07-31:
                 # the live rank consumes ONLY actual measurements (ts), so score_age_* must
                 # not be pacified by sweeper model observations (pts) — those get their own

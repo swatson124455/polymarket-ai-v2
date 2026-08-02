@@ -81,12 +81,51 @@ class TestTouchAttempt:
 
 
 class TestQuoterWiring:
-    def test_attempt_stamp_fires_for_explore_markets_priced_or_not(self):
+    def test_attempt_stamp_decoupled_from_telemetry(self):
+        # D9 review fix #3: frontier progress must not depend on MKT_TELEMETRY or on
+        # telemetry write health — the main stamp sits BEFORE the telemetry block.
         src = inspect.getsource(q)
-        i = src.index("_kms.touch_attempt(SCORES, t, now=now.timestamp())")
-        window = src[i - 500:i]
-        assert 'if SCORE_RANK and m.get("explore"):' in window
-        # and it sits BEFORE the accumulating-quote fold guard, not inside it
-        after = src[i:i + 600]
-        assert 'any(_o7.get("reason") != "unwind"' in after, \
-            "stamp must be unconditional on pricing; the fold guard comes after"
+        i = src.rindex("_kms.touch_attempt(SCORES, t, now=now.timestamp())")
+        assert 'if SCORE_RANK and m.get("explore"):' in src[i - 600:i]
+        assert "if MKT_TELEMETRY:" in src[i:i + 800], \
+            "stamp precedes the telemetry block, not inside it"
+
+    def test_fetch_fail_also_stamps(self):
+        # D9 review fix #1: a fetch TRY is an attempt — dead tickers (404 mid-window) must
+        # not pin the front of the sweep queue through the fetch-fail path.
+        src = inspect.getsource(q)
+        first = src.index("_kms.touch_attempt(SCORES, t, now=now.timestamp())")
+        last = src.rindex("_kms.touch_attempt(SCORES, t, now=now.timestamp())")
+        assert first != last, "both the fetch-fail path and the main loop stamp attempts"
+        assert "fetch_failed += 1" in src[first:first + 700]
+
+    def test_sweep_ages_excludes_attempt_stamps(self):
+        # D9 review fix #2: the sweeper measures what the quoter COULDN'T — an attempt
+        # stamp must not push a market to the back of the sweep queue.
+        saved = dict(q.SCORES)
+        try:
+            q.SCORES.clear()
+            q.SCORES.update({"KXM-1": {"ts": T0},
+                             "KXP-1": {"pts": T0 + 5},
+                             "KXA-1": {"ats": T0 + 99}})
+            ages = q._sweep_ages()
+            assert ages == {"KXM-1": T0, "KXP-1": T0 + 5}, \
+                "attempt-only rows are invisible to the sweep queue"
+        finally:
+            q.SCORES.clear()
+            q.SCORES.update(saved)
+
+    def test_scored_markets_gauge_counts_measurements_only(self):
+        # D9 review fix #5
+        src = inspect.getsource(q)
+        i = src.index('plan["scored_markets"]')
+        assert '_r8.get("ts") is not None or _r8.get("pts") is not None' in src[i:i + 300]
+
+
+class TestEvictPreference:
+    def test_row_cap_kills_attempt_only_rows_before_measurements(self):
+        # D9 review fix #4: a fresh ats must never evict an older measured row
+        markets = {"KXOLD-MEAS": {"ts": T0 - 1000, "capture": 5.0},
+                   "KXNEW-ATS": {"ats": T0 + 500}}
+        kms.evict(markets, now=T0 + 600, max_age_s=kms.EVICT_AGE_S, max_rows=1)
+        assert "KXOLD-MEAS" in markets and "KXNEW-ATS" not in markets

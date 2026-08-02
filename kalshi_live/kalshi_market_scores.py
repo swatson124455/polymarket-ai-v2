@@ -105,7 +105,13 @@ def evict(markets, now=None, max_age_s=EVICT_AGE_S, max_rows=EVICT_MAX_ROWS):
     for t in dead:
         del markets[t]
     if len(markets) > max_rows:
-        oldest = sorted(markets, key=lambda t: _obs_ts(markets[t]) or 0.0)
+        # D9 review fix #4 (2026-08-02): under the hard row cap, contentless attempt-only
+        # rows must die BEFORE rows carrying real measurements — a fresh ats must never
+        # evict an older measured row.
+        oldest = sorted(markets,
+                        key=lambda t: (1 if (markets[t].get("ts") is not None
+                                             or markets[t].get("pts") is not None) else 0,
+                                       _obs_ts(markets[t]) or 0.0))
         for t in oldest[:len(markets) - max_rows]:
             del markets[t]
             dead.append(t)
