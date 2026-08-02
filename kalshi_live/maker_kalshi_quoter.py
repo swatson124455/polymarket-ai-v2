@@ -3699,6 +3699,13 @@ def run_once():
                     # quota for 30 min on a measurement that never happened (69.3% of all
                     # timestamped rows were these fake zeros). Ungated rows stay unknown/
                     # stale in the cache and remain explore-eligible, as documented.
+                    # D9 (operator-named 2026-08-02): stamp every explore ATTEMPT — priced or
+                    # not — so the full-sweep frontier advances past gated/unpriceable
+                    # markets instead of wedging on them. Attempt != measurement (D4).
+                    if SCORE_RANK and m.get("explore"):
+                        import kalshi_market_scores as _kms
+                        with SCORES_LOCK:
+                            _kms.touch_attempt(SCORES, t, now=now.timestamp())
                     # blind review 2026-08-01 (lens A #4): "q non-empty" was half the D4 rule —
                     # a market STRIPPED to unwind-only (loss governor / incumbent gate /
                     # holding_exit_only) still folded a halved capture as if measured. Fold

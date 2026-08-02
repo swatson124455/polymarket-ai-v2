@@ -86,13 +86,16 @@ EVICT_MAX_ROWS = 8192
 
 
 def _obs_ts(r):
-    """A row's LAST OBSERVATION time — actual (ts) or prospective (pts), whichever is newer.
-    Sweeper-only rows have pts but no ts; evicting them on the missing ts would delete every
-    sweep measurement each cycle (sweeper root-fix 2026-07-30). None when never observed."""
-    ts, pts = r.get("ts"), r.get("pts")
-    if ts is None and pts is None:
+    """A row's LAST OBSERVATION time — actual (ts), prospective (pts), or attempt (ats),
+    whichever is newer. Sweeper-only rows have pts but no ts; evicting them on the missing ts
+    would delete every sweep measurement each cycle (sweeper root-fix 2026-07-30). ats joins
+    the max (D9 full-sweep, 2026-08-02): an attempted-but-unpriceable market's row holds ONLY
+    the attempt stamp, and evicting it would erase the sweep frontier's memory every cycle.
+    None when never observed."""
+    ts, pts, ats = r.get("ts"), r.get("pts"), r.get("ats")
+    if ts is None and pts is None and ats is None:
         return None
-    return max(float(ts or 0.0), float(pts or 0.0))
+    return max(float(ts or 0.0), float(pts or 0.0), float(ats or 0.0))
 
 
 def evict(markets, now=None, max_age_s=EVICT_AGE_S, max_rows=EVICT_MAX_ROWS):
@@ -136,6 +139,20 @@ def update(markets, ticker, capture_usd_day, ref_yes, now=None):
     row["capture"] = float(capture_usd_day or 0.0)
     row["ts"] = now
     row["n"] = int(row.get("n", 0)) + 1
+    markets[ticker] = row
+    return row
+
+
+def touch_attempt(markets, ticker, now=None):
+    """Stamp that exploration ATTEMPTED this market this cycle — regardless of whether a
+    price was ever emitted (D9 full-sweep, operator-named 2026-08-02: 'explore first full
+    data set'). Distinct from update(): a gated/unpriceable market must NOT be recorded as
+    a capture measurement (that is the D4 defect), but it must still advance the explore
+    frontier — otherwise permanently-gated markets (entry-band longshots) wedge the sweep
+    and the same N markets absorb every explore slot forever. Pure dict mutation, no I/O."""
+    now = now if now is not None else _now()
+    row = markets.get(ticker) or {}
+    row["ats"] = float(now)
     markets[ticker] = row
     return row
 
@@ -209,7 +226,17 @@ def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,
     # all about them), then the oldest stale ones — a market whose book has had time to change is
     # a genuine re-look, not a re-run. Restricting this to never-seen would mean a market is judged
     # once and then effectively retired.
-    unseen = [t for t in scored if t[1] == "unknown"]
+    # D9 (selection review 2026-08-01, operator-named 2026-08-02 'explore first full data
+    # set'): unknowns were explored in SCORE order — and an unknown's score is pool x bonus,
+    # so the queue was highest-pool-first while the venue mints fresh high-pool unknowns
+    # daily: the low-pool tail starved (12.7% of 6,862 tracked rows ever measured). Order
+    # unknowns least-recently-ATTEMPTED first (never-attempted lead, deterministic ticker
+    # tie-break) — a full sweep whose frontier advances even past unpriceable markets,
+    # because touch_attempt() stamps the try itself.
+    unseen = sorted((t for t in scored if t[1] == "unknown"),
+                    key=lambda t: (float((markets.get(t[2].get(ticker_key)) or {})
+                                         .get("ats") or 0.0),
+                                   str(t[2].get(ticker_key))))
     stale = sorted((t for t in scored if t[1] == "stale"),
                    key=lambda t: float((markets.get(t[2].get(ticker_key)) or {}).get("ts") or 0.0))
     pool_of_candidates = unseen + stale
