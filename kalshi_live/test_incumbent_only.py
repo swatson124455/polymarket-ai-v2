@@ -115,5 +115,6 @@ def test_ladder_escape_hatch_is_incumbent_gated():
     src = inspect.getsource(q)
     i = src.index('"count": cross, "reason": "ladder"')
     window = src[i - 2200:i]
-    assert "_incumbent_only is not None and t2 not in _incumbent_only" in window
+    # exact guard line, `if ` included — a disabled guard (`if False and ...`) must not pass
+    assert "if _incumbent_only is not None and t2 not in _incumbent_only:" in window
     assert window.count("ladder_cross_gated") >= 2   # both gates count into the same key

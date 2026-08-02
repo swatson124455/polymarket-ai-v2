@@ -122,3 +122,17 @@ def test_all_four_reviewed_knobs_are_covered():
     for k in ("SWEEP_VETO_TICKS", "EXPLORE_PROBE_CT", "SERIES_MAX_USD",
               "FILLCOST_REFRESH_S"):
         assert k in src, k
+
+
+def test_d5_reclamp_is_isolated_in_its_own_guard():
+    # Blind review 2026-08-01 (lens A #5 / B #4): a fault in the telemetry-grade sibling
+    # re-clamp must land in its OWN counter, never the governor fail-streak (3 strikes of
+    # which flips the whole book reduce-only). Pin the isolation: the reclamp body sits in
+    # a nested try whose except bumps its own named counter, and the ticker split is
+    # str()-hardened. (A corrupt mixed-type mkt_out entry still breaks the governor at the
+    # PRE-EXISTING sorted() call — that path predates this fix and is out of its scope.)
+    src = inspect.getsource(q)
+    i = src.index('_SILENT["series_probe_reclamp_fail"] += 1')
+    window = src[i - 900:i]
+    assert "except Exception:" in window
+    assert "str(_t7).split" in window, "ticker split must be str()-hardened"
