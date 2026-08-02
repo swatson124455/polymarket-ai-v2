@@ -2951,6 +2951,19 @@ def run_once():
             _release_lock(_lock)
             return 0
         print("STOP sentinel present; maker-flattening (cancel quotes + rest offsets) + exiting")
+        # READ-BUDGET RESET (root fix 2026-08-02). The normal reset lives at the bottom of this
+        # block (search `_reads[0] = 0`), but the STOP branch RETURNS before reaching it, so in
+        # the long-lived WS daemon `_reads[0]` is MONOTONE across STOP cycles: every flatten
+        # spends from a budget that never refills. On exhaustion public_get raises
+        # "read budget exhausted", every book read in _flatten_all fails, and the bail paths
+        # cancel resting exits they can no longer replace — i.e. a halted bot ends up holding
+        # inventory with NO working exit, which is the opposite of what STOP is for.
+        # Each flatten must start with a full budget; that is what this line guarantees.
+        # Placed before the dry_run guard so the pacing/flatten path is covered in every mode.
+        # MEASURED 2026-08-02 (journal, window 10:26:00Z->23:2xZ): 27 flatten runs, 1,389 paced
+        # skips, 0 exhaustions — real but not yet triggered in this halt window. The paced-skip
+        # branch above returns without spending reads, so only flatten runs accumulate.
+        _reads[0] = 0
         if client.mode != "dry_run":
             try:
                 _sfp = os.path.join(DATA_DIR, "stopflat.last")
