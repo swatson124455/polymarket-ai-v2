@@ -44,14 +44,17 @@ class TestD10DropNotSelected:
         assert "drop_not_selected" not in q.FP_DROPS, \
             "no drop -> no counter (plan rows stay lean, matching every other drop_*)"
 
-    def test_per_series_cap_overflow_is_also_counted(self, monkeypatch):
-        # exhausted-series exit (progressed=False) is the same silent stage — count it too
+    def test_per_series_cap_overflow_gets_its_own_label(self, monkeypatch):
+        # exhausted-series exit (progressed=False, slots still empty) is the same silent
+        # stage but a DIFFERENT cause — blind review lens A #6: label it separately so the
+        # funnel analysis cannot misattribute per-series-cap drops as slot exhaustion.
         _base_env(monkeypatch, top=10)
         monkeypatch.setattr(q, "PER_SERIES_CAP", 1)
         progs = [_prog("KXAAA-01"), _prog("KXAAA-02"), _prog("KXAAA-03")]
         picked = q.select_footprint(progs, q.utcnow())
         assert len(picked) == 1
-        assert q.FP_DROPS["drop_not_selected"] == 2
+        assert q.FP_DROPS["drop_series_capped"] == 2
+        assert "drop_not_selected" not in q.FP_DROPS
 
     def test_counter_reaches_the_plan_namespace(self, monkeypatch):
         # FP_DROPS is plan.update()'d verbatim in run_once (:2845) — key shape is the contract

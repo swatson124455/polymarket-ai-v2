@@ -74,6 +74,31 @@ class TestShadowCooldownSemantics:
                       now=NOW + datetime.timedelta(seconds=120))
         assert st2["anyloss_shadow"]["floors"]["0.25"]["trips"] == 2
 
+    def test_retrip_bleed_is_incremental_not_cumulative(self, monkeypatch):
+        # Blind review 2026-08-01 (lens A #3): _d is cumulative-since-baseline, so a re-trip
+        # must add only the increment — the old code reported -$0.90 for a market that bled
+        # -$0.60 total. The bias overstated bleed, which would flatter enabling the feature.
+        monkeypatch.setattr(q, "REENTRY_COOLDOWN_S", 60.0)
+        st, _ = _run(realized={"T-A": -1.0}, base={"T-A": 0.0})
+        st2, _ = _run(st=st, realized={"T-A": -1.5}, base={"T-A": 0.0},
+                      now=NOW + datetime.timedelta(seconds=120))
+        rec = st2["anyloss_shadow"]["floors"]["0.25"]
+        assert rec["bled_usd"] == -1.5, "total day bleed, never re-added"
+        # partial recovery between trips shrinks the number back toward truth
+        st3, _ = _run(st=st2, realized={"T-A": -0.6}, base={"T-A": 0.0},
+                      now=NOW + datetime.timedelta(seconds=300))
+        assert st3["anyloss_shadow"]["floors"]["0.25"]["bled_usd"] == -0.6
+
+    def test_call_site_passes_empty_cooling_when_cooldown_off(self):
+        # Blind review 2026-08-01 (lens B #3): with REENTRY_COOLDOWN_S=0 the real pruning
+        # never runs, so the raw state key holds stale stamps — the shadow must see an
+        # empty cooling set in that config, not phantom brakes.
+        import inspect
+        src = inspect.getsource(q)
+        i = src.rindex("_anyloss_shadow(st,")
+        window = src[i:i + 800]
+        assert "if REENTRY_COOLDOWN_S > 0 else set()" in window
+
     def test_unparseable_stamp_simply_expires(self):
         st = {"anyloss_shadow": {"day": DAY, "floors": {
             "0.25": {"active": {"T-A": "garbage"}, "trips": 1, "new": 1,
@@ -136,6 +161,6 @@ class TestCallSiteWiring:
         import inspect
         src = inspect.getsource(q)
         i = src.rindex("_anyloss_shadow(st,")         # the call site, not the def
-        window = src[i - 600:i + 600]
+        window = src[i - 1100:i + 1100]
         assert 'anyloss_shadow_fail' in window
         assert "MKT_DAY_LOSS_EXITONLY_USD > 0" in window

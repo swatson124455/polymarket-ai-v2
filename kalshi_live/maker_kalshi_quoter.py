@@ -672,7 +672,16 @@ def _anyloss_shadow(st, realized, base, tripped, out, cooling, now, day, plan):
                 rec["redundant"] = int(rec.get("redundant", 0)) + 1
             else:
                 rec["new"] = int(rec.get("new", 0)) + 1
-                rec["bled_usd"] = round(float(rec.get("bled_usd", 0.0)) + _d, 4)
+                # blind review 2026-08-01 (lens A #3): _d is CUMULATIVE-since-baseline, so a
+                # re-trip after cooldown expiry must add only the increment since the last
+                # counted trip — adding _d again double-counted bleed (overstated, the exact
+                # bias that would flatter enabling the feature). counted{} is per-day like
+                # the rest of rec and shares the ticker cap.
+                _cnt = rec.setdefault("counted", {})
+                _prev = float(_cnt.get(_t, 0.0))
+                if _t in _cnt or len(_cnt) < ANYLOSS_SHADOW_MAX_TICKERS:
+                    _cnt[_t] = _d
+                rec["bled_usd"] = round(float(rec.get("bled_usd", 0.0)) + (_d - _prev), 4)
                 if (_t not in rec["tickers"]
                         and len(rec["tickers"]) < ANYLOSS_SHADOW_MAX_TICKERS):
                     rec["tickers"].append(_t)
@@ -1471,7 +1480,12 @@ def select_footprint(progs, now):
             # D10 (selection review 2026-08-01): the funnel's largest drop stage had no
             # counter — rows past the last slot vanished with zero reason codes, leaving a
             # viable market indistinguishable in telemetry from one never discovered.
-            drops["drop_not_selected"] = len(rows) - len(picked)
+            # Blind review lens A #6: label the cause — slots genuinely full vs the
+            # round-robin exhausting under PER_SERIES_CAP with slots still empty.
+            if len(picked) >= FOOTPRINT_TOP:
+                drops["drop_not_selected"] = len(rows) - len(picked)
+            else:
+                drops["drop_series_capped"] = len(rows) - len(picked)
         _caprank_telemetry(rows, picked, now)   # observation only; no-op unless flag ON
         return picked
     # ---- PIVOT: density-weighted, over-selected, near-money-ordered candidate pool ----
@@ -2009,16 +2023,22 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     # book got NO exit order at all, which is precisely the book a losing position ends on.
     # Flat -> still nothing. Holding -> rest the reducing side and stop.
     if best_y is None or best_n is None:            # one-sided: cannot JOIN, can still EXIT
+        if abs(inv) >= INV_TOLERANCE:
+            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
+        # counter fires ONLY on the priceless [] path (blind review 2026-08-01 lens A #8:
+        # counting the reducing-quote branch overstated "priceless exits")
         if stats is not None:
             stats["gate_one_sided_book"] = stats.get("gate_one_sided_book", 0) + 1
-        return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve) if abs(inv) >= INV_TOLERANCE else []
+        return []
     if not (_ok_entry_price(best_y) and _ok_entry_price(best_n)):
         # the KXMAMDANIEO mechanism: best_y + best_n < 1 means a YES ref below MIN_PRICE
         # forces NO above MAX_PRICE — both sides fail together, excluding the whole
-        # longshot category. Now it excludes it OUT LOUD.
+        # longshot category. Now it excludes it OUT LOUD (priceless [] path only).
+        if abs(inv) >= INV_TOLERANCE:
+            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
         if stats is not None:
             stats["gate_entry_band"] = stats.get("gate_entry_band", 0) + 1
-        return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve) if abs(inv) >= INV_TOLERANCE else []
+        return []
     # external depth = public depth minus our own resting order on that side
     ext_y = max(0.0, sum(s for _, s in yl) - float(own.get("yes", 0)))
     ext_n = max(0.0, sum(s for _, s in nl) - float(own.get("no", 0)))
@@ -3122,13 +3142,20 @@ def run_once():
                     # Re-apply the clamp here, after this cycle's bans are written and
                     # before the quote loop reads footprint. Same rules as L3: unwind
                     # sizing is exempt via the probe clamp's reason=='unwind' carve-out.
+                    # Own guard (blind review 2026-08-01, lens A #5 / lens B #4): this is a
+                    # telemetry-grade clamp inside the governor try — without isolation a
+                    # corrupt mkt_out entry (non-string, hand-edited state) would bump
+                    # gov_fail_streak and flip the whole book reduce-only after 3 cycles.
                     if EXPLORE_PROBE_CT > 0:
-                        _out_series5 = {_t7.split("-")[0] for _t7 in _out4}
-                        for _r7 in footprint:
-                            if (not _r7.get("explore")
-                                    and _r7.get("ticker", "").split("-")[0] in _out_series5):
-                                _r7["explore"] = True
-                                plan["series_probe"] = plan.get("series_probe", 0) + 1
+                        try:
+                            _out_series5 = {str(_t7).split("-")[0] for _t7 in _out4}
+                            for _r7 in footprint:
+                                if (not _r7.get("explore")
+                                        and _r7.get("ticker", "").split("-")[0] in _out_series5):
+                                    _r7["explore"] = True
+                                    plan["series_probe"] = plan.get("series_probe", 0) + 1
+                        except Exception:
+                            _SILENT["series_probe_reclamp_fail"] += 1
                     plan["loss_exitonly"] = len(_tripped)
                     if _out4:
                         plan["mkt_out"] = len(_out4)
@@ -3193,7 +3220,11 @@ def run_once():
                                     st.get("mkt_realized_base") or {},
                                     set(st.get("mkt_loss_tripped") or []),
                                     set(st.get("mkt_out") or []),
-                                    set(st.get("reentry_cool") or {}),
+                                    # cooldown OFF -> nothing is "cooling": the raw state key
+                                    # is unpruned in that config and would misclassify trips
+                                    # as redundant (blind review 2026-08-01 lens B #3)
+                                    (set(st.get("reentry_cool") or {})
+                                     if REENTRY_COOLDOWN_S > 0 else set()),
                                     now, _day_mkt, plan)
                 except Exception:
                     _SILENT["anyloss_shadow_fail"] += 1
@@ -3668,7 +3699,12 @@ def run_once():
                     # quota for 30 min on a measurement that never happened (69.3% of all
                     # timestamped rows were these fake zeros). Ungated rows stay unknown/
                     # stale in the cache and remain explore-eligible, as documented.
-                    if SCORE_RANK and q:
+                    # blind review 2026-08-01 (lens A #4): "q non-empty" was half the D4 rule —
+                    # a market STRIPPED to unwind-only (loss governor / incumbent gate /
+                    # holding_exit_only) still folded a halved capture as if measured. Fold
+                    # only when at least one ACCUMULATING quote rested: that is the only case
+                    # where capture was genuinely attempted.
+                    if SCORE_RANK and any(_o7.get("reason") != "unwind" for _o7 in q):
                         _cache_row = _row
                         if _q_fullsize is not None:
                             # D8: the probe rests EXPLORE_PROBE_CT contracts, but the cache
@@ -3814,6 +3850,14 @@ def run_once():
             # exit-only set — so a loss-tripped or cooling t2 could be re-entered through it.
             # Gate it like any other opening order, and COUNT the gate so it is never silent.
             if _exit_only_all or t2 in _exit_only_mkts:
+                plan["ladder_cross_gated"] = plan.get("ladder_cross_gated", 0) + 1
+                continue
+            # INCUMBENT-ONLY (blind review 2026-08-01, lens A #1 / lens B I5): this hatch is
+            # an OPENING order and ran after the quote-loop incumbent strip — the one path
+            # that could open a new market through the gate. Latent today (unwind pricing
+            # rests at/above the touch, so the sub-touch trigger is unsatisfiable), but the
+            # invariant must not depend on pricing internals. Same shape as F6b above.
+            if _incumbent_only is not None and t2 not in _incumbent_only:
                 plan["ladder_cross_gated"] = plan.get("ladder_cross_gated", 0) + 1
                 continue
             uws[0]["count"] = keep                      # keep+cross <= c0 <= |naked|: flip-safe
@@ -5096,9 +5140,9 @@ def _strike_of(ticker, stats=None):
         # outcome (-HELLO, -LAL) — unpairable BY DESIGN, ~250/day, and it was drowning the
         # loud warning that exists for STRUCTURAL failures (a digit-bearing tail that still
         # won't parse = shape change = pairing gone dark). Two counters, one warning.
-        if not any(c.isdigit() for c in tail):
+        if tail and not any(c.isdigit() for c in tail):
             return _fail("strike_categorical")
-        return _fail()
+        return _fail()      # digit-bearing OR empty tail = structural, stays loud
 
 
 def ladder_pairing(held_by, stats=None):

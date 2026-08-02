@@ -55,8 +55,11 @@ class TestD8FullSizeRecompute:
 
 class TestD4NoFakeZeros:
     def test_cache_fold_requires_a_quoting_attempt(self):
+        # blind review lens A #4 tightened the guard from "q non-empty" to "at least one
+        # ACCUMULATING quote" — a market stripped to unwind-only is our decision, not a
+        # capture measurement.
         src = inspect.getsource(q)
-        i = src.index("if SCORE_RANK and q:")
+        i = src.index('if SCORE_RANK and any(_o7.get("reason") != "unwind" for _o7 in q):')
         # the qstats->gates diff and the row write must come BEFORE this guard (row always
         # written; only the cache fold is conditional)
         pre = src[:i]

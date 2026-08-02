@@ -40,10 +40,12 @@ class TestGateCounters:
         quotes, stats = _run(nl=[])
         assert quotes == [] and stats.get("gate_one_sided_book") == 1
 
-    def test_one_sided_book_holding_still_counts_but_exits(self):
-        # long NO -> the reducing quote rests on the YES side, which is the side present
+    def test_one_sided_book_holding_exits_without_counting(self):
+        # long NO -> the reducing quote rests on the YES side, which is the side present.
+        # Blind review lens A #8: the counter must fire ONLY on the priceless [] path —
+        # a row that emitted a reducing quote is not a priceless exit.
         quotes, stats = _run(nl=[], inv=-10.0)
-        assert stats.get("gate_one_sided_book") == 1
+        assert "gate_one_sided_book" not in stats
         assert quotes, "held inventory must still get its reducing exit"
         assert all(o.get("reason") == "unwind" for o in quotes)
 

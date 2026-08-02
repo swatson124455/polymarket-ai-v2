@@ -1548,6 +1548,10 @@ def test_strike_parse_failure_is_counted_not_silent():
     # STRUCTURAL failure (digit-bearing tail that still fails) keeps the loud counter
     assert q._strike_of("KXBAD-26JUL23-4..0.5", stats2) is None
     assert stats2.get("strike_parse_failed") == 1
+    # blind review lens A #7: an EMPTY tail is structural too, never silent-categorical
+    stats3 = {}
+    assert q._strike_of("KXBAD-26JUL23-", stats3) is None
+    assert stats3.get("strike_parse_failed") == 1 and "strike_categorical" not in stats3
 
 
 # ---- Q3: the daily-loss quota must measure an UNINFLATABLE drawdown ----

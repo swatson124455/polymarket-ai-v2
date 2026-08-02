@@ -104,3 +104,16 @@ def test_off_clears_captured_set(monkeypatch, tmp_path):
 def test_knob_is_hot_reloadable():
     src = inspect.getsource(q._refresh_safety_knobs)
     assert '"KALSHI_INCUMBENT_ONLY": ("INCUMBENT_ONLY", int)' in src
+
+
+def test_ladder_escape_hatch_is_incumbent_gated():
+    # Blind review 2026-08-01 (lens A #1 / lens B I5): the ladder hatch OPENS a position on
+    # an adjacent strike AFTER the quote-loop strip — the one path that could open a new
+    # market through the gate (latent today only because unwind pricing rests at/above the
+    # touch). The invariant must not depend on pricing internals: the hatch carries the
+    # same incumbent guard as the F6b exit-only gate beside it.
+    src = inspect.getsource(q)
+    i = src.index('"count": cross, "reason": "ladder"')
+    window = src[i - 2200:i]
+    assert "_incumbent_only is not None and t2 not in _incumbent_only" in window
+    assert window.count("ladder_cross_gated") >= 2   # both gates count into the same key
