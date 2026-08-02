@@ -1183,6 +1183,27 @@ CLOSE_CACHE_NEG_TTL_S = 3600.0
 CLOSE_CACHE_MAX = 8192
 
 
+# HIGH-ACTIVITY FIRST GATE (operator-named 2026-08-02, coarse v1 — review later): skip
+# markets whose venue-wide 24h traded volume exceeds MAX_VOL24H_CT contracts. Crowded/hot
+# markets are where adverse fills live and where our share of the reward pool is smallest;
+# the ideology targets low-to-moderate activity. Volume piggybacks on the close-time read
+# (zero extra reads on a miss; TTL'd so activity spikes are seen within VOL24_TTL_S).
+MAX_VOL24H_CT = _envf("KALSHI_MAX_VOL24H_CT", 0.0)      # 0 = gate OFF (provable no-op)
+VOL24_TTL_S = _envf("KALSHI_VOL24_TTL_S", 21600.0)      # re-read activity every 6h
+_VOL24_CACHE = {}                                        # {ticker: (contracts_24h, mono)}
+
+
+def _vol24_cache_get(ticker):
+    v = _VOL24_CACHE.get(ticker)
+    if v is None:
+        return None
+    vol, stamp = v
+    if (time.monotonic() - stamp) > VOL24_TTL_S:
+        _VOL24_CACHE.pop(ticker, None)
+        return None
+    return vol
+
+
 def _close_cache_get(ticker):
     """close_time str, "" (recent negative), or None (absent/expired -> caller re-fetches)."""
     v = _CLOSE_TIME_CACHE.get(ticker)
@@ -1453,15 +1474,32 @@ def select_footprint(progs, now):
                 break
             _t3 = r["ticker"]
             _ct3 = _close_cache_get(_t3)
-            if _ct3 is None:
+            _v3 = _vol24_cache_get(_t3)
+            if _ct3 is None or (_v3 is None and MAX_VOL24H_CT > 0):
                 _checked += 1
                 try:
-                    _ct3 = public_get(f"/trade-api/v2/markets/{_t3}"
-                                      ).get("market", {}).get("close_time")
+                    _mkt3 = public_get(f"/trade-api/v2/markets/{_t3}").get("market", {})
+                    _ct3 = _mkt3.get("close_time")
                     _close_cache_put(_t3, _ct3)
+                    try:
+                        _v3 = float(_mkt3.get("volume_24h_fp") or 0.0)
+                    except (TypeError, ValueError):
+                        _v3 = 0.0
+                    _VOL24_CACHE[_t3] = (_v3, time.monotonic())
                 except Exception:
                     _kept.append(r)                    # unreadable clock -> keep (fail-open)
                     continue
+            # HIGH-ACTIVITY FIRST GATE (operator-named 2026-08-02: "avoid any market on
+            # high activity on the site for now as the 1st gate. review later"). Activity
+            # = venue volume_24h_fp contracts, same payload the close read already pays,
+            # cached VOL24_TTL_S. Measured basis for the live threshold (random n=160 of
+            # 5,448 active liquidity programs, API 2026-08-02): p50=0, p75~107, p90~995,
+            # p99~27,568 ct/24h -> 1,000 ct ~= the top decile. Fail-open when unknown;
+            # held inventory on a gated market unwinds via the strand path as with every
+            # other selection drop. 0 = gate OFF (test-pinned no-op).
+            if MAX_VOL24H_CT > 0 and _v3 is not None and _v3 > MAX_VOL24H_CT:
+                drops["drop_high_activity"] = drops.get("drop_high_activity", 0) + 1
+                continue
             try:
                 _far3 = bool(_ct3) and parse_iso(_ct3) > now + timedelta(days=MAX_DAYS_TO_CLOSE)
             except Exception:
@@ -2822,7 +2860,8 @@ def _refresh_safety_knobs():
              "KALSHI_PAIR_UNWIND_MIN_EDGE": ("PAIR_UNWIND_MIN_EDGE", float),
              "KALSHI_INCUMBENT_ONLY": ("INCUMBENT_ONLY", int),
              "KALSHI_SELECT_BUDGET": ("SELECT_BUDGET", int),
-             "KALSHI_SELECT_BUDGET_MARGIN": ("SELECT_BUDGET_MARGIN", float)}
+             "KALSHI_SELECT_BUDGET_MARGIN": ("SELECT_BUDGET_MARGIN", float),
+             "KALSHI_MAX_VOL24H_CT": ("MAX_VOL24H_CT", float)}
     # Gov-D9 (1.1 review 2026-07-31): these four LOOK hot-reloadable (they sit in the same
     # env file) but are import-time only — an operator editing them mid-flight got a silent
     # no-op, the exact defect class KALSHI_THROTTLE_SMART hid. Changed-but-not-applied is
