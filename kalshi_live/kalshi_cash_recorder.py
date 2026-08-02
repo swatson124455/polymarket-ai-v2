@@ -29,10 +29,17 @@ THE CONFOUND THIS EXISTS TO RESOLVE  -- OPEN QUESTION, NOT AN ESTABLISHED FACT
   and the remainder in the correct form is deposit-or-reward. Raw orders are stored too, so
   the reservation model can be revised later WITHOUT re-collecting.
 
-CONVENTIONS (both validated against the venue 2026-07-27)
-  fills       ACTION-ONLY, YES-SIGNED; priced on yes_price_dollars. Integrity check:
-              settled net-yes == summed fills on 75/75 settled tickers.
-  settlements payout on NET position only: net = yes_count_fp - no_count_fp;
+CONVENTIONS
+  fills       POSITION-AWARE, delegated to kalshi_attribution_ledger.replay_fills (the canon
+              model, validated there: predicts settlement `revenue` to the cent on 51/51).
+              A fill is an OUTFLOW at the acquired outcome's own price when it OPENS, and an
+              INFLOW at (1 - price) when it OFFSETS opposite inventory (the venue releases the
+              $1 collateral on the closed pair).
+              WAS "ACTION-ONLY, YES-SIGNED; priced on yes_price_dollars" — ROOT-FIXED
+              2026-08-02, see the fills block below. That convention could not express Kalshi
+              cash: the venue prints a NO ACQUISITION as action="sell", so buying NO was booked
+              as selling YES, i.e. cash IN where real collateral went OUT.
+  settlements payout on NET position only, GROSS of fees: net = yes_count_fp - no_count_fp;
               payout = net*v if net>0 else -net*(1-v), where v = value/100.
               The gross "paired pays $1/pair" model is REFUTED (implied a -$1,977 residual).
 
@@ -70,6 +77,11 @@ _load_env()
 
 import maker_kalshi_client as MK
 from maker_kalshi_client import KalshiOrderClient
+# THE cash model, not a copy of it (root fix 2026-08-02). Import-time side effects: none —
+# the module defines constants and functions only, makes no network call and reads no file at
+# import. Deployed alongside this script in the FLAT layout at /opt/pa2-maker-kalshi-live/,
+# which both sys.path entries above cover.
+from kalshi_attribution_ledger import replay_fills
 
 R = MK.API_ROOT
 
@@ -97,10 +109,41 @@ def order_reservation(o):
     return ct * px
 
 
-def fill_cash(f):
-    """ACTION-ONLY, YES-SIGNED. buy -> cash out at yes price; sell -> cash in at yes price."""
-    sign = 1.0 if f.get("action") == "buy" else -1.0
-    return -sign * _f(f.get("count_fp")) * _f(f.get("yes_price_dollars")) - _f(f.get("fee_cost"))
+def cum_fills_cash(fills):
+    """Cumulative cash flow of the whole fill tape, POSITION-AWARE.
+
+    ROOT FIX 2026-08-02 (operator-named; defect found by the A2 blind review). This REPLACES a
+    local `fill_cash(f)` that signed cash off `action` alone. Kalshi prints a NO ACQUISITION as
+    action="sell" (census over the complete tape, API read 2026-08-02T22:42:49Z:
+    {('buy','yes'): 582, ('sell','no'): 651} of 1,233 fills), so buying NO was booked as selling
+    YES — cash IN where real collateral went OUT, and the $1/contract collateral a naked NO
+    posts was never booked at all. The sibling module had already root-fixed exactly this on
+    2026-07-23 and says so verbatim at kalshi_attribution_ledger.py:196-201: "the signature WAS
+    the bug. A position-independent function cannot express Kalshi cash... would silently
+    reproduce the 'flip the sign' model that scored 12x too much cash out." The recorder never
+    got that fix, so it is DELEGATED here rather than reimplemented — one model, one place.
+
+    MEASURED IMPACT over the complete history (n=1,233 fills / 127 settlements, API reads
+    2026-08-02T22:01:01Z and T21:28:21Z; credits $191.67 from credit_history at T20:40:43Z):
+    cumulative fill cash moves -$229.8397 -> -$595.4397, and the reconciliation residual
+    cash - credits - cum_fills - cum_settle moves $190.1000 -> $555.7000 against venue-verified
+    deposits of $565.00 / 7 rows (docs/maker_handoffs/KALSHI_HANDOFF_2026-08-02.md:67) — from
+    $374.90 out to $9.30 out. The remaining $9.30 is NOT explained and stays open.
+    NOT CONFIRMED: the review's characterisation that the gap equals $1 x net-NO contracts
+    exactly. Checked on the full history and it does not hold (that formula predicts $2,465.13
+    against an actual $365.60); it reconciled only on a smaller frozen subset. The mechanism is
+    established by the residual, the per-contract formula is not.
+
+    FEED CONTRACT verified before delegating (same read, n=1,233): `book_side` is present and in
+    {bid,ask} on 1,233/1,233 and `outcome_side` in {yes,no} on 1,233/1,233, so
+    kalshi_attribution_ledger.fill_outcome() — which RAISES on an unverified shape rather than
+    guessing — never raises on this feed; `fill_id` and `created_time` are present on
+    1,233/1,233, so replay_fills' sort key is total and the netting order is deterministic.
+    Direction of the OLD error, for anyone re-reading historical rows: it over-credited
+    cum_fills, which LOWERS unexplained_todate_*, so it UNDERSTATED rewards and implied
+    deposits. It could not manufacture a phantom reward."""
+    events, _positions = replay_fills(fills)
+    return sum(e["cash"] for e in events)
 
 
 MISSING_VALUE_FIELDS = [0]   # audit probe 2026-07-30: settlements lacking `value` — a venue
@@ -174,7 +217,7 @@ def main():
     # never loses money (no incremental cursor state to corrupt).
     fills = c._get_paginated(f"{R}/portfolio/fills", "fills", {})["fills"]
     setts = c._get_paginated(f"{R}/portfolio/settlements", "settlements", {})["settlements"]
-    cum_fills = sum(fill_cash(f) for f in fills)
+    cum_fills = cum_fills_cash(fills)
     cum_settle = sum(settlement_payout(s) for s in setts)
 
     row = {
@@ -190,12 +233,15 @@ def main():
         "portfolio_value_cents": bal.get("portfolio_value"),
         "cum_fills_cash": round(cum_fills, 6),
         "cum_settle_payout": round(cum_settle, 6),
-        # CONVENTION MARKER (blind review 2026-08-02): rows are differenced OFFLINE, and
-        # cum_settle_payout changed meaning mid-series when the settlement fee roll-up was
-        # dropped (net-of-fee -> gross). Without an in-row marker the one-time step is
-        # indistinguishable from real money at the boundary. Bump this string if the
-        # convention ever changes again; pre-marker rows are the "net" era by definition.
+        # CONVENTION MARKERS (2026-08-02): rows are differenced OFFLINE, and BOTH cumulative
+        # columns changed meaning mid-series — cum_settle_payout when the settlement fee
+        # roll-up was dropped (net-of-fee -> gross, +$35.5619 step) and cum_fills_cash when the
+        # position-independent fill model was replaced (-$365.6000 step, measured over the
+        # complete tape). Without in-row markers those one-time steps are indistinguishable
+        # from real money at the boundary. Bump these strings if a convention changes again;
+        # rows written before a marker existed are that column's PRE-fix era by definition.
         "settle_payout_basis": "gross",
+        "fills_cash_basis": "position_aware",
         "n_fills_todate": len(fills),
         "n_settlements_todate": len(setts),
         # unexplained-to-date under BOTH candidate forms; per-interval deltas taken offline.
