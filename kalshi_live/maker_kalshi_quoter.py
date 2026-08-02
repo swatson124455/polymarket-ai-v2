@@ -570,6 +570,23 @@ TAKER_GOV_CROSSES = _envi("KALSHI_TAKER_GOV_CROSSES", 3)
 TAKER_GOV_LOSS_USD = _envf("KALSHI_TAKER_GOV_LOSS_USD", 1.0)
 _TAKER_XN = {}                               # ticker -> paid-exit count today (st mirror)
 _REALIZED_LAST_GOOD = {}                     # last successful all-traded realized snapshot
+def _ban_set(vals):
+    """Persisted ban/trip collections must be str tickers, but quoter_state.json and
+    mkt_out_backup.json are operator-editable JSON and nothing enforced the type at the
+    load boundary — a single non-string entry (hand-edit, bare JSON int) made the
+    governor's sorted() raise a mixed-type TypeError, failing the WHOLE book closed via
+    gov_fail_streak (root-caused 2026-08-02, operator-named root fix). Coerce LOUDLY and
+    never drop: a mangled entry stays banned under its string form — protective state is
+    never silently discarded."""
+    out = set()
+    for v in (vals or ()):
+        if not isinstance(v, str):
+            _SILENT["ban_entry_coerced"] += 1
+            v = str(v)
+        out.add(v)
+    return out
+
+
 def _mkt_out_backup_union(current):
     """Amnesty guard (re-review, bleed-F9 class): permanent bans ALSO live in a tiny separate
     file, unioned on every governor pass — losing/corrupting quoter_state.json can no longer
@@ -579,10 +596,10 @@ def _mkt_out_backup_union(current):
     known = set()                                           # test-patched per harness
     try:
         if os.path.exists(path):
-            known = set(json.load(open(path)) or [])
+            known = _ban_set(json.load(open(path)) or [])
     except Exception:
         _SILENT["mkt_out_backup_read_fail"] += 1
-    merged = known | set(current)
+    merged = known | _ban_set(current)
     if merged != known:
         try:
             tmp = path + ".tmp"
@@ -3044,9 +3061,9 @@ def run_once():
             # The governor block below only ADDS this cycle's new trips. Day-latches are
             # enforced only for TODAY's state (a rolled day reopens them, same as the body).
             try:
-                _exit_only_mkts |= set(st.get("mkt_out") or []) | _mkt_out_backup_union(set())
+                _exit_only_mkts |= _ban_set(st.get("mkt_out")) | _mkt_out_backup_union(set())
                 if st.get("mkt_realized_day") == _day_mkt:
-                    _exit_only_mkts |= set(st.get("mkt_loss_tripped") or [])
+                    _exit_only_mkts |= _ban_set(st.get("mkt_loss_tripped"))
             except Exception:
                 _SILENT["mkt_out_enforce_fail"] += 1
             if MKT_DAY_LOSS_EXITONLY_USD > 0:
@@ -3085,14 +3102,14 @@ def run_once():
                             _exit_only_all = True
                             plan["governor_fail_reduce_only"] = 1
                     _base = st.get("mkt_realized_base") or {}
-                    _tripped = set(st.get("mkt_loss_tripped") or [])
+                    _tripped = _ban_set(st.get("mkt_loss_tripped"))
                     if "mkt_out" in st:
-                        _out4 = set(st.get("mkt_out") or [])
+                        _out4 = _ban_set(st.get("mkt_out"))
                     else:
                         # E-migration (operator "3$ then 5$ then out"): markets banned under
                         # the earlier one-strike-out rule stay banned -- grandfather every
                         # struck ticker into the permanent OUT set exactly once.
-                        _out4 = set(st.get("mkt_strike_hist") or {})
+                        _out4 = _ban_set(st.get("mkt_strike_hist") or {})
                     _snap = st.get("mkt_trip_snap") or {}
                     if st.get("mkt_realized_day") != _day_mkt:
                         st["mkt_realized_day"] = _day_mkt
@@ -3189,7 +3206,7 @@ def run_once():
                 # coverage fix: PERMANENT bans must not die when the day-governor knob is
                 # zeroed -- enforce mkt_out (incl. the amnesty backup) unconditionally.
                 try:
-                    _out4b = set(st.get("mkt_out") or []) | _mkt_out_backup_union(set())
+                    _out4b = _ban_set(st.get("mkt_out")) | _mkt_out_backup_union(set())
                     if _out4b:
                         st["mkt_out"] = sorted(_out4b)
                         _exit_only_mkts |= _out4b
