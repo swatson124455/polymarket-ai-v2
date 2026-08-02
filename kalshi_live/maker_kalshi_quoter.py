@@ -147,7 +147,7 @@ _ENV_DECLARED = {}                      # name -> default as passed at the call 
 _SAFETY_KNOBS = ("KALSHI_PRECLOSE_FLATTEN", "KALSHI_TAKER_FLATTEN", "KALSHI_THROTTLE_SMART",
                  "KALSHI_CAPTURE_GATE", "KALSHI_STANDDOWN", "KALSHI_NETEV_GATE",
                  "KALSHI_HELD_MAX_USD",
-                 "KALSHI_DAILY_LOSS_HALT_USD", "KALSHI_DAILY_DOWN_HALT_USD")
+                 "KALSHI_DAILY_LOSS_HALT_USD")
 
 
 def _envi(name, default):
@@ -1135,21 +1135,19 @@ BREAKER_WINDOW_S = _envi("KALSHI_BREAKER_WINDOW_S", 600)
 # LEVEL trigger, complementing the velocity trigger above; can overshoot by at most one cycle's
 # small quote sizes before it bites.
 HELD_MAX_USD = _envf("KALSHI_HELD_MAX_USD", 20.0)
-# --- DAILY LOSS KILL (review 07-22: the "treadmill" gap): held-$ velocity/level breakers can't
-# see CUMULATIVE realized losses — acquire ~$18/hour, settle at a loss, repeat, forever under
-# both triggers with 'cycle ok'. Equity (balance + held cost) is metered against TWO uninflatable
-# quotas — drawdown from the intraday high-water mark, and the cumulative sum of per-cycle equity
-# DECREASES — and the worse of them breaching DAILY_LOSS_HALT_USD writes the STOP sentinel
-# (maker-first flatten + halt until the operator removes it). Completes the daily arm of the
-# never-lose-more-than-the-rewards invariant.
-# WAS a drop from a FROZEN day-start, which INCOME inflated: reward credits raised equity while
-# the baseline stood still, so the room to lose grew all day (measured 07-23: $76.42 of effective
-# room against a $40 nominal quota, on an $85 account). See the meter in run_once.
+# --- DAILY LOSS KILL: equity (balance + marked inventory) is metered as TRUE DRAWDOWN from the
+# intraday high-water mark; a breach sustained across HALT_CONFIRM_N of the last 5 cycles writes
+# the STOP sentinel (maker-first flatten + halt until the operator removes it). The peak-based
+# measure is immune to income and deposits: a credit lifts the peak by the amount it lifts
+# equity, so it buys ZERO extra room (WAS a drop from a FROZEN day-start, which income inflated —
+# measured 07-23: $76.42 of effective room against a $40 nominal quota, on an $85 account).
+# The second arm — the RATCHETING cumulative-sum-of-decreases (DAILY_DOWN_HALT_USD, the 07-22
+# "treadmill" guard) — was REMOVED BY OPERATOR ORDER 2026-08-02 after the 08-02 halt post-mortem:
+# 34.51% of its $68.68 reading was a torn-read accounting artifact, and it never netted
+# recoveries. KNOWN ACCEPTED GAP: a realize-loss/recover-via-credits cycle no longer accumulates
+# toward a halt; only the drawdown arm stands. The equity snapshot itself is torn-read-proof —
+# see the consistency re-read in the meter (run_once).
 DAILY_LOSS_HALT_USD = _envf("KALSHI_DAILY_LOSS_HALT_USD", 20.0)
-# Separate limit for the RATCHETING cumulative-down measure. Defaults to DAILY_LOSS_HALT_USD so
-# behaviour is unchanged when unset; set it higher to let true-drawdown be the tight limit without
-# ordinary mark noise tripping the halt. See the halt block for why these are not the same number.
-DAILY_DOWN_HALT_USD = _envf("KALSHI_DAILY_DOWN_HALT_USD", 0.0) or DAILY_LOSS_HALT_USD
 # --- config-coherence clamps (review 07-22): foot-gun envs must not silently disable trading
 # or the gate ordering. LATE_LIFE_FRAC >= 1 would exclude every short-lived market entirely;
 # MAX_ENTRY_CUTOFF below WIND_DOWN would violate the always-at-least-wind-down guarantee.
@@ -2505,7 +2503,7 @@ def diff_orders(standing, desired):
 
 def load_state():
     # ABSENT file = legitimate cold start (silent). PRESENT-BUT-UNREADABLE = every latching
-    # guard (halt baselines, cumulative-down ratchet, per-market loss trips, cooldowns) would
+    # guard (halt baselines, day-peak, per-market loss trips, cooldowns) would
     # silently reseed from scratch — a full amnesty (self-audit A2-F20). Preserve the corrupt
     # file for forensics, be LOUD, and count it where the plan row surfaces it.
     if not os.path.exists(STATE_FILE):
@@ -2838,7 +2836,6 @@ def _refresh_safety_knobs():
     if not path:
         return
     watch = {"KALSHI_DAILY_LOSS_HALT_USD": ("DAILY_LOSS_HALT_USD", float),
-             "KALSHI_DAILY_DOWN_HALT_USD": ("DAILY_DOWN_HALT_USD", float),
              "KALSHI_HELD_MAX_USD": ("HELD_MAX_USD", float),
              "KALSHI_TAKER_FLATTEN": ("TAKER_FLATTEN", int),
              "KALSHI_PRECLOSE_FLATTEN": ("PRECLOSE_FLATTEN", int),
@@ -3358,13 +3355,53 @@ def run_once():
             # We still do NOT read the venue's portfolio_value: whether it includes cash is
             # unverified (re-affirmed 2026-07-23); our own books are ground truth we control.
             _equity = None
+            _eq_consistent = False
             try:
-                # ONE get_balance() call; free_cash reused by the funding gate below (no second
-                # fetch). A raise leaves free_cash None (init above) -> funding gate fails closed.
+                # ONE get_balance() call on the happy path; free_cash reused by the funding gate
+                # below (no second fetch — the torn-read retry may add one, mismatch-only). A
+                # raise leaves free_cash None (init above) -> funding gate fails closed.
                 free_cash = float(client.get_balance().get("balance_dollars") or 0)
+                # TORN-READ ROOT FIX (defect 1 of the 08-02 post-mortem, operator-named
+                # 2026-08-02). The cycle's positions were read ~230 lines (and several REST
+                # calls) earlier; a fill or settlement landing between that read and this
+                # balance read is seen by ONE half only, so the summed equity LEVEL is fiction
+                # for exactly one cycle (08-02: $23.70 of the $68.68 halt reading — 34.51% —
+                # was this artifact, round-tripping to the cent on the next row). The peak
+                # ratchet makes the UPWARD tear permanent: a sell landing between the reads
+                # double-counts (cash up AND the sold position still marked), inflating
+                # equity_day_peak forever and manufacturing false drawdown from then on.
+                # Fix: CONFIRM the snapshot. Re-read positions after the balance read —
+                # identical position digests bracketing the balance read prove no fill landed
+                # between them. On mismatch, one bounded retry (fresh balance + third positions
+                # read). Still unstable -> the cycle's equity level is TORN: telemetry still
+                # emits, but day-seed/peak/drawdown arithmetic and the halt decision are
+                # skipped (counted + WARNED, never silent), and 2 consecutive torn cycles stop
+                # acquisition (mirror of the balance-fail F2 rule). Credits and deposits move
+                # balance without touching positions, so genuine income still lands as a
+                # consistent equity rise by construction.
+                def _pos_digest(_hb, _cb):
+                    return tuple(sorted((_t, round(float(_p), 4),
+                                         round(float(_cb.get(_t, 0.0)), 6))
+                                        for _t, _p in _hb.items()))
+                _eq_held_cost, _eq_held_by, _eq_cost_by = held_cost, held_by, cost_by
+                try:
+                    _hc2, _hb2, _cb2 = _held_cost(client)
+                    if _pos_digest(_hb2, _cb2) == _pos_digest(held_by, cost_by):
+                        _eq_consistent = True
+                        _eq_held_cost, _eq_held_by, _eq_cost_by = _hc2, _hb2, _cb2
+                    else:
+                        plan["equity_snapshot_retried"] = 1
+                        free_cash = float(client.get_balance().get("balance_dollars") or 0)
+                        _hc3, _hb3, _cb3 = _held_cost(client)
+                        _eq_held_cost, _eq_held_by, _eq_cost_by = _hc3, _hb3, _cb3
+                        if _pos_digest(_hb3, _cb3) == _pos_digest(_hb2, _cb2):
+                            _eq_consistent = True
+                except Exception as _te:
+                    # Re-read failed -> cannot PROVE consistency -> torn path (fail safe).
+                    plan["equity_reread_failed"] = repr(_te)[:120]
                 _marked, _mark_fb = 0.0, 0
                 try:
-                    for _t, _p in held_by.items():
+                    for _t, _p in _eq_held_by.items():
                         if not _p:
                             continue
                         _mv = None
@@ -3381,18 +3418,21 @@ def run_once():
                         except Exception:
                             _mv = None
                         if _mv is None:
-                            _mv = abs(_p) * float(cost_by.get(_t, 0.0))   # fallback: cost
+                            _mv = abs(_p) * float(_eq_cost_by.get(_t, 0.0))   # fallback: cost
                             _mark_fb += 1
                         _marked += _mv
                     _equity = free_cash + _marked
                     plan["equity_mark_usd"] = round(_equity, 2)
-                    _TOTAL_CAP_EFF[0] = _equity          # portfolio-tracking total cap refresh
-                    plan["total_cap_eff"] = round(_total_cap(), 2)
+                    if _eq_consistent:
+                        # A TORN level must not poison the portfolio-tracking cap either —
+                        # keep the last-good value on torn cycles (Gov-D10 semantics).
+                        _TOTAL_CAP_EFF[0] = _equity      # portfolio-tracking total cap refresh
+                        plan["total_cap_eff"] = round(_total_cap(), 2)
                     if _mark_fb:
                         plan["mark_fallback_tickers"] = _mark_fb
                 except Exception as _me:
                     plan["mark_failed"] = repr(_me)[:120]
-                    _equity = free_cash + held_cost       # old meter, never disarmed
+                    _equity = free_cash + _eq_held_cost   # old meter, never disarmed
                     if _TOTAL_CAP_EFF[0] is None:
                         # Gov-D10 (1.1 review 2026-07-31): fresh process + lost state
                         # (equity_prev gone) + a failed mark read left the portfolio-
@@ -3431,46 +3471,50 @@ def run_once():
                 # numerator while the baseline stood still, so the room to lose grew monotonically
                 # all day. Measured live 07-23: equity $99.76 vs day_start $63.34 => the halt only
                 # tripped at $23.34 — $76.42 of effective room against a nominal $40 quota (1.91x),
-                # i.e. 76% of an $85 account could evaporate first. Two meters now, both immune to
-                # income and to deposits, and the halt fires on the WORSE of them:
+                # i.e. 76% of an $85 account could evaporate first. The drawdown meter is immune
+                # to income and to deposits:
                 #   dd   = drawdown from the intraday HIGH-WATER MARK. A credit/deposit lifts the
                 #          peak by the same amount it lifts equity, so it buys ZERO extra room.
-                #   down = CUMULATIVE sum of per-cycle equity DECREASES. Up-moves are ignored
-                #          entirely, so no inflow can pay back a loss already taken (a deposit
-                #          resets 'dd' but can never reset 'down'). This is the treadmill arm.
+                # (The second arm — 'down', the RATCHETING cumulative sum of per-cycle equity
+                # decreases, the 07-22 treadmill guard — was REMOVED by operator order 2026-08-02
+                # after the 08-02 halt post-mortem; see the config block at DAILY_LOSS_HALT_USD.
+                # Its state keys equity_day_down / equity_prev_cost / down_basis are no longer
+                # read or written; stale copies in an old state file are ignored harmlessly.)
                 # Peak seeds from equity_day_start so a PRE-fix state file migrates with the old
                 # drop-from-day-start behaviour intact as a FLOOR: the meter is >= the old one on
                 # every input, never weaker.
                 _day = now.strftime("%Y%m%d")
-                _equity_cost = free_cash + held_cost
-                # ROOT FIX (operator order 2026-07-29 "fix false stop issue at the root", after
-                # the live 14:25:25Z false halt: ratchet $41.89 of mark noise vs TRUE drawdown
-                # $18.44). The two arms now measure DIFFERENT BASES — each exactly what it is for:
-                #   dd   (DAILY_LOSS_HALT_USD)  MARK equity vs the day's peak. Sees unrealized
-                #        collapse (the 07-27 gap). "Stop if I'm down $X" in real money.
-                #   down (DAILY_DOWN_HALT_USD)  COST-BASIS equity decreases only. An entry moves
-                #        cash down and held cost up by the SAME amount, so churn and book flicker
-                #        CANNOT tick it — only realized/settled losses do. The false-stop class
-                #        is dead by construction, while the anti-treadmill guarantee stands: a
-                #        realize-loss / recover / realize-again cycle still ratchets.
-                if st.get("down_basis") != "cost":
-                    st["down_basis"] = "cost"          # one-time migration: discard the counter's
-                    st["equity_day_down"] = 0.0        # accumulated MARK noise; re-seed the basis
-                    st["equity_prev_cost"] = _equity_cost
-                if st.get("equity_day") != _day:
+                if not _eq_consistent:
+                    # TORN CYCLE (defect 1 root fix): the equity LEVEL is untrusted — no
+                    # day-seed, no peak move, no halt verdict off it. A false peak would poison
+                    # every later cycle of the day (the ratchet never un-inflates); a false dip
+                    # would halt on fiction. Loud + counted, never silent; 2 consecutive torn
+                    # cycles stop ACQUIRING (mirror of the balance-fail F2 rule — unwinds and
+                    # exits untouched). The breach-confirmation window is FROZEN on torn cycles,
+                    # not fed a 0, so a real sustained breach interleaved with tears is not
+                    # diluted out of confirmation.
+                    st["equity_torn_streak"] = int(st.get("equity_torn_streak", 0)) + 1
+                    plan["equity_torn"] = 1
+                    plan["equity_torn_streak"] = st["equity_torn_streak"]
+                    print(f"WARNING equity snapshot TORN x{st['equity_torn_streak']} — a fill "
+                          f"landed between the positions/balance reads and the retry did not "
+                          f"stabilise; halt arithmetic skipped this cycle")
+                    if st["equity_torn_streak"] >= 2:
+                        _exit_only_all = True
+                        plan["equity_torn_reduce_only"] = 1
+                elif st.get("equity_day") != _day:
+                    plan["equity_torn"] = 0
+                    st["equity_torn_streak"] = 0
                     st["equity_day"] = _day
                     st["equity_day_start"] = _equity
                     st["equity_day_peak"] = _equity
-                    st["equity_day_down"] = 0.0
                     st["equity_prev"] = _equity
-                    st["equity_prev_cost"] = _equity_cost
                 else:
+                    plan["equity_torn"] = 0
+                    st["equity_torn_streak"] = 0
                     _start = float(st.get("equity_day_start", _equity))
                     _peak = max(float(st.get("equity_day_peak", _start)), _equity)
-                    _prev_cost = float(st.get("equity_prev_cost", _equity_cost))
-                    _down = float(st.get("equity_day_down", 0.0)) + max(0.0, _prev_cost - _equity_cost)
                     st["equity_day_peak"] = _peak
-                    st["equity_day_down"] = _down
                     # PEAK AUDIT TRAIL (defect 2026-07-30: recorded day-peak $299.96 < the
                     # 12:00Z mark $321.77 — a regression that delayed the halt ~$22; the
                     # in-process max() cannot regress, so the writer was external. Mechanism
@@ -3478,31 +3522,20 @@ def run_once():
                     # regression is caught red-handed, cycle-stamped.)
                     plan["equity_day_peak"] = round(_peak, 2)
                     st["equity_prev"] = _equity        # mark-equity telemetry continuity
-                    st["equity_prev_cost"] = _equity_cost
                     _dd = _peak - _equity
                     plan["daily_dd"] = round(_dd, 2)
-                    plan["daily_down"] = round(_down, 2)
-                    # TWO DIFFERENT MEASURES, TWO DIFFERENT LIMITS (2026-07-26; bases split
-                    # 2026-07-29):
+                    # SINGLE MEASURE, SINGLE LIMIT (the cumulative-down arm was removed by
+                    # operator order 2026-08-02):
                     #   _dd    TRUE DRAWDOWN from the day's peak, MARK basis. Falls back when
                     #          equity recovers. What an operator means by "stop if I'm down $X".
-                    #   _down  CUMULATIVE sum of per-cycle COST-BASIS decreases. Ratchets on
-                    #          realized/settled losses only; immune to spread accounting.
-                    drop = max(_dd, _down)
-                    # NAME THE LIMB THAT ACTUALLY BREACHED (2026-07-26). The message used to
-                    # render `cumulative-down $X > $DAILY_LOSS_HALT_USD` unconditionally — the
-                    # wrong quantity against the wrong limit. Live at 14:54:08Z it printed
-                    # "cumulative-down $8.98 > $10", which is not even true; the real trigger was
-                    # drawdown $13.74 > $10. Misreading WHICH measure halted the bot is the single
-                    # most expensive diagnostic error this lane has made, so the halt must say so
-                    # itself rather than leave it to be re-derived from two similar numbers.
+                    # NAME THE LIMB THAT ACTUALLY BREACHED (2026-07-26): one limb remains, and
+                    # the halt still names it and the limit it was tested against — misreading
+                    # WHICH measure halted the bot is the single most expensive diagnostic
+                    # error this lane has made, so the halt says so itself.
                     _breaches = []
                     if _dd > DAILY_LOSS_HALT_USD:
                         _breaches.append(f"DRAWDOWN ${_dd:.2f} > ${DAILY_LOSS_HALT_USD:.2f} "
                                          f"(from day-peak ${_peak:.2f})")
-                    if _down > DAILY_DOWN_HALT_USD:
-                        _breaches.append(f"CUMULATIVE-DOWN ${_down:.2f} > ${DAILY_DOWN_HALT_USD:.2f} "
-                                         f"(ratcheting sum, never resets)")
                     # F1 (operator-named 2026-07-31): N-of-5 WINDOW, not a hard-reset streak
                     # -- an oscillating mark used to reset the streak to 0 on any single
                     # non-breach cycle, deferring confirmation forever under real losses.
@@ -3514,14 +3547,13 @@ def run_once():
                     plan["halt_breach_streak"] = st["halt_breach_streak"]
                     if _breaches and sum(_bh) >= max(1, HALT_CONFIRM_N):
                         _why = " AND ".join(_breaches)
-                        plan["daily_loss_halt"] = round(drop, 2)
+                        plan["daily_loss_halt"] = round(_dd, 2)
                         plan["daily_halt_reason"] = _why
                         with open(STOP_FILE, "w") as fh:
-                            fh.write(f"auto daily-loss halt {now.isoformat()} drop=${drop:.2f} "
+                            fh.write(f"auto daily-loss halt {now.isoformat()} drop=${_dd:.2f} "
                                      f"TRIGGER: {_why} "
                                      f"(equity ${_equity:.2f} vs day-peak ${_peak:.2f}; "
-                                     f"dd ${_dd:.2f} / cumulative-down ${_down:.2f}; "
-                                     f"day-start ${_start:.2f})\n")
+                                     f"dd ${_dd:.2f}; day-start ${_start:.2f})\n")
                         print(f"WARNING DAILY LOSS HALT: {_why} — STOP written, "
                               f"maker-flattening")
                         _flatten_all(client)

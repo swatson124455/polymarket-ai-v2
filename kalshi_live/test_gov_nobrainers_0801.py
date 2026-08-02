@@ -25,7 +25,6 @@ def test_fresh_ban_probes_siblings_same_cycle(monkeypatch, tmp_path):
     _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
     monkeypatch.setattr(q, "HELD_MAX_USD", 1e9)
     monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
-    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 1e9)
     monkeypatch.setattr(q, "MKT_DAY_LOSS_EXITONLY_USD", 3.0)
     monkeypatch.setattr(q, "MKT_OUT_LOSS_USD", 5.0)
     monkeypatch.setattr(q, "EXPLORE_PROBE_CT", 5)
@@ -50,7 +49,6 @@ def test_no_ban_no_reclamp(monkeypatch, tmp_path):
     _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
     monkeypatch.setattr(q, "HELD_MAX_USD", 1e9)
     monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
-    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 1e9)
     monkeypatch.setattr(q, "MKT_DAY_LOSS_EXITONLY_USD", 3.0)
     monkeypatch.setattr(q, "EXPLORE_PROBE_CT", 5)
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: [

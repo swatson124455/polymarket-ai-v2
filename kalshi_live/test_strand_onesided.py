@@ -34,7 +34,6 @@ def _setup(monkeypatch, yes_levels, no_levels):
     monkeypatch.setattr(q, "TAKER_FLATTEN", False)      # isolate the strand path
     monkeypatch.setattr(q, "HELD_MAX_USD", 1e9)
     monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
-    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 1e9)
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: [])   # nothing footprinted
     monkeypatch.setattr(q, "public_get",
                         lambda p: {"incentive_programs": [], "next_cursor": ""}

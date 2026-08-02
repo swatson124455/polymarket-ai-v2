@@ -93,7 +93,6 @@ def test_marked_drop_trips_the_halt_costs_basis_could_not_see(monkeypatch, tmp_p
     _cfg(monkeypatch)
     _fp(monkeypatch)
     monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 5.0)
-    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 5.0)
     monkeypatch.setattr(q, "STOP_ESCALATE_S", 0)          # no real sleep in the halt flatten
     c = MockClient(mode="live", positions=_held(pos="50", exposure="25.00"))
     _run(monkeypatch, c, str(tmp_path))
@@ -381,39 +380,52 @@ def test_settle_backstop_crosses_naked_only_keeps_the_pair(monkeypatch, tmp_path
         assert cap_ct <= 6, f"settle path crossed more than the naked residual: {calls}"
 
 
-# ---- H. FALSE-STOP ROOT FIX (operator 2026-07-29: ratchet arm on COST basis) ------------------
+# ---- H. CUMULATIVE-DOWN ARM REMOVED (operator order 2026-08-02, halt post-mortem) -------------
+# The ratcheting cumulative-sum-of-decreases arm (DAILY_DOWN_HALT_USD) no longer exists: 34.51%
+# of its $68.68 halt reading on 08-02 was a torn-read artifact and it never netted recoveries.
+# These pins hold the removal in place: no 'daily_down' on plan rows, stale state keys are
+# tolerated and never consulted, and realized losses still halt — via the DRAWDOWN arm.
 
-def test_mark_oscillation_cannot_tick_the_ratchet(monkeypatch, tmp_path):
-    # The 14:25:25Z false halt: mark flicker walked the ratchet to $41.89 while cash never moved.
-    # Now: bid drops (mark down) but cash+cost unchanged -> down stays 0, no STOP even at $1.
-    _cfg(monkeypatch)
-    _fp(monkeypatch)
-    monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1000.0)   # isolate the ratchet arm
-    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 1.0)
-    monkeypatch.setattr(q, "STOP_ESCALATE_S", 0)
-    c = MockClient(mode="live", positions=_held(pos="50", exposure="25.00"))
-    _run(monkeypatch, c, str(tmp_path))                     # seeds baselines (bid 0.50)
-    crashed = {"orderbook_fp": {"yes_dollars": [["0.30", "9999"]],
-                                "no_dollars": [["0.69", "9999"]]}}
-    monkeypatch.setattr(q, "public_get",
-                        lambda p: {"incentive_programs": [], "next_cursor": ""}
-                        if "incentive" in p else crashed)
-    c2 = MockClient(mode="live", positions=_held(pos="50", exposure="25.00"))
-    row = _run(monkeypatch, c2, str(tmp_path))              # mark -$10, cash unchanged
-    assert not os.path.exists(os.path.join(str(tmp_path), "STOP")), \
-        "mark-only moves must never trip the ratchet arm"
-    assert row.get("daily_down") == 0.0
-
-
-def test_realized_loss_still_ticks_the_ratchet(monkeypatch, tmp_path):
-    # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
-    # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
-    monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
-    # Anti-treadmill guarantee intact: CASH drops (realized) -> ratchet accrues -> STOP.
+def test_ratchet_arm_is_gone_from_plan_and_module(monkeypatch, tmp_path):
     _cfg(monkeypatch)
     _fp(monkeypatch)
     monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1000.0)
-    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 5.0)
+    c = MockClient(mode="live", positions=_held(pos="50", exposure="25.00"))
+    _run(monkeypatch, c, str(tmp_path))                     # seeds baselines
+    c2 = MockClient(mode="live", positions=_held(pos="50", exposure="25.00"))
+    row = _run(monkeypatch, c2, str(tmp_path))              # steady cycle emits daily_dd
+    assert "daily_dd" in row, "drawdown telemetry must survive the removal"
+    assert "daily_down" not in row, "the removed arm must not emit telemetry"
+    assert not hasattr(q, "DAILY_DOWN_HALT_USD"), "the knob itself is removed"
+
+
+def test_stale_down_state_keys_are_ignored_not_fatal(monkeypatch, tmp_path):
+    # A pre-removal state file still carries the dead arm's keys ($39 accumulated). They must
+    # neither crash the load nor contribute to any halt decision.
+    import json as _json
+    _cfg(monkeypatch)
+    _fp(monkeypatch)
+    monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 40.0)
+    day = q.utcnow().strftime("%Y%m%d")
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
+        _json.dump({"equity_day": day, "equity_day_start": 105.0, "equity_day_peak": 105.0,
+                    "equity_day_down": 39.0, "equity_prev": 105.0, "equity_prev_cost": 105.0,
+                    "down_basis": "cost", "equity_basis": "mark"}, f)
+    c = MockClient(mode="live", positions=_held())
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("daily_dd") == 0.0                       # equity 105 == peak 105
+    assert not os.path.exists(os.path.join(str(tmp_path), "STOP"))
+
+
+def test_realized_loss_still_halts_via_drawdown(monkeypatch, tmp_path):
+    # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
+    # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
+    monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
+    # With the ratchet gone, a realized cash loss must still stop the bot: cash 100 -> 90 is a
+    # $10 drawdown from the day peak, and the DRAWDOWN arm owns it now.
+    _cfg(monkeypatch)
+    _fp(monkeypatch)
+    monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 5.0)
     monkeypatch.setattr(q, "STOP_ESCALATE_S", 0)
     c = MockClient(mode="live", positions=_held())
     _run(monkeypatch, c, str(tmp_path))                     # balance 100 (mock default)
@@ -423,28 +435,9 @@ def test_realized_loss_still_ticks_the_ratchet(monkeypatch, tmp_path):
             return {"balance_dollars": "90.0000"}           # -$10 realized
     c2 = PoorClient(mode="live", positions=_held())
     _run(monkeypatch, c2, str(tmp_path))
-    assert os.path.exists(os.path.join(str(tmp_path), "STOP")), \
-        "realized cash losses must still ratchet to a halt"
-
-
-def test_down_basis_migration_discards_mark_noise_once(monkeypatch, tmp_path):
-    # A pre-fix state file carries $39 of accumulated mark noise; the migration must zero it
-    # instead of letting the first cost-basis tick push it over the limit.
-    import json as _json
-    _cfg(monkeypatch)
-    _fp(monkeypatch)
-    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 40.0)
-    day = q.utcnow().strftime("%Y%m%d")
-    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as f:
-        _json.dump({"equity_day": day, "equity_day_start": 105.0, "equity_day_peak": 105.0,
-                    "equity_day_down": 39.0, "equity_prev": 105.0,
-                    "equity_basis": "mark"}, f)
-    c = MockClient(mode="live", positions=_held())
-    _run(monkeypatch, c, str(tmp_path))
-    st = _json.load(open(os.path.join(str(tmp_path), "quoter_state.json")))
-    assert st.get("down_basis") == "cost"
-    assert st.get("equity_day_down") == 0.0
-    assert not os.path.exists(os.path.join(str(tmp_path), "STOP"))
+    stop = os.path.join(str(tmp_path), "STOP")
+    assert os.path.exists(stop), "realized cash losses must still halt (drawdown arm)"
+    assert "TRIGGER: DRAWDOWN" in open(stop).read()
 
 
 def test_selection_prefilter_spends_slots_on_quotable_markets(monkeypatch):

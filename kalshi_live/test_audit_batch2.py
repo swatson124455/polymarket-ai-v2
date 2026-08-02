@@ -27,7 +27,6 @@ def _drawdown_setup(monkeypatch, tmp_path, peak):
     _cfg(monkeypatch)
     _fp1(monkeypatch)
     monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 40.0)
-    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 999.0)
     day = q.utcnow().strftime("%Y%m%d")
     with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as fh:
         json.dump({"equity_day": day, "equity_day_start": peak, "equity_day_peak": peak,

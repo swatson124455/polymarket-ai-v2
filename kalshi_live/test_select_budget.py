@@ -24,7 +24,6 @@ def _arm(monkeypatch, footprint, on=1, margin=0.0):
     _cfg(monkeypatch, join=20, mktcap=40, totcap=100)   # mock equity $100 -> _total_cap 100
     monkeypatch.setattr(q, "HELD_MAX_USD", 1e9)
     monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
-    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 1e9)
     monkeypatch.setattr(q, "SELECT_BUDGET", on)
     monkeypatch.setattr(q, "SELECT_BUDGET_MARGIN", margin)
     monkeypatch.setattr(q, "SERIES_MAX_USD", 0.0)       # family cap off unless a test sets it

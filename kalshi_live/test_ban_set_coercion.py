@@ -30,7 +30,6 @@ class TestGovernorSurvivesCorruptState:
         _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
         monkeypatch.setattr(q, "HELD_MAX_USD", 1e9)
         monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
-        monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 1e9)
         monkeypatch.setattr(q, "MKT_DAY_LOSS_EXITONLY_USD", 3.0)
         monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
             {"ticker": "KXOK-26AUG-A", "usd_day": 100.0, "target": 1,

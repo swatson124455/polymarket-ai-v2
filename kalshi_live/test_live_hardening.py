@@ -1581,21 +1581,26 @@ def test_daily_loss_measures_drawdown_from_intraday_high_water_mark(monkeypatch,
     assert row.get("daily_loss_halt") == 25.0
     assert os.path.exists(os.path.join(d, "STOP"))
 
-def test_daily_loss_cumulative_downticks_survive_a_deposit(monkeypatch, tmp_path):
+def test_daily_loss_deposit_lifts_the_peak_and_buys_zero_room(monkeypatch, tmp_path):
     # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the
     # operator-named 2026-07-29 sustained-breach confirmation — test_audit_batch2 pins that.
     monkeypatch.setattr(q, "HALT_CONFIRM_N", 1)
-    # PIN (defect c): a mid-day deposit used to add room 1:1 (and, under a naive high-water
-    # mark alone, would also FORGIVE the drawdown already taken). The cumulative adverse-move
-    # meter only ever counts DOWN moves, so income and deposits cannot pay it back.
+    # PIN (defect c, re-scoped 2026-08-02): a mid-day deposit lifts the high-water mark by
+    # exactly the deposit, so it buys ZERO extra drawdown room — the next $20 of decline
+    # from the NEW peak still halts. (The stronger property — inflows could not even
+    # FORGIVE drawdown already taken — belonged to the cumulative-down ratchet, REMOVED by
+    # operator order 2026-08-02 after the 08-02 post-mortem; forgiveness-by-recovery is now
+    # the accepted single-arm behaviour, pinned by the saw-tooth test in
+    # test_halt_attribution.)
     _q3cfg(monkeypatch)
     d = str(tmp_path)
     assert _run(monkeypatch, _BalClient(100.0, mode="live"), d).get("daily_loss_halt") is None
     assert _run(monkeypatch, _BalClient(85.0, mode="live"), d).get("daily_loss_halt") is None   # -15
     assert _run(monkeypatch, _BalClient(200.0, mode="live"), d).get("daily_loss_halt") is None  # deposit
-    row = _run(monkeypatch, _BalClient(190.0, mode="live"), d)                                  # -10
-    assert row.get("daily_loss_halt") == 25.0        # 15 + 10, NOT reset by the +115 inflow
-    assert row.get("daily_down") == 25.0 and row.get("daily_dd") == 10.0
+    row = _run(monkeypatch, _BalClient(175.0, mode="live"), d)                                  # -25
+    assert row.get("daily_loss_halt") == 25.0        # measured from the POST-deposit peak 200
+    assert row.get("daily_dd") == 25.0
+    assert "daily_down" not in row                   # the removed arm emits nothing
 
 def test_daily_loss_legacy_state_file_still_halts_on_day_start_drop(monkeypatch, tmp_path):
     # HALT_CONFIRM_N=1: this test pins the METER (measurement/attribution), not the

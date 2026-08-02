@@ -27,7 +27,6 @@ def _arm(monkeypatch, footprint, incumbent_only=1):
     _cfg(monkeypatch, join=20, mktcap=250, totcap=200)
     monkeypatch.setattr(q, "HELD_MAX_USD", 1e9)
     monkeypatch.setattr(q, "DAILY_LOSS_HALT_USD", 1e9)
-    monkeypatch.setattr(q, "DAILY_DOWN_HALT_USD", 1e9)
     monkeypatch.setattr(q, "INCUMBENT_ONLY", incumbent_only)
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: footprint)
 
