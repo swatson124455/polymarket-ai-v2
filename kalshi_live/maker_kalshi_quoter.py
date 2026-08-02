@@ -2242,6 +2242,19 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                     stats["standdown"] = stats.get("standdown", 0) + 1
                     stats["standdown_min_rho"] = min(stats.get("standdown_min_rho", 1e18), _eff)
                 return []                           # reward too thin to justify Target-size activate
+        if PRESENCE_GATE:
+            # $1-MINIMUM ON THE ACTIVATE PATH (double-blind audit 2026-08-02, lens 1 #3;
+            # operator-named same day). Every credit gate was scoped `not void`, so seeding
+            # an empty book committed up to MAX_ACTIVATE_CAPITAL with ZERO expected-credit
+            # check — the one OPEN path outside the $1-minimum ideology. Same floor, same
+            # model, flat entry only (held inventory unwound above, untouched). Measured
+            # exposure: 73 of 7,080 cycles (07-29..08-01 plan rows) had >=1 activate.
+            _expA, _idealA, _fracA = _expected_credit_usd(m, yl, nl, best_y, best_n,
+                                                          target, now)
+            if _expA < MIN_CREDIT_USD:
+                if stats is not None:
+                    stats["gate_activate_credit"] = stats.get("gate_activate_credit", 0) + 1
+                return []
         # audit F2 (2026-07-29): with JOIN_SIZE=0 the old max(JOIN_SIZE, target-ext) floor could
         # go to ZERO on a book short on only one side — and this branch appended the count-0
         # quote unconditionally (venue 400s it every cycle). Floor each side at 0 and only
@@ -2832,6 +2845,10 @@ def _refresh_safety_knobs():
                     try:
                         nv = cast(v.strip())
                     except (TypeError, ValueError):
+                        # audit lens 1 #10b: a MALFORMED value was the one silent sub-case
+                        # left in the class Gov-D9 fixed — say it, don't swallow it
+                        print(f"WARNING RESTART-ONLY knob {gname}: malformed value "
+                              f"{v.strip()!r} in {path} — ignored")
                         continue
                     if g.get(gname) != nv:
                         print(f"WARNING RESTART-ONLY knob {gname} changed in {path} "
@@ -3510,7 +3527,8 @@ def run_once():
                 _cap9 = sorted(set(standing)
                                | {_t9 for _t9, _p9 in held_by.items()
                                   if abs(_p9) >= INV_TOLERANCE}
-                               | set(st.get("prev_standing_tickers") or []))
+                               | _ban_set(st.get("prev_standing_tickers")))  # editable state:
+                               # coerce (audit lens 2 #5 — same sorted() crash class)
                 st["incumbent_only_set"] = _cap9
                 print(f"INCUMBENT-ONLY gate ARMED: {len(_cap9)} incumbent market(s) captured "
                       f"— no new markets will be opened while the gate is on")
@@ -3528,9 +3546,18 @@ def run_once():
                 import kalshi_capital_rank as _kcr
                 _limit9 = _total_cap() * (1.0 + SELECT_BUDGET_MARGIN)
                 _famcap9 = _series_cap()
+                _refs9 = {}
+                _now9 = now.timestamp()
                 with SCORES_LOCK:
-                    _refs9 = {_m9["ticker"]: (SCORES.get(_m9["ticker"]) or {}).get("ref")
-                              for _m9 in footprint}
+                    for _m9 in footprint:
+                        _r9 = SCORES.get(_m9["ticker"]) or {}
+                        _rts9 = _r9.get("ts")
+                        # audit lens 2 #3: refs age out at the same bar the alloc
+                        # prospective feed uses — a stale extreme ref halves est and
+                        # over-admits; stale -> unknown -> max est (conservative)
+                        if (_rts9 is not None
+                                and (_now9 - float(_rts9)) <= ALLOC_PCAP_MAX_AGE_S):
+                            _refs9[_m9["ticker"]] = _r9.get("ref")
                 _order9 = sorted(footprint,
                                  key=lambda _m9: (-float(alloc_prio.get(_m9["ticker"], 0.0)
                                                         or 0.0), _m9["ticker"]))
@@ -3866,7 +3893,10 @@ def run_once():
                             _kms.update(SCORES, t, _cache_row.get("capture_usd_day"),
                                         _cache_row.get("y_ref"), now=now.timestamp())
                 except Exception:
-                    pass
+                    # audit lens 1 #7: this swallow also covers the score-cache FOLD — an
+                    # uncounted fault here silently decays ranking to pool order. Count it;
+                    # a telemetry fault still never breaks a trading cycle.
+                    _SILENT["mkt_telemetry_fail"] += 1
 
         # PIVOT: collapse `footprint` to what we ACTUALLY tried (the over-selected pool tail we
         # never reached is NOT part of this cycle's footprint). Every downstream consumer
@@ -4154,7 +4184,10 @@ def run_once():
         if SELECT_BUDGET and capped_markets:
             # BACKSTOP ALARM (Option C): with the budget walk on, the blunt cut should
             # almost never fire — every firing means est_commit under-read real demand.
-            # Persistent nonzero = raise KALSHI_SELECT_BUDGET_MARGIN.
+            # Persistent nonzero = LOWER KALSHI_SELECT_BUDGET_MARGIN (more negative =
+            # tighter walk limit = less admitted demand). The original "raise" advice was
+            # inverted (double-blind audit 2026-08-02, lens 2 #1) — raising the margin
+            # ADMITS more demand and makes the backstop fire more.
             plan["budget_backstop_fired"] = capped_markets
         try:
             _fam_denom = float(_TOTAL_CAP_EFF[0]) if _TOTAL_CAP_EFF[0] is not None else None
@@ -5298,9 +5331,14 @@ def _strike_of(ticker, stats=None):
         # outcome (-HELLO, -LAL) — unpairable BY DESIGN, ~250/day, and it was drowning the
         # loud warning that exists for STRUCTURAL failures (a digit-bearing tail that still
         # won't parse = shape change = pairing gone dark). Two counters, one warning.
-        if tail and not any(c.isdigit() for c in tail):
+        if tail and any(c.isalpha() for c in tail):
+            # audit 2026-08-02 (lens 1 #2): categorical outcome codes are frequently
+            # ALPHANUMERIC (A5, H2, CLAU5, AUG05) — the digit-free rule left the live
+            # held inventory warning every cycle, keeping the alarm fatigue RF3 exists
+            # to kill. Any letter in the tail = categorical (silent counter); a tail of
+            # digits/punctuation that still fails float = mangled numeric = structural.
             return _fail("strike_categorical")
-        return _fail()      # digit-bearing OR empty tail = structural, stays loud
+        return _fail()      # numeric-looking OR empty tail = structural, stays loud
 
 
 def ladder_pairing(held_by, stats=None):

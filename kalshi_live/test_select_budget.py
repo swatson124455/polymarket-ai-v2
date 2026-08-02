@@ -176,7 +176,7 @@ def test_backstop_alarm_pinned(monkeypatch):
     import inspect
     src = inspect.getsource(q)
     i = src.index('plan["budget_backstop_fired"]')
-    assert "if SELECT_BUDGET and capped_markets:" in src[i - 400:i]
+    assert "if SELECT_BUDGET and capped_markets:" in src[i - 800:i]
 
 
 def test_knobs_hot_reloadable():
