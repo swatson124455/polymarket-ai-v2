@@ -4846,6 +4846,35 @@ def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
         return remaining < max(1, int(INV_TOLERANCE)), crossed
 
 
+def _cancel_each(client, ids):
+    """Cancel each id, isolating failures, and return how many succeeded.
+
+    NEW helper 2026-08-02 (not a refactor of an existing one): the STOP flatten now cancels
+    from three places instead of one, and the try/except-pass body must be identical at all
+    three or the cover guarantee differs by path."""
+    n = 0
+    for oid in ids:
+        try:
+            client.cancel_order(oid)
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
+def _keep_verbatim(orders):
+    """Re-express resting orders as DESIRED, so diff_orders emits neither cancel nor create.
+
+    The retention idiom is apply_drop_grace's (:2426-2428), reused rather than reinvented.
+    Operator decision 2026-08-02: on a STOP bail path — book unreadable, reducing side
+    unpriceable, or the loss cap leaving no priceable offset — the existing exit is KEPT. We
+    could not compute a replacement, and destroying an exit you cannot replace is strictly
+    worse than holding a stale one; the staleness is bounded by pass 2's taker escalation,
+    which re-reads positions and fires regardless. All three bail paths use this same rule."""
+    return [{"side": o["side"], "price_dollars": o["price_dollars"], "count": o["count"]}
+            for o in (orders or [])]
+
+
 def _flatten_all(client):
     """EMERGENCY-STOP de-risk: MAKER-FIRST with BOUNDED ESCALATION (audit HIGH-1).
     Pure-taker STOP is a fire-sale (realizes the loss + pays the spread); pure-maker STOP can
@@ -4855,18 +4884,31 @@ def _flatten_all(client):
       3. WAIT STOP_ESCALATE_S for them to fill,
       4. re-read; whatever is STILL >= STOP_TAKER_MIN_CT gets taker-crossed — bounded, sized
          to the residual only, never the whole book. Below-threshold residue is left/reported."""
+    # DIFF-AND-KEEP (defect 11 root fix, operator-named 2026-08-02). This block used to DESTROY
+    # the whole resting book here, before computing what it wanted ~30 lines below — so it
+    # structurally could not notice that a resting order already IS the order it is about to
+    # place. Live evidence: 27 consecutive flattens in the 08-02 halt window each logged
+    # "cancelled 2/2 resting quotes" and immediately re-created the same two offsets with fresh
+    # client ids, surrendering queue position every 30 minutes for nothing. The fix gives the
+    # STOP path the same DECIDE-THEN-ACT ordering the normal quoting path has had since
+    # diff_orders(:2482) — the mechanism is REUSED, not reinvented.
+    # The "stop making" guarantee is unchanged: every accumulating quote, every order on a
+    # ticker we hold no material inventory in, and every unparseable row still dies below,
+    # before any book read. Only REDUCING-side orders on held tickers are deferred, and those
+    # are exits, which canon wants resting under STOP.
     try:
         orders = client.get_orders("resting").get("orders") or []
     except Exception as e:
         print(f"flatten: could NOT read resting orders ({e!r}) — run flatten_kalshi.py manually")
         orders = []
-    n = 0
-    for o in orders:
-        try:
-            client.cancel_order(o["order_id"]); n += 1
-        except Exception:
-            pass
-    print(f"flatten: cancelled {n}/{len(orders)} resting quotes (stopped making)")
+    standing = _standing_from_rows(orders)             # parsed from the SAME rows; no second GET
+    all_ids = [o["order_id"] for o in orders if o.get("order_id")]
+    # all_ids is the CANCEL COVER and is built from the raw rows, not from `standing`, so an
+    # order we failed to parse is one we cannot reason about and is therefore always cancelled
+    # (it can never enter keep_ids, which is derived from parsed rows only). That preserves the
+    # old cancel-everything cover exactly.
+    # Positions are read BEFORE any cancel now, because the keep/cancel split depends on them.
+    # Both early exits stay cover-preserving: they cancel everything first, exactly as today.
     try:
         _tot, _by, _costs = _held_cost(client)
         _naked = ladder_pairing(_by)
@@ -4876,11 +4918,21 @@ def _flatten_all(client):
                   f"— left to settle, offsetting only the naked remainder")
         held = {t: p for t, p in _naked.items() if abs(p) >= INV_TOLERANCE}
     except Exception as e:
+        n = _cancel_each(client, all_ids)
+        print(f"flatten: cancelled {n}/{len(all_ids)} resting quotes (stopped making)")
         print(f"flatten: could NOT read positions ({e!r}) — inventory MAY remain, check manually")
         return
     if not held:
+        n = _cancel_each(client, all_ids)
+        print(f"flatten: cancelled {n}/{len(all_ids)} resting quotes (stopped making)")
         print("flatten: no material inventory — book is flat")
         return
+    # STOP MAKING. The reducing side follows from the SIGN alone, so this needs no book read:
+    # long yes -> a NO bid reduces; long no -> a YES bid reduces.
+    _red = {t: ("no" if p > 0 else "yes") for t, p in held.items()}
+    deferred = {t: [o for o in standing.get(t, []) if o["side"] == _red[t]] for t in held}
+    keep_ids = {o["order_id"] for ol in deferred.values() for o in ol}
+    n = _cancel_each(client, [i for i in all_ids if i not in keep_ids])
     # --- pass 1: MAKER offsets on the reducing side ---
     # per-invocation nonce so a REPEATED STOP run (timer still firing while STOP sentinel present)
     # never reuses a client_order_id — Kalshi dedups on it, so a reused id would reject the fresh
@@ -4888,11 +4940,15 @@ def _flatten_all(client):
     # fire-sale on every cycle after the first (review C5).
     _nonce = int(time.time())
     offset_oids = {}                                   # ticker -> our offset order id
-    for i, (t, pos) in enumerate(held.items()):
+    # DECIDE: build the desired offset per ticker. The computation below is UNCHANGED — only
+    # its destination changed, from an immediate create to a `desired` dict the diff consumes.
+    desired = {}
+    for t, pos in held.items():
         try:
             ob = public_get(f"/trade-api/v2/markets/{t}/orderbook").get("orderbook_fp") or {}
         except Exception:
             print(f"flatten: {t} pos={pos:+.2f} — book unreadable, will re-check at escalation")
+            desired[t] = _keep_verbatim(deferred.get(t))
             continue
         by = max((p for p, _ in _levels(ob.get("yes_dollars") or [])[0]), default=None)
         bn = max((p for p, _ in _levels(ob.get("no_dollars") or [])[0]), default=None)
@@ -4903,13 +4959,40 @@ def _flatten_all(client):
             side, price, other = "yes", by, (bn or by)
         else:
             print(f"flatten: {t} pos={pos:+.2f} — reducing side unpriceable, will re-check at escalation")
+            desired[t] = _keep_verbatim(deferred.get(t))
             continue
         price = _unwind_price(price, _costs.get(t, 0.0))             # loss-capped offset
         if not _ok_exit_price(price):
             print(f"flatten: {t} pos={pos:+.2f} — loss-cap leaves no priceable offset, "
                   f"will re-check at escalation")
+            desired[t] = _keep_verbatim(deferred.get(t))
             continue
         cnt = _unwind_size(_capped_join(price, other), price, pos)   # <= |pos|, never overshoot
+        desired[t] = [{"side": side, "price_dollars": price, "count": cnt, "reason": "unwind"}]
+    # ACT: reuse diff_orders, exactly as the normal quoting path does. An offset survives only
+    # if side+price+count match to the same 4dp the normal path uses.
+    _std = {t: v for t, v in deferred.items() if v}
+    cancels, creates = diff_orders(_std, desired)
+    # AT MOST ONE EXIT PER TICKER. diff_orders keys on (side, price, count), so two IDENTICAL
+    # resting offsets both survive as one key — leaving 2x|inventory| of resting reducing size,
+    # which on a full fill crosses THROUGH flat into the opposite position. Today's
+    # cancel-everything hid this; keeping orders exposes it, so it is closed here.
+    _cancel_set = set(cancels)
+    kept = 0
+    for t, surv in ((t, [o for o in v if o["order_id"] not in _cancel_set]) for t, v in _std.items()):
+        for o in surv[1:]:
+            cancels.append(o["order_id"])
+        if surv:
+            offset_oids[t] = surv[0]["order_id"]       # record the KEPT id for pass 2
+            kept += 1
+    n += _cancel_each(client, cancels)
+    print(f"flatten: cancelled {n}/{len(all_ids)} resting quotes (stopped making)")
+    if kept:
+        print(f"flatten: KEPT {kept} identical exit offset(s) — no cancel/re-create "
+              f"(queue position preserved)")
+    for i, c in enumerate(creates):
+        t, side, price, cnt = c["ticker"], c["side"], c["price_dollars"], c["count"]
+        pos = held.get(t, 0.0)
         try:
             r = client.create_quote(t, side, price, cnt, post_only=True,
                                     client_order_id=f"mk-stopflat-{_nonce}-{i}-{side}")
@@ -5567,13 +5650,13 @@ def _event_key(ticker):
     return "-".join(ticker.split("-")[:2])
 
 
-def _live_standing(client):
-    """Returns (standing_dict, raw_row_count). Reads resting V2 orders back into our
-    (outcome, outcome-price) form. Per-order parse is ISOLATED so one malformed
-    record cannot crash the cycle before cancels/wind-down run. The raw_row_count
-    lets the caller reconcile (rows>0 but parsed==0 => parse failure => halt)."""
+def _standing_from_rows(orders):
+    """Parse raw resting V2 order rows into our (outcome, outcome-price) form.
+
+    Extracted from _live_standing 2026-08-02 so a caller that ALREADY holds the rows can parse
+    them without issuing a second GET — the STOP flatten needs exactly that. Per-order parse is
+    ISOLATED so one malformed record cannot crash the cycle before cancels/wind-down run."""
     out = defaultdict(list)
-    orders = client.get_orders("resting").get("orders") or []
     for o in orders:
         try:
             outcome = o.get("outcome_side")   # 'yes' | 'no'
@@ -5587,7 +5670,16 @@ def _live_standing(client):
         except Exception:
             _SILENT["standing_row_skip"] += 1     # unreadable resting order -> risk of a DUPLICATE
             continue                              # create; see the _SILENT block for why it matters
-    return dict(out), len(orders)
+    return dict(out)
+
+
+def _live_standing(client):
+    """Returns (standing_dict, raw_row_count). Reads resting V2 orders back into our
+    (outcome, outcome-price) form. Per-order parse is ISOLATED so one malformed
+    record cannot crash the cycle before cancels/wind-down run. The raw_row_count
+    lets the caller reconcile (rows>0 but parsed==0 => parse failure => halt)."""
+    orders = client.get_orders("resting").get("orders") or []
+    return _standing_from_rows(orders), len(orders)
 
 
 def report():
