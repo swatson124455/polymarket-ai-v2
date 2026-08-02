@@ -125,14 +125,36 @@ def cum_fills_cash(fills):
 
     MEASURED IMPACT over the complete history (n=1,233 fills / 127 settlements, API reads
     2026-08-02T22:01:01Z and T21:28:21Z; credits $191.67 from credit_history at T20:40:43Z):
-    cumulative fill cash moves -$229.8397 -> -$595.4397, and the reconciliation residual
-    cash - credits - cum_fills - cum_settle moves $190.1000 -> $555.7000 against venue-verified
-    deposits of $565.00 / 7 rows (docs/maker_handoffs/KALSHI_HANDOFF_2026-08-02.md:67) — from
-    $374.90 out to $9.30 out. The remaining $9.30 is NOT explained and stays open.
-    NOT CONFIRMED: the review's characterisation that the gap equals $1 x net-NO contracts
-    exactly. Checked on the full history and it does not hold (that formula predicts $2,465.13
-    against an actual $365.60); it reconciled only on a smaller frozen subset. The mechanism is
-    established by the residual, the per-contract formula is not.
+    cumulative fill cash moves -$229.8397 -> -$595.4397, a step of -$365.6000.
+
+    THE STEP IS AN EXACT IDENTITY, not an estimate — use it to self-check any re-derivation:
+        new_cum - old_cum  ==  -$1 x SUM over tickers of max(0, N_t - Y_t)
+    where per ticker Y_t and N_t are the TOTAL contracts on YES-acquiring and NO-acquiring
+    fills. Verified on the complete history (read 2026-08-02T23:22:54Z): both sides -$365.6000,
+    absolute error 2e-12. It needs four preconditions, each of which holds 1,233/1,233 on that
+    read: (a) action=='buy' iff outcome=='yes'; (b) yes_px + no_px == 1; (c) count_fp present;
+    (d) fee_cost >= 0.
+    CORRECTION (2026-08-02, same session): an earlier version of this docstring said the
+    per-contract formula was NOT CONFIRMED and quoted $2,465.13 as a counter-example. That was
+    MY error and the retraction was too broad — $2,465.13 comes from summing only the OPENED
+    portion of each fill instead of total contracts per side. The identity above is correct;
+    the earlier formulation was not. Note it is a tautology in its own inputs, so it is
+    invariant to tape truncation and carries NO diagnostic power over feed completeness — the
+    truncation guard for that lives at kalshi_attribution_ledger.py:328-338.
+
+    RECONCILIATION (corroborating, not decisive). The residual moves $190.1000 -> $555.7000
+    against venue-verified deposits of $565.00 / 7 rows
+    (docs/maker_handoffs/KALSHI_HANDOFF_2026-08-02.md:67) — from $374.90 out to $9.30 out.
+    That $9.30 is the CASH form. The identity behind it is
+        cash - credits - cum_fills - cum_settle  ==  deposits - withdrawals - reservation
+    i.e. it carries a RESERVATION term whenever `balance` is net of collateral held against our
+    own resting orders. At the measured read the reservation was $3.5300 over 2 resting orders,
+    so the FUNDED form leaves $559.2300 vs $565.00 = $5.77 out. Open positions need no term:
+    their cost is already inside cum_fills as -p*q and their payout reaches neither `cash` nor
+    cum_settle until settlement, so the identity holds continuously.
+    NEITHER form is asserted — this module records both every run
+    (unexplained_todate_cash / _funded) precisely because which one is the true invariant is
+    still open, and $9.30 / $5.77 is unexplained under either.
 
     FEED CONTRACT verified before delegating (same read, n=1,233): `book_side` is present and in
     {bid,ask} on 1,233/1,233 and `outcome_side` in {yes,no} on 1,233/1,233, so
@@ -240,6 +262,17 @@ def main():
         # complete tape). Without in-row markers those one-time steps are indistinguishable
         # from real money at the boundary. Bump these strings if a convention changes again;
         # rows written before a marker existed are that column's PRE-fix era by definition.
+        #
+        # ⚠ THE DEPLOY BOUNDARY IS A SINGLE +$330.0381 JUMP IN unexplained_todate_*.
+        # VERIFIED 2026-08-02: the DEPLOYED recorder (md5 9d842c41c12afc8de804cab4013bd2c2)
+        # is NOT an ancestor of either fix — it still carries the action-signed fill model AND
+        # still subtracts the settlement fee, and has neither marker key. So both corrections
+        # land in the SAME 5-minute interval: unexplained moves by -(-365.6000) - (+35.5619)
+        # = +$330.0381. This module's standing operator rule above (see WHY IT EXISTS) reads
+        # any unexplained POSITIVE step as a REWARD unless told otherwise — so that jump MUST
+        # be booked as a convention change, not income. It is recognisable without trusting
+        # these markers: at the boundary d(cash), d(n_fills_todate) and d(n_settlements_todate)
+        # are all 0 (the bot is halted), which is structurally impossible for real money.
         "settle_payout_basis": "gross",
         "fills_cash_basis": "position_aware",
         "n_fills_todate": len(fills),
