@@ -122,9 +122,22 @@ def settlement_payout(s):
         NEGATIVE payout — which is what drove cum_settle_payout DOWN over time (a payout is
         >= 0 by construction, so the cumulative sum must be monotone non-decreasing; 0 of 127
         are negative without the term);
-      * decisive: implied deposits close to exactly $190.1000 (whole cents, as a deposit total
-        must be) without the term, versus $225.6619 with it — the sub-cent residue there is the
-        double-counted fee tail itself.
+      * corroborating (NOT decisive — see the correction below): the reconciliation residual
+        cash - credits - cum_fills - cum_settle lands on exactly $190.1000 without the term,
+        versus $225.6619 with it, under the non-reservation (`cash`) form; the funded form gives
+        $193.6300 vs $229.1919. Only the CONTRAST is evidence here: it is a difference, so any
+        error in cum_fills cancels identically between the two variants.
+    CORRECTION (blind review 2026-08-02, same session): an earlier version of this docstring
+    called that residual "implied deposits" and the whole-cent landing "decisive". BOTH ARE
+    REFUTED. Deposits are venue-verified at $565.00 across 7 rows, withdrawals $0
+    (docs/maker_handoffs/KALSHI_HANDOFF_2026-08-02.md:67) — so $190.1000 is the cash model's OPEN
+    RESIDUAL, not a deposit total, and the ~$374.90 gap is unexplained. The leading candidate is
+    the position-independent fill_cash() at :100-103, which cannot express Kalshi cash for a NO
+    acquisition (the venue prints one as action="sell"); kalshi_attribution_ledger.fill_cashflow
+    (:193-212) is the already-validated position-aware model and its own docstring records that
+    this exact signature "WAS the bug". The whole-cent test is structurally blind to that error
+    class: count_fp is 2 dp, so a $1-per-contract mistake is always whole cents.
+    Bullets 1 and 3 above carry this fix on their own and are unaffected by that residual.
     Rows already written to cash-YYYYMM.jsonl carry the old column; the recorder re-derives from
     the venue's full cumulative history every run, so every FUTURE row is correct with no state
     to migrate. Rewriting historical rows is a separate operator-named action."""
@@ -177,6 +190,12 @@ def main():
         "portfolio_value_cents": bal.get("portfolio_value"),
         "cum_fills_cash": round(cum_fills, 6),
         "cum_settle_payout": round(cum_settle, 6),
+        # CONVENTION MARKER (blind review 2026-08-02): rows are differenced OFFLINE, and
+        # cum_settle_payout changed meaning mid-series when the settlement fee roll-up was
+        # dropped (net-of-fee -> gross). Without an in-row marker the one-time step is
+        # indistinguishable from real money at the boundary. Bump this string if the
+        # convention ever changes again; pre-marker rows are the "net" era by definition.
+        "settle_payout_basis": "gross",
         "n_fills_todate": len(fills),
         "n_settlements_todate": len(setts),
         # unexplained-to-date under BOTH candidate forms; per-interval deltas taken offline.
