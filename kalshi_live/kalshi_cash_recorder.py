@@ -108,15 +108,33 @@ MISSING_VALUE_FIELDS = [0]   # audit probe 2026-07-30: settlements lacking `valu
 
 
 def settlement_payout(s):
-    """NET position only. Gross/paired model refuted 2026-07-27."""
+    """NET position only, GROSS of fees. Gross/paired model refuted 2026-07-27.
+
+    NO FEE TERM (root fix 2026-08-02, operator-named). A settlement's `fee_cost` is a REPORTING
+    ROLL-UP of the fees already charged on that market's fills — not a fee levied at settlement —
+    so subtracting it here double-counted every one of them against fill_cash(), which already
+    subtracts the same dollars. Measured against the live account 2026-08-02T21:27:34Z
+    (n=1,233 fills / 127 settlements, the complete history):
+      * settlement.fee_cost == SUM(fills.fee_cost) on the same ticker for 127 of 127, to the cent;
+      * 0 settlements carry a fee with zero fills on that ticker, so the roll-up is never a
+        novel charge that would otherwise go uncounted;
+      * the double-count was worth $35.5619 lifetime, and made 56 of 127 settlements contribute
+        NEGATIVE payout — which is what drove cum_settle_payout DOWN over time (a payout is
+        >= 0 by construction, so the cumulative sum must be monotone non-decreasing; 0 of 127
+        are negative without the term);
+      * decisive: implied deposits close to exactly $190.1000 (whole cents, as a deposit total
+        must be) without the term, versus $225.6619 with it — the sub-cent residue there is the
+        double-counted fee tail itself.
+    Rows already written to cash-YYYYMM.jsonl carry the old column; the recorder re-derives from
+    the venue's full cumulative history every run, so every FUTURE row is correct with no state
+    to migrate. Rewriting historical rows is a separate operator-named action."""
     if s.get("value") is None:
         MISSING_VALUE_FIELDS[0] += 1
         print(f"WARNING settlement missing `value` field (ticker={s.get('ticker')}) — "
               f"payout treated as 0; venue field rename? total={MISSING_VALUE_FIELDS[0]}")
     v = _f(s.get("value")) / 100.0
     net = _f(s.get("yes_count_fp")) - _f(s.get("no_count_fp"))
-    pay = (net * v) if net > 0 else ((-net) * (1.0 - v))
-    return pay - _f(s.get("fee_cost"))
+    return (net * v) if net > 0 else ((-net) * (1.0 - v))
 
 
 def main():
