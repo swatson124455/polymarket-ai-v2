@@ -86,12 +86,19 @@ def test_fees_are_subtracted_exactly_once_on_both_legs():
     assert round(cr.cum_fills_cash(tape), 6) == round(2.5 - 0.65, 6)
 
 
-def test_replay_order_follows_created_time_not_list_order():
-    # Netting is path-dependent, so an out-of-order tape must still replay chronologically.
-    # Fed backwards, the open must still be seen before the offset.
-    late = _fill("no", 0.60, 50, ts="2026-08-02T00:01:00.000000Z", fid="b")
-    early = _fill("yes", 0.35, 50, ts="2026-08-02T00:00:00.000000Z", fid="a")
-    assert round(cr.cum_fills_cash([late, early]), 6) == 2.5
+def test_total_is_invariant_to_input_order():
+    # HONEST SCOPE (mutation-checked 2026-08-02): deleting replay_fills' sort does NOT change
+    # this total, and no pin here can claim otherwise. The closed volume of a tape is
+    # (sum|q| - |net|)/2, which is order-invariant, so the SUM is too — only the per-event
+    # attribution replay_fills returns is order-sensitive, and that is pinned by the ledger's
+    # own tests (test_attribution.py passes position_before explicitly).
+    # What this pin IS worth: it proves the recorder's total cannot be corrupted by the order
+    # the venue happens to paginate fills in.
+    a = _fill("yes", 0.35, 50, ts="2026-08-02T00:00:00.000000Z", fid="a")
+    b = _fill("no", 0.60, 50, ts="2026-08-02T00:01:00.000000Z", fid="b")
+    c = _fill("no", 0.20, 15, ts="2026-08-02T00:02:00.000000Z", fid="c")
+    assert round(cr.cum_fills_cash([a, b, c]), 6) == round(cr.cum_fills_cash([c, b, a]), 6)
+    assert round(cr.cum_fills_cash([b, a, c]), 6) == round(cr.cum_fills_cash([a, b, c]), 6)
 
 
 def test_naked_no_held_to_settlement_keeps_its_collateral_out():
