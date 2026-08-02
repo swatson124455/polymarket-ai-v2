@@ -636,6 +636,19 @@ STRIKES_OUT = _envi("KALSHI_STRIKES_OUT", 0)   # 0 = count-based bans OFF (E lad
 # directive's original blocker was that no selection knob could hot-apply.
 INCUMBENT_ONLY = _envi("KALSHI_INCUMBENT_ONLY", 0)
 
+# OPTION C — SELECT-TO-BUDGET (operator-named 2026-08-02, study
+# D1_D6_CAPITAL_COUPLING_STUDY_2026-08-02.md). ON: the footprint is walked in allocation-
+# priority order accumulating each market's estimated two-sided commit
+# (kalshi_capital_rank.est_commit_usd — byte-aligned with _capped_join sizing) and capped
+# near _total_cap(), with a per-family budget = _series_cap() (the D6 multiplicity bound).
+# Held markets are never gated (de-risk first, and their capital is already spent);
+# explore probes are charged probe cost, not join cost. cap_desired stays as an unchanged
+# backstop that should now almost never fire — when it does, budget_backstop_fired alarms.
+# MARGIN covers the commit model's measured ~30% under-read (study §3) — tune from the
+# alarm counter. Default 0 = byte-identical (test-pinned). Both knobs hot-reloadable.
+SELECT_BUDGET = _envi("KALSHI_SELECT_BUDGET", 0)
+SELECT_BUDGET_MARGIN = _envf("KALSHI_SELECT_BUDGET_MARGIN", 0.3)
+
 # ANY-LOSS COOLDOWN SHADOW — WATCH-ONLY (operator-named 2026-08-01, option A: "A review next
 # handoff though. we can handle drips and we make money on drips").
 # GAP MEASURED: the re-entry cooldown is fed ONLY by taker-cross exits (":549", the three
@@ -2789,7 +2802,9 @@ def _refresh_safety_knobs():
              "KALSHI_STRIKES_OUT": ("STRIKES_OUT", int),
              "KALSHI_PAIR_UNWIND": ("PAIR_UNWIND", int),
              "KALSHI_PAIR_UNWIND_MIN_EDGE": ("PAIR_UNWIND_MIN_EDGE", float),
-             "KALSHI_INCUMBENT_ONLY": ("INCUMBENT_ONLY", int)}
+             "KALSHI_INCUMBENT_ONLY": ("INCUMBENT_ONLY", int),
+             "KALSHI_SELECT_BUDGET": ("SELECT_BUDGET", int),
+             "KALSHI_SELECT_BUDGET_MARGIN": ("SELECT_BUDGET_MARGIN", float)}
     # Gov-D9 (1.1 review 2026-07-31): these four LOOK hot-reloadable (they sit in the same
     # env file) but are import-time only — an operator editing them mid-flight got a silent
     # no-op, the exact defect class KALSHI_THROTTLE_SMART hid. Changed-but-not-applied is
@@ -3498,6 +3513,55 @@ def run_once():
             plan["incumbent_only_n"] = len(_incumbent_only)
         elif "incumbent_only_set" in st:
             st.pop("incumbent_only_set", None)       # OFF -> next enable re-captures fresh
+        # OPTION C — SELECT-TO-BUDGET walk (see the knob comment). Runs after the governor
+        # and the incumbent capture, before the quote loop, so it sees this cycle's truth.
+        # Fail-OPEN: any fault leaves the footprint unfiltered (the cap_desired backstop
+        # still bounds capital) and counts select_budget_fail.
+        if SELECT_BUDGET and footprint:
+            try:
+                import kalshi_capital_rank as _kcr
+                _limit9 = _total_cap() * (1.0 + SELECT_BUDGET_MARGIN)
+                _famcap9 = _series_cap()
+                with SCORES_LOCK:
+                    _refs9 = {_m9["ticker"]: (SCORES.get(_m9["ticker"]) or {}).get("ref")
+                              for _m9 in footprint}
+                _order9 = sorted(footprint,
+                                 key=lambda _m9: (-float(alloc_prio.get(_m9["ticker"], 0.0)
+                                                        or 0.0), _m9["ticker"]))
+                _heldset9 = {_t9 for _t9, _p9 in held_by.items()
+                             if abs(_p9) >= INV_TOLERANCE}
+                _tot9, _fam9, _keep9 = 0.0, defaultdict(float), []
+                _drop_budget9 = _drop_family9 = 0
+                for _m9 in _order9:
+                    _t9 = _m9["ticker"]
+                    if _t9 in _heldset9:
+                        _keep9.append(_m9)      # de-risk never gated; capital already held
+                        continue
+                    _est9 = _kcr.est_commit_usd(_refs9.get(_t9), MAX_MARKET_CAPITAL,
+                                                INV_HARD_CT)
+                    if _m9.get("explore") and EXPLORE_PROBE_CT > 0:
+                        # probes rest EXPLORE_PROBE_CT contracts a side; at any yes/no
+                        # split the two sides' dollars sum to ~probe_ct x $1
+                        _est9 = min(_est9, float(EXPLORE_PROBE_CT))
+                    _f9 = _t9.split("-")[0]
+                    if _famcap9 > 0 and _fam9[_f9] + _est9 > _famcap9:
+                        _drop_family9 += 1      # family budget full: skip THIS sibling
+                        continue
+                    if _tot9 + _est9 > _limit9:
+                        _drop_budget9 += 1      # keep walking: a cheaper market may fit
+                        continue
+                    _keep9.append(_m9)
+                    _tot9 += _est9
+                    _fam9[_f9] += _est9
+                footprint = _keep9
+                plan["select_budget_used"] = round(_tot9, 2)
+                plan["select_budget_limit"] = round(_limit9, 2)
+                if _drop_budget9:
+                    plan["drop_budget_full"] = _drop_budget9
+                if _drop_family9:
+                    plan["drop_family_budget"] = _drop_family9
+            except Exception:
+                _SILENT["select_budget_fail"] += 1
         if plan.get("strike_parse_failed"):
             # LOUD: held inventory whose strike would not parse can never be paired, so 100% of
             # it stays naked with no error. Silent darkness here is indistinguishable from
@@ -4059,6 +4123,11 @@ def run_once():
             desired, alloc_prio,
             incumbents=_INCUMBENT_TICKERS if ALLOC_INCUMBENT_FIRST else None,
             fam_held=_fam_held)                                                # aggregate $ cap
+        if SELECT_BUDGET and capped_markets:
+            # BACKSTOP ALARM (Option C): with the budget walk on, the blunt cut should
+            # almost never fire — every firing means est_commit under-read real demand.
+            # Persistent nonzero = raise KALSHI_SELECT_BUDGET_MARGIN.
+            plan["budget_backstop_fired"] = capped_markets
         try:
             _fam_denom = float(_TOTAL_CAP_EFF[0]) if _TOTAL_CAP_EFF[0] is not None else None
         except (TypeError, ValueError):
