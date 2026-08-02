@@ -70,6 +70,10 @@ def test_held_market_never_gated(monkeypatch, tmp_path):
     assert any(o["ticker"] == "KXS04-26AUG-A" for o in c.created), \
         "held market must survive the budget walk"
     assert row.get("select_budget_used") == 80.0, "held commit not double-counted"
+    # the held market must stay IN the footprint (budget-exempt), not merely get a
+    # strand-path exit — footprint = 2 funded + 1 held. (Mutation pin: gating held
+    # markets drops footprint to 2 while the strand quote masks the created-orders check.)
+    assert row.get("footprint") == 3, row.get("footprint")
 
 
 def test_explore_probe_charged_probe_cost(monkeypatch, tmp_path):
