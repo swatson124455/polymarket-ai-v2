@@ -646,6 +646,9 @@ INCUMBENT_ONLY = _envi("KALSHI_INCUMBENT_ONLY", 0)
 # backstop that should now almost never fire — when it does, budget_backstop_fired alarms.
 # MARGIN covers the commit model's measured ~30% under-read (study §3) — tune from the
 # alarm counter. Default 0 = byte-identical (test-pinned). Both knobs hot-reloadable.
+# DEPENDENCY: est refs come from the SCORE_RANK cache — with SCORE_RANK=0 every ref is
+# unknown and est pins at the 0.50/0.50 maximum (conservative: footprint ~limit/max_est
+# markets). Run this with SCORE_RANK=1 (live config) for honest sizing.
 SELECT_BUDGET = _envi("KALSHI_SELECT_BUDGET", 0)
 SELECT_BUDGET_MARGIN = _envf("KALSHI_SELECT_BUDGET_MARGIN", 0.3)
 
@@ -1429,7 +1432,9 @@ def select_footprint(progs, now):
     if MAX_DAYS_TO_CLOSE > 0 and rows:
         _kept, _checked = [], 0
         # ≤ half the cycle read budget (live 15:15Z: 4x FOOTPRINT starved ctx.build -> hot path
-        # down for the cycle). Cache warms over 2-3 cycles instead of 1; nothing else starves.
+        # down for the cycle). Post-D1: full-universe warm-up is ~ceil(rows/_budget) cycles
+        # (~33 at 3,300 rows / 100 budget) after each process start; bounded per cycle,
+        # visible via close_unchecked_tail shrinking to zero.
         _budget = min(FOOTPRINT_TOP * 4, max(40, READ_BUDGET_PER_CYCLE // 2))
         for _ri, r in enumerate(rows):
             # D1 ROOT FIX (selection review 2026-08-01; operator-named Option C
@@ -3517,6 +3522,7 @@ def run_once():
         # and the incumbent capture, before the quote loop, so it sees this cycle's truth.
         # Fail-OPEN: any fault leaves the footprint unfiltered (the cap_desired backstop
         # still bounds capital) and counts select_budget_fail.
+        _budget_said_no = set()          # budget-REFUSED tickers: excluded from drop-grace
         if SELECT_BUDGET and footprint:
             try:
                 import kalshi_capital_rank as _kcr
@@ -3530,12 +3536,26 @@ def run_once():
                                                         or 0.0), _m9["ticker"]))
                 _heldset9 = {_t9 for _t9, _p9 in held_by.items()
                              if abs(_p9) >= INV_TOLERANCE}
-                _tot9, _fam9, _keep9 = 0.0, defaultdict(float), []
+                _tot9, _fam9 = 0.0, defaultdict(float)
+                _keepset9, _saidno9 = set(), set()
                 _drop_budget9 = _drop_family9 = 0
                 for _m9 in _order9:
                     _t9 = _m9["ticker"]
+                    _f9 = _t9.split("-")[0]
                     if _t9 in _heldset9:
-                        _keep9.append(_m9)      # de-risk never gated; capital already held
+                        _keepset9.add(_t9)      # de-risk never gated; capital already held
+                        # blind review C#3: seed the family total with held dollars
+                        # ($1/contract, cap_desired's own convention) so the walk cannot
+                        # admit siblings the family backstop then skips every cycle
+                        _fam9[_f9] += abs(held_by.get(_t9, 0.0))
+                        continue
+                    # blind review C#2: markets whose ACCUMULATING quotes the incumbent
+                    # gate or the loss governor will strip anyway commit ~nothing —
+                    # charging full est let phantom demand budget-out a standing
+                    # incumbent. Keep them at zero cost; the strips do the real gating.
+                    if ((_incumbent_only is not None and _t9 not in _incumbent_only)
+                            or _t9 in _exit_only_mkts):
+                        _keepset9.add(_t9)
                         continue
                     _est9 = _kcr.est_commit_usd(_refs9.get(_t9), MAX_MARKET_CAPITAL,
                                                 INV_HARD_CT)
@@ -3543,17 +3563,22 @@ def run_once():
                         # probes rest EXPLORE_PROBE_CT contracts a side; at any yes/no
                         # split the two sides' dollars sum to ~probe_ct x $1
                         _est9 = min(_est9, float(EXPLORE_PROBE_CT))
-                    _f9 = _t9.split("-")[0]
                     if _famcap9 > 0 and _fam9[_f9] + _est9 > _famcap9:
                         _drop_family9 += 1      # family budget full: skip THIS sibling
+                        _saidno9.add(_t9)
                         continue
                     if _tot9 + _est9 > _limit9:
                         _drop_budget9 += 1      # keep walking: a cheaper market may fit
+                        _saidno9.add(_t9)
                         continue
-                    _keep9.append(_m9)
+                    _keepset9.add(_t9)
                     _tot9 += _est9
                     _fam9[_f9] += _est9
-                footprint = _keep9
+                # blind review C#1: filter in ORIGINAL footprint order — rebuilding in
+                # walk order silently destroyed the pivot branch's near-money ordering,
+                # which the quote loop's FOOTPRINT_TOP early-stop depends on.
+                footprint = [_m9 for _m9 in footprint if _m9["ticker"] in _keepset9]
+                _budget_said_no = _saidno9
                 plan["select_budget_used"] = round(_tot9, 2)
                 plan["select_budget_limit"] = round(_limit9, 2)
                 if _drop_budget9:
@@ -4103,7 +4128,10 @@ def run_once():
         grace_used = {}
         if DROP_GRACE > 0:
             try:
-                _fp_now = {m["ticker"] for m in footprint}
+                # blind review C#4: grace covers "we didn't check", never "we said no" —
+                # a budget-REFUSED ticker is a decision, so it must not be grace-retained.
+                # Adding it to fp_now makes grace treat it as checked-and-rejected.
+                _fp_now = {m["ticker"] for m in footprint} | _budget_said_no
                 desired, grace_used = apply_drop_grace(
                     standing, desired, _fp_now,
                     (load_state().get("drop_grace") or {}), DROP_GRACE)

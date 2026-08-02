@@ -114,6 +114,64 @@ def test_walk_fault_fails_open(monkeypatch, tmp_path):
     assert len({o["ticker"] for o in c.created}) == 2, "fault -> unfiltered footprint"
 
 
+def test_walk_preserves_original_footprint_order(monkeypatch, tmp_path):
+    # blind review C#1: rebuilding footprint in walk order destroyed the pivot branch's
+    # near-money ordering — the walk must FILTER in place, never reorder.
+    fp = list(reversed(_fp(3)))          # selection order: KXS02, KXS01, KXS00
+    _arm(monkeypatch, fp, margin=10.0)   # huge margin: nothing dropped
+    c = MockClient(mode="live", positions=[])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("footprint") == 3
+    src_order = [m["ticker"] for m in fp]
+    import inspect
+    assert 'footprint = [_m9 for _m9 in footprint if _m9["ticker"] in _keepset9]' \
+        in inspect.getsource(q), "filter-in-place is the ordering contract"
+    assert src_order == [m["ticker"] for m in fp], "walk must not mutate the row list"
+
+
+def test_incumbent_stripped_markets_charge_no_budget(monkeypatch, tmp_path):
+    # blind review C#2: a non-incumbent's accumulating quotes strip to nothing — charging
+    # full est let phantom demand budget-out a standing incumbent.
+    from test_live_hardening import _order
+    _arm(monkeypatch, _fp(5))
+    monkeypatch.setattr(q, "INCUMBENT_ONLY", 1)
+    # incumbent = a standing order on the LOWEST-priority market
+    c = MockClient(mode="live", positions=[],
+                   resting=[_order("o1", "KXS04-26AUG-A", "yes", 0.50, 10)])
+    row = _run(monkeypatch, c, str(tmp_path))
+    # non-incumbents cost 0 - nothing hits the budget; the incumbent is charged and fits
+    assert row.get("select_budget_used") == 40.0
+    assert "drop_budget_full" not in row
+    created = {o["ticker"] for o in c.created}
+    assert created == {"KXS04-26AUG-A"}, created
+
+
+def test_held_family_seeds_the_family_budget(monkeypatch, tmp_path):
+    # blind review C#3: without held seeding the walk admits siblings the cap_desired
+    # family backstop then skips every cycle (wasted seats)
+    _arm(monkeypatch, _fp(5))
+    monkeypatch.setattr(q, "SERIES_MAX_USD", 50.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 3.0)
+    fam = [{"ticker": f"KXFAM-26AUG-{i}", "usd_day": 100.0 - i, "target": 1,
+            "end": "2099-01-01T00:00:00Z"} for i in range(3)]
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: fam)
+    # held 30 ct on sibling 0 -> $30 of the $50 family budget consumed -> $40 sibling
+    # est cannot fit -> both remaining siblings family-dropped
+    c = MockClient(mode="live", positions=[
+        {"ticker": "KXFAM-26AUG-0", "position_fp": "30", "market_exposure_dollars": "15.00"}])
+    row = _run(monkeypatch, c, str(tmp_path))
+    assert row.get("drop_family_budget") == 2
+    assert row.get("footprint") == 1
+
+
+def test_budget_refused_tickers_excluded_from_drop_grace():
+    # blind review C#4: grace covers "we didn't check", never "we said no"
+    import inspect
+    src = inspect.getsource(q)
+    i = src.index('_fp_now = {m["ticker"] for m in footprint} | _budget_said_no')
+    assert "apply_drop_grace" in src[i:i + 300]
+
+
 def test_backstop_alarm_pinned(monkeypatch):
     import inspect
     src = inspect.getsource(q)
