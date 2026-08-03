@@ -93,10 +93,39 @@ def _cycle(monkeypatch, tmp_path):
 
 
 def test_plan_row_carries_absent_knobs(monkeypatch, tmp_path):
+    """ORDER-PROOF since the env_absent dedup (2026-08-03). The full list is emitted only when
+    the SIGNATURE changes, and the signature lives in a module global that persists across
+    tests in a process — so asserting on `env_absent` directly made this test depend on
+    whichever test ran first. It passed in the full suite and FAILED when the two tests in this
+    file were selected alone; the dedup commit did not update the pin it broke.
+    The always-emitted keys are what the docstring is really about, so pin those: the count,
+    and a signature that must equal the signature of the CURRENT absent set."""
     monkeypatch.delenv("KALSHI_PRECLOSE_FLATTEN", raising=False)
+    # Fresh process semantics: force the "first row emits the full list" path deterministically.
+    monkeypatch.setattr(q, "_ENV_ABSENT_SIG", [None])
     row = _cycle(monkeypatch, tmp_path)
     assert row.get("env_absent_n", 0) > 0
+    assert row.get("env_absent_changed") == 1, "a fresh signature must emit the full list"
     assert "KALSHI_PRECLOSE_FLATTEN" in row.get("env_absent", [])
+    # and the signature is a faithful digest of the set actually absent
+    import hashlib
+    assert row.get("env_absent_sig") == hashlib.sha1(
+        ",".join(q.env_absent()).encode()).hexdigest()[:12]
+
+
+def test_absent_knob_list_is_deduped_but_never_lost(monkeypatch, tmp_path):
+    """The dedup's own contract: on a SECOND cycle with an unchanged environment the full list
+    is omitted, but the count and signature still identify it — so absence of `env_absent`
+    means 'unchanged since the last row that carried it', never 'unknown'."""
+    monkeypatch.delenv("KALSHI_PRECLOSE_FLATTEN", raising=False)
+    monkeypatch.setattr(q, "_ENV_ABSENT_SIG", [None])
+    first = _cycle(monkeypatch, tmp_path)
+    second = _cycle(monkeypatch, tmp_path)
+    assert "env_absent" in first and first.get("env_absent_changed") == 1
+    assert "env_absent" not in second, "an unchanged list must not be restated"
+    assert second.get("env_absent_changed") == 0
+    assert second.get("env_absent_n") == first.get("env_absent_n")
+    assert second.get("env_absent_sig") == first.get("env_absent_sig")
 
 
 def test_unset_protection_knob_is_named_in_the_log(monkeypatch, tmp_path, capsys):

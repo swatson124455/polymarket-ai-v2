@@ -708,12 +708,30 @@ _ENV_ABSENT_SIG = [None]
 # "never evaluated", which is the ambiguity that let a protection look fine while it was
 # structurally unable to fire. Seeding them to 0 at the top of every cycle makes absence mean
 # "not evaluated" and 0 mean "evaluated, did not fire" — two different facts that were one.
-# Derived mechanically (not hand-maintained): these are exactly the keys matching
-# `plan["k"] = plan.get("k"...` with no plain assignment anywhere in the module.
+# DERIVATION, stated with its limits (corrected 2026-08-03 after blind review). The list was
+# built by a TEXTUAL search for `plan["k"] = plan.get("k"...` with no plain assignment. That
+# rule has two blind spots, and the first pass missed SIX keys because of them:
+#   * a `round(plan.get(k, 0.0) + x, n)` wrapper — the accumulation is not at the head of the
+#     RHS (exit_cross_cost_usd, preclose_naked_ct, preclose_taker_ct, strand_crossed_ct);
+#   * a statement split across lines, so a per-line scan sees only `= round(`
+#     (settle_topup_usd, exit_ladder_would_pay_usd).
+# All six are now included. Anyone re-deriving this list must match accumulation ANYWHERE in
+# the RHS and join continuation lines first — a per-line prefix match silently under-reports.
+# The magnitudes (…_usd, …_ct) are seeded on the same reasoning as the counts: a missing
+# magnitude is as ambiguous as a missing count.
 # SAFETY: seeding cannot change behaviour. Every in-module consumer reads these with
 # `.get(k, 0)` or truthiness, so a falsy 0 is byte-identical to absence at every read site;
 # the same holds for the hourly roll-up (kalshi_plans_hourly.py), which coerces with
 # `.get(f, 0) or 0`.
+# WHAT THE 0 DOES AND DOES NOT MEAN (corrected 2026-08-03): seeding happens at plan
+# construction, BEFORE the pipeline runs, and run_once has early `return 0` paths (standing-read
+# blackout, reconcile failure, positions-read failure) whose rows the `finally` still writes —
+# with all of these at 0. So a 0 does NOT prove the stage was evaluated. What the change buys is
+# a LOSSLESS RELABEL: pre-seeding, absence already conflated "did not fire" with "never ran",
+# and every write site is `+ 1` or a guarded assignment, so no consumer can distinguish less
+# than before. The discriminator lives in the same row and is deliberately NOT seeded —
+# standing_read_failed / reconcile_fail / positions_read_failed are plainly assigned and are
+# absent on a healthy row.
 _ALWAYS_EMIT_COUNTERS = (
     "create_ratchet_skipped", "drop_far_market_close", "exit_cross_unpriced",
     "exit_ladder_stepped", "exit_sweep_veto", "exit_trend_cross", "farclose_check_failed",
@@ -721,6 +739,9 @@ _ALWAYS_EMIT_COUNTERS = (
     "preclose_check_failed", "preclose_taker_failed", "series_probe", "settle_check_failed",
     "settle_topups", "strand_cross_failed", "strand_crossed_book", "strand_no_exit_side",
     "strand_read_failed", "strand_unpriceable", "taker_gov_tripped", "trip_inv_missing",
+    # the six the first derivation missed (round()-wrapped or line-split accumulations)
+    "settle_topup_usd", "exit_ladder_would_pay_usd", "exit_cross_cost_usd",
+    "preclose_naked_ct", "preclose_taker_ct", "strand_crossed_ct",
 )
 # Footprint DROP REASONS. FP_DROPS is merged into the row at the end of selection, so a reason
 # that never fired was likewise absent — indistinguishable from a selection stage that never
@@ -3386,6 +3407,14 @@ def run_once():
                             # must never fire on a stale basis.
                             # The settlement row carries the counts that actually settled (both
                             # fields present 127/127, read 2026-08-02T02:30:57Z), so re-base:
+                            # NOTE (corrected 2026-08-03): "no count basis -> skip" describes a
+                            # MISSING SNAPSHOT (_ct04), not missing venue fields. A settlement
+                            # row lacking yes_count_fp/no_count_fp coerces to 0.0 - 0.0 and
+                            # takes the `_net4 <= 0` arm, recording a ZERO delta rather than
+                            # skipping. That is the safe direction — a row we cannot size
+                            # cannot mint a ban — and both fields are present 127/127 on the
+                            # live tape, but the two cases are NOT the same and were described
+                            # as one.
                             _net4 = abs(float(_sr.get("yes_count_fp") or 0.0)
                                         - float(_sr.get("no_count_fp") or 0.0))
                             _ct04 = float((_expo_ct or {}).get(_st4, 0.0) or 0.0)
