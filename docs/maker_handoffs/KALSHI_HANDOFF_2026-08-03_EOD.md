@@ -113,12 +113,19 @@ agent defects from family economics, and these negatives are **not** a verdict o
 ## 4. OPEN DECISIONS
 
 - **Deploy + arm** (§3) — operator-gated.
-- **`MIN_RECEIPT_FILLS` 40 vs 24.** 40 shipped. Families that flip between them:
-  full history — `KXGENERICBALLOTVOTEHUB` (29 fills), `KXMLABELSHARE` (30); 07-29→now —
-  `KXMLABELSHARE` (30), `KXTRUMPENDORSEMENTS` (38); 08-01→now — `KXTRUMPENDORSEMENTS` (28),
-  `KXTRUMPTIME` (25, **+0.85%**, the only allow in the set). Zero flips on the canon window.
-- **The two engines now carry different bars** — rebuild 40 fills, calibrate
-  `MIN_RECEIPT_TRADES=20`. Not a defect; an inconsistency nobody has ruled on.
+- **VERIFY THE DEPOSIT TOTAL.** The cash identity closes to $0.0000 at deposits of
+  **$629.2030**; the operator-stated figure is **$640.00** ($565.00 venue-verified + $75 added
+  2026-08-03). The −$10.7970 residual is a fixed offset, not a leak (§5), so this single number
+  is the whole remaining gap. Needs a bank/venue deposit-record check — no code change can
+  settle it.
+- **The two engines now carry different evidence bars** — rebuild `MIN_RECEIPT_FILLS=40`,
+  calibrate `MIN_RECEIPT_TRADES=20`. Not a defect; an inconsistency nobody has ruled on.
+
+**DECIDED, recorded so it is not re-asked:** `MIN_RECEIPT_FILLS` stays **40** (operator, "not a
+question, go with your rec"). For the record, the families that would flip at 24: full history —
+`KXGENERICBALLOTVOTEHUB` (29 fills), `KXMLABELSHARE` (30); 07-29→now — `KXMLABELSHARE` (30),
+`KXTRUMPENDORSEMENTS` (38); 08-01→now — `KXTRUMPENDORSEMENTS` (28), `KXTRUMPTIME` (25, **+0.85%**,
+the only allow in the set). Zero flips on the canon window.
 
 ## 5. OPEN ITEMS — nothing here may be dropped (RULE NINE)
 
@@ -131,12 +138,28 @@ agent defects from family economics, and these negatives are **not** a verdict o
   corrected) and Gov-D6 / `STRIKES_OUT` (ruled LEAVE at 0, revisit only if armed) remain the
   operator's to rule. Live strike state 2026-08-03T12:48:49Z: 24 tickers, 21 at one strike, 3 at
   two; 9 permanent bans, `mkt_out_backup.json` agrees exactly.
-- **The $5.77–$9.30 cash-identity residual** — still unexplained, still not started. It DRIFTED
-  $1.50 while halted (no trading, 4 settlements), pointing at the settlement leg. Deposits
-  operator-stated **$640.00** ($565.00 venue-verified + $75 added 2026-08-03); model implies
-  $629.20 cash-form / $631.81 funded-form. ⚠ Cannot be honestly re-derived from the live ledger
-  until the defect-13 fix is deployed — the running recorder still uses the position-blind fill
-  model. It CAN now be attacked offline against the committed frozen tape.
+- **The cash-identity residual — MEASURED 2026-08-03, and the standing lead is REFUTED.**
+  Against a single-instant snapshot (balance + fills + settlements + credits read together;
+  `kalshi_live/cash_identity_snapshot_2026-08-03T233338Z.json`, re-runnable via
+  `kalshi_live/cash_identity_check.py`):
+
+      cash == deposits + credits + settlement_revenue + fill_cashflow
+      640.0000 + 198.9500 + 74.4100 − 594.9697 = 318.3903 predicted
+      307.5933 actual  →  RESIDUAL −$10.7970   (read 2026-08-03T23:33:38Z)
+
+  **IT DOES NOT DRIFT.** Measured at two instants 6h27m apart across 1 new fill and 4 new
+  settlements, the model predicted every cash movement **to the cent** (+$0.6700 predicted vs
+  +$0.6700 actual) and the residual was **identical at both: −$10.7970**. So the prior lead
+  ("the $1.50 drift points at the settlement leg") is **refuted** — that drift was measured with
+  the DEPLOYED recorder, i.e. the defect-13 position-blind fill model, the very instrument now
+  known to be wrong.
+
+  A constant offset with perfect dynamics points at the **initial condition, not a flow**.
+  Deposits implied by a zero residual: **$629.2030** vs operator-stated **$640.00** — a
+  difference of exactly the residual. Credits are clean (58/58 `status=applied`, 0 clawbacks, no
+  single credit or settlement row near $10.7970). **Remaining candidates: the deposit total
+  itself, or a one-time account adjustment no API feed exposes. This is an operator
+  record-check, not a code question** — see §4.
 - **`KALSHI_MAX_TOTAL_CAPITAL=350`** predates the deposit — verified still 350.
 - **$0.1093 of finalized-NO dust.**
 - `KXRAIN-26AUG03-PHIL` self-closed 08-02T18:57:33Z (−$0.62 ticker realized) — **closed**.
