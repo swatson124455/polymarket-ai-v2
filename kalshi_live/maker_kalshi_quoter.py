@@ -629,8 +629,15 @@ def _mkt_out_backup_union(current):
 # anything costing over 5 dollars until 8-3 rereview"). A market that trips the $/day governor
 # STRIKES_OUT times is OUT: banned with NO expiry, EXEMPT from memory pruning — only an
 # operator clearing quoter_state's mkt_strike_hist entry (or the market's own close) ends it.
-# STRIKES_OUT=1 (the live setting) means one trip = permanent ban; the day-latch and the ban
-# coincide. The knob exists so the operator's 2026-08-03 policy re-review can retune without a
+# STRIKES_OUT=0 IS THE LIVE SETTING — count-based bans are OFF. CORRECTED 2026-08-03 on
+# operator ruling ("resolve to match reality and keep it that way"). This comment previously
+# read "STRIKES_OUT=1 (the live setting) means one trip = permanent ban", which contradicted
+# the code two lines below (default 0) and the box (KALSHI_STRIKES_OUT is unset in live.env,
+# verified 2026-08-03), i.e. it described a ban mechanism that has not been armed. Every one of
+# the 9 permanent bans on record was minted by the $5 rung or by the one-time grandfather, NOT
+# by a strike count. Strikes still ACCRUE (mkt_strike_hist: 24 tickers, 21 at one strike and 3
+# at two, read 2026-08-03T12:48:49Z) — they are a record, not a trigger, unless this knob is
+# raised. The knob exists so the operator's 2026-08-03 policy re-review can retune without a
 # code deploy. Strike history persists in quoter_state (per-market trip dates; entries BELOW
 # the OUT threshold are pruned at TWO_STRIKES_MEMORY_D so the file stays bounded). Rides the
 # same governor: inert unless MKT_DAY_LOSS_EXITONLY_USD > 0. Born 2026-07-31 00:00-02:32Z: the
@@ -792,10 +799,13 @@ def _two_strikes(hist, tripped_today, day, now):
       >= STRIKES_OUT strikes -> OUT: banned with NO expiry and EXEMPT from memory pruning —
                    only an operator clearing quoter_state's mkt_strike_hist entry (or the
                    market's own close) ends it.
-      below the threshold    -> no ban here (at STRIKES_OUT=1 this branch only ever holds
-                   markets from a former multi-strike era); entries prune at
-                   TWO_STRIKES_MEMORY_D. The same-day trip is still exit-only via the
-                   caller's day-latch regardless."""
+      below the threshold    -> no ban here; entries prune at TWO_STRIKES_MEMORY_D. The
+                   same-day trip is still exit-only via the caller's day-latch regardless.
+    LIVE STATE, corrected 2026-08-03 on operator ruling: STRIKES_OUT is 0 (unset in live.env,
+    code default 0), so the `>= STRIKES_OUT` branch is GATED OFF at the call site and this
+    function bans nothing today — it is pure bookkeeping. The prior wording ("at STRIKES_OUT=1
+    this branch only ever holds markets from a former multi-strike era") described an armed
+    mechanism and was wrong."""
     for t in tripped_today:
         dl = hist.setdefault(t, [])
         if day not in dl:
