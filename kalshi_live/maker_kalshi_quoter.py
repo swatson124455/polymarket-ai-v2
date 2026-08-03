@@ -742,6 +742,10 @@ _ALWAYS_EMIT_COUNTERS = (
     # the six the first derivation missed (round()-wrapped or line-split accumulations)
     "settle_topup_usd", "exit_ladder_would_pay_usd", "exit_cross_cost_usd",
     "preclose_naked_ct", "preclose_taker_ct", "strand_crossed_ct",
+    # C1 live inventory meter: these are plainly assigned inside the mark block, so they are
+    # absent whenever the balance read fails or marking raises. Seeding them keeps the A3
+    # contract — a missing gauge means "did not run", never "measured flat".
+    "mkt_unreal_n", "mkt_unreal_usd", "mkt_unreal_neg_usd", "mkt_unreal_worst_usd",
 )
 # Footprint DROP REASONS. FP_DROPS is merged into the row at the end of selection, so a reason
 # that never fired was likewise absent — indistinguishable from a selection stage that never
@@ -3759,6 +3763,19 @@ def run_once():
                     # Re-read failed -> cannot PROVE consistency -> torn path (fail safe).
                     plan["equity_reread_failed"] = repr(_te)[:120]
                 _marked, _mark_fb = 0.0, 0
+                # LIVE PER-MARKET INVENTORY METER (defect 2, Phase C1). The loss ladder is fed
+                # by the venue's realized_pnl_dollars, which is 0.0 for as long as a position is
+                # OPEN — so a market can bleed all day and the governor sees nothing until it
+                # closes. Live 2026-08-02 KXTEMPAUSH was first seen at -$9.00 having never
+                # tripped the $3 rung: two lifetime fills, 108.81s apart, the whole loss
+                # realized in one round trip.
+                # This is MEASUREMENT ONLY and gates nothing. Per the plan's own framing, a
+                # live meter buys honest measurement and earlier cross-market visibility, NOT
+                # loss limitation on a one-tick adverse fill — the reduce path had already
+                # flipped in the same cycle, so a rung firing on an unrealized mark would have
+                # banned a market that was already exiting. Whether unrealized should FEED the
+                # rungs is an operator policy call, deliberately not taken here.
+                _unreal = {}
                 try:
                     for _t, _p in _eq_held_by.items():
                         if not _p:
@@ -3779,9 +3796,35 @@ def run_once():
                         if _mv is None:
                             _mv = abs(_p) * float(_eq_cost_by.get(_t, 0.0))   # fallback: cost
                             _mark_fb += 1
+                        else:
+                            # Only a REAL mark carries signal. The cost fallback would report
+                            # exactly 0.00 unrealized by construction, which is not a
+                            # measurement of anything — recording it would dilute the gauge
+                            # with markets we could not price.
+                            _unreal[_t] = _mv - abs(_p) * float(_eq_cost_by.get(_t, 0.0))
                         _marked += _mv
                     _equity = free_cash + _marked
                     plan["equity_mark_usd"] = round(_equity, 2)
+                    # The C1 gauge. ALWAYS emitted (A3 doctrine): 0 must mean "measured, flat",
+                    # never "we did not look". A market priced only by the cost fallback is
+                    # excluded from _unreal and shows up in mark_fallback_tickers instead.
+                    _worst_t, _worst_v = "", 0.0
+                    for _ut, _uv in _unreal.items():
+                        if _uv < _worst_v:
+                            _worst_t, _worst_v = _ut, _uv
+                    plan["mkt_unreal_n"] = len(_unreal)
+                    plan["mkt_unreal_usd"] = round(sum(_unreal.values()), 4)
+                    plan["mkt_unreal_neg_usd"] = round(
+                        sum(v for v in _unreal.values() if v < 0), 4)
+                    plan["mkt_unreal_worst_usd"] = round(_worst_v, 4)
+                    plan["mkt_unreal_worst"] = _worst_t
+                    # LOUD at the ladder's own thresholds — visibility, not enforcement. This is
+                    # the line that would have named KXTEMPAUSH while it was still open.
+                    if MKT_DAY_LOSS_EXITONLY_USD > 0 and _worst_v <= -MKT_DAY_LOSS_EXITONLY_USD:
+                        print(f"WARNING UNREALIZED {_worst_t} {_worst_v:+.2f} at/below the "
+                              f"${MKT_DAY_LOSS_EXITONLY_USD:.2f} rung — the ladder cannot see "
+                              f"this yet (it reads REALIZED, which is 0 while the position is "
+                              f"open); measurement only, nothing gated")
                     if _eq_consistent:
                         # A TORN level must not poison the portfolio-tracking cap either —
                         # keep the last-good value on torn cycles (Gov-D10 semantics).
