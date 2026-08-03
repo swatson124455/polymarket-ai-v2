@@ -81,7 +81,19 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from maker_kalshi_client import KalshiOrderClient, API_ROOT
     c = KalshiOrderClient()
-    # NO count_filter here (unlike get_positions): settled rows are exactly the receipts we want.
+    # ⚠ REFUTED 2026-08-03. This line used to read "NO count_filter here (unlike
+    # get_positions): settled rows are exactly the receipts we want." The premise is FALSE:
+    # /portfolio/positions never returns a SETTLED market under ANY filter. Measured read-only
+    # 2026-08-03T12:39:55Z against the live account, 129 settled tickers definitive from
+    # /portfolio/settlements: unfiltered 40 rows / 0 settled; count_filter=total_traded 40 rows
+    # / 0 settled; count_filter=position 19 rows / 0 settled.
+    # So omitting count_filter buys NOTHING here, and this feed cannot see the settled markets
+    # it most wants — NEW DEFECT 14, reported to the operator, unfixed. It matters because the
+    # net-EV calibration (defect 7) is built on this feed; a per-market cost table blind to
+    # every settled market is blind to exactly the completed round trips it is meant to price.
+    # The same blind spot in the GOVERNOR feed was root-fixed 2026-08-03 (carry-forward plus a
+    # settlement top-up from /portfolio/settlements); the equivalent repair here is Phase-C
+    # work and is the operator's to name.
     positions = c._get_paginated(f"{API_ROOT}/portfolio/positions",
                                  "market_positions")["market_positions"]
     fills = c._get_paginated(f"{API_ROOT}/portfolio/fills", "fills")["fills"]

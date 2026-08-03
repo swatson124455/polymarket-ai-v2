@@ -35,6 +35,10 @@ import urllib.request
 PROD_BASE = "https://external-api.kalshi.com"
 DEMO_BASE = "https://external-api.demo.kalshi.co"
 API_ROOT = "/trade-api/v2"
+# Times _get_paginated hit its 50-page runaway bound while the venue still had more to give,
+# i.e. handed a caller a PARTIAL list that looks complete. Unreachable at today's volumes
+# (50 pages x limit=1000 = 50k rows); exists so it can never become a silent one.
+PAGINATION_TRUNCATED = [0]
 
 # 0.16s => 6.25 writes/s; all-creates peak = 62.5 tok/s (create=10 tok), a ~37%
 # margin under the Basic write ceiling of 100 tok/s (no burst credit). Widened
@@ -338,6 +342,18 @@ class KalshiOrderClient:
             cursor = d.get("cursor") or ""
             if not cursor:
                 break
+        if cursor:
+            # SILENT TRUNCATION, now LOUD (2026-08-03). Hitting the 50-page bound with a live
+            # cursor means the caller is being handed a PARTIAL list that looks complete: the
+            # leftover cursor is returned, but no caller in this repo inspects it and nothing
+            # counted it. That is the same silent-degradation class this module counts
+            # everywhere else, and it is the shape the burn-and-run and settled-row blind spots
+            # both took — a feed that quietly stops mentioning things.
+            # Runaway guard is unchanged (still 50 pages); only the silence is fixed.
+            PAGINATION_TRUNCATED[0] += 1
+            print(f"WARNING {base_path} paginated to the {50}-page cap with a LIVE cursor — "
+                  f"{len(items)} {item_key} returned but the list is INCOMPLETE; every "
+                  f"consumer of this call is now reading a partial view")
         return {item_key: items, "cursor": cursor}
 
     def get_balance(self):

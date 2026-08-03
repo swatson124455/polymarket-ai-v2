@@ -28,6 +28,7 @@ Cycle (timer-driven, default 10-min):
 Stop:   sudo touch <dir>/STOP
 Kill:   sudo systemctl disable --now polymarket-maker-kalshi-quoter.timer
 """
+import hashlib
 import json
 import math
 import os
@@ -689,6 +690,10 @@ ANYLOSS_SHADOW_MAX_TICKERS = 200          # per floor per day — keeps quoter_s
 # real usage is tens of floats; on overflow the MOST NEGATIVE are kept, because those are the
 # only ones that can still trip a rung, and the truncation is counted rather than silent.
 REALIZED_CARRY_MAX = 500
+# Last emitted env_absent signature, so the (near-constant, ~44%-of-row) list is written only
+# when it CHANGES. Module-level: it resets on restart, which is exactly right — a fresh process
+# must state the full list once before any later row can mean "unchanged".
+_ENV_ABSENT_SIG = [None]
 
 # --- ALWAYS-EMIT COUNTERS (defect 9, Phase A3). Every name below is written ONLY as an
 # accumulation — `plan[k] = plan.get(k, 0) + 1` — and never plainly assigned, so a cycle in
@@ -2007,6 +2012,14 @@ def _refresh_fill_costs(client):
         pass
     try:
         import kalshi_fill_costs as _kfc
+        # ⚠ NEW DEFECT 14 (2026-08-03, reported, UNFIXED): this unfiltered read cannot see a
+        # SETTLED market — measured 0 of 129 settled tickers present under unfiltered,
+        # count_filter=total_traded AND count_filter=position (read 2026-08-03T12:39:55Z). The
+        # standalone script's comment claiming settled rows are "exactly the receipts we want"
+        # is refuted there too. This is the LIVE site (the script is manual-run only), and it
+        # is the feed the net-EV calibration depends on, so the cost table is blind to every
+        # completed round trip it is meant to price. Repair mirrors the governor fix
+        # (settlement top-up) and is Phase-C work for the operator to name.
         positions = client._get_paginated(f"{API_ROOT}/portfolio/positions",
                                           "market_positions")["market_positions"]
         fills = client._get_paginated(f"{API_ROOT}/portfolio/fills", "fills")["fills"]
@@ -3052,7 +3065,24 @@ def run_once():
     # NAMED in the log, because a bare count is exactly as ignorable as silence was.
     _absent = env_absent()
     plan["env_absent_n"] = len(_absent)
-    plan["env_absent"] = _absent
+    # DEDUP (operator-authorized 2026-08-03). This list is near-constant for a process, and it
+    # dominated the row: MEASURED on the live box over plans-20260802.jsonl (707 rows), the
+    # field was 1,921 B of a 4,330 B row (44.4%, 72 entries) and took exactly ONE distinct
+    # value across all 707 rows. So it was ~44% of every row restating the same fact.
+    # The COUNT and a stable SIGNATURE are still emitted every cycle, so a CHANGE is always
+    # detectable from any row; the full list is emitted only when the signature moves (and on
+    # the first row of each process, since the module global resets on restart). Absence of
+    # `env_absent` therefore means "identical to the last row that carried it" — never
+    # "unknown". The protection-bearing knobs are unaffected: unset _SAFETY_KNOBS are still
+    # NAMED in the log every cycle, below.
+    _sig9 = hashlib.sha1(",".join(_absent).encode()).hexdigest()[:12]
+    plan["env_absent_sig"] = _sig9
+    if _ENV_ABSENT_SIG[0] != _sig9:
+        _ENV_ABSENT_SIG[0] = _sig9
+        plan["env_absent"] = _absent
+        plan["env_absent_changed"] = 1
+    else:
+        plan["env_absent_changed"] = 0
     _unset_safety = [k for k in _SAFETY_KNOBS if k in _absent]
     if _unset_safety:
         plan["env_absent_safety"] = _unset_safety
