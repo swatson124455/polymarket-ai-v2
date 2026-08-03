@@ -15,6 +15,19 @@ A departed ticker's last known value is now CARRIED for the rest of the day, wit
 ALWAYS WINNING so a live ticker is never shadowed by a stale carry. The carry is FROZEN, so
 by itself it cannot manufacture a trip the governor lacked the data for — moving it is the
 separate settlement top-up.
+
+⚠ MUTATION COVERAGE, STATED HONESTLY (2026-08-03). Two mutations of the merge SURVIVE this
+file, and after tracing them neither is a defect AT THIS COMMIT:
+  * "carry shadows fresh instead of fresh winning" is mathematically a no-op here: _departed
+    is built as (prior knowledge MINUS whatever the fresh read still shows), so the two dicts
+    are DISJOINT by construction and merge precedence cannot change the result. On the
+    fallback path they overlap but hold identical values, so it is still inert.
+  * "drop the merge entirely" changes no ladder outcome today, because a carried value is
+    FROZEN at its last observed level: a ticker that had tripped stays latched in
+    mkt_loss_tripped, and one that had not cannot cross a threshold without new information.
+Both become LOAD-BEARING the moment the settlement top-up (B4b) can MOVE a carried value, and
+B4b's own pins are required to kill them. This note exists so a future session does not read
+the surviving mutants as untested code, or "fix" them by weakening the merge.
 """
 import json
 import os
@@ -100,6 +113,51 @@ def test_the_carry_still_enforces_the_ladder_on_a_departed_ticker(monkeypatch, t
     st = _state(tmp_path)
     assert "T2" in (st.get("mkt_loss_tripped") or []), "the trip must not be forgotten"
     assert (st.get("mkt_realized_carry") or {}).get("T2") == -3.5
+
+
+def test_a_stale_carry_never_shadows_a_live_value(monkeypatch, tmp_path):
+    """EVALUATION precedence, not just what gets persisted (mutation-found 2026-08-03).
+
+    The earlier pins only inspected mkt_realized_carry, which is computed from set membership
+    and is therefore identical whether the merge puts fresh or carry on top. That let a
+    precedence inversion survive. Here T2 departs while flat at 0.00 and then REAPPEARS
+    already down -$3.50: the fresh value must drive the ladder and trip the $3 rung. If the
+    stale 0.00 shadowed it, no trip would fire and a real loss would go ungoverned."""
+    _arm(monkeypatch)
+    _run(monkeypatch, MockClient(mode="live", positions=[_pos("T1")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"},
+                                         {"ticker": "T2", "realized_pnl_dollars": "0.00"}]),
+         str(tmp_path))
+    _run(monkeypatch, MockClient(mode="live", positions=[_pos("T1")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"}]),
+         str(tmp_path))
+    assert (_state(tmp_path).get("mkt_realized_carry") or {}).get("T2") == 0.0
+    _run(monkeypatch, MockClient(mode="live", positions=[_pos("T1")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"},
+                                         {"ticker": "T2", "realized_pnl_dollars": "-3.50"}]),
+         str(tmp_path))
+    assert "T2" in (_state(tmp_path).get("mkt_loss_tripped") or []), \
+        "the LIVE value must drive the ladder; a stale carry may never shadow it"
+
+
+def test_carry_is_capped_keeping_the_most_negative(monkeypatch, tmp_path):
+    """quoter_state must stay bounded, and the truncation must keep the entries that can still
+    trip a rung. Cap lowered for the test; three tickers depart at once."""
+    _arm(monkeypatch)
+    monkeypatch.setattr(q, "REALIZED_CARRY_MAX", 2)
+    _run(monkeypatch, MockClient(mode="live", positions=[_pos("T1")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"},
+                                         {"ticker": "A", "realized_pnl_dollars": "-0.10"},
+                                         {"ticker": "B", "realized_pnl_dollars": "-9.00"},
+                                         {"ticker": "C", "realized_pnl_dollars": "-4.00"}]),
+         str(tmp_path))
+    _run(monkeypatch, MockClient(mode="live", positions=[_pos("T1")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"}]),
+         str(tmp_path))
+    carry = _state(tmp_path).get("mkt_realized_carry") or {}
+    assert len(carry) == 2, f"the carry must respect REALIZED_CARRY_MAX: {carry}"
+    assert set(carry) == {"B", "C"}, \
+        f"truncation must keep the MOST NEGATIVE (B -9.00, C -4.00), not A -0.10: {carry}"
 
 
 def test_carry_clears_at_the_day_roll(monkeypatch, tmp_path):
