@@ -326,6 +326,32 @@ def test_settlements_outage_does_not_halt_and_does_not_advance_the_watermark(mon
     assert _state(tmp_path).get("settle_watermark") == wm_before
 
 
+def test_exposure_and_its_count_basis_are_pruned_together(monkeypatch, tmp_path):
+    """Mutation-found 2026-08-03. mkt_exposure_ct must be pruned at the day roll in lockstep
+    with mkt_exposure. Leaving it is unreachable TODAY — the dollars are pruned first, so a
+    departed ticker takes the unknown-exposure skip and the stale count is never consulted —
+    but the dict would then grow without bound across days, and the two keys drifting apart is
+    exactly how a future reader ends up prorating against a basis from another day."""
+    _arm(monkeypatch)
+    _run(monkeypatch, MockClient(mode="live",
+                                 positions=[_pos("T1"), _pos("T2", pos="50", expo="40.00")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"},
+                                         {"ticker": "T2", "realized_pnl_dollars": "0.00"}]),
+         str(tmp_path))
+    st = _state(tmp_path)
+    assert (st.get("mkt_exposure_ct") or {}).get("T2") == 50.0
+    st["mkt_realized_day"] = "2020-01-01"
+    with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as fh:
+        json.dump(st, fh)
+    _run(monkeypatch, MockClient(mode="live", positions=[_pos("T1")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"}]),
+         str(tmp_path))
+    st2 = _state(tmp_path)
+    assert "T2" not in (st2.get("mkt_exposure") or {}), "dollars pruned at the roll"
+    assert "T2" not in (st2.get("mkt_exposure_ct") or {}), \
+        "the count basis must be pruned in lockstep with the dollars it belongs to"
+
+
 def test_settlement_deltas_clear_at_the_day_roll(monkeypatch, tmp_path):
     # The ladder latches on the UTC calendar day, so yesterday's settlement must not count
     # toward today's rungs. The WATERMARK is a feed cursor and deliberately does NOT rewind.
