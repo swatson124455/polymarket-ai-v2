@@ -746,6 +746,7 @@ _ALWAYS_EMIT_COUNTERS = (
     # absent whenever the balance read fails or marking raises. Seeding them keeps the A3
     # contract — a missing gauge means "did not run", never "measured flat".
     "mkt_unreal_n", "mkt_unreal_usd", "mkt_unreal_neg_usd", "mkt_unreal_worst_usd",
+    "mkt_unreal_measured",
 )
 # Footprint DROP REASONS. FP_DROPS is merged into the row at the end of selection, so a reason
 # that never fired was likewise absent — indistinguishable from a selection stage that never
@@ -3812,6 +3813,15 @@ def run_once():
                     for _ut, _uv in _unreal.items():
                         if _uv < _worst_v:
                             _worst_t, _worst_v = _ut, _uv
+                    # DID THE METER ACTUALLY RUN? A3 seeds the gauges to 0, which is the right
+                    # default everywhere else but hides exactly the distinction this gauge
+                    # exists to make: a 0 from "measured, nothing underwater" and a 0 from
+                    # "the mark block never ran" are different facts. Found by mutation
+                    # 2026-08-03 — a mutant that emitted the gauges only when non-empty passed
+                    # the suite, because the seed supplied the 0 either way.
+                    # This flag is seeded 0 and set 1 ONLY here, so measured==1 means the
+                    # numbers beside it were computed this cycle.
+                    plan["mkt_unreal_measured"] = 1
                     plan["mkt_unreal_n"] = len(_unreal)
                     plan["mkt_unreal_usd"] = round(sum(_unreal.values()), 4)
                     plan["mkt_unreal_neg_usd"] = round(

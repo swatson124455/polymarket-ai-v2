@@ -41,10 +41,30 @@ def test_meter_is_emitted_even_with_no_inventory(monkeypatch, tmp_path):
     # A3 contract: 0 must mean "measured, flat", never "did not look".
     _arm(monkeypatch)
     row = _run(monkeypatch, MockClient(mode="live", positions=[]), str(tmp_path))
+    assert row.get("mkt_unreal_measured") == 1, "the meter ran"
     assert row.get("mkt_unreal_n") == 0
     assert row.get("mkt_unreal_usd") == 0.0
     assert row.get("mkt_unreal_worst_usd") == 0.0
     assert row.get("mkt_unreal_worst") == ""
+
+
+def test_measured_flag_separates_flat_from_never_ran(monkeypatch, tmp_path):
+    """Found by mutation 2026-08-03. A3 seeds these gauges to 0, so a mutant that emitted them
+    only when non-empty passed the whole suite — the seed supplied the 0 either way. That hides
+    the one distinction THIS gauge exists to make: "measured, nothing underwater" and "the mark
+    block never ran" are different facts that both read 0.
+    mkt_unreal_measured is seeded 0 and set 1 only inside the mark block, so it separates them.
+    Here the balance read fails, the whole block is skipped, and the flag must stay 0."""
+    _arm(monkeypatch)
+
+    class NoBalance(MockClient):
+        def get_balance(self):
+            raise RuntimeError("balance 503")
+
+    row = _run(monkeypatch, NoBalance(mode="live", positions=[_pos()]), str(tmp_path))
+    assert row.get("mkt_unreal_measured") == 0, "the meter did NOT run and must say so"
+    assert row.get("mkt_unreal_usd") == 0.0, "...while the seeded gauge still reads 0"
+    assert row.get("balance_read_failed"), "sanity: this is the blind-cycle path"
 
 
 def test_open_position_at_cost_shows_flat(monkeypatch, tmp_path):
