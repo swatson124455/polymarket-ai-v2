@@ -28,6 +28,9 @@ import sys
 SCHEMA = 1          # must match kalshi_capital_rank.SCHEMA (reader fails open on mismatch)
 
 
+SETTLED_REPLAY_FAILS = [0]   # defect 14: the settled-market fill replay faulted, so those
+                             # markets fell back to ABSENT (the pre-fix behaviour) rather than
+                             # being priced on a partial tape. Counted, never silent.
 MISSING_FIELD_ROWS = [0]     # audit probe 2026-07-30: positions rows with BOTH pnl/fee fields
                              # absent in the last build() — venue-rename tripwire for the feed
                              # that ranks capital. Module counter so build() stays pure-return.
@@ -37,8 +40,26 @@ def _iso(s):
     return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
 
 
-def build(positions, fills, now=None):
-    """Pure aggregation: positions rows + fills rows -> {ticker: {...}}. Testable, no I/O."""
+def build(positions, fills, now=None, settlements=None):
+    """Pure aggregation: positions rows + fills rows (+ settlements) -> {ticker: {...}}.
+
+    `settlements` is OPTIONAL and additive — the 3-arg signature every existing caller and test
+    uses is unchanged, and omitting it reproduces the old output exactly.
+
+    WHY IT EXISTS (defect 14, root-fixed 2026-08-03). This feed used to be built from
+    /portfolio/positions alone, and that endpoint NEVER returns a SETTLED market: measured
+    read-only 2026-08-03T12:39:55Z against the live account, 0 of 129 settled tickers appear
+    under unfiltered, count_filter=total_traded OR count_filter=position. So a cost feed meant
+    to price completed round trips was blind to every completed round trip — and it is the feed
+    the net-EV calibration is built on.
+    A settled market's realized P&L is recoverable without it: settlement revenue plus the
+    position-aware cash of that ticker's fills. Both halves are canon —
+    `revenue` is CENTS (matches the value/counts payout model 127/127 divided by 100, measured
+    2026-08-03T02:30:57Z) and the fill model is kalshi_attribution_ledger.replay_fills, the
+    same validated model the cash recorder was moved onto for defect 13.
+    NOT used: the settlement row's yes/no_total_cost_dollars. Those are GROSS LIFETIME costs on
+    BOTH legs (KXTRUMPENDORSEMENTS-26AUG01-A5 carries $141.15 against 125.00 yes vs 124.89 no —
+    almost entirely paired), so subtracting them would manufacture enormous phantom losses."""
     now = now or dt.datetime.now(dt.timezone.utc)
     span = {}                                        # ticker -> [first_ts, last_ts]
     for f in fills:
@@ -74,6 +95,50 @@ def build(positions, fills, now=None):
                       "cost_usd_day": round(max(0.0, -realized) / days, 4),
                       "ts": now.isoformat()}
     MISSING_FIELD_ROWS[0] = missing_fields
+    # ---- SETTLED MARKETS (defect 14). Absent from `positions` under every filter, so their
+    # realized P&L is reconstructed from the settlement receipt plus the position-aware cash of
+    # their own fills. A live ticker is NEVER overwritten: settlement and presence are mutually
+    # exclusive at the venue, and the guard makes that explicit rather than assumed.
+    if settlements:
+        try:
+            from kalshi_attribution_ledger import replay_fills
+        except Exception:
+            replay_fills = None
+        if replay_fills is not None:
+            cash_by, fee_by = {}, {}
+            try:
+                events, _pos = replay_fills(fills)
+                for e in events:
+                    t = (e["fill"].get("ticker") or e["fill"].get("market_ticker"))
+                    if not t:
+                        continue
+                    cash_by[t] = cash_by.get(t, 0.0) + float(e["cash"])
+                    try:
+                        fee_by[t] = fee_by.get(t, 0.0) + abs(float(
+                            e["fill"].get("fee_cost") or 0.0))
+                    except (TypeError, ValueError):
+                        pass
+            except Exception:
+                SETTLED_REPLAY_FAILS[0] += 1
+                cash_by, fee_by = {}, {}
+            for s in settlements:
+                t = s.get("ticker")
+                if not t or t in markets:
+                    continue                     # never shadow a live row
+                try:
+                    revenue = float(s.get("revenue") or 0.0) / 100.0   # CENTS, measured 127/127
+                except (TypeError, ValueError):
+                    continue
+                realized = revenue + cash_by.get(t, 0.0)
+                lo, hi = span.get(t, (None, None))
+                days = ((hi - lo).total_seconds() / 86400.0) if lo is not None else 0.0
+                days = max(days, 1.0)
+                markets[t] = {"realized_pnl_usd": round(realized, 4),
+                              "fees_usd": round(fee_by.get(t, 0.0), 4),
+                              "active_days": round(days, 3),
+                              "cost_usd_day": round(max(0.0, -realized) / days, 4),
+                              "settled": 1,
+                              "ts": now.isoformat()}
     return markets
 
 
@@ -97,7 +162,11 @@ def main():
     positions = c._get_paginated(f"{API_ROOT}/portfolio/positions",
                                  "market_positions")["market_positions"]
     fills = c._get_paginated(f"{API_ROOT}/portfolio/fills", "fills")["fills"]
-    markets = build(positions, fills)
+    try:
+        settlements = c.get_settlements().get("settlements") or []
+    except Exception:
+        settlements = []
+    markets = build(positions, fills, settlements=settlements)
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "kalshi_fill_costs.json")
     tmp = out + ".tmp"

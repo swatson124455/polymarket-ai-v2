@@ -2043,18 +2043,22 @@ def _refresh_fill_costs(client):
         pass
     try:
         import kalshi_fill_costs as _kfc
-        # ⚠ NEW DEFECT 14 (2026-08-03, reported, UNFIXED): this unfiltered read cannot see a
-        # SETTLED market — measured 0 of 129 settled tickers present under unfiltered,
-        # count_filter=total_traded AND count_filter=position (read 2026-08-03T12:39:55Z). The
-        # standalone script's comment claiming settled rows are "exactly the receipts we want"
-        # is refuted there too. This is the LIVE site (the script is manual-run only), and it
-        # is the feed the net-EV calibration depends on, so the cost table is blind to every
-        # completed round trip it is meant to price. Repair mirrors the governor fix
-        # (settlement top-up) and is Phase-C work for the operator to name.
+        # DEFECT 14 ROOT FIX (operator-named 2026-08-03: "fix then build"). This positions read
+        # cannot see a SETTLED market — measured 0 of 129 settled tickers present under
+        # unfiltered, count_filter=total_traded AND count_filter=position (2026-08-03T12:39:55Z)
+        # — so the cost feed was blind to every completed round trip it exists to price, and it
+        # is the feed the net-EV calibration is built on. Settlements are now supplied so a
+        # settled market is priced from its receipt plus the position-aware cash of its own
+        # fills. Fail-soft is unchanged: the whole helper is wrapped and counts _SILENT.
         positions = client._get_paginated(f"{API_ROOT}/portfolio/positions",
                                           "market_positions")["market_positions"]
         fills = client._get_paginated(f"{API_ROOT}/portfolio/fills", "fills")["fills"]
-        markets = _kfc.build(positions, fills)
+        try:
+            settlements = client.get_settlements().get("settlements") or []
+        except Exception:
+            settlements = []                  # cost feed must never block on a third read
+            _SILENT["fillcost_settlements_fail"] += 1
+        markets = _kfc.build(positions, fills, settlements=settlements)
         tmp = FILL_COST_PATH + ".tmp"
         with open(tmp, "w") as fh:
             json.dump({"schema": _kfc.SCHEMA, "markets": markets}, fh, separators=(",", ":"))
@@ -5360,7 +5364,9 @@ def _flatten_all(client):
     # offset and force the taker escalation, turning maker-first STOP into a metronomic taker
     # fire-sale on every cycle after the first (review C5).
     _nonce = int(time.time())
-    offset_oids = {}                                   # ticker -> our offset order id
+    # (offset_oids removed 2026-08-03 on operator ruling — it was written in two places and
+    # read NOWHERE in the repo. Pass 2 re-derives through _cancel_ticker_resting_confirmed and
+    # takes no hint ids, so the dict recorded state nobody consumed.)
     # DECIDE: build the desired offset per ticker. The computation below is UNCHANGED — only
     # its destination changed, from an immediate create to a `desired` dict the diff consumes.
     desired = {}
@@ -5422,13 +5428,6 @@ def _flatten_all(client):
                 cancels.append(o["order_id"])
                 _cancel_set.add(o["order_id"])
         if keeper is not None:
-            # NOTE (blind review 2026-08-03): offset_oids is WRITTEN here and at the create
-            # loop below, and is read NOWHERE in this module — pass 2 re-derives everything
-            # through _cancel_ticker_resting_confirmed and takes no hint ids. My earlier
-            # comment claiming "for pass 2" was false; corrected rather than propagated, since
-            # a stale comment that misdescribes control flow is defect 12's own category. The
-            # variable itself is pre-existing and left in place.
-            offset_oids[t] = keeper["order_id"]
             kept += 1
     n += _cancel_each(client, cancels)
     print(f"flatten: cancelled {n}/{len(all_ids)} resting quotes (stopped making)")
@@ -5439,19 +5438,39 @@ def _flatten_all(client):
         t, side, price, cnt = c["ticker"], c["side"], c["price_dollars"], c["count"]
         pos = held.get(t, 0.0)
         try:
-            r = client.create_quote(t, side, price, cnt, post_only=True,
-                                    client_order_id=f"mk-stopflat-{_nonce}-{i}-{side}")
-            o = r.get("order") if isinstance(r, dict) and isinstance(r.get("order"), dict) else {}
-            if o.get("order_id"):
-                offset_oids[t] = o["order_id"]
+            client.create_quote(t, side, price, cnt, post_only=True,
+                                client_order_id=f"mk-stopflat-{_nonce}-{i}-{side}")
             print(f"flatten: {t} pos={pos:+.2f} -> rested MAKER offset {side} {cnt}@{price} (passive)")
         except Exception as e:
             print(f"flatten: {t} pos={pos:+.2f} — offset REJECTED ({_err_detail(e)}), "
                   f"will re-check at escalation")
     # --- pass 2: bounded escalation — give passive a real chance, then taker the RESIDUAL ---
     if STOP_ESCALATE_S > 0:
-        print(f"flatten: waiting {STOP_ESCALATE_S}s for passive offsets to fill...")
-        time.sleep(STOP_ESCALATE_S)
+        # POLLED WAIT (operator-named 2026-08-03). This was one straight-line sleep of
+        # STOP_ESCALATE_S, executed while holding the single-instance run lock — so the daemon
+        # loop stalled for the full window on every flatten, including the auto-halt cycle.
+        # The window itself is a MONEY parameter (it is how long passive offsets get to fill
+        # before we pay the spread), so it is NOT shortened: the wait still runs to
+        # STOP_ESCALATE_S whenever inventory remains. It now simply STOPS EARLY once there is
+        # nothing left to escalate, which is the only case where waiting buys nothing.
+        # Strictly conservative by construction: the early exit requires a SUCCESSFUL read
+        # showing no residual at or above the taker threshold; any read failure keeps waiting,
+        # so a blind cycle can never cut the passive window short.
+        print(f"flatten: waiting up to {STOP_ESCALATE_S}s for passive offsets to fill...")
+        _waited = 0.0
+        while _waited < STOP_ESCALATE_S:
+            _step = min(5.0, STOP_ESCALATE_S - _waited)
+            time.sleep(_step)
+            _waited += _step
+            try:
+                _resid = {t: p for t, p in ladder_pairing(_held_cost(client)[1]).items()
+                          if abs(p) >= STOP_TAKER_MIN_CT}
+            except Exception:
+                continue                      # unreadable -> keep waiting (fail conservative)
+            if not _resid:
+                print(f"flatten: passive offsets cleared the book after {_waited:.0f}s "
+                      f"(of {STOP_ESCALATE_S}s) — ending the wait early")
+                break
     try:
         # NAKED residual only (self-audit A2-F1, 2026-07-29): pass 1 correctly offset only the
         # unpaired inventory, but this escalation re-read the GROSS position and handed it to

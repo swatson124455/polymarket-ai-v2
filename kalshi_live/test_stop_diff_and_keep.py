@@ -256,6 +256,60 @@ def test_flat_book_still_cancels_everything(monkeypatch, tmp_path):
 
 # ---- escalation is untouched -----------------------------------------------------------------
 
+def test_escalation_wait_ends_early_only_when_the_book_is_clear(monkeypatch, tmp_path):
+    """The escalation wait is a MONEY window — how long passive offsets get before we pay the
+    spread — so it must run its full length whenever inventory remains. It was one straight-line
+    sleep holding the run lock; it now polls and stops early ONLY when nothing is left to
+    escalate (operator-named 2026-08-03).
+
+    Flat book: nothing to escalate, so the wait ends on the first poll rather than stalling the
+    daemon for the whole window."""
+    _arm(monkeypatch)
+    monkeypatch.setattr(q, "STOP_ESCALATE_S", 30)
+    monkeypatch.setattr(q, "STOP_TAKER_MIN_CT", 1.0)
+    slept = []
+    monkeypatch.setattr(q.time, "sleep", lambda s: slept.append(s))
+    c = _flat(monkeypatch, tmp_path,
+              MockClient(mode="live", resting=[], positions=_held(pos="0")))
+    assert sum(slept) < 30, f"a clear book must not burn the whole window: {slept}"
+
+
+def test_escalation_wait_runs_full_length_while_inventory_remains(monkeypatch, tmp_path):
+    # Inventory never clears, so the wait must run to STOP_ESCALATE_S — the passive window is
+    # not shortened, only ended early when it buys nothing.
+    _arm(monkeypatch)
+    monkeypatch.setattr(q, "STOP_ESCALATE_S", 20)
+    monkeypatch.setattr(q, "STOP_TAKER_MIN_CT", 1.0)
+    slept = []
+    monkeypatch.setattr(q.time, "sleep", lambda s: slept.append(s))
+    _flat(monkeypatch, tmp_path,
+          MockClient(mode="live", resting=[], positions=_held(pos="20")))
+    assert sum(slept) >= 20, f"the full passive window must be honoured: {slept}"
+
+
+def test_unreadable_positions_keeps_waiting(monkeypatch, tmp_path):
+    # Fail conservative: a blind cycle must never cut the passive window short.
+    _arm(monkeypatch)
+    monkeypatch.setattr(q, "STOP_ESCALATE_S", 20)
+    monkeypatch.setattr(q, "STOP_TAKER_MIN_CT", 1.0)
+    slept = []
+    monkeypatch.setattr(q.time, "sleep", lambda s: slept.append(s))
+
+    class Flaky(MockClient):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self._n = 0
+
+        def get_positions(self):
+            self._n += 1
+            if self._n > 1:                    # first read (the cycle's own) succeeds
+                raise RuntimeError("positions 503")
+            return {"market_positions": list(self._positions)}
+
+    _flat(monkeypatch, tmp_path, Flaky(mode="live", resting=[], positions=_held(pos="20")))
+    assert sum(slept) >= 20, f"an unreadable book must keep waiting, not escalate early: {slept}"
+
+
 def test_kept_offset_does_not_suppress_taker_escalation(monkeypatch, tmp_path):
     # The keep must not become an early return: pass 2 still re-reads and crosses the residual.
     # NOTE on the cancel here — pass 2's _taker_cross_capped is CANCEL(confirmed) -> CROSS ->
