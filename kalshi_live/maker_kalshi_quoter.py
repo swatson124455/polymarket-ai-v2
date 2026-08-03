@@ -684,6 +684,11 @@ SELECT_BUDGET_MARGIN = _envf("KALSHI_SELECT_BUDGET_MARGIN", 0.3)
 # caller's nested guard so a shadow bug cannot fault the real governor.
 ANYLOSS_SHADOW_FLOORS = (0.25, 0.5, 1.0, 2.0)
 ANYLOSS_SHADOW_MAX_TICKERS = 200          # per floor per day — keeps quoter_state bounded
+# Cap on the departed-ticker realized carry (defect 5a). Same bounding doctrine as the shadow
+# above: quoter_state must stay small. Only TRADED tickers ever enter the governor feed, so
+# real usage is tens of floats; on overflow the MOST NEGATIVE are kept, because those are the
+# only ones that can still trip a rung, and the truncation is counted rather than silent.
+REALIZED_CARRY_MAX = 500
 
 
 def _anyloss_shadow(st, realized, base, tripped, out, cooling, now, day, plan):
@@ -3190,6 +3195,14 @@ def run_once():
                     # realized_pnl_dollars in the total_traded read (probe 13:15:36Z 07-31).
                     # Read failure falls back to the side channel — never worse than the old
                     # feed, and the governor's fail-OPEN doctrine is unchanged.
+                    # Everything the governor knew BEFORE this cycle. Captured here because the
+                    # successful-read branch below overwrites st["realized_last_good"], and a
+                    # ticker that departs is by definition absent from the fresh read — so the
+                    # carry can only be computed against prior knowledge, never against the
+                    # post-departure view.
+                    _prev_known = dict(_REALIZED_LAST_GOOD) or dict(
+                        st.get("realized_last_good") or {})
+                    _feed_ok = True
                     try:
                         _realized = client.get_realized_by_market()
                         _REALIZED_LAST_GOOD.clear()
@@ -3200,6 +3213,7 @@ def run_once():
                         # channel). One float per traded ticker — tiny.
                         st["realized_last_good"] = dict(_realized)
                     except Exception:
+                        _feed_ok = False
                         # F3 (2026-07-31): prefer the LAST-GOOD all-traded snapshot -- the
                         # open-positions side channel drops flat markets (the burn-and-run
                         # blind spot) and is only the bootstrap fallback. Re-review M4: this
@@ -3214,6 +3228,37 @@ def run_once():
                         if st["gov_fail_streak"] >= 3:
                             _exit_only_all = True
                             plan["governor_fail_reduce_only"] = 1
+                    # FEED RECONCILIATION (defect 5a root fix, 2026-08-02). The feed is a
+                    # /portfolio/positions read, and that endpoint NEVER emits a SETTLED market
+                    # under any parameter — count_filter=total_traded keeps FLAT-but-alive rows
+                    # (the 07-31 burn-and-run fix, correct and unchanged) but has no effect on
+                    # settled ones. So a ticker's realized loss VANISHED from the governor the
+                    # moment it settled, and the overwrite above erased it from the in-memory
+                    # snapshot, the persisted snapshot and the fallback source in one statement.
+                    # Live 2026-08-02: the largest single loss of the day (KXTEMPAUSH, -$9.4939
+                    # all-in) was absent from the governor's realized read entirely.
+                    # A departed ticker's last known value is CARRIED for the rest of the day.
+                    # FRESH ALWAYS WINS, so a live ticker is never shadowed by a stale carry.
+                    # This restores measurement; it cannot by itself produce a trip the governor
+                    # did not already have the data to produce, because a carried value is
+                    # FROZEN at its last observed level (the settlement top-up that can move it
+                    # is the separate B4b commit).
+                    _realized_raw = dict(_realized) if _feed_ok else {}
+                    _departed = {}
+                    try:
+                        # Everything known before this cycle, prior carry included, minus
+                        # whatever the fresh read still shows = the tickers that left.
+                        _known = dict(_prev_known)
+                        _known.update(st.get("mkt_realized_carry") or {})
+                        _departed = {t: v for t, v in _known.items()
+                                     if t not in _realized_raw}
+                        if _departed:
+                            _merged = dict(_departed)
+                            _merged.update(_realized)     # fresh always wins
+                            _realized = _merged
+                    except Exception:
+                        _SILENT["realized_carry_fail"] += 1
+                        _departed = {}
                     _base = st.get("mkt_realized_base") or {}
                     _tripped = _ban_set(st.get("mkt_loss_tripped"))
                     if "mkt_out" in st:
@@ -3231,10 +3276,19 @@ def run_once():
                     _inv4 = st.get("mkt_trip_inv") or {}
                     if st.get("mkt_realized_day") != _day_mkt:
                         st["mkt_realized_day"] = _day_mkt
+                        # Yesterday's departed tickers do not exist today: drop them BEFORE
+                        # re-baselining, or they persist in mkt_realized_base forever and the
+                        # carry write below would immediately undo this clear. Only when the
+                        # feed actually read this cycle — otherwise _realized is the fallback
+                        # snapshot and must be left alone.
+                        if _feed_ok:
+                            _realized = dict(_realized_raw)
+                        _departed = {}                   # nothing carries across the roll
                         _base = dict(_realized)          # fresh day -> fresh baseline
                         _tripped = set()                 # trips are per-day
                         _snap = {}                       # M3: trip snapshots are per-day too
                         _inv4 = {}                       # trip inventory is per-day too
+                        st["mkt_realized_carry"] = {}    # departed-ticker carry is per-day too
                         _TAKER_XN.clear()                # paid-exit counts are per-day too
                     for _t4, _v4 in _realized.items():
                         # first seen mid-day -> baseline NOW: lifetime realized from prior days
@@ -3292,6 +3346,25 @@ def run_once():
                                 _snap.setdefault(_t4, _d4)
                                 _inv4.setdefault(_t4, abs(float(held_by.get(_t4, 0.0) or 0.0)))
                                 plan["taker_gov_tripped"] = plan.get("taker_gov_tripped", 0) + 1
+                    # Persist the carry — ONLY when the feed read succeeded, or a single outage
+                    # would freeze every live ticker's value into the carry and shadow the real
+                    # feed once it recovers. Bounded: only TRADED tickers ever enter the feed
+                    # (27 were ever filled on 08-02, master plan §4), so this is tens of floats.
+                    if _feed_ok:
+                        try:
+                            _new_carry = dict(_departed)
+                            if len(_new_carry) > REALIZED_CARRY_MAX:
+                                # keep the MOST NEGATIVE — the ones that can still trip a rung
+                                _kept = sorted(_new_carry.items(),
+                                               key=lambda kv: kv[1])[:REALIZED_CARRY_MAX]
+                                _new_carry = dict(_kept)
+                                _SILENT["realized_carry_capped"] += 1
+                            st["mkt_realized_carry"] = _new_carry
+                            plan["realized_carried"] = len(_new_carry)
+                            plan["realized_carried_usd"] = round(
+                                sum(min(0.0, v) for v in _new_carry.values()), 4)
+                        except Exception:
+                            _SILENT["realized_carry_fail"] += 1
                     st["mkt_realized_base"] = _base
                     st["mkt_loss_tripped"] = sorted(_tripped)
                     _bk4 = _mkt_out_backup_union(_out4)     # amnesty guard (separate file)

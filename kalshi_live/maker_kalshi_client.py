@@ -356,12 +356,27 @@ class KalshiOrderClient:
                                    {"count_filter": "position"})
 
     def get_realized_by_market(self):
-        """{ticker: venue realized_pnl_dollars} over ALL traded markets, INCLUDING fully flat
-        ones. count_filter=total_traded keeps flat rows with their realized_pnl_dollars — the
-        venue's own attribution — so the per-market loss governor can see a market that burned
-        and fully flattened within one cycle (the burn-and-run hole: count_filter=position
-        drops the row before the loss is ever read). Probe 2026-07-31T13:15:36Z: 12/12 flat
-        rows carry realized_pnl_dollars; a settled row was still present 10h after settlement.
+        """{ticker: venue realized_pnl_dollars} over all traded markets that are STILL OPEN,
+        including fully flat ones. count_filter=total_traded keeps flat rows with their
+        realized_pnl_dollars — the venue's own attribution — so the per-market loss governor
+        can see a market that burned and fully flattened within one cycle (the burn-and-run
+        hole: count_filter=position drops the row before the loss is ever read). Probe
+        2026-07-31T13:15:36Z: 12/12 flat rows carry realized_pnl_dollars. That part stands.
+
+        ⚠ SETTLED MARKETS ARE NOT IN THIS FEED — CORRECTED 2026-08-03. This docstring used to
+        claim "a settled row was still present 10h after settlement". That does NOT reproduce
+        and it is the sentence that made the governor's blind spot look closed. Measured
+        read-only 2026-08-03T01:35:04Z over the complete account history: of 127 settled
+        tickers, **0** appear in this feed (42 rows returned, none of them settled). The
+        endpoint drops a market on settlement, and count_filter has no bearing on that — it
+        governs zero-vs-nonzero POSITION rows, not settlement state.
+        Consequence: a loss that only becomes real at settlement is invisible here, so the
+        governor cannot see it. Live 2026-08-02 the largest single loss of the day
+        (KXTEMPAUSH, -$9.4939 all-in) was absent from this read entirely.
+        Reconciliation therefore lives in the quoter, not here: see mkt_realized_carry (a
+        departed ticker's last value is carried for the rest of the day) and the settlement
+        top-up that corrects it from /portfolio/settlements.
+
         The inventory read above stays count_filter=position ON PURPOSE — settled noise must
         never push real inventory off a page; this is a separate governor-only feed."""
         d = self._get_paginated(f"{API_ROOT}/portfolio/positions", "market_positions",
