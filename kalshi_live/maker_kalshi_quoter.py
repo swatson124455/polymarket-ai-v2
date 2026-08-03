@@ -2419,10 +2419,30 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     if NETEV_GATE and not void:
         fam = _netev_family(m["ticker"])
         ent = NETEV_TABLE.get(fam)
-        if ent is not None and ent.get("confidence") not in (None, "unproven"):
-            net_pct = ent.get("net_pct_notional")           # RECEIPT signal (net % of notional)
-            poor = net_pct is not None and net_pct < NETEV_MIN_MARGIN_PCT
-            signal = net_pct if net_pct is not None else 0.0
+        # ⚠ THE VERDICT BRANCH DEMANDS A REAL RECEIPT AND A REAL NUMBER. It used to read
+        # `confidence not in (None, "unproven")` with `poor = net_pct is not None and ...`, and
+        # that pair INVERTED the gate on two reachable inputs (both executed 2026-08-03, not
+        # reasoned about):
+        #   * confidence="thin" — kalshi_netev_calibrate emits a THIRD value (:175-180) on any
+        #     window with fewer than MIN_RECEIPT_TRADES in-window trades. "thin" is not
+        #     "unproven", so it took this branch and was believed as receipt-grade.
+        #   * net_pct_notional=None — emitted whenever in-window notional is 0. `poor` can never
+        #     fire on None, so the family fell through the gate ENTIRELY and opened full
+        #     two-sided, while a genuinely UNPROVEN family in the same book was skipped to the
+        #     conservative model. No data outranked unknown data.
+        #   Measured: thin+None -> 2 quotes {yes:100,no:100}; thin+(-0.50) -> 0 quotes;
+        #   receipt+None -> 2 quotes. The table shipped on disk is calibrate output, so this was
+        #   live-reachable, not theoretical.
+        # The producer-side bar (kalshi_netev_rebuild.MIN_RECEIPT_FILLS) closes it for ONE
+        # producer. This closes it for ALL of them — calibrate, rebuild, and any hand-written or
+        # legacy table — because the safety property belongs in the gate, not in a writer.
+        # Anything that is not an explicit "receipt" carrying a real number now routes to the
+        # model fallback, which is what "we have no verdict for this family" is supposed to mean.
+        if (ent is not None and ent.get("confidence") == "receipt"
+                and ent.get("net_pct_notional") is not None):
+            net_pct = ent["net_pct_notional"]              # RECEIPT signal (net % of notional)
+            poor = net_pct < NETEV_MIN_MARGIN_PCT
+            signal = net_pct
         else:                                               # UNPROVEN: conservative model fallback
             pc = _prospective_capture(m, yl, nl, best_y, best_n, target)
             signal = pc / NETEV_MODEL_HAIRCUT - NETEV_FINGERPRINT_USD_DAY

@@ -331,3 +331,47 @@ def test_the_alarm_does_not_break_the_flag_off_no_op(monkeypatch, tmp_path):
     row = _run(monkeypatch, MockClient(mode="live", resting=[], positions=[]), str(tmp_path))
     for k in ("netev_gate", "netev_table_families", "netev_table_empty"):
         assert k not in row, f"{k} leaked into a flag-off row"
+
+
+# --------------------------------------------------------------------------------------------
+# T-HARDEN — the verdict branch demands an explicit receipt AND a real number (2026-08-03)
+# --------------------------------------------------------------------------------------------
+def _quotes(monkeypatch, conf, npct, tkr=_TEMP_TKR, inv=0.0):
+    _netev_cfg(monkeypatch, on=True,
+               table={"temp": {"net_pct_notional": npct, "confidence": conf},
+                      "gas": {"net_pct_notional": npct, "confidence": conf}})
+    return q.desired_quotes(_mkt(tkr), _YL, _NL, q.utcnow(), inv=inv)
+
+
+def test_thin_is_not_receipt_grade(monkeypatch):
+    """kalshi_netev_calibrate emits confidence='thin' on any window with < MIN_RECEIPT_TRADES
+    in-window trades (:175-180). 'thin' is not 'unproven', so the old condition believed it.
+    Measured before the fix: thin + net_pct=None opened FULL TWO-SIDED."""
+    assert _quotes(monkeypatch, "thin", None) == [], "thin must not buy an unconditional pass"
+    assert _quotes(monkeypatch, "thin", 0.25) == [], "a thin POSITIVE is still not a verdict"
+
+
+def test_receipt_without_a_number_is_not_a_verdict(monkeypatch):
+    """net_pct_notional=None (zero in-window notional) cannot be marked poor, so before the fix
+    it fell through the gate entirely — no data outranking unknown data."""
+    assert _quotes(monkeypatch, "receipt", None) == []
+
+
+def test_an_unknown_confidence_value_is_not_believed(monkeypatch):
+    """Any future/typo'd grade must fail CLOSED to the model, not be trusted by default."""
+    assert _quotes(monkeypatch, "provisional", 0.25) == []
+
+
+def test_a_real_receipt_still_gets_its_verdict(monkeypatch):
+    """The fix must not break the thing the gate is for: a genuine receipt row still decides."""
+    assert _quotes(monkeypatch, "receipt", -0.092) == [], "net-negative receipt -> flat skip"
+    keep = _sides(_quotes(monkeypatch, "receipt", 0.011))
+    assert keep["yes"]["count"] == 100 and keep["no"]["count"] == 100
+
+
+def test_hardening_never_blocks_a_reducing_exit(monkeypatch):
+    """De-risk is never blocked or down-sized, on every rejected-grade path."""
+    for conf, npct in (("thin", None), ("thin", -0.5), ("receipt", None), ("provisional", 0.25)):
+        out = _quotes(monkeypatch, conf, npct, inv=40.0)
+        assert len(out) == 1 and out[0]["side"] == "no" and out[0]["count"] == 40, \
+            f"{conf}/{npct} must still allow the full reducing exit"
