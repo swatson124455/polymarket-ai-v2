@@ -156,23 +156,35 @@ def test_paired_position_nets_to_the_price_improvement():
 
 
 def test_zero_notional_reports_none_not_a_division():
-    doc = nr.build_table([], [], [_credit("KXAAAGASD-26JUL21", 500)], _fam, WIN)
+    # A traded market whose fills carry no price: the family EXISTS (so the credit is in scope)
+    # but has no notional. Fixture updated 2026-08-03 — it used to pass zero fills, which the
+    # market-scoped credit rule now correctly excludes from the table entirely.
+    doc = nr.build_table([_fill("KXAAAGASD-26JUL21-4.02", "yes", 0.0, 5)], [],
+                         [_credit("KXAAAGASD-26JUL21", 500)], _fam, WIN)
     assert doc["families"]["gas"]["net_pct_notional"] is None
 
 
 def test_credits_alone_never_earn_a_receipt_verdict():
     """DEFECT C REGRESSION (2026-08-03). Credits with ZERO trading used to grade 'receipt'.
 
-    That row carries net_pct_notional=None, and the armed gate's test is
+    That row carries net_pct_notional=None, and the armed gate's test was
     `poor = net_pct is not None and net_pct < MIN` — None can never be poor, so the family
     opened FULL TWO-SIDED while a genuinely unknown ('unproven') family was skipped. No data
     ranked ABOVE unknown data. Verified by executing the real gate, not by reading it.
+
+    The different-clocks fix makes the guarantee STRICTER than 'unproven': a family we never
+    traded in-window now produces NO ROW AT ALL, so there is nothing for the gate to believe.
+    Both halves are pinned — the no-row case, and the traded-but-below-the-bar case that can
+    still legitimately reach the table.
     """
     doc = nr.build_table([], [], [_credit("KXAAAGASD-26JUL21", 500)], _fam, WIN)
-    g = doc["families"]["gas"]
+    assert "gas" not in doc["families"], "credits with no in-window trading are not a family"
+
+    traded = nr.build_table([_fill("KXAAAGASD-26JUL21-4.02", "yes", 0.40, 50)], [],
+                            [_credit("KXAAAGASD-26JUL21", 500)], _fam, WIN)
+    g = traded["families"]["gas"]
     assert g["credits"] == 5.0
-    assert g["net_pct_notional"] is None
-    assert g["confidence"] == "unproven", "credits alone must route to the model fallback"
+    assert g["confidence"] == "unproven", "one fill is below the bar -> model fallback"
     assert "thin" in g["evidence"]
 
 
@@ -254,4 +266,43 @@ def test_the_caveats_are_not_stale_on_the_canon_disagreement():
     assert "RECONCILED" in cav.upper()
     assert "-5.78%" in cav, "the ET-clock (like-for-like) gas figure must be the one quoted"
     assert "ET DATES" in cav, "the clock the canon window is defined on must travel with it"
-    assert "different clocks" in cav.lower(), "the credits-vs-trading scope caveat must travel"
+    assert "ONE CLOCK" in cav, "the credits-vs-trading scope caveat must travel"
+
+
+def test_credits_are_scoped_by_market_not_by_credit_date():
+    """DIFFERENT-CLOCKS FIX (2026-08-03). Credits were filtered by created_at while trading was
+    whole-market, so the two legs of NET ran on different clocks."""
+    tape = [_fill("KXAAAGASD-26JUL21-4.02", "yes", 0.40, 50)]          # traded IN-window
+
+    # (a) a credit for an event we traded in-window, POSTED AFTER it, now counts (credit lag).
+    late = nr.build_table(tape, [], [_credit("KXAAAGASD-26JUL21", 2500,
+                                             ts="2026-07-30T06:00:00Z")], _fam, WIN)
+    assert late["families"]["gas"]["credits"] == 25.0, "a lagged credit must not be lost"
+
+    # (b) a credit posted INSIDE the window for an event we never traded is NOT income for us.
+    never = nr.build_table(tape, [], [_credit("KXAAAGASW-26JUL27", 999)], _fam, WIN)
+    assert never["families"]["gas"]["credits"] == 0.0
+
+    # (c) the '-' in the prefix match is load-bearing: an event that is a STRICT PREFIX of a
+    # traded ticker but not a real event boundary must NOT collect that market's credits.
+    # Caught by mutation — the first version of this case tested a LONGER event name, which the
+    # separator was never what prevented, so `startswith(ev)` survived. Real shape of the risk:
+    # a credit for event "KXMLB" must not attach to a traded "KXMLBTRADE-26AUG05-SKWA".
+    assert nr.build_table(tape, [], [_credit("KXAAAGASD-26JUL2", 500)],
+                          _fam, WIN)["families"]["gas"]["credits"] == 0.0
+    assert nr.build_table(tape, [], [_credit("KXAAAGASD-26JUL2199", 500)],
+                          _fam, WIN)["families"]["gas"]["credits"] == 0.0
+
+
+def test_an_eventless_credit_is_still_reported_not_lost():
+    """The referral credit names no event, so it has no market to be scoped by. It keeps the
+    DATE rule and must still be REPORTED — dropping it would silently lose real money from the
+    document."""
+    tape = [_fill("KXAAAGASD-26JUL21-4.02", "yes", 0.40, 50)]
+    ref = {"amount_cents": 1500, "created_at": "2026-07-22T06:00:00Z", "reason": "Referral bonus"}
+    doc = nr.build_table(tape, [], [ref], _fam, WIN)
+    assert doc["credits_unattributed"] == 15.0
+    assert doc["families"]["gas"]["credits"] == 0.0
+
+    out = dict(ref, created_at="2026-07-30T06:00:00Z")
+    assert nr.build_table(tape, [], [out], _fam, WIN)["credits_unattributed"] == 0.0

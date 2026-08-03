@@ -213,15 +213,41 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
             continue
         fam_settle[fam] = fam_settle.get(fam, 0.0) + _f(s.get("revenue")) / 100.0
 
+    # CREDITS ARE SCOPED BY MARKET, ON THE SAME CLOCK AS TRADING (fixed 2026-08-03).
+    # They used to be filtered by created_at while trading took ALL cash and ALL settlement of
+    # any market traded in-window, whenever those landed — the two legs of NET on DIFFERENT
+    # CLOCKS. That is the same defect class 9de3d89 fixed between the cash and settlement legs,
+    # left alive one layer up. Two measured symptoms, both gone with this change:
+    #   * Credits LAG their program window, so a date-filtered family was under-credited and its
+    #     net biased pessimistic. On the canon window that understated gas by $10.09-$2.15 and
+    #     temp by $38.55-$23.06.
+    #   * A family could carry in-window CREDITS with zero in-window TRADING — income with no
+    #     cost side. KXMLABELSHARE read receipt -8.37% over full history but kept the same
+    #     $16.15 of credits with 0 fills on a 2026-08-01 window. Those rows are also exactly the
+    #     zero-notional ones that produced net_pct_notional=None.
+    # THE RULE IS NOW ONE RULE: score a market if we TRADED it in-window, then count everything
+    # that market ever earned or cost us — credits, cash, settlement alike. Credits name an
+    # EVENT (canon §M11), and a market ticker is its event plus a strike suffix, so the event is
+    # matched by prefix rather than by splitting on '-', which no venue contract guarantees.
+    # ⚠ The §M8 agreement is NOT lost, it is superseded: under the OLD date rule this reproduced
+    # the screenshot attribution exactly ($2.15 gas / $23.06 temp), which is what validated
+    # per-event parsing against the operator's screenshots. That validation stands; this rule
+    # then additionally captures the lagged credits the date window cut off.
     fam_credits, credits_unattributed = {}, 0.0
     for c in credits:
-        if not _in_window(c.get("created_at"), window):
-            continue
         amt = _f(c.get("amount_cents")) / 100.0
         ev = credit_event(c)
-        fam = family_of(ev) if ev else None
+        if not ev:
+            # No event to attach to (the referral credit is the known case) — real money, but it
+            # belongs to no market, so it keeps the DATE rule and is only ever REPORTED.
+            if _in_window(c.get("created_at"), window):
+                credits_unattributed += amt
+            continue
+        if not any(t == ev or t.startswith(ev + "-") for t in _traded_in_window):
+            continue                             # we did not trade this event in-window
+        fam = family_of(ev)
         if not fam:
-            credits_unattributed += amt          # e.g. the referral credit: real, not a family's
+            credits_unattributed += amt
             continue
         fam_credits[fam] = fam_credits.get(fam, 0.0) + amt
 
@@ -276,8 +302,12 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
             "Credits are attributed PER EVENT from credit_history reason strings — exact, no "
             "screenshots. A credit whose event maps to no family lands in "
             "credits_unattributed (the referral credit is the known case).",
-            "Credits LAG their program window, so a family whose period had not closed at read "
-            "time is under-credited and its net is biased PESSIMISTIC — conservative for a gate.",
+            "Credit LAG is now largely absorbed: scoping credits by MARKET rather than by "
+            "created_at picks up a credit that posts after the window for an event we traded "
+            "inside it. What remains is genuine TRUNCATION — an incentive period still open at "
+            "READ time has not paid yet and cannot be counted by any rule — so a family whose "
+            "period is mid-flight is still under-credited and its net biased PESSIMISTIC, which "
+            "is the conservative direction for a gate.",
             "confidence='receipt' requires credits > 0 in-window AND at least MIN_RECEIPT_FILLS "
             "fills on non-zero notional; otherwise 'unproven', which routes the family to the "
             "quoter's model fallback rather than to a verdict, with the reason recorded in the "
@@ -316,13 +346,16 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
             "family verdict — exactly what the module docstring warns against. (A raw "
             "observation on THIS window only; it is NOT a re-decomposition of the -$122.57 "
             "defect basis and no percentage is claimed from it.)",
-            "CREDITS AND TRADING ARE WINDOWED ON DIFFERENT CLOCKS, and this is unresolved. "
-            "Credits are filtered strictly by created_at; trading takes ALL cash and ALL "
-            "settlement of any market TRADED in-window, whenever those landed. A family can "
-            "therefore carry in-window credits earned by out-of-window trading, or vice versa. "
-            "Measured: KXMLABELSHARE reads receipt -8.37% (benched) over full history but on a "
-            "2026-08-01 window keeps the same $16.15 of credits with 0 fills. This is a "
-            "residual of the same different-clocks defect the cash/settlement legs already had.",
+            "CREDITS AND TRADING ARE ON ONE CLOCK (fixed 2026-08-03). A market is scored if we "
+            "TRADED it in-window; everything it ever earned or cost — credits, cash, settlement "
+            "— then counts, whenever it landed. Credits were previously filtered by created_at "
+            "while trading was whole-market, which under-credited every family whose incentive "
+            "period had not closed (gas $2.15 -> $10.09, temp $23.06 -> $38.55 on the canon "
+            "window) and let a family carry credits with NO in-window trading at all "
+            "(KXMLABELSHARE: $16.15 of credits, 0 fills, on a 2026-08-01 window). A credit that "
+            "names no event — the referral credit is the known case — has no market to attach "
+            "to, so it keeps the date rule and is REPORTED in credits_unattributed, never "
+            "attributed to a family.",
         ],
         "families": families,
     }
