@@ -190,6 +190,20 @@ def test_receipt_grade_requires_measured_trading():
     assert doc2["families"]["gas"]["confidence"] == "unproven", "one fill below the bar"
 
 
+def test_zero_notional_is_unproven_even_above_the_fill_bar():
+    """Found by MUTATION, not by review: deleting the `notional <= 0` guard while keeping the
+    fill bar survived the whole suite. The guard is only reachable with enough fills AND zero
+    notional, so nothing exercised it — yet it is the guard that stops a net_pct_notional=None
+    row (which the armed gate can never mark poor) from carrying a receipt verdict."""
+    tape = [_fill("KXAAAGASD-26JUL21-4.02", "yes", 0.0, 5, fid=f"z{i}")
+            for i in range(nr.MIN_RECEIPT_FILLS)]
+    doc = nr.build_table(tape, [], [_credit("KXAAAGASD-26JUL21", 2500)], _fam, WIN)
+    g = doc["families"]["gas"]
+    assert g["n_fills"] == nr.MIN_RECEIPT_FILLS, "the fill bar is met"
+    assert g["notional"] == 0.0 and g["net_pct_notional"] is None
+    assert g["confidence"] == "unproven", "no notional -> no verdict, whatever the fill count"
+
+
 def test_the_receipt_bar_is_tunable_without_editing_code():
     tape = [_fill("KXAAAGASD-26JUL21-4.02", "yes", 0.40, 1, fid=f"f{i}") for i in range(3)]
     creds = [_credit("KXAAAGASD-26JUL21", 2500)]
