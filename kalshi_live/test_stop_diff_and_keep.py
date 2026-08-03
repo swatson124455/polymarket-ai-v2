@@ -142,6 +142,31 @@ def test_unreadable_book_keeps_the_existing_exit(monkeypatch, tmp_path):
     assert c.created == []
 
 
+def test_bail_path_keeps_the_EXIT_only_never_an_accumulating_quote(monkeypatch, tmp_path):
+    # THE PIN MUTATION TESTING FOUND MISSING (2026-08-02). Deferring both sides, or deferring
+    # every ticker, leaves the suite green on the happy path — because diff_orders is total over
+    # set(standing) | set(desired) and cancels anything not desired, so the accumulating quote
+    # still dies, just LATER. The property those mutants really break is ORDERING: "stop making"
+    # must complete before any book read, so a hang, a crash or an exhausted read budget mid-loop
+    # cannot leave an accumulating quote resting.
+    # The bail path is where that difference becomes observable: whatever was deferred is what
+    # _keep_verbatim can resurrect. Only the reducing side may ever be eligible.
+    def pg(p):
+        if "incentive" in p:
+            return {"incentive_programs": [], "next_cursor": ""}
+        raise RuntimeError("book 500")
+    _arm(monkeypatch)
+    monkeypatch.setattr(q, "public_get", pg)
+    c = _flat(monkeypatch, tmp_path,
+              MockClient(mode="live",
+                         resting=[_order("acc", "TT", "yes", 0.50, 20), _the_offset()],
+                         positions=_held()))
+    assert "acc" in c.cancelled, \
+        "an accumulating quote must be cancelled BEFORE the book read, so a bail cannot keep it"
+    assert "keep-me" not in c.cancelled, "the exit is still kept on a blind cycle"
+    assert c.created == []
+
+
 def test_unpriceable_side_keeps_the_existing_exit(monkeypatch, tmp_path):
     # Empty NO side -> the reducing side for a long-yes position cannot be priced.
     _arm(monkeypatch, book={"orderbook_fp": {"yes_dollars": [["0.50", "9999"]],
