@@ -4628,18 +4628,24 @@ def run_once():
             except Exception as e:
                 create_fail += 1
                 _create_ratchet_fail(c["ticker"])   # J6
+                # RENDER ONCE. _err_detail drains the HTTPError's one-shot body via e.read(),
+                # so calling it twice on the same exception leaves the SECOND caller with
+                # `body=` empty — and creates are sorted unwind-first, so the second caller was
+                # the loud operator-facing print below, i.e. the common case (blind review
+                # 2026-08-03). Verified: a second e.read() returns b"".
+                _edet = _err_detail(e)
                 if first_create_err is None:        # anonymous create_fail hid WHAT was rejected
                     # defect 10: {e!r} on an HTTPError renders only "400 Bad Request" — the
                     # venue's actual reason is in the body, which _err_detail extracts.
                     first_create_err = (f"{c['ticker']}/{c['side']}/{c.get('reason')}: "
-                                        f"{_err_detail(e)}")[:240]
+                                        f"{_edet}")[:240]
                 if c.get("reason") == "unwind":
                     # An UNWIND is an EXIT. A rejected exit leaves inventory we intended to be
                     # rid of, so it is printed as well as recorded — first_create_err is a
                     # single first-writer-wins slot SHARED with amends (:4307), so a later or
                     # second unwind rejection would otherwise be dropped entirely.
                     print(f"WARNING UNWIND create REJECTED on {c['ticker']} {c['side']} "
-                          f"{c.get('count')}@{c.get('price_dollars')}: {_err_detail(e)}")
+                          f"{c.get('count')}@{c.get('price_dollars')}: {_edet}")
 
         # next dry-run standing = prior standing - cancels + created (reflects truncation)
         if client.mode == "dry_run":
@@ -5292,7 +5298,13 @@ def _flatten_all(client):
                 cancels.append(o["order_id"])
                 _cancel_set.add(o["order_id"])
         if keeper is not None:
-            offset_oids[t] = keeper["order_id"]        # record the KEPT id for pass 2
+            # NOTE (blind review 2026-08-03): offset_oids is WRITTEN here and at the create
+            # loop below, and is read NOWHERE in this module — pass 2 re-derives everything
+            # through _cancel_ticker_resting_confirmed and takes no hint ids. My earlier
+            # comment claiming "for pass 2" was false; corrected rather than propagated, since
+            # a stale comment that misdescribes control flow is defect 12's own category. The
+            # variable itself is pre-existing and left in place.
+            offset_oids[t] = keeper["order_id"]
             kept += 1
     n += _cancel_each(client, cancels)
     print(f"flatten: cancelled {n}/{len(all_ids)} resting quotes (stopped making)")

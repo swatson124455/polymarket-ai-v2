@@ -119,6 +119,45 @@ def test_the_other_three_none_paths_stay_distinguishable(monkeypatch, capsys):
     assert q._SILENT["rerest_fail_create"] == before_create
 
 
+def test_err_detail_is_rendered_once_per_exception(monkeypatch):
+    """BLIND-REVIEW FIX 2026-08-03. _err_detail drains the HTTPError's ONE-SHOT body via
+    e.read(), so calling it twice on the same exception leaves the second caller with an empty
+    body. run_once called it once for first_create_err and again for the loud UNWIND print, and
+    creates are sorted unwind-first — so the operator-facing message, the whole point of the
+    fix, was the one that came out blank. Verified: a second e.read() returns b"".
+    This pins the property at the helper level: two renders of ONE exception must not differ."""
+    e = _http_error()
+    first = q._err_detail(e)
+    second = q._err_detail(e)
+    assert "would_cross" in first
+    assert second != first, (
+        "sanity: the body IS one-shot, so a second render differs — which is exactly why "
+        "run_once must bind it once")
+    assert "body=" in second and "would_cross" not in second
+
+
+def test_rejected_unwind_create_prints_the_venue_reason(monkeypatch, tmp_path, capsys):
+    """The UNWIND rejection print was entirely unpinned (the review showed `if False:` over it
+    left the suite green). An exit we cannot place is the one failure that must never be quiet,
+    and under STOP the journal is the only channel — so pin the message, not just the state."""
+    _book(monkeypatch)
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": "TT", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
+    from test_live_hardening import _cfg
+    _cfg(monkeypatch)
+    _book(monkeypatch)
+    c = _RejectingClient(mode="live", resting=[],
+                         positions=[{"ticker": "TT", "position_fp": "20",
+                                     "market_exposure_dollars": "10.00"}])
+    _run(monkeypatch, c, str(tmp_path))
+    out = capsys.readouterr().out
+    assert "UNWIND create REJECTED" in out, "a blocked exit must be loud"
+    assert "TT" in out
+    assert "would_cross" in out, (
+        "the venue's reason must survive into the operator-facing line, not be drained by an "
+        "earlier render")
+
+
 def test_stop_flatten_offset_rejection_carries_the_body(monkeypatch, tmp_path, capsys):
     # Under STOP the journal is the only channel, so the flatten's own rejection line must
     # carry the reason too.
