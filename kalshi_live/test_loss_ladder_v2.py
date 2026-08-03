@@ -171,18 +171,93 @@ class TestM3TripSnapshot:
     losses realized DURING the timeout (our forced exits) never escalate to the $5 rung;
     a one-shot burn already at/past $5 at trip time still goes OUT immediately."""
 
-    def test_timeout_exits_do_not_escalate_to_permanent(self, monkeypatch, tmp_path):
+    def test_timeout_exit_COSTS_do_not_escalate_to_permanent(self, monkeypatch, tmp_path):
+        """M3's INTENT, re-pinned against the live delta (defect 4 root fix 2026-08-02).
+
+        This test used to drive -$3.20 -> -$6.00 and assert NO ban, which pinned the frozen
+        snapshot itself: rung 2 read the value frozen at the trip, so a tripped market could
+        never reach $5 no matter how far it fell. That is the defect (live KXRAIN-26AUG02-CHI
+        froze at -$1.28 and finished at -$7.29, never banned).
+
+        What M3 actually protects is the SPREAD WE PAY TO LEAVE, and that is what the bounded
+        allowance now refunds. Here the market trips at -$3.20 holding 50 ct and then bleeds
+        only the liquidation cost: allowance = min($2.00 rung gap, $0.04 x 50) = $2.00, so a
+        drift to -$4.90 stays inside the refund and must NOT go permanent."""
         _arm(monkeypatch)
-        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="0.00")]),
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="0.00")]),
              str(tmp_path))
-        # cycle 2: -$3.20 -> timeout (snapshot frozen at -3.20)
-        _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="-3.20")]),
+        # cycle 2: -$3.20 -> timeout; 50 ct held at the trip is the allowance basis
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="-3.20")]),
              str(tmp_path))
-        # cycle 3: forced exits realize down to -$6 WHILE tripped -> must NOT go permanent
-        row3 = _run(monkeypatch, MockClient(mode="live", positions=[_pos(realized="-6.00")]),
+        # cycle 3: exit costs take it to -$4.90; -4.90 + 2.00 = -2.90 > -5.00 -> no ban
+        row3 = _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="-4.90")]),
                     str(tmp_path))
         assert row3.get("loss_exitonly") == 1
-        assert _state(tmp_path).get("mkt_out") == [],             "exit costs during the timeout must not trigger the permanent ban"
+        assert _state(tmp_path).get("mkt_out") == [], \
+            "the spread paid to leave must never mint a permanent ban"
+
+    def test_bleeding_after_the_trip_DOES_reach_the_permanent_rung(self, monkeypatch, tmp_path):
+        """THE DEFECT-4 CASE (live shape: KXRAIN-26AUG02-CHI, trip -$1.28 -> final -$7.29).
+
+        A market that keeps losing after tripping must still reach $5. The allowance refunds
+        the liquidation cost and nothing more, so a loss far beyond it escalates."""
+        _arm(monkeypatch)
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="0.00")]),
+             str(tmp_path))
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="-3.20")]),
+             str(tmp_path))
+        # -7.29 + 2.00 allowance = -5.29 <= -5.00 -> OUT, which the frozen snapshot never did
+        row3 = _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="-7.29")]),
+                    str(tmp_path))
+        assert _state(tmp_path).get("mkt_out") == ["T1"], \
+            "post-trip bleeding beyond the unwind allowance must reach the permanent rung"
+        assert row3.get("mkt_out_rung2") == 1, "the rung-2 ban must be counted"
+
+    def test_allowance_is_capped_at_the_rung_gap(self, monkeypatch, tmp_path):
+        """A huge position must not buy an unbounded refund: the allowance is capped at
+        MKT_OUT_LOSS_USD - MKT_DAY_LOSS_EXITONLY_USD ($2.00 live), so it can never span more
+        than one rung. 5,000 ct would otherwise refund $200."""
+        _arm(monkeypatch)
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="5000", realized="0.00")]),
+             str(tmp_path))
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="5000", realized="-3.20")]),
+             str(tmp_path))
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="5000", realized="-7.29")]),
+             str(tmp_path))
+        assert _state(tmp_path).get("mkt_out") == ["T1"], \
+            "the allowance is capped at the rung gap regardless of position size"
+
+    def test_zero_allowance_gives_pure_live_delta(self, monkeypatch, tmp_path):
+        """KALSHI_MKT_UNWIND_ALLOW_PER_CT=0 is the operator's named alternative: rung 2 on the
+        raw live delta, no refund at all."""
+        _arm(monkeypatch)
+        monkeypatch.setattr(q, "MKT_UNWIND_ALLOW_PER_CT", 0.0)
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="0.00")]),
+             str(tmp_path))
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="-3.20")]),
+             str(tmp_path))
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="-5.10")]),
+             str(tmp_path))
+        assert _state(tmp_path).get("mkt_out") == ["T1"], \
+            "with no allowance the raw day-delta alone drives rung 2"
+
+    def test_missing_trip_inventory_falls_back_to_the_old_behaviour(self, monkeypatch, tmp_path):
+        """State written before this fix has no mkt_trip_inv. Rather than ban on an allowance
+        we cannot justify, fail toward the OLD behaviour (full rung gap) and COUNT it."""
+        _arm(monkeypatch)
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="0.00")]),
+             str(tmp_path))
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="-3.20")]),
+             str(tmp_path))
+        st = _state(tmp_path)
+        st.pop("mkt_trip_inv", None)                      # simulate pre-fix state
+        with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as fh:
+            json.dump(st, fh)
+        row = _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="-6.50")]),
+                   str(tmp_path))
+        assert row.get("trip_inv_missing") == 1, "the missing basis must be counted, not silent"
+        assert _state(tmp_path).get("mkt_out") == [], \
+            "-6.50 + the full $2.00 gap = -4.50 > -5.00: fails toward the old behaviour"
 
     def test_one_shot_burn_still_goes_out_immediately(self, monkeypatch, tmp_path):
         _arm(monkeypatch)

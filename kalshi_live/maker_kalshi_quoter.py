@@ -559,6 +559,21 @@ MKT_DAY_LOSS_EXITONLY_USD = _envf("KALSHI_MKT_DAY_LOSS_EXITONLY_USD", 0.0)   # 0
 # first cycle this shipped. Count-based strike bans are now OFF by default (STRIKES_OUT=0);
 # the knob remains for the operator's 2026-08-03 re-review.
 MKT_OUT_LOSS_USD = _envf("KALSHI_MKT_OUT_LOSS_USD", 5.0)
+# UNWIND ALLOWANCE (defect 4 root fix, operator-approved 2026-08-02). Rung 2 used to judge the
+# FROZEN loss at the moment of the $3 trip, so a market that kept bleeding after tripping could
+# never reach the $5 rung that day — live 2026-08-02 KXRAIN-26AUG02-CHI froze at -$1.28 and
+# finished at -$7.29, never banned. Rung 2 now judges the LIVE day-delta, which alone would
+# punish correct behaviour: once tripped the market is exit-only, so the spread we pay to LEAVE
+# would itself walk every tripped market to the $5 rung. The allowance refunds that liquidation
+# COST and nothing else: a market that genuinely loses $5 today goes out even if the last
+# dollars arrived on the way out; it only gets credit for the spread it paid to exit.
+# $0.04/contract is the measured half-spread ($3.02 over 123 ct = $0.0246 on the 08-02 loss
+# sample, INFERRED from the session doc, not a canonical script) plus ~60% margin. It is capped
+# at the DERIVED rung gap (MKT_OUT_LOSS_USD - MKT_DAY_LOSS_EXITONLY_USD = $2.00 live) so the
+# allowance can never span more than one rung, and at INV_HARD_CT=50 the cap binds exactly.
+# Set to 0 for a pure live-delta rung 2 (which would repeal the M3 directive for markets
+# tripping between -$4 and -$5, where one unwind's spread can carry them over).
+MKT_UNWIND_ALLOW_PER_CT = _envf("KALSHI_MKT_UNWIND_ALLOW_PER_CT", 0.04)
 # TAKER-CROSS BEHAVIORAL GOVERNOR (operator-named 2026-07-31 "A do it and go live with it"):
 # >= TAKER_GOV_CROSSES paid taker exits on a ticker in one day AND realized day-loss <=
 # -TAKER_GOV_LOSS_USD -> exit-only for the day + strike. Encodes the measured era fingerprint
@@ -2849,6 +2864,7 @@ def _refresh_safety_knobs():
              "KALSHI_EXIT_LADDER_STEPS": ("EXIT_LADDER_STEPS", int),
              "KALSHI_EXIT_CHEAP_CROSS_USD": ("EXIT_CHEAP_CROSS_USD", float),
              "KALSHI_MKT_OUT_LOSS_USD": ("MKT_OUT_LOSS_USD", float),
+             "KALSHI_MKT_UNWIND_ALLOW_PER_CT": ("MKT_UNWIND_ALLOW_PER_CT", float),
              "KALSHI_TAKER_GOV_CROSSES": ("TAKER_GOV_CROSSES", int),
              "KALSHI_TAKER_GOV_LOSS_USD": ("TAKER_GOV_LOSS_USD", float),
              "KALSHI_SERIES_PCT": ("SERIES_PCT", float),
@@ -3208,11 +3224,17 @@ def run_once():
                         # struck ticker into the permanent OUT set exactly once.
                         _out4 = _ban_set(st.get("mkt_strike_hist") or {})
                     _snap = st.get("mkt_trip_snap") or {}
+                    # Inventory held AT the moment of the trip — the basis for the unwind
+                    # allowance (defect 4). Per-day, cleared with the other ladder state on the
+                    # roll. The latch is the EXISTING UTC calendar day (mkt_realized_day),
+                    # operator-named 2026-08-02; no rolling-24h state is introduced.
+                    _inv4 = st.get("mkt_trip_inv") or {}
                     if st.get("mkt_realized_day") != _day_mkt:
                         st["mkt_realized_day"] = _day_mkt
                         _base = dict(_realized)          # fresh day -> fresh baseline
                         _tripped = set()                 # trips are per-day
                         _snap = {}                       # M3: trip snapshots are per-day too
+                        _inv4 = {}                       # trip inventory is per-day too
                         _TAKER_XN.clear()                # paid-exit counts are per-day too
                     for _t4, _v4 in _realized.items():
                         # first seen mid-day -> baseline NOW: lifetime realized from prior days
@@ -3222,15 +3244,45 @@ def run_once():
                         # M3 (operator-clarified 2026-07-31: "3 timeout then open up and if 5
                         # then out for good"): losses realized WHILE serving the $3 timeout
                         # (our own forced exits) must not escalate to the $5 permanent rung.
-                        # The rung is judged on the loss frozen AT the trip; a one-shot burn
-                        # arriving already at/past $5 still goes OUT immediately. Snapshots
-                        # reset at the day roll -- after reopening, fresh counting applies.
+                        # ROOT FIX 2026-08-02 (defect 4): this used to judge rung 2 on the loss
+                        # FROZEN at the trip, which made the $5 rung UNREACHABLE for any market
+                        # that kept bleeding after tripping — live KXRAIN-26AUG02-CHI froze at
+                        # -$1.28 and finished the day at -$7.29 without ever being banned.
+                        # Rung 2 now judges the LIVE day-delta plus a bounded ALLOWANCE that
+                        # refunds only the liquidation cost, so M3's intent survives without its
+                        # blind spot: a market that genuinely loses $5 today goes out even if
+                        # the last dollars arrived on the way out; it only gets credit for the
+                        # spread it paid to leave. A one-shot burn arriving already at/past $5
+                        # still goes OUT immediately (untripped -> zero allowance). Per-day
+                        # state resets at the day roll -- after reopening, fresh counting.
                         _was_tripped4 = _t4 in _tripped
-                        _eff4 = _snap.get(_t4, _d4) if _was_tripped4 else _d4
+                        _cap4 = max(0.0, MKT_OUT_LOSS_USD - MKT_DAY_LOSS_EXITONLY_USD)
+                        _allow4 = 0.0
+                        if _was_tripped4:
+                            if _t4 in _inv4:
+                                _allow4 = min(_cap4, MKT_UNWIND_ALLOW_PER_CT * _inv4[_t4])
+                            else:
+                                # Tripped on an earlier build (or state predating this fix), so
+                                # no inventory basis exists. Fail toward the OLD behaviour — the
+                                # full rung gap — rather than banning on an allowance we cannot
+                                # justify. Counted so the gap is visible, never silent.
+                                _allow4 = _cap4
+                                plan["trip_inv_missing"] = plan.get("trip_inv_missing", 0) + 1
+                        _eff4 = _d4 + _allow4
                         if _d4 <= -MKT_DAY_LOSS_EXITONLY_USD:
                             _tripped.add(_t4)            # LATCH: stays for the day even if flat
                             _snap.setdefault(_t4, _d4)   # freeze the pre-timeout loss
+                            # Basis for this market's allowance: inventory held AT the trip.
+                            # held_by is this cycle's signed position, bound above and not
+                            # mutated until the quote loop.
+                            _inv4.setdefault(_t4, abs(float(held_by.get(_t4, 0.0) or 0.0)))
                         if MKT_OUT_LOSS_USD > 0 and _eff4 <= -MKT_OUT_LOSS_USD:
+                            if _t4 not in _out4:
+                                plan["mkt_out_rung2"] = plan.get("mkt_out_rung2", 0) + 1
+                                print(f"WARNING mkt_out RUNG 2: {_t4} day-delta ${_d4:.2f} "
+                                      f"(trip snapshot ${_snap.get(_t4, _d4):.2f}, unwind "
+                                      f"allowance ${_allow4:.2f} on {_inv4.get(_t4, 0):.0f} ct) "
+                                      f"<= -${MKT_OUT_LOSS_USD:.2f} — permanently OUT")
                             _out4.add(_t4)               # $5 rung: OUT -- permanent, no expiry
                         if (TAKER_GOV_CROSSES > 0
                                 and _TAKER_XN.get(_t4, 0) >= TAKER_GOV_CROSSES
@@ -3238,6 +3290,7 @@ def run_once():
                             if _t4 not in _tripped:
                                 _tripped.add(_t4)        # behavioral trip: paying to leave x3
                                 _snap.setdefault(_t4, _d4)
+                                _inv4.setdefault(_t4, abs(float(held_by.get(_t4, 0.0) or 0.0)))
                                 plan["taker_gov_tripped"] = plan.get("taker_gov_tripped", 0) + 1
                     st["mkt_realized_base"] = _base
                     st["mkt_loss_tripped"] = sorted(_tripped)
@@ -3254,6 +3307,7 @@ def run_once():
                     _out4 |= _bk4
                     st["mkt_out"] = sorted(_out4)
                     st["mkt_trip_snap"] = _snap
+                    st["mkt_trip_inv"] = _inv4
                     st["mkt_taker_xn"] = dict(_TAKER_XN)
                     _exit_only_mkts |= _tripped | _out4
                     # Gov-D5 (1.1 review 2026-07-31): the L3 sibling probe clamp ran at
