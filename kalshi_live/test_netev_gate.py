@@ -182,6 +182,13 @@ def test_gas_via_cycle_keeps_quoting(monkeypatch, tmp_path):
     _cfg(monkeypatch, join=100, mktcap=250, totcap=100000)
     monkeypatch.setattr(q, "NETEV_GATE", 1)
     monkeypatch.setattr(q, "NETEV_TABLE", _TABLE)
+    # 2026-08-03: this test set the fixture table but — unlike its sibling above — never pinned
+    # the PATH, so the in-cycle mtime refresh reloaded the REAL repo table over the fixture. It
+    # passed only because the committed table happened to carry gas net-POSITIVE (+1.1184%, CSV
+    # canon). Regenerating that file on a different window turned this red, which is the test
+    # reporting a data file it never declared it depended on. Pinning the path restores its
+    # stated intent: a net-positive family, from the FIXTURE, keeps quoting.
+    monkeypatch.setattr(q, "NETEV_TABLE_PATH", "/nonexistent/netev_table_test.json")
     monkeypatch.setattr(q, "NETEV_MIN_MARGIN_PCT", 0.0)
     monkeypatch.setattr(q, "public_get", _pg({"yes_dollars": _YL, "no_dollars": _NL}, _GAS_TKR))
     monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
@@ -291,6 +298,11 @@ def test_armed_with_empty_table_alarms(monkeypatch, tmp_path, capsys):
     _cfg(monkeypatch, join=100, mktcap=250, totcap=100000)
     monkeypatch.setattr(q, "NETEV_GATE", 1)
     monkeypatch.setattr(q, "NETEV_TABLE", {})          # the live 07-31/08-01 state
+    # 2026-08-03: pin the PATH or the in-cycle mtime refresh reloads the REAL repo table over
+    # this fixture and the alarm never fires. This test only passed before because module-global
+    # _NETEV_MTIME had already been set by an earlier test in the file — i.e. it depended on test
+    # ORDER and on the committed table's contents, neither of which it declared.
+    monkeypatch.setattr(q, "NETEV_TABLE_PATH", "/nonexistent/netev_table_test.json")
     monkeypatch.setattr(q, "public_get", _pg({"yes_dollars": _YL, "no_dollars": _NL}, _TEMP_TKR))
     _fp1(monkeypatch)
     row = _run(monkeypatch, MockClient(mode="live", resting=[], positions=[]), str(tmp_path))
@@ -310,6 +322,9 @@ def test_armed_with_a_real_table_does_not_alarm(monkeypatch, tmp_path):
     _cfg(monkeypatch, join=100, mktcap=250, totcap=100000)
     monkeypatch.setattr(q, "NETEV_GATE", 1)
     monkeypatch.setattr(q, "NETEV_TABLE", _TABLE)
+    # 2026-08-03: same undeclared coupling as the empty-table test above — pin the PATH so the
+    # in-cycle refresh cannot swap this fixture for the committed table.
+    monkeypatch.setattr(q, "NETEV_TABLE_PATH", "/nonexistent/netev_table_test.json")
     monkeypatch.setattr(q, "public_get", _pg({"yes_dollars": _YL, "no_dollars": _NL}, _TEMP_TKR))
     _fp1(monkeypatch)
     row = _run(monkeypatch, MockClient(mode="live", resting=[], positions=[]), str(tmp_path))
