@@ -4391,7 +4391,17 @@ def run_once():
                 create_fail += 1
                 _create_ratchet_fail(c["ticker"])   # J6
                 if first_create_err is None:        # anonymous create_fail hid WHAT was rejected
-                    first_create_err = f"{c['ticker']}/{c['side']}/{c.get('reason')}: {e!r}"[:160]
+                    # defect 10: {e!r} on an HTTPError renders only "400 Bad Request" — the
+                    # venue's actual reason is in the body, which _err_detail extracts.
+                    first_create_err = (f"{c['ticker']}/{c['side']}/{c.get('reason')}: "
+                                        f"{_err_detail(e)}")[:240]
+                if c.get("reason") == "unwind":
+                    # An UNWIND is an EXIT. A rejected exit leaves inventory we intended to be
+                    # rid of, so it is printed as well as recorded — first_create_err is a
+                    # single first-writer-wins slot SHARED with amends (:4307), so a later or
+                    # second unwind rejection would otherwise be dropped entirely.
+                    print(f"WARNING UNWIND create REJECTED on {c['ticker']} {c['side']} "
+                          f"{c.get('count')}@{c.get('price_dollars')}: {_err_detail(e)}")
 
         # next dry-run standing = prior standing - cancels + created (reflects truncation)
         if client.mode == "dry_run":
@@ -4747,8 +4757,18 @@ def _rest_maker_offset(client, ticker, pos, cost, tag):
                                 client_order_id=f"mk-{tag}-{int(time.time())}-{side}")
         o = r.get("order") if isinstance(r, dict) and isinstance(r.get("order"), dict) else {}
         return o.get("order_id")
-    except Exception:
+    except Exception as e:
+        # DEFECT 10 (2026-08-02): this catch bound NOTHING — no `as e` — so a rejected EXIT
+        # re-rest vanished into a flat global counter that cannot even name the ticker. Live
+        # 2026-08-02T10:32:58Z the caller printed "...the re-rest FAILED — no working exit
+        # until the next cycle unwind pass" for KXRAIN-26AUG03-BOS with no reason attached,
+        # and the same rejection then repeated identically. An exit we cannot place is the
+        # one failure that must never be quiet, and under STOP the journal is the ONLY
+        # channel (run_once returns before append_plan), so this PRINTS rather than only
+        # counting.
         _SILENT["rerest_fail_create"] += 1
+        print(f"WARNING re-rest of EXIT offset REJECTED on {ticker} pos={pos:+.2f} "
+              f"{side} {cnt}@{price}: {_err_detail(e)}")
         return None
 
 
@@ -4844,6 +4864,39 @@ def flatten_to_zero(client, ticker, standing_oids=None, tries=4):
         return abs(_held_cost(client)[1].get(ticker, 0.0)) < INV_TOLERANCE, crossed
     except Exception:
         return remaining < max(1, int(INV_TOLERANCE)), crossed
+
+
+def _err_detail(e, limit=240):
+    """Render an exception for humans INCLUDING the HTTP status and response body.
+
+    Defect 10 root fix (2026-08-02). `{e!r}` on an HTTPError renders
+    `HTTPError(400, 'Bad Request')` — the venue's actual reason ("would cross", "market not
+    active", a tick-grid complaint...) lives in the BODY and was thrown away at every catch
+    site. That is why an UNWIND rejection could repeat identically for 19 minutes with nothing
+    in the log explaining it.
+
+    The body is already available: maker_kalshi_client._request raises
+    urllib.error.HTTPError(url, status, reason, headers, io.BytesIO(raw)) on the pooled path
+    (:159-163) and urlopen raises the same shape on the other, so `e.read()` returns the
+    venue's payload without any client-side change.
+
+    SECRETS: an HTTPError carries the RESPONSE headers, never our request headers, so the API
+    key, the signature and the timestamp cannot appear here. Only the venue's own reply is
+    rendered, bounded to `limit` chars. Reading the body is one-shot, so it is read once and
+    tolerated as empty if something upstream already consumed it."""
+    try:
+        status = getattr(e, "code", None)
+        if status is None:
+            return repr(e)[:limit]
+        body = ""
+        try:
+            raw = e.read()
+            body = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        except Exception:
+            body = "<body unavailable>"
+        return f"HTTP {status} {getattr(e, 'reason', '')!s} body={body.strip()}"[:limit]
+    except Exception:
+        return "<unrenderable error>"
 
 
 def _cancel_each(client, ids):
@@ -5001,7 +5054,8 @@ def _flatten_all(client):
                 offset_oids[t] = o["order_id"]
             print(f"flatten: {t} pos={pos:+.2f} -> rested MAKER offset {side} {cnt}@{price} (passive)")
         except Exception as e:
-            print(f"flatten: {t} pos={pos:+.2f} — offset REJECTED ({e!r}), will re-check at escalation")
+            print(f"flatten: {t} pos={pos:+.2f} — offset REJECTED ({_err_detail(e)}), "
+                  f"will re-check at escalation")
     # --- pass 2: bounded escalation — give passive a real chance, then taker the RESIDUAL ---
     if STOP_ESCALATE_S > 0:
         print(f"flatten: waiting {STOP_ESCALATE_S}s for passive offsets to fill...")
