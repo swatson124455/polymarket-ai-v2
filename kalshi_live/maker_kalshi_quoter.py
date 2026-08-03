@@ -690,6 +690,35 @@ ANYLOSS_SHADOW_MAX_TICKERS = 200          # per floor per day — keeps quoter_s
 # only ones that can still trip a rung, and the truncation is counted rather than silent.
 REALIZED_CARRY_MAX = 500
 
+# --- ALWAYS-EMIT COUNTERS (defect 9, Phase A3). Every name below is written ONLY as an
+# accumulation — `plan[k] = plan.get(k, 0) + 1` — and never plainly assigned, so a cycle in
+# which the thing never happened emitted NO KEY AT ALL. Absence then reads identically to
+# "never evaluated", which is the ambiguity that let a protection look fine while it was
+# structurally unable to fire. Seeding them to 0 at the top of every cycle makes absence mean
+# "not evaluated" and 0 mean "evaluated, did not fire" — two different facts that were one.
+# Derived mechanically (not hand-maintained): these are exactly the keys matching
+# `plan["k"] = plan.get("k"...` with no plain assignment anywhere in the module.
+# SAFETY: seeding cannot change behaviour. Every in-module consumer reads these with
+# `.get(k, 0)` or truthiness, so a falsy 0 is byte-identical to absence at every read site;
+# the same holds for the hourly roll-up (kalshi_plans_hourly.py), which coerces with
+# `.get(f, 0) or 0`.
+_ALWAYS_EMIT_COUNTERS = (
+    "create_ratchet_skipped", "drop_far_market_close", "exit_cross_unpriced",
+    "exit_ladder_stepped", "exit_sweep_veto", "exit_trend_cross", "farclose_check_failed",
+    "ladder_cross", "ladder_cross_gated", "ladder_violation", "mkt_out_rung2",
+    "preclose_check_failed", "preclose_taker_failed", "series_probe", "settle_check_failed",
+    "settle_topups", "strand_cross_failed", "strand_crossed_book", "strand_no_exit_side",
+    "strand_read_failed", "strand_unpriceable", "taker_gov_tripped", "trip_inv_missing",
+)
+# Footprint DROP REASONS. FP_DROPS is merged into the row at the end of selection, so a reason
+# that never fired was likewise absent — indistinguishable from a selection stage that never
+# ran (the exact failure mode the FP_DROPS block itself was built to end).
+_ALWAYS_EMIT_DROPS = (
+    "close_unchecked_tail", "drop_allowlist", "drop_date_parse", "drop_far_close",
+    "drop_far_market_close_sel", "drop_high_activity", "drop_late_life", "drop_not_liquidity",
+    "drop_not_selected", "drop_null_fields", "drop_series_capped", "drop_series_deny",
+)
+
 
 def _anyloss_shadow(st, realized, base, tripped, out, cooling, now, day, plan):
     """Pure shadow bookkeeping for the any-loss cooldown. Returns nothing; mutates only
@@ -3010,6 +3039,12 @@ def run_once():
     if st.get("equity_prev") is not None:
         _TOTAL_CAP_EFF[0] = st.get("equity_prev")
     plan = {"ts": now.isoformat(), "mode": client.mode}
+    # defect 9: absence must mean "not evaluated", never "did not fire". See the
+    # _ALWAYS_EMIT_COUNTERS block for why this cannot change behaviour.
+    for _k9 in _ALWAYS_EMIT_COUNTERS:
+        plan[_k9] = 0
+    for _k9 in _ALWAYS_EMIT_DROPS:
+        plan[_k9] = 0
     # CONFIG VISIBILITY (2026-07-26): a knob absent from live.env takes its code default
     # silently. That class of defect hid KALSHI_THROTTLE_SMART (OFF in production) and
     # KALSHI_PRECLOSE_FLATTEN (built + tested, never switched on) while every cycle
@@ -4796,6 +4831,17 @@ def run_once():
                 _kms.save(SCORE_PATH, _snap)
                 # measurement-bearing rows only (D9 review fix #5): attempt-only rows would
                 # inflate this gauge toward universe size regardless of measurement progress
+                # DENOMINATORS, LABELLED (defect 9, Phase A3). scored_markets and
+                # score_age_p50_m are computed from the SAME snapshot in the SAME cycle but
+                # over DIFFERENT PREDICATES — scored_markets counts rows bearing ts OR pts,
+                # score_age_* only rows bearing ts. Printed side by side with no denominator,
+                # the pair invited the reading that measurement coverage was ~12% when the
+                # gauge's own population was a different, smaller set.
+                # (The master plan explained this gap as scored_markets being a
+                # "session-START epoch". That is mechanically WRONG and is corrected here:
+                # there is ONE snapshot, taken above, read by both. Confirmed by blind review
+                # 2026-08-03.)
+                plan["score_rows_total"] = len(_snap)
                 plan["scored_markets"] = sum(
                     1 for _r8 in _snap.values()
                     if _r8.get("ts") is not None or _r8.get("pts") is not None)
@@ -4805,11 +4851,15 @@ def run_once():
                 # keys. A gauge fed by the tool built alongside it is a gauge that can lie.)
                 _ages = sorted(now.timestamp() - float(r["ts"]) for r in _snap.values()
                                if r.get("ts") is not None)
+                # The population score_age_* is actually computed over — ALWAYS emitted, so a
+                # reader can never pair the percentile with the wrong denominator.
+                plan["score_age_n"] = len(_ages)
                 if _ages:
                     plan["score_age_p50_m"] = round(_ages[len(_ages) // 2] / 60.0, 1)
                     plan["score_age_p90_m"] = round(_ages[int(len(_ages) * 0.9)] / 60.0, 1)
                 _pages = sorted(now.timestamp() - float(r["pts"]) for r in _snap.values()
                                 if r.get("pts") is not None)
+                plan["pcap_age_n"] = len(_pages)
                 if _pages:
                     plan["pcap_age_p50_m"] = round(_pages[len(_pages) // 2] / 60.0, 1)
                     plan["pcap_age_p90_m"] = round(_pages[int(len(_pages) * 0.9)] / 60.0, 1)
@@ -4817,7 +4867,12 @@ def run_once():
                 if _SWEEPER is not None:
                     plan["sweep"] = dict(_SWEEPER.stats)      # additive keys, observation only
             except Exception:
-                pass
+                # defect 9: this swallowed silently, so a fault in the score telemetry made
+                # every gauge above VANISH from the row while "cycle ok" still printed — the
+                # always-emit guarantee is voidable without it being counted anywhere. The
+                # module's own doctrine is count-don't-swallow; this is the last bare pass in
+                # the telemetry path.
+                _SILENT["score_telemetry_fail"] += 1
         # DROP GRACE: carry the per-ticker counter into the next cycle. Tickers absent from
         # grace_used are simply not written back, which RESETS them — correct, because they either
         # came back into the footprint or their grace ran out and the diff cancelled them.

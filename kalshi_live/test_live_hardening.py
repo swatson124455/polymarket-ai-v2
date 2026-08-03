@@ -1172,7 +1172,7 @@ def test_ladder_hatch_never_fires_when_the_exit_rests_at_the_touch(monkeypatch, 
     c = MockClient(mode="live", resting=[], positions=[
         {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "12.40"}])
     row = _run(monkeypatch, c, str(tmp_path))
-    assert row.get("ladder_cross") is None                    # never armed: nothing is parked
+    assert row.get("ladder_cross") == 0                       # never armed: nothing is parked
     ups = [o for o in c.created if o["ticker"].endswith("4.050") and o["side"] == "no"]
     assert len(ups) == 1 and ups[0]["price"] == 0.85          # AT the touch, expensive basis or not
     assert ups[0]["count"] == 20                              # FULL |naked| — not halved into lanes
@@ -1180,7 +1180,7 @@ def test_ladder_hatch_never_fires_when_the_exit_rests_at_the_touch(monkeypatch, 
     c2 = MockClient(mode="live", resting=[], positions=[
         {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "2.00"}])
     row2 = _run(monkeypatch, c2, str(tmp_path))
-    assert row2.get("ladder_cross") is None
+    assert row2.get("ladder_cross") == 0  # A3: seeded to 0, so absence became 0 — claim unchanged
     ups2 = [o for o in c2.created if o["ticker"].endswith("4.050") and o["side"] == "no"]
     assert len(ups2) == 1 and ups2[0]["price"] == 0.85
 
@@ -1280,7 +1280,7 @@ def test_touch_exit_exempt_from_tight_cap_while_adjacent_join_is_gated(monkeypat
     c = MockClient(mode="live", resting=[], positions=[
         {"ticker": "KXAAAGASD-26JUL22-4.050", "position_fp": "20", "market_exposure_dollars": "12.40"}])
     row = _run(monkeypatch, c, str(tmp_path))
-    assert row.get("ladder_cross") is None                 # hatch cannot arm: nothing is parked
+    assert row.get("ladder_cross") == 0                    # hatch cannot arm: nothing is parked
     crossed = [o for o in c.created if o["ticker"].endswith("4.060")]
     assert not crossed                                     # flat sibling fully capital-gated
     exits = [o for o in c.created if o["ticker"].endswith("4.050") and o["side"] == "no"]

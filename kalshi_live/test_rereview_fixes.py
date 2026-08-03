@@ -142,7 +142,7 @@ def _superseded_m6(monkeypatch, tmp_path):
                    "prev_standing_tickers": ["KXBURN-INC-1"]}, fh)
     c = MockClient(mode="live", positions=[])
     row = _run(monkeypatch, c, str(tmp_path))
-    assert row.get("series_probe") is None, "M6: incumbents are not probe-shrunk"
+    assert row.get("series_probe") == 0, "M6: incumbents are not probe-shrunk"
     mine = [x for x in c.created if x["ticker"] == "KXBURN-INC-1"]
     assert mine and any(x["count"] > 5 for x in mine)
 

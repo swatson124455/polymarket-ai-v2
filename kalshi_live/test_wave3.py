@@ -67,7 +67,7 @@ class TestSweepVetoAndTrendCross:
         c = _strand_setup(monkeypatch, tmp_path,
                           {"strand_touch": {"T1": [0.40, 0]}})
         row = _run(monkeypatch, c, str(tmp_path))
-        assert c.crosses == [] and row.get("exit_sweep_veto") is None
+        assert c.crosses == [] and row.get("exit_sweep_veto") == 0
         assert row.get("exit_ladder_stepped") == 1, "normal ladder path preserved"
 
     def test_disabled_restores_legacy(self, monkeypatch, tmp_path):
@@ -75,7 +75,7 @@ class TestSweepVetoAndTrendCross:
                           {"strand_touch": {"T1": [0.50, 0]}})
         monkeypatch.setattr(q, "SWEEP_VETO_TICKS", 0)
         row = _run(monkeypatch, c, str(tmp_path))
-        assert row.get("exit_sweep_veto") is None, "0 = both arms off"
+        assert row.get("exit_sweep_veto") == 0, "0 = both arms off"
 
 
 class TestSeriesProbeInsurance:
@@ -104,7 +104,7 @@ class TestSeriesProbeInsurance:
             json.dump({"mkt_out": ["KXBURN-OLD-1"]}, fh)
         c = MockClient(mode="live", positions=[])
         row = _run(monkeypatch, c, str(tmp_path))
-        assert row.get("series_probe") is None
+        assert row.get("series_probe") == 0  # A3: seeded to 0, so absence became 0 — claim unchanged
         mine = [x for x in c.created if x["ticker"] == "KXOTHER-NEW-1"]
         assert mine and any(x["count"] > 5 for x in mine)
 

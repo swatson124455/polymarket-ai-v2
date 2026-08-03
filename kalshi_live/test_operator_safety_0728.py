@@ -145,7 +145,7 @@ def test_near_close_market_is_kept(monkeypatch, tmp_path):
                         _pg_with_close((q.utcnow() + timedelta(days=1)).isoformat()))
     c = MockClient(mode="live")
     row = _run(monkeypatch, c, str(tmp_path))
-    assert "drop_far_market_close" not in row
+    assert row.get("drop_far_market_close") == 0  # A3: seeded to 0, so absence became 0 — claim unchanged
     assert len(c.created) == 2
 
 
