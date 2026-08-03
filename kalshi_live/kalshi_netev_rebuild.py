@@ -46,7 +46,20 @@ def _f(x, d=0.0):
 
 
 def _iso(s):
-    return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    """Parse an ISO timestamp. A value carrying no UTC offset IS UTC.
+
+    ⚠ THE UTC DEFAULT IS THE FIX, NOT A CONVENIENCE. A date-only bound ("2026-07-21" — the
+    exact form main()'s own --since help offers as its example) parses NAIVE, and _in_window
+    then compares it against tz-aware fill created_time, which raises
+    "TypeError: can't compare offset-naive and offset-aware datetimes". The CLI therefore
+    crashed on its own documented example, on every invocation, for the whole window it
+    existed. The suite never caught it because every test passes a tz-AWARE tuple straight to
+    build_table (WIN in test_netev_rebuild.py), so the CLI's own parsing path had zero
+    coverage — the -2.74% figure in the 08-03 handoff was produced by calling build_table
+    directly, never through main(). Measured 2026-08-03.
+    """
+    d = dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    return d if d.tzinfo is not None else d.replace(tzinfo=dt.timezone.utc)
 
 
 def credit_event(row):

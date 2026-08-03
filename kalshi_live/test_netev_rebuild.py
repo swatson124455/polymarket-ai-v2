@@ -57,6 +57,36 @@ def test_window_is_required():
         nr.build_table([], [], [], _fam, None)
 
 
+def test_date_only_window_bounds_are_utc_aware_not_naive():
+    """REGRESSION (2026-08-03): the CLI raised TypeError on its own documented example.
+
+    main() builds the window with _iso(--since); "2026-07-21" parsed NAIVE, and _in_window
+    compared it against tz-aware created_time. Every test passed a tz-aware tuple straight to
+    build_table, so this path had no coverage at all. Fails before the fix, passes after.
+    """
+    lo, hi = nr._iso("2026-07-21"), nr._iso("2026-07-23")
+    assert lo.tzinfo is not None and hi.tzinfo is not None
+    assert nr._in_window("2026-07-21T12:00:00Z", (lo, hi)) is True
+    assert nr._in_window("2026-07-20T12:00:00Z", (lo, hi)) is False
+    assert nr._in_window("2026-07-24T12:00:00Z", (lo, hi)) is False
+
+
+def test_an_offset_bearing_timestamp_keeps_its_own_offset():
+    """The UTC default must apply ONLY to naive values — never override a real offset.
+    2026-07-21T01:36:39-04:00 is 05:36:39Z, which is INSIDE a window starting 07-21T00:00Z."""
+    assert nr._iso("2026-07-21T01:36:39-04:00") == nr._iso("2026-07-21T05:36:39Z")
+    assert nr._in_window("2026-07-20T22:00:00-04:00", (nr._iso("2026-07-21"), nr._iso("2026-07-23")))
+
+
+def test_build_table_accepts_a_window_built_the_way_the_cli_builds_it():
+    """End-to-end: the exact main() construction must reach a verdict, not raise."""
+    win = (nr._iso("2026-07-21"), nr._iso("2026-07-23"))
+    doc = nr.build_table([_fill("KXAAAGASD-26JUL21-4.02", "yes", 0.40, 50)],
+                         [_settle("KXAAAGASD-26JUL21-4.02", 0)],
+                         [_credit("KXAAAGASD-26JUL21", 2500)], _fam, win)
+    assert doc["families"]["gas"]["trading_pnl"] == -20.0
+
+
 def test_credit_event_is_parsed_from_the_reason_string():
     assert nr.credit_event(_credit("KXAAAGASD-26JUL21", 215)) == "KXAAAGASD-26JUL21"
     assert nr.credit_event({"reason": "Referral bonus"}) is None
