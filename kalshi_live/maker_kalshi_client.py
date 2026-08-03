@@ -33,6 +33,12 @@ import urllib.request
 # Legacy still works: prod api.elections.kalshi.com / demo demo-api.kalshi.co.
 # Credentials are NOT shared across environments (demo keys only hit demo).
 PROD_BASE = "https://external-api.kalshi.com"
+# credit_history lives on the ELECTIONS host only (external-api 404s for it, measured
+# 2026-08-03) and needs the account id in its path. The id is an account identifier, not a
+# credential — but it is env-overridable so nothing is pinned to one account in code.
+CREDIT_BASE = os.environ.get("KALSHI_CREDIT_BASE", "https://api.elections.kalshi.com")
+CREDIT_USER_ID = os.environ.get("KALSHI_USER_ID",
+                                "3aa87f0f-3360-4584-983e-89e479efc6e5")
 DEMO_BASE = "https://external-api.demo.kalshi.co"
 API_ROOT = "/trade-api/v2"
 # Times _get_paginated hit its 50-page runaway bound while the venue still had more to give,
@@ -146,8 +152,13 @@ class KalshiOrderClient:
 
     # ---------------- transport ----------------
 
-    def _request(self, method, path, body=None, authed=True):
-        url = self.base + path
+    def _request(self, method, path, body=None, authed=True, base=None):
+        # `base` is an ADDITIVE override with a None default, so every existing caller is
+        # byte-unchanged. It exists because not every authenticated endpoint lives on the
+        # trading host: credit_history is served ONLY by api.elections.kalshi.com and returns
+        # HTTP 404 on external-api.kalshi.com (both measured 2026-08-03). The signature is
+        # unaffected — it covers method + path with the query string stripped, not the host.
+        url = (base or self.base) + path
         headers = {"User-Agent": "maker-kalshi-client/1.0"}
         if authed:
             if self.auth is None:
@@ -404,6 +415,24 @@ class KalshiOrderClient:
             except (TypeError, ValueError):
                 pass
         return out
+
+    def get_credit_history(self, limit=1000):
+        """Liquidity-incentive credits — the REWARD RECEIPT feed.
+
+        ADDITIVE 2026-08-03. Not under API_ROOT: this is the v1 users path, and the signature
+        covers the path WITHOUT the query string (verified in use since 2026-08-02).
+        Rows carry amount_cents / created_at / credit_id / status / type and a `reason` of the
+        form "Liquidity Incentive for event <EVENT_TICKER>" — per EVENT, never per strike
+        (canon §M11). That is what makes per-family credit attribution exact and removes the
+        operator-screenshot step the CSV calibrator needed.
+        HOST: served ONLY by api.elections.kalshi.com — external-api.kalshi.com returns HTTP
+        404 for this path (both measured 2026-08-03), hence the explicit base override.
+        Read-only. Never logs the key or the signature."""
+        if not CREDIT_USER_ID:
+            raise RuntimeError("KALSHI_USER_ID unset — credit_history needs the account id")
+        return self._request(
+            "GET", f"/v1/users/{CREDIT_USER_ID}/credit_history?limit={int(limit)}",
+            base=CREDIT_BASE)
 
     def get_settlements(self, min_ts=None):
         """Settled markets, newest-inclusive from `min_ts` (UNIX seconds) when given.
