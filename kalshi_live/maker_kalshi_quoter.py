@@ -1461,10 +1461,73 @@ def parse_iso(s):
 # 'cycle ok footprint=0' forever while the bot is functionally dead (masking audit 07-22).
 # Module-level rather than a parameter so the 2-arg signature every caller/test uses is intact.
 FP_DROPS = {}
+# SELECTION SHAPE (Phase C2), kept in its OWN namespace. FP_DROPS means "why a candidate was
+# dropped" and test_selection_observability asserts that meaning by exact set — mixing
+# measurement into it would have forced that pin to be loosened, so the pin stays and the
+# measurement lives here. Merged into the plan row alongside FP_DROPS, cleared with it.
+FP_SHAPE = {}
+
+
+def _record_pool_shape(rows, picked, shape):
+    """POOL HISTOGRAM + BELOW-CUT SHAPE (Phase C2). Writes into FP_SHAPE, a namespace of its
+    own — FP_DROPS means "why a candidate was dropped" and a test asserts that meaning by
+    exact set, so measurement is kept separate rather than loosening the pin.
+
+    The funnel counted how many candidates were dropped but never WHAT they looked like, so
+    "we passed over 200 markets" could not be turned into "we passed over 200 markets whose
+    pools were all under $20/day" — the two have opposite implications for whether the cut is
+    costing anything. Recording the histogram of the whole candidate pool and of the part below
+    the cut makes the question answerable from the tape.
+
+    Buckets are usd_day (the venue's daily reward pool), chosen around the measured live
+    distribution: p50 $140 / max $1,000 across 475 quoted tickers on 2026-08-02.
+    Pure measurement — returns nothing and changes no selection."""
+    try:
+        _edges = (0.0, 1.0, 10.0, 50.0, 140.0, 500.0)
+        def _bucket(v):
+            for i, e in enumerate(_edges):
+                if v < e:
+                    return i
+            return len(_edges)
+        _picked_ids = {id(r) for r in picked}
+        _below = [r for r in rows if id(r) not in _picked_ids]
+        for name, group in (("pool", rows), ("below", _below)):
+            _h = [0] * (len(_edges) + 1)
+            for r in group:
+                try:
+                    _h[_bucket(float(r.get("usd_day") or 0.0))] += 1
+                except (TypeError, ValueError):
+                    pass
+            shape[f"{name}_hist"] = _h
+        shape["below_cut_n"] = len(_below)
+        # Row-safe: ONE malformed usd_day used to raise into the outer handler and take the
+        # ENTIRE shape record with it — a single bad row losing all the telemetry, which is the
+        # opposite of what a measurement layer should do under bad input. Caught by its own pin
+        # 2026-08-03. Bad rows are skipped and counted; everything else still reports.
+        _sum, _bad = 0.0, 0
+        for r in _below:
+            try:
+                _sum += float(r.get("usd_day") or 0.0)
+            except (TypeError, ValueError):
+                _bad += 1
+        shape["below_cut_usd_day_sum"] = round(_sum, 2)
+        shape["shape_bad_rows"] = _bad
+        # vol24h coverage over the candidate pool: how much of the selection input we actually
+        # have, so a later cut on it knows its own denominator.
+        _v = [r["vol24h_ct"] for r in rows if r.get("vol24h_ct") is not None]
+        shape["pool_vol24h_known"] = len(_v)
+        shape["pool_n"] = len(rows)
+        if _v:
+            _vs = sorted(_v)
+            shape["pool_vol24h_p50"] = round(_vs[len(_vs) // 2], 2)
+            shape["pool_vol24h_max"] = round(_vs[-1], 2)
+    except Exception:
+        _SILENT["pool_shape_fail"] += 1
 
 
 def select_footprint(progs, now):
     FP_DROPS.clear()
+    FP_SHAPE.clear()
     drops = FP_DROPS
     rows = []
     for p in progs:
@@ -1585,6 +1648,15 @@ def select_footprint(progs, now):
             # p99~27,568 ct/24h -> 1,000 ct ~= the top decile. Fail-open when unknown;
             # held inventory on a gated market unwinds via the strand path as with every
             # other selection drop. 0 = gate OFF (test-pinned no-op).
+            # PERSIST THE SELECTION INPUT, not just the verdict (Phase C2). The gate's own
+            # threshold was measured once against a sample; carrying vol24h onto the row means
+            # a later study can re-cut it from OUR OWN candidates instead of re-sampling the
+            # venue — and can ask the question the 08-02 measurement could not: what vol24h did
+            # the markets we actually LOST money on carry? (The gate caught 0 of the 6 losers.)
+            # Recorded whether or not the gate is armed, so the data exists before a decision
+            # needs it.
+            if _v3 is not None:
+                r["vol24h_ct"] = float(_v3)
             if MAX_VOL24H_CT > 0 and _v3 is not None and _v3 > MAX_VOL24H_CT:
                 drops["drop_high_activity"] = drops.get("drop_high_activity", 0) + 1
                 continue
@@ -1658,6 +1730,7 @@ def select_footprint(progs, now):
                 drops["drop_not_selected"] = len(rows) - len(picked)
             else:
                 drops["drop_series_capped"] = len(rows) - len(picked)
+        _record_pool_shape(rows, picked, FP_SHAPE)
         _caprank_telemetry(rows, picked, now)   # observation only; no-op unless flag ON
         return picked
     # ---- PIVOT: density-weighted, over-selected, near-money-ordered candidate pool ----
@@ -1710,6 +1783,7 @@ def select_footprint(progs, now):
             break
     if len(rows) > len(picked):
         drops["drop_not_selected"] = len(rows) - len(picked)   # D10, same as legacy branch
+    _record_pool_shape(rows, picked, FP_SHAPE)  # PIVOT branch too (split-branch parity)
     _caprank_telemetry(rows, picked, now)       # observation only; no-op unless flag ON
     return picked
 
@@ -3170,6 +3244,7 @@ def run_once():
                         _r5["explore"] = True
                         plan["series_probe"] = plan.get("series_probe", 0) + 1
         plan.update(FP_DROPS)                 # drop reasons (empty when a test patches selection)
+        plan.update(FP_SHAPE)                 # C2 selection shape, same lifecycle
         plan["programs_seen"] = len(progs)
         # FAR-CLOSE CAP ON THE MARKET CLOCK (operator Q6 decision 2026-07-28). select_footprint's
         # cap gates on the reward-PROGRAM window end — but a market can carry a short weekly
@@ -3977,6 +4052,29 @@ def run_once():
             # paired inventory really does consume cash, so capital accounting must not shrink.
             risk_cost = naked_held_cost(held_by, cost_by)
             plan["naked_held_usd"] = round(risk_cost, 2)
+            # PAIREDNESS SPLIT (Phase C2). Canon's own lever for a reward-earning maker is
+            # PAIREDNESS — the whale study's "every fill is a cost" holds for NAKED inventory,
+            # while a floored ladder pair settles at >= $1 and carries only the strike gap. The
+            # bot has always ACTED on that distinction (naked_held_usd gates the breakers) but
+            # never RECORDED it, so no study could ask what share of a day's inventory was
+            # paired, or what the naked share cost. That gap is why the 08-02 loss could not be
+            # split paired-vs-naked after the fact. Contracts AND cost, both sides, always
+            # emitted — derived from reads the cycle already made.
+            try:
+                _naked_by = ladder_pairing(held_by)
+                _gross_ct = sum(abs(float(v or 0.0)) for v in held_by.values())
+                _naked_ct = sum(abs(float(v or 0.0)) for v in _naked_by.values())
+                plan["inv_gross_ct"] = round(_gross_ct, 2)
+                plan["inv_naked_ct"] = round(_naked_ct, 2)
+                plan["inv_paired_ct"] = round(max(0.0, _gross_ct - _naked_ct), 2)
+                plan["inv_gross_usd"] = round(held_cost, 4)
+                plan["inv_naked_usd"] = round(risk_cost, 4)
+                plan["inv_paired_usd"] = round(max(0.0, held_cost - risk_cost), 4)
+                plan["inv_paired_frac"] = round(
+                    (max(0.0, _gross_ct - _naked_ct) / _gross_ct) if _gross_ct else 0.0, 4)
+                plan["inv_pairedness_measured"] = 1
+            except Exception:
+                _SILENT["pairedness_split_fail"] += 1
             hist = [h for h in st.get("held_hist", [])
                     if now.timestamp() - h[0] < BREAKER_WINDOW_S]
             hist.append([now.timestamp(), risk_cost])
