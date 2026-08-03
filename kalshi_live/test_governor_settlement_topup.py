@@ -116,7 +116,7 @@ def test_flat_before_settlement_produces_no_delta(monkeypatch, tmp_path):
 
 
 def test_the_topup_is_idempotent_across_cycles(monkeypatch, tmp_path):
-    # ASSIGN, never accumulate: re-reading the same settlement row must not compound.
+    # The watermark normally prevents a row being seen twice.
     _hold_then_settle(monkeypatch, tmp_path, expo="40.00", revenue_cents=0)
     first = dict(_state(tmp_path).get("mkt_settle_pnl") or {})
     for _ in range(3):
@@ -127,6 +127,28 @@ def test_the_topup_is_idempotent_across_cycles(monkeypatch, tmp_path):
              str(tmp_path))
     assert (_state(tmp_path).get("mkt_settle_pnl") or {}) == first, \
         "a one-off settlement must never compound into an unbounded loss"
+
+
+def test_reprocessing_a_row_is_idempotent_even_without_the_watermark(monkeypatch, tmp_path):
+    """DEFENCE IN DEPTH (mutation-found 2026-08-03). The test above passes even if the delta
+    ACCUMULATES, because the watermark stops the row being seen a second time — so it pins the
+    cursor, not the arithmetic. Here the watermark is rewound to force genuine re-processing:
+    the write must be an ASSIGN, so the value is identical no matter how often it is seen.
+    Two independent guards, each pinned separately."""
+    _hold_then_settle(monkeypatch, tmp_path, expo="40.00", revenue_cents=0)
+    assert (_state(tmp_path).get("mkt_settle_pnl") or {}).get("T2") == -40.0
+    for _ in range(3):
+        st = _state(tmp_path)
+        st["settle_watermark"] = 0                     # force the row to be re-read
+        with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as fh:
+            json.dump(st, fh)
+        _run(monkeypatch,
+             MockClient(mode="live", positions=[_pos("T1")],
+                        traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"}],
+                        settlements=[_settle("T2", revenue_cents=0)]),
+             str(tmp_path))
+        assert (_state(tmp_path).get("mkt_settle_pnl") or {}).get("T2") == -40.0, \
+            "the delta must be ASSIGNED, never accumulated"
 
 
 def test_the_carry_is_persisted_WITHOUT_the_topup(monkeypatch, tmp_path):
@@ -153,6 +175,31 @@ def test_unknown_exposure_never_fabricates_a_ban(monkeypatch, tmp_path):
     st = _state(tmp_path)
     assert "NEVER-SEEN" not in (st.get("mkt_out") or [])
     assert "NEVER-SEEN" not in (st.get("mkt_settle_pnl") or {})
+
+
+def test_one_unknown_ticker_does_not_poison_the_whole_batch(monkeypatch, tmp_path):
+    """Mutation-found 2026-08-03: the previous pin passes even if the unknown-exposure guard
+    is removed, because the missing basis then raises and the OUTER except swallows it — the
+    ban is avoided by accident. The real requirement is that an unknown ticker is SKIPPED so
+    the rest of the batch still processes. Here a known settlement rides alongside an unknown
+    one and must still be applied."""
+    _arm(monkeypatch)
+    _run(monkeypatch, MockClient(mode="live",
+                                 positions=[_pos("T1"), _pos("T2", pos="50", expo="40.00")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"},
+                                         {"ticker": "T2", "realized_pnl_dollars": "0.00"}]),
+         str(tmp_path))
+    row = _run(monkeypatch,
+               MockClient(mode="live", positions=[_pos("T1")],
+                          traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"}],
+                          settlements=[_settle("NEVER-SEEN", revenue_cents=0),
+                                       _settle("T2", revenue_cents=0)]),
+               str(tmp_path))
+    assert row.get("settle_feed_fail") is None, \
+        "an unknown ticker must be skipped, not raise into the feed handler"
+    assert (_state(tmp_path).get("mkt_settle_pnl") or {}).get("T2") == -40.0, \
+        "the known settlement in the same batch must still be applied"
+    assert "NEVER-SEEN" not in (_state(tmp_path).get("mkt_settle_pnl") or {})
 
 
 def test_settlements_outage_does_not_halt_and_does_not_advance_the_watermark(monkeypatch, tmp_path):
