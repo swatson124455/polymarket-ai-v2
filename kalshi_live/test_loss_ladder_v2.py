@@ -241,6 +241,37 @@ class TestM3TripSnapshot:
         assert _state(tmp_path).get("mkt_out") == ["T1"], \
             "with no allowance the raw day-delta alone drives rung 2"
 
+    def test_trip_inventory_does_not_survive_the_day_roll(self, monkeypatch, tmp_path):
+        """Found by mutation 2026-08-02: leaving mkt_trip_inv uncleared at the day roll is
+        invisible on the roll cycle itself (trips reset, so the allowance is zero anyway), but
+        it poisons the NEXT trip — a market that held 50 ct yesterday and 1 ct today would get
+        yesterday's $2.00 refund instead of $0.04.
+
+        Here the market re-trips holding 1 ct and falls to -$5.10. With today's basis the
+        allowance is $0.04 and it goes OUT; with a stale 50-ct basis it would be spared."""
+        _arm(monkeypatch)
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="0.00")]),
+             str(tmp_path))
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="50", realized="-3.20")]),
+             str(tmp_path))
+        assert (_state(tmp_path).get("mkt_trip_inv") or {}).get("T1") == 50.0
+        st = _state(tmp_path)
+        st["mkt_realized_day"] = "2020-01-01"             # force the roll
+        with open(os.path.join(str(tmp_path), "quoter_state.json"), "w") as fh:
+            json.dump(st, fh)
+        # roll cycle re-baselines at the current lifetime value, now holding only 1 ct
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="1", realized="-3.20")]),
+             str(tmp_path))
+        assert (_state(tmp_path).get("mkt_trip_inv") or {}) == {}, \
+            "trip inventory is per-day state and must clear with the rest of the ladder"
+        # fresh trip at 1 ct, then a real bleed: allowance is $0.04, so it must go OUT
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="1", realized="-6.50")]),
+             str(tmp_path))
+        _run(monkeypatch, MockClient(mode="live", positions=[_pos(pos="1", realized="-8.30")]),
+             str(tmp_path))
+        assert _state(tmp_path).get("mkt_out") == ["T1"], \
+            "the allowance must be sized on TODAY's inventory, not a stale basis"
+
     def test_missing_trip_inventory_falls_back_to_the_old_behaviour(self, monkeypatch, tmp_path):
         """State written before this fix has no mkt_trip_inv. Rather than ban on an allowance
         we cannot justify, fail toward the OLD behaviour (full rung gap) and COUNT it."""
