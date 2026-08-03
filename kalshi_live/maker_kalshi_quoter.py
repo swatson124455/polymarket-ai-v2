@@ -1055,7 +1055,13 @@ def _netev_table_alarm(plan):
     if not NETEV_GATE:
         return
     plan["netev_gate"] = 1
-    plan["netev_table_families"] = len((NETEV_TABLE or {}).get("families") or {})
+    # NETEV_TABLE IS the {family: row} map, NOT the whole document: _load_netev_table returns
+    # kalshi_netev_calibrate.load_table, which already unwraps data["families"] (:229-238), and
+    # the gate consults it as NETEV_TABLE.get(fam). A first version of this alarm counted
+    # NETEV_TABLE["families"] and would therefore have reported 0 families and raised the EMPTY
+    # alarm on EVERY armed cycle — a false alarm on a populated table. Caught by reading the
+    # loader contract; the pin below now uses the real shape.
+    plan["netev_table_families"] = len(NETEV_TABLE or {})
     plan["netev_table_empty"] = 0
     if not plan["netev_table_families"]:
         plan["netev_table_empty"] = 1

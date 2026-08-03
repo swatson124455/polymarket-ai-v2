@@ -301,9 +301,15 @@ def test_armed_with_empty_table_alarms(monkeypatch, tmp_path, capsys):
 
 
 def test_armed_with_a_real_table_does_not_alarm(monkeypatch, tmp_path):
+    # SHAPE MATTERS, and my first version of this test got it wrong: NETEV_TABLE is the
+    # {family: row} MAP, not the whole document — _load_netev_table returns load_table(), which
+    # already unwraps data["families"], and the gate consults NETEV_TABLE.get(fam). Passing
+    # {"families": _TABLE} here made the test agree with an alarm that counted the wrong key,
+    # so it passed while the code would have false-alarmed on every armed cycle. _TABLE is the
+    # shape the rest of this file (and the live loader) uses.
     _cfg(monkeypatch, join=100, mktcap=250, totcap=100000)
     monkeypatch.setattr(q, "NETEV_GATE", 1)
-    monkeypatch.setattr(q, "NETEV_TABLE", {"families": _TABLE})
+    monkeypatch.setattr(q, "NETEV_TABLE", _TABLE)
     monkeypatch.setattr(q, "public_get", _pg({"yes_dollars": _YL, "no_dollars": _NL}, _TEMP_TKR))
     _fp1(monkeypatch)
     row = _run(monkeypatch, MockClient(mode="live", resting=[], positions=[]), str(tmp_path))
