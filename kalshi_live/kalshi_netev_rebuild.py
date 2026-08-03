@@ -109,7 +109,10 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
 
     NET = credits(family, in-window) + trading_pnl(family, in-window)
     trading_pnl = position-aware fill cash - fees + settlement revenue
-    net_pct_notional = NET / notional, notional = sum(price * count) over in-window fills.
+    net_pct_notional = NET / notional, notional = sum(price * count) over EVERY fill of every
+    market traded in-window — not only the in-window fills. (Corrected 2026-08-03: this line
+    said "over in-window fills", which stopped being true at the whole-market change in 9de3d89
+    and would have mis-stated the gate's own denominator to anyone reading it.)
     """
     if window is None:
         raise ValueError("window is required: a net-EV table built over an unstated period "
@@ -270,11 +273,31 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
             "round-trip P&L; here a taker fill is usually the CLOSING leg, so excluding it "
             "strips an inflow and keeps its cost. Measured 2026-08-03: ON moved gas from "
             "-3.89% to -85.58% on the post-governor window. ON is NOT equivalent to §M13.",
-            "⚠ FAMILY-LEVEL DISAGREEMENT WITH THE CSV CANON, UNRESOLVED: over 07-21..07-23 this "
-            "engine puts gas at -8.70% where the CSV table records +1.1% (temp agrees in sign: "
-            "-7.58% vs -9.2%). The per-MARKET proof criterion passes to the cent, so the "
-            "divergence is in family aggregation or the CSV's own exclusions — do not arm a "
-            "gate on the gas sign until it is explained.",
+            "FAMILY-LEVEL DISAGREEMENT WITH THE CSV CANON — RECONCILED 2026-08-03, exactly. "
+            "Over the canon window this engine puts gas at -2.74% where the CSV records +1.1% "
+            "(temp -7.58% vs -9.2%). The bridge closes to the cent with no residual: credits "
+            "are IDENTICAL on both sides ($2.15 gas / $23.06 temp, credit_history vs the §M8 "
+            "screenshots) and §M13's taker exclusion removes exactly $0.00 (0 excluded rows, "
+            "measured). The entire gap is SCOPE: a CSV 'trade' row books close_timestamp = "
+            "SETTLEMENT time in ET, so canon scored round trips that had CLOSED by the 07-23 "
+            "export — partial and mid-flight — while this engine scores the COMPLETE lifetime "
+            "of every market traded in-window. Proof of the mechanism: on temp, shared-market "
+            "settlement revenue (+$32.93) and the in-window cash-vs-realized term (-$32.93) "
+            "cancel to the cent, i.e. canon's realized P&L already embeds the settlement "
+            "payout. Every gas market in that window has since settled, so the complete view "
+            "is now knowable and it is -2.74%.",
+            "⚠ THE CANON WINDOW IS THE LAUNCH-DEFECT ERA. $9.3713 of the $16.9586 gas trading "
+            "loss sits in three markets that carried >= 20 contracts into a $0.00 settlement "
+            "(the one-sided settlement tail). That is an AGENT DEFECT shape, not gas economics. "
+            "A table built over this window encodes our own bugs as a permanent family verdict "
+            "— which is exactly what the module docstring warns against.",
+            "CREDITS AND TRADING ARE WINDOWED ON DIFFERENT CLOCKS, and this is unresolved. "
+            "Credits are filtered strictly by created_at; trading takes ALL cash and ALL "
+            "settlement of any market TRADED in-window, whenever those landed. A family can "
+            "therefore carry in-window credits earned by out-of-window trading, or vice versa. "
+            "Measured: KXMLABELSHARE reads receipt -8.37% (benched) over full history but on a "
+            "2026-08-01 window keeps the same $16.15 of credits with 0 fills. This is a "
+            "residual of the same different-clocks defect the cash/settlement legs already had.",
         ],
         "families": families,
     }

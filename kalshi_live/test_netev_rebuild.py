@@ -204,3 +204,15 @@ def test_the_document_carries_its_window_and_caveats():
     assert doc["window"][0].startswith("2026-07-21")
     assert any("OPERATOR CHOICE" in c for c in doc["caveats"]), \
         "the window caveat must travel with the table, not live only in a commit message"
+
+
+def test_the_caveats_are_not_stale_on_the_canon_disagreement():
+    """DEFECT B REGRESSION (2026-08-03). 9de3d89 changed the aggregation from -8.70% to -2.74%
+    but left the caveat quoting -8.70% and calling the disagreement UNRESOLVED. That text
+    ships INSIDE every table document, so a future reader would have trusted a number the
+    engine no longer produces. Pin the stale figure out and the reconciliation in."""
+    cav = " ".join(nr.build_table([], [], [], _fam, WIN)["caveats"])
+    assert "-8.70" not in cav, "the pre-9de3d89 gas figure must not survive in the document"
+    assert "RECONCILED" in cav.upper()
+    assert "-2.74%" in cav
+    assert "different clocks" in cav.lower(), "the credits-vs-trading scope caveat must travel"
