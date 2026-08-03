@@ -273,3 +273,55 @@ def test_family_of_matches_quoter_replica():
     for t in [_GAS_TKR, _TEMP_TKR, "KXAAAGASW-26JUL27-4.5", "KXTEMPAUSH-26JUL2021-T71.99",
               "KXNEWSERIES-26JUL23-T1", "KXFUNDRAISING-26-A15", ""]:
         assert cal.family_of(t) == q._netev_family(t)
+
+
+# ---- DEFECT 7: ARMED WITH AN EMPTY TABLE MUST NEVER BE SILENT (2026-08-03) --------------------
+# The loader fail-opens to {}, which does NOT disable the gate — it makes every family
+# "unproven", routing them to the MODEL fallback and the conservative fingerprint cost. The gate
+# then still SKIPS markets, on a table that does not exist, saying nothing. Live 2026-07-31/08-01
+# it skipped 640 of 2,195 evaluations, including 71 for a family its own (undeployed) table rates
+# net-POSITIVE. Silence was the whole bug.
+
+def _fp1(monkeypatch, tkr=_TEMP_TKR):
+    monkeypatch.setattr(q, "select_footprint", lambda progs, now: [
+        {"ticker": tkr, "usd_day": 50.0, "target": 1000, "end": "2099-01-01T00:00:00Z"}])
+
+
+def test_armed_with_empty_table_alarms(monkeypatch, tmp_path, capsys):
+    _cfg(monkeypatch, join=100, mktcap=250, totcap=100000)
+    monkeypatch.setattr(q, "NETEV_GATE", 1)
+    monkeypatch.setattr(q, "NETEV_TABLE", {})          # the live 07-31/08-01 state
+    monkeypatch.setattr(q, "public_get", _pg({"yes_dollars": _YL, "no_dollars": _NL}, _TEMP_TKR))
+    _fp1(monkeypatch)
+    row = _run(monkeypatch, MockClient(mode="live", resting=[], positions=[]), str(tmp_path))
+    assert row.get("netev_gate") == 1
+    assert row.get("netev_table_families") == 0
+    assert row.get("netev_table_empty") == 1, "gate armed + no table is the actionable alarm"
+    assert "EMPTY TABLE" in capsys.readouterr().out, "and it must be loud, not only recorded"
+
+
+def test_armed_with_a_real_table_does_not_alarm(monkeypatch, tmp_path):
+    _cfg(monkeypatch, join=100, mktcap=250, totcap=100000)
+    monkeypatch.setattr(q, "NETEV_GATE", 1)
+    monkeypatch.setattr(q, "NETEV_TABLE", {"families": _TABLE})
+    monkeypatch.setattr(q, "public_get", _pg({"yes_dollars": _YL, "no_dollars": _NL}, _TEMP_TKR))
+    _fp1(monkeypatch)
+    row = _run(monkeypatch, MockClient(mode="live", resting=[], positions=[]), str(tmp_path))
+    assert row.get("netev_table_families") == 2
+    assert row.get("netev_table_empty") == 0, "0 = checked and populated, not 'nobody looked'"
+
+
+def test_the_alarm_does_not_break_the_flag_off_no_op(monkeypatch, tmp_path):
+    """Flag-off emits ZERO net-EV telemetry — a deliberate provable-no-op property of this
+    subsystem. The alarm is scoped to the armed path for exactly this reason: seeding these
+    keys the way A3 seeds counters would write them on every flag-off cycle and destroy the
+    proof. Pinned here as well as in test_flag_off_cycle_emits_no_netev_telemetry so a future
+    always-emit sweep cannot quietly reintroduce it."""
+    _cfg(monkeypatch, join=100, mktcap=250, totcap=100000)
+    monkeypatch.setattr(q, "NETEV_GATE", 0)
+    monkeypatch.setattr(q, "NETEV_TABLE", {})
+    monkeypatch.setattr(q, "public_get", _pg({"yes_dollars": _YL, "no_dollars": _NL}, _TEMP_TKR))
+    _fp1(monkeypatch)
+    row = _run(monkeypatch, MockClient(mode="live", resting=[], positions=[]), str(tmp_path))
+    for k in ("netev_gate", "netev_table_families", "netev_table_empty"):
+        assert k not in row, f"{k} leaked into a flag-off row"

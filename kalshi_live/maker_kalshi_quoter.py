@@ -747,6 +747,13 @@ _ALWAYS_EMIT_COUNTERS = (
     # contract — a missing gauge means "did not run", never "measured flat".
     "mkt_unreal_n", "mkt_unreal_usd", "mkt_unreal_neg_usd", "mkt_unreal_worst_usd",
     "mkt_unreal_measured",
+    # C2 pairedness split + C3 net-EV table alarm: plainly assigned inside guarded blocks, so
+    # absent whenever that block did not run. Seeded for the same A3 reason.
+    "inv_gross_ct", "inv_naked_ct", "inv_paired_ct", "inv_gross_usd", "inv_naked_usd",
+    "inv_paired_usd", "inv_paired_frac", "inv_pairedness_measured",
+    # NOTE: the netev_* alarm keys are deliberately NOT seeded — flag-off must emit zero
+    # net-EV telemetry (a pinned provable-no-op property of that subsystem), and seeding would
+    # write them on every flag-off cycle. See _netev_table_alarm.
 )
 # Footprint DROP REASONS. FP_DROPS is merged into the row at the end of selection, so a reason
 # that never fired was likewise absent — indistinguishable from a selection stage that never
@@ -1018,12 +1025,44 @@ def _netev_family(ticker):
 
 
 def _load_netev_table():
-    """Load the calibration table from disk (fail-OPEN to {} -> every family unproven, never blocks)."""
+    """Load the calibration table from disk (fail-OPEN to {} -> every family unproven, never blocks).
+
+    ⚠ THE FAIL-OPEN IS THE DEFECT-7 TRAP. Returning {} does not disable the gate — it makes
+    every family "unproven", which routes them to the MODEL fallback and the conservative
+    fingerprint cost. The gate then still SKIPS markets, on a table that does not exist, and
+    says nothing: live 2026-07-31/08-01 it skipped 640 of 2,195 evaluations including 71 for a
+    family its own (undeployed) table rates net-POSITIVE. Silence is the whole bug — the
+    caller must alarm when the gate is armed and the table is empty. See _netev_table_alarm."""
     try:
         import kalshi_netev_calibrate
         return kalshi_netev_calibrate.load_table(NETEV_TABLE_PATH)
     except Exception:
         return {}
+
+
+def _netev_table_alarm(plan):
+    """ALARM on every plan row when the net-EV gate is ARMED but its table is EMPTY (defect 7).
+
+    SCOPE, deliberately narrower than the A3 always-emit doctrine: when the gate is OFF this
+    writes NOTHING. Flag-off being a PROVABLE NO-OP — no file IO, no behaviour change, and no
+    telemetry — is an explicit design property of this subsystem, pinned by
+    test_netev_gate.test_flag_off_cycle_emits_no_netev_telemetry. Seeding these keys would emit
+    them on every flag-off cycle and break that proof, so the invariant wins over the doctrine
+    here; absence of netev_gate already means "gate off" unambiguously, and that is exactly
+    what the pin asserts.
+    When the gate IS armed, all three keys are written every cycle, so
+    netev_table_families == 0 means "checked, empty" rather than "nobody looked"."""
+    if not NETEV_GATE:
+        return
+    plan["netev_gate"] = 1
+    plan["netev_table_families"] = len((NETEV_TABLE or {}).get("families") or {})
+    plan["netev_table_empty"] = 0
+    if not plan["netev_table_families"]:
+        plan["netev_table_empty"] = 1
+        print(f"WARNING NET-EV GATE ARMED WITH AN EMPTY TABLE ({NETEV_TABLE_PATH}) — every "
+              f"family reads as UNPROVEN, so the gate is skipping markets on the MODEL "
+              f"fallback with no receipts behind it. This is silent by construction; it is "
+              f"being said out loud instead.")
 
 
 # loaded ONCE at import, and ONLY when the flag is on (flag-off does zero file IO -> provable no-op)
@@ -3172,6 +3211,11 @@ def run_once():
         plan[_k9] = 0
     for _k9 in _ALWAYS_EMIT_DROPS:
         plan[_k9] = 0
+    # Defect 7. Placed HERE, immediately after `plan` exists — the first attempt called this
+    # up beside _netev_table_refresh(), which runs ~170 lines earlier, so it raised NameError
+    # on every cycle and the surrounding broad `except` swallowed it. The alarm against silent
+    # degradation was itself silently dead; caught by its own pins.
+    _netev_table_alarm(plan)
     # CONFIG VISIBILITY (2026-07-26): a knob absent from live.env takes its code default
     # silently. That class of defect hid KALSHI_THROTTLE_SMART (OFF in production) and
     # KALSHI_PRECLOSE_FLATTEN (built + tested, never switched on) while every cycle
