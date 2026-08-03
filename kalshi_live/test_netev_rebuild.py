@@ -190,6 +190,22 @@ def test_receipt_grade_requires_measured_trading():
     assert doc2["families"]["gas"]["confidence"] == "unproven", "one fill below the bar"
 
 
+def test_no_credits_is_unproven_even_above_the_fill_bar():
+    """Found by ADVERSARIAL REVIEW: mutating the credits guard `cred <= 0` to `cred < 0` passed
+    the entire suite. test_a_family_with_no_credits_is_unproven_not_a_verdict looks like the pin
+    for it but uses ONE fill, so the fill bar enforces the result and the credits guard is never
+    exercised. Under that mutant a family with NO reward receipts at all grades receipt-positive
+    and opens full two-sided on the armed gate. Same coverage-hole shape as the notional guard."""
+    tape = [_fill("KXAAAGASD-26JUL21-4.02", "yes", 0.40, 1, fid=f"n{i}")
+            for i in range(nr.MIN_RECEIPT_FILLS)]
+    doc = nr.build_table(tape, [], [], _fam, WIN)          # fills, but ZERO credits
+    g = doc["families"]["gas"]
+    assert g["n_fills"] == nr.MIN_RECEIPT_FILLS, "the fill bar is met"
+    assert g["credits"] == 0.0
+    assert g["confidence"] == "unproven", "no receipts -> no verdict, whatever the fill count"
+    assert g["evidence"] == "no in-window credits"
+
+
 def test_zero_notional_is_unproven_even_above_the_fill_bar():
     """Found by MUTATION, not by review: deleting the `notional <= 0` guard while keeping the
     fill bar survived the whole suite. The guard is only reachable with enough fills AND zero
@@ -221,12 +237,21 @@ def test_the_document_carries_its_window_and_caveats():
 
 
 def test_the_caveats_are_not_stale_on_the_canon_disagreement():
-    """DEFECT B REGRESSION (2026-08-03). 9de3d89 changed the aggregation from -8.70% to -2.74%
-    but left the caveat quoting -8.70% and calling the disagreement UNRESOLVED. That text
-    ships INSIDE every table document, so a future reader would have trusted a number the
-    engine no longer produces. Pin the stale figure out and the reconciliation in."""
+    """DEFECT B REGRESSION (2026-08-03). 9de3d89 changed the aggregation and moved gas, updated
+    its commit message, and left the caveat quoting the OLD figure as UNRESOLVED — text that
+    ships inside every emitted document.
+
+    ⚠ WHAT THIS TEST CAN AND CANNOT DO (corrected after adversarial review overclaimed it).
+    It is a TEXT-LEVEL pin only: it asserts the superseded figure is gone and the reconciliation
+    travels with the table. It CANNOT detect staleness caused by a behaviour change — mutating
+    build_table's exclude_taker default moves the real gas number by ~1.5 points while every
+    string here still matches. Tying the caveat to a computed value would need the frozen receipt
+    tape, which is not a unit-test fixture. Treat this as a guard against silent text rot, not as
+    proof the document agrees with the engine.
+    """
     cav = " ".join(nr.build_table([], [], [], _fam, WIN)["caveats"])
     assert "-8.70" not in cav, "the pre-9de3d89 gas figure must not survive in the document"
     assert "RECONCILED" in cav.upper()
-    assert "-2.74%" in cav
+    assert "-5.78%" in cav, "the ET-clock (like-for-like) gas figure must be the one quoted"
+    assert "ET DATES" in cav, "the clock the canon window is defined on must travel with it"
     assert "different clocks" in cav.lower(), "the credits-vs-trading scope caveat must travel"

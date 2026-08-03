@@ -38,8 +38,17 @@ SCHEMA = 1
 _EVENT_RE = re.compile(r"for event\s+([A-Za-z0-9_.\-]+)")
 
 # A family earns a RECEIPT verdict only on this many fills (on markets traded in-window) AND
-# non-zero notional. Below the bar it is UNPROVEN — routed to the quoter's conservative model
-# fallback rather than handed a verdict.
+# non-zero notional. Below the bar it is UNPROVEN — routed to the quoter's model fallback rather
+# than handed a verdict.
+#
+# ⚠ THE MODEL FALLBACK IS NOT UNIFORMLY CONSERVATIVE, and describing it that way is wrong in one
+# direction (caught by adversarial review 2026-08-03). Against an unearned ALLOW it tightens.
+# Against a NEGATIVE receipt verdict it LOOSENS: a family the receipts scored net-negative used to
+# be hard-skipped when flat and now takes the model path, which opens whenever
+# prospective_capture / HAIRCUT - fingerprint > 0. Measured against the REAL gate on a
+# KXMLABELSHARE-shaped row (-8.37%, 30 fills): at usd_day 50 both give 0 quotes, but at usd_day
+# 200 and 5000 the pre-fix table gave 0 quotes while this one opens two-sided. Nothing here caps
+# that — it is the honest price of refusing to hand a verdict on thin evidence.
 #
 # ⚠ THIS BAR IS LOAD-BEARING, AND ITS ABSENCE INVERTED THE GATE. Until 2026-08-03 confidence was
 # `"receipt" if cred > 0 else "unproven"` — credits ALONE bought receipt grade, with no trading
@@ -53,8 +62,16 @@ _EVENT_RE = re.compile(r"for event\s+([A-Za-z0-9_.\-]+)")
 #     2026-08-01 window it keeps the same $16.15 of credits, loses all 30 fills, and flips to an
 #     unconditional pass.
 #   * Verdicts like +31.63% on 2 fills / $9.60 of notional (KXCLUBFSPREAD) were graded receipt.
-# 40 fills mirrors kalshi_netev_calibrate.MIN_RECEIPT_TRADES = 20: a CSV "trade" is a matched
-# open+close round trip, i.e. TWO fills, so 40 fills is the same evidence bar in the CSV's units.
+# CHOOSING 40 — and correcting the reasoning that first justified it (2026-08-03, adversarial
+# review). The original claim here was that a CSV "trade" is a matched open+close round trip, i.e.
+# TWO fills, so 40 fills == kalshi_netev_calibrate.MIN_RECEIPT_TRADES = 20. THAT IS FALSE. A CSV
+# trade row is a LOT MATCH, not a round trip: one fill splits across several rows, and rows for
+# positions still open at export never appear at all. MEASURED on this account's own canon export
+# over its full span (2026-07-20T17:45Z..07-23T03:38Z): 244 CSV trade rows against 290 API fills =
+# 1.1885 fills per row (gas 1.1692, temp 1.2105). The CSV's 20-trade bar is therefore ~24 fills,
+# so 40 is roughly 1.7x STRICTER than canon — a deliberate conservative choice for a money gate,
+# NOT an equivalence. 24 is the value that actually mirrors canon; the difference is live (e.g.
+# KXTRUMPENDORSEMENTS sits at 38 fills) and is the operator's to set.
 MIN_RECEIPT_FILLS = 40
 
 
@@ -219,7 +236,8 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
         # RECEIPT requires CREDITS *and* MEASURED TRADING. See MIN_RECEIPT_FILLS above: grading on
         # credits alone inverted the armed gate, because a zero-notional row carries
         # net_pct_notional=None and the gate's `poor` test cannot fire on None. Anything below the
-        # bar is UNPROVEN — the conservative model fallback — never a verdict. `evidence` records
+        # bar is UNPROVEN — the model fallback (see the caveat above: NOT uniformly conservative,
+        # it loosens against a negative receipt verdict) — never a verdict. `evidence` records
         # WHY in the document so the demotion is auditable and no information is lost.
         if cred <= 0:
             conf, evidence = "unproven", "no in-window credits"
@@ -273,24 +291,31 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
             "round-trip P&L; here a taker fill is usually the CLOSING leg, so excluding it "
             "strips an inflow and keeps its cost. Measured 2026-08-03: ON moved gas from "
             "-3.89% to -85.58% on the post-governor window. ON is NOT equivalent to §M13.",
-            "FAMILY-LEVEL DISAGREEMENT WITH THE CSV CANON — RECONCILED 2026-08-03, exactly. "
-            "Over the canon window this engine puts gas at -2.74% where the CSV records +1.1% "
-            "(temp -7.58% vs -9.2%). The bridge closes to the cent with no residual: credits "
-            "are IDENTICAL on both sides ($2.15 gas / $23.06 temp, credit_history vs the §M8 "
-            "screenshots) and §M13's taker exclusion removes exactly $0.00 (0 excluded rows, "
-            "measured). The entire gap is SCOPE: a CSV 'trade' row books close_timestamp = "
-            "SETTLEMENT time in ET, so canon scored round trips that had CLOSED by the 07-23 "
-            "export — partial and mid-flight — while this engine scores the COMPLETE lifetime "
-            "of every market traded in-window. Proof of the mechanism: on temp, shared-market "
-            "settlement revenue (+$32.93) and the in-window cash-vs-realized term (-$32.93) "
-            "cancel to the cent, i.e. canon's realized P&L already embeds the settlement "
-            "payout. Every gas market in that window has since settled, so the complete view "
-            "is now knowable and it is -2.74%.",
-            "⚠ THE CANON WINDOW IS THE LAUNCH-DEFECT ERA. $9.3713 of the $16.9586 gas trading "
-            "loss sits in three markets that carried >= 20 contracts into a $0.00 settlement "
-            "(the one-sided settlement tail). That is an AGENT DEFECT shape, not gas economics. "
-            "A table built over this window encodes our own bugs as a permanent family verdict "
-            "— which is exactly what the module docstring warns against.",
+            "FAMILY-LEVEL DISAGREEMENT WITH THE CSV CANON — RECONCILED 2026-08-03. ⚠ READ THE "
+            "CLOCK FIRST: the canon's window is INCLUSIVE ET DATES (kalshi_netev_calibrate._date "
+            "slices a -04:00 close_timestamp), so the like-for-like window is "
+            "2026-07-21T04:00Z..07-23T03:59:59Z, on which this engine gives gas -5.78% and temp "
+            "-4.30% against the CSV's +1.1% / -9.2%. The -2.74% / -7.58% pair quoted in the "
+            "2026-08-03 handoff read the same nominal dates on a UTC clock — a 4-hour shift "
+            "worth ~3 points on gas. Both other legs are exact: credits are IDENTICAL on both "
+            "sides ($2.15 gas / $23.06 temp, credit_history vs the §M8 screenshots) and §M13's "
+            "taker exclusion removes exactly $0.00 (0 rows). THE MECHANISM IS EXPORT-TIME "
+            "COMPLETENESS, not a cash-vs-realized modelling dispute: a CSV trade row books "
+            "close_timestamp = SETTLEMENT time, so canon is structurally blind to any market "
+            "that had not settled by the export instant. temp had 0 of 25 in-window markets "
+            "unsettled at export, and the two engines therefore agree on trading P&L TO THE "
+            "CENT (-$36.1178 both) — the whole temp gap is the notional DENOMINATOR ($142.6720 "
+            "= entry leg of closed round trips, vs $303.6178 = every fill of every in-window "
+            "market). gas had 9 of 10 unsettled, so canon's +$0.2528 is a fragment of a "
+            "complete -$40.2060.",
+            "⚠ THE CANON WINDOW IS THE LAUNCH-DEFECT ERA. On it, FOUR gas markets carried >= 20 "
+            "contracts into a $0.00 settlement for combined cash -$41.4113 — MORE than the "
+            "entire -$40.2060 gas trading total, i.e. everything else that window was net "
+            "positive. That is the one-sided settlement tail, an AGENT-DEFECT shape rather than "
+            "gas economics, and a table built here would encode our own bugs as a permanent "
+            "family verdict — exactly what the module docstring warns against. (A raw "
+            "observation on THIS window only; it is NOT a re-decomposition of the -$122.57 "
+            "defect basis and no percentage is claimed from it.)",
             "CREDITS AND TRADING ARE WINDOWED ON DIFFERENT CLOCKS, and this is unresolved. "
             "Credits are filtered strictly by created_at; trading takes ALL cash and ALL "
             "settlement of any market TRADED in-window, whenever those landed. A family can "
