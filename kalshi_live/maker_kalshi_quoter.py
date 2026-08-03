@@ -3244,6 +3244,65 @@ def run_once():
                     # FROZEN at its last observed level (the settlement top-up that can move it
                     # is the separate B4b commit).
                     _realized_raw = dict(_realized) if _feed_ok else {}
+                    # EXPOSURE SNAPSHOT (defect 5b): what a still-alive market would cost us if
+                    # it settled worthless. Built from the reads this cycle ALREADY did — no
+                    # extra I/O. A ticker that later departs keeps its last value, which is the
+                    # frozen pre-settlement cost, and that is the only correct basis for the
+                    # settlement delta. (The settlement row's own yes/no_total_cost_dollars are
+                    # GROSS LIFETIME costs on both legs and are NOT a P&L basis — see
+                    # maker_kalshi_client.get_settlements.)
+                    try:
+                        _expo = dict(st.get("mkt_exposure") or {})
+                        for _te in _realized_raw:
+                            if _te in cost_by:
+                                _expo[_te] = round(float(cost_by[_te])
+                                                   * abs(float(held_by.get(_te, 0.0) or 0.0)), 6)
+                            elif _te in held_by:
+                                _expo[_te] = None      # venue omitted the cost field -> unknown
+                            else:
+                                _expo[_te] = 0.0       # flat but alive: nothing left to lose
+                        st["mkt_exposure"] = _expo
+                    except Exception:
+                        _SILENT["settle_expo_fail"] += 1
+                        _expo = dict(st.get("mkt_exposure") or {})
+                    # SETTLEMENT TOP-UP. Own nested try: a settlements outage must never raise
+                    # into the governor try, and per operator decision 2026-08-02 it does NOT
+                    # feed gov_fail_streak — this feed is ADDITIVE protection, and a new
+                    # outage->halt path on it would be a worse trade than the blind spot.
+                    # Self-healing: on failure the watermark does not advance, so the next good
+                    # read catches up with zero data loss.
+                    _settle_pnl = dict(st.get("mkt_settle_pnl") or {})
+                    try:
+                        _wm = int(st.get("settle_watermark") or 0)
+                        _srows = (client.get_settlements(min_ts=_wm or None)
+                                  .get("settlements") or [])
+                        _wm_new = _wm
+                        for _sr in _srows:
+                            try:
+                                _sts = int(parse_iso(str(_sr.get("settled_time"))).timestamp())
+                            except Exception:
+                                _SILENT["settle_ts_unparsed"] += 1
+                                continue
+                            if _sts <= _wm:
+                                continue
+                            _wm_new = max(_wm_new, _sts)
+                            _st4 = _sr.get("ticker")
+                            _e4 = _expo.get(_st4, "__missing__")
+                            if _e4 is None or _e4 == "__missing__":
+                                # Never fabricate a permanent ban on an unknown basis.
+                                _SILENT["settle_exposure_unknown"] += 1
+                                continue
+                            # ASSIGN, never accumulate -> re-processing a row is idempotent.
+                            _settle_pnl[_st4] = round(
+                                float(_sr.get("revenue") or 0.0) / 100.0 - float(_e4), 6)
+                            plan["settle_topups"] = plan.get("settle_topups", 0) + 1
+                            plan["settle_topup_usd"] = round(
+                                plan.get("settle_topup_usd", 0.0) + min(0.0, _settle_pnl[_st4]), 4)
+                        st["settle_watermark"] = _wm_new
+                    except Exception:
+                        _SILENT["settle_feed_fail"] += 1
+                        plan["settle_feed_fail"] = 1
+                    st["mkt_settle_pnl"] = _settle_pnl
                     _departed = {}
                     try:
                         # Everything known before this cycle, prior carry included, minus
@@ -3253,7 +3312,14 @@ def run_once():
                         _departed = {t: v for t, v in _known.items()
                                      if t not in _realized_raw}
                         if _departed:
-                            _merged = dict(_departed)
+                            # The top-up applies to the EVALUATION copy only. _departed itself
+                            # is persisted as the carry, and it must stay at the pre-settlement
+                            # realized value — adding the delta into it would re-add the same
+                            # delta on every subsequent cycle and compound a one-off settlement
+                            # into an unbounded loss.
+                            _eval_dep = {t: v + _settle_pnl.get(t, 0.0)
+                                         for t, v in _departed.items()}
+                            _merged = dict(_eval_dep)
                             _merged.update(_realized)     # fresh always wins
                             _realized = _merged
                     except Exception:
@@ -3284,6 +3350,15 @@ def run_once():
                         if _feed_ok:
                             _realized = dict(_realized_raw)
                         _departed = {}                   # nothing carries across the roll
+                        # Settlement deltas are per-day for the same reason the carry is: the
+                        # ladder latches on the UTC calendar day (operator-named 2026-08-02),
+                        # so yesterday's settlement must not count toward today's rungs.
+                        # The watermark is deliberately NOT reset — it is a feed cursor, not
+                        # ladder state, and rewinding it would re-process settled rows forever.
+                        _settle_pnl = {}
+                        st["mkt_settle_pnl"] = {}
+                        st["mkt_exposure"] = {t: v for t, v in (st.get("mkt_exposure") or {}).items()
+                                              if t in _realized_raw}
                         _base = dict(_realized)          # fresh day -> fresh baseline
                         _tripped = set()                 # trips are per-day
                         _snap = {}                       # M3: trip snapshots are per-day too

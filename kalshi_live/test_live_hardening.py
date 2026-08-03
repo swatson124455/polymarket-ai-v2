@@ -13,7 +13,8 @@ q = _load("maker_kalshi_quoter")
 class MockClient:
     def __init__(self, mode="live", resting=None, positions=None,
                  cancel_fail_ids=(), create_raises=False, get_orders_raises=False,
-                 get_positions_raises=False, traded=None, get_realized_raises=False):
+                 get_positions_raises=False, traded=None, get_realized_raises=False,
+                 settlements=(), get_settlements_raises=False):
         self.mode = mode
         self._resting = resting or []
         self._positions = positions or []
@@ -26,6 +27,8 @@ class MockClient:
         # a burn-and-run test passes a FLAT row here that positions no longer carries.
         self._traded = traded
         self._get_realized_raises = get_realized_raises
+        self._settlements = list(settlements or [])
+        self._get_settlements_raises = get_settlements_raises
         self.created = []
         self.cancelled = []
         self.crosses = []
@@ -41,6 +44,24 @@ class MockClient:
         if getattr(self, "_frozen_positions", None) is not None:
             return {"market_positions": list(self._frozen_positions)}
         return {"market_positions": list(self._positions)}
+    def get_settlements(self, min_ts=None):
+        # ADDITIVE 2026-08-03 (defect 5b). Defaults to an EMPTY list, so every pre-existing
+        # test sees a bot with nothing settled — the current behaviour — and only a test that
+        # passes `settlements=` exercises the top-up. min_ts is honoured the way the venue
+        # honours it (measured: min_ts at the median settle time returned exactly the rows at
+        # or after it), so watermark logic is testable.
+        if self._get_settlements_raises:
+            raise RuntimeError("settlements read 500")
+        rows = list(self._settlements)
+        if min_ts is not None:
+            def _ts(r):
+                try:
+                    return q.parse_iso(str(r.get("settled_time"))).timestamp()
+                except Exception:
+                    return 0.0
+            rows = [r for r in rows if _ts(r) >= float(min_ts)]
+        return {"settlements": rows}
+
     def get_realized_by_market(self):
         if self._get_realized_raises:
             raise RuntimeError("realized read 500")

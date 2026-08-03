@@ -389,6 +389,34 @@ class KalshiOrderClient:
                 pass
         return out
 
+    def get_settlements(self, min_ts=None):
+        """Settled markets, newest-inclusive from `min_ts` (UNIX seconds) when given.
+
+        ADDITIVE 2026-08-03 (defect 5b). This is the ONLY feed that can see a loss which only
+        becomes real at settlement: get_realized_by_market above is a /portfolio/positions read
+        and that endpoint drops a market the moment it settles (measured 2026-08-03T01:35:04Z:
+        0 of 127 settled tickers present).
+
+        VENUE SHAPES, measured 2026-08-03T02:30:57Z over the complete history (n=127):
+          * `revenue` is CENTS — it matches the value/counts payout model on 127/127 when
+            divided by 100 (a bare-dollars reading matches only 109/127, and only where both
+            are zero). Divide by 100.
+          * `settled_time` is an ISO-8601 STRING ('2026-08-02T14:58:20.874705Z'), 127/127 —
+            NOT an epoch int, though `min_ts` itself takes epoch seconds.
+          * `min_ts` IS honoured: min_ts at the median settle time returned 66 rows against
+            127 total, exactly the count at or after it. So a watermark really does bound the
+            work.
+          * ⚠ `yes_total_cost_dollars` / `no_total_cost_dollars` are GROSS LIFETIME costs on
+            BOTH sides and are NOT a P&L basis. KXTRUMPENDORSEMENTS-26AUG01-A5 carries
+            $73.10 + $68.05 = $141.15 of "cost" on a position that was 125.00 yes against
+            124.89 no — almost entirely PAIRED, with real exposure of a fraction of a
+            contract. Subtracting those fields from revenue manufactures enormous phantom
+            losses. The correct basis is the venue's own market_exposure_dollars for the net
+            position, snapshotted while the market was still alive.
+        """
+        params = {} if min_ts is None else {"min_ts": int(min_ts)}
+        return self._get_paginated(f"{API_ROOT}/portfolio/settlements", "settlements", params)
+
     # ---------------- public reads (no auth) ----------------
 
     def get_orderbook(self, ticker):
