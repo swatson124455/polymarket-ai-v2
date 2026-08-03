@@ -96,12 +96,28 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
     # look like it made things WORSE — both artifacts of the broken position path, not findings.
     # The window and the §M13 taker exclusion are applied to the EVENTS instead, after the
     # replay, so the position path stays intact and only ATTRIBUTION is scoped.
+    # ATTRIBUTE WHOLE MARKETS, NOT HALF ROUND TRIPS. A market is scored into the window if it
+    # was TRADED in the window; once in, ALL of its cash and ALL of its settlement revenue
+    # count, whenever they happened.
+    # WHY (root-caused 2026-08-03, and it explains the whole gas disagreement): a fill-windowed
+    # CASH model books the full cost of any position still open at the window edge and gives it
+    # no offsetting value, while the CSV canon summed venue REALIZED P&L, which is 0 for an open
+    # position. Measured on the canon's own gas window: 121.62 gas contracts were still open at
+    # the edge and 7 of the 9 markets traded in-window settled OUTSIDE it, so the cash model
+    # read -$23.29 where canon read +$0.25. Neither engine was wrong — they answered different
+    # questions, and only one of them is a fair verdict on a family.
+    # A family cannot be judged on half a round trip, so the market is the unit.
     events, _pos = replay_fills(fills)
+    _traded_in_window = set()
+    for e in events:
+        _t = e["fill"].get("ticker") or e["fill"].get("market_ticker")
+        if _t and _in_window(e["fill"].get("created_time"), window):
+            _traded_in_window.add(_t)
     for e in events:
         row = e["fill"]
-        if not _in_window(row.get("created_time"), window):
-            continue
         t = row.get("ticker") or row.get("market_ticker")
+        if t not in _traded_in_window:
+            continue
         fam = family_of(t) if t else None
         if not fam:
             continue
@@ -133,7 +149,11 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
 
     fam_settle = {}
     for s in settlements:
-        if not _in_window(s.get("settled_time"), window):
+        # Windowed by the MARKET, not by settle date: a market we traded in-window is scored
+        # complete, including a settlement that landed after the window closed. Windowing the
+        # two legs on different clocks is what made the cash model read every window-edge
+        # position as a pure loss.
+        if s.get("ticker") not in _traded_in_window:
             continue
         fam = family_of(s.get("ticker")) if s.get("ticker") else None
         if not fam:
