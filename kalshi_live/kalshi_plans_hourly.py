@@ -108,6 +108,14 @@ def main():
             f"{st.mean([x.get(c, 0) or 0 for x in v]):>11.2f}" for c in cols))
 
     # ---- overall ----
+    # ⚠ DENOMINATOR CHANGES AT THE A3 BOUNDARY (2026-08-03). `if f in x` means a row lacking
+    # the field is EXCLUDED, so for a counter that was emitted only when it fired, `n` counted
+    # FIRING cycles and the mean was a mean over firing cycles. A3 seeds those counters to 0
+    # every cycle, so from the first post-A3 row they are present always: `n` becomes TOTAL
+    # cycles and the mean becomes a mean over all cycles — a lower number for the same
+    # behaviour. Two FIELDS entries are affected: drop_allowlist and drop_late_life.
+    # A step down in those means across the boundary is the seeding, NOT a change in the bot.
+    # The `n` column makes it visible: it jumps to the row count.
     print("\n=== OVERALL (mean / median / p90 / max per cycle) ===")
     for f in FIELDS:
         v = [x.get(f, 0) or 0 for x in rows if f in x]
