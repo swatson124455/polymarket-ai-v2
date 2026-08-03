@@ -104,7 +104,10 @@ def test_family_net_combines_credits_and_trading():
     assert g["net"] == 5.0
     assert g["notional"] == 20.0
     assert g["net_pct_notional"] == 0.25
-    assert g["confidence"] == "receipt"
+    # 2026-08-03 — THIS ASSERTION USED TO READ "receipt" AND IT WAS ASSERTING THE DEFECT.
+    # One fill is not a receipt-grade sample. The arithmetic above is what this test is for;
+    # the grade belongs to test_receipt_grade_requires_measured_trading below.
+    assert g["confidence"] == "unproven"
 
 
 def test_a_family_with_no_credits_is_unproven_not_a_verdict():
@@ -155,6 +158,45 @@ def test_paired_position_nets_to_the_price_improvement():
 def test_zero_notional_reports_none_not_a_division():
     doc = nr.build_table([], [], [_credit("KXAAAGASD-26JUL21", 500)], _fam, WIN)
     assert doc["families"]["gas"]["net_pct_notional"] is None
+
+
+def test_credits_alone_never_earn_a_receipt_verdict():
+    """DEFECT C REGRESSION (2026-08-03). Credits with ZERO trading used to grade 'receipt'.
+
+    That row carries net_pct_notional=None, and the armed gate's test is
+    `poor = net_pct is not None and net_pct < MIN` — None can never be poor, so the family
+    opened FULL TWO-SIDED while a genuinely unknown ('unproven') family was skipped. No data
+    ranked ABOVE unknown data. Verified by executing the real gate, not by reading it.
+    """
+    doc = nr.build_table([], [], [_credit("KXAAAGASD-26JUL21", 500)], _fam, WIN)
+    g = doc["families"]["gas"]
+    assert g["credits"] == 5.0
+    assert g["net_pct_notional"] is None
+    assert g["confidence"] == "unproven", "credits alone must route to the model fallback"
+    assert "thin" in g["evidence"]
+
+
+def test_receipt_grade_requires_measured_trading():
+    """At/above the bar with credits -> receipt. One fill below it -> unproven."""
+    tape = [_fill("KXAAAGASD-26JUL21-4.02", "yes", 0.40, 1, fid=f"f{i}")
+            for i in range(nr.MIN_RECEIPT_FILLS)]
+    doc = nr.build_table(tape, [], [_credit("KXAAAGASD-26JUL21", 2500)], _fam, WIN)
+    g = doc["families"]["gas"]
+    assert g["n_fills"] == nr.MIN_RECEIPT_FILLS
+    assert g["confidence"] == "receipt"
+    assert "thin" not in g["evidence"]
+
+    doc2 = nr.build_table(tape[:-1], [], [_credit("KXAAAGASD-26JUL21", 2500)], _fam, WIN)
+    assert doc2["families"]["gas"]["confidence"] == "unproven", "one fill below the bar"
+
+
+def test_the_receipt_bar_is_tunable_without_editing_code():
+    tape = [_fill("KXAAAGASD-26JUL21-4.02", "yes", 0.40, 1, fid=f"f{i}") for i in range(3)]
+    creds = [_credit("KXAAAGASD-26JUL21", 2500)]
+    assert nr.build_table(tape, [], creds, _fam, WIN,
+                          min_receipt_fills=3)["families"]["gas"]["confidence"] == "receipt"
+    assert nr.build_table(tape, [], creds, _fam, WIN,
+                          min_receipt_fills=4)["families"]["gas"]["confidence"] == "unproven"
 
 
 def test_the_document_carries_its_window_and_caveats():

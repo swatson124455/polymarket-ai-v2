@@ -37,6 +37,26 @@ sys.path.insert(0, "/opt/pa2-maker-kalshi-live")
 SCHEMA = 1
 _EVENT_RE = re.compile(r"for event\s+([A-Za-z0-9_.\-]+)")
 
+# A family earns a RECEIPT verdict only on this many fills (on markets traded in-window) AND
+# non-zero notional. Below the bar it is UNPROVEN — routed to the quoter's conservative model
+# fallback rather than handed a verdict.
+#
+# ⚠ THIS BAR IS LOAD-BEARING, AND ITS ABSENCE INVERTED THE GATE. Until 2026-08-03 confidence was
+# `"receipt" if cred > 0 else "unproven"` — credits ALONE bought receipt grade, with no trading
+# evidence whatsoever. Two measured consequences on real frozen receipts (tape read
+# 2026-08-03T17:06:00Z):
+#   * A family with credits in-window and ZERO fills scored notional 0 -> net_pct_notional None.
+#     The armed gate reads `poor = net_pct is not None and net_pct < MIN`, so None is NOT poor:
+#     it opened FULL TWO-SIDED. An `unproven` family in the same book is SKIPPED. No data was
+#     therefore treated as BETTER than unknown data — verified by execution, not by reading.
+#     Live example: KXMLABELSHARE is receipt -8.37% (benched) over full history, but on a
+#     2026-08-01 window it keeps the same $16.15 of credits, loses all 30 fills, and flips to an
+#     unconditional pass.
+#   * Verdicts like +31.63% on 2 fills / $9.60 of notional (KXCLUBFSPREAD) were graded receipt.
+# 40 fills mirrors kalshi_netev_calibrate.MIN_RECEIPT_TRADES = 20: a CSV "trade" is a matched
+# open+close round trip, i.e. TWO fills, so 40 fills is the same evidence bar in the CSV's units.
+MIN_RECEIPT_FILLS = 40
+
 
 def _f(x, d=0.0):
     try:
@@ -80,7 +100,7 @@ def _in_window(ts, window):
 
 
 def build_table(fills, settlements, credits, family_of, window, now=None,
-                exclude_taker=False):
+                exclude_taker=False, min_receipt_fills=MIN_RECEIPT_FILLS):
     """Pure aggregation -> the table document. No I/O, fully testable.
 
     family_of(ticker) -> family name or None (the quoter's own _netev_family is passed in, so
@@ -192,8 +212,23 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
         cred = fam_credits.get(fam, 0.0)
         notional = fam_notional.get(fam, 0.0)
         net = cred + trading
+        n_fills = fam_fills.get(fam, 0)
+        # RECEIPT requires CREDITS *and* MEASURED TRADING. See MIN_RECEIPT_FILLS above: grading on
+        # credits alone inverted the armed gate, because a zero-notional row carries
+        # net_pct_notional=None and the gate's `poor` test cannot fire on None. Anything below the
+        # bar is UNPROVEN — the conservative model fallback — never a verdict. `evidence` records
+        # WHY in the document so the demotion is auditable and no information is lost.
+        if cred <= 0:
+            conf, evidence = "unproven", "no in-window credits"
+        elif notional <= 0 or n_fills < min_receipt_fills:
+            conf, evidence = "unproven", (
+                f"thin: {n_fills} fills / ${notional:.2f} notional on markets traded in-window "
+                f"(receipt needs >= {min_receipt_fills} fills and non-zero notional)")
+        else:
+            conf, evidence = "receipt", f"{n_fills} fills / ${notional:.2f} notional"
         families[fam] = {
-            "confidence": "receipt" if cred > 0 else "unproven",
+            "confidence": conf,
+            "evidence": evidence,
             "credits": round(cred, 4),
             "trading_pnl": round(trading, 4),
             "fees": round(fam_fees.get(fam, 0.0), 4),   # REPORTING ONLY — already in trading_pnl
@@ -222,8 +257,14 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
             "credits_unattributed (the referral credit is the known case).",
             "Credits LAG their program window, so a family whose period had not closed at read "
             "time is under-credited and its net is biased PESSIMISTIC — conservative for a gate.",
-            "confidence='receipt' requires credits > 0 in-window; otherwise 'unproven', which "
-            "routes the family to the quoter's model fallback rather than to a verdict.",
+            "confidence='receipt' requires credits > 0 in-window AND at least MIN_RECEIPT_FILLS "
+            "fills on non-zero notional; otherwise 'unproven', which routes the family to the "
+            "quoter's model fallback rather than to a verdict, with the reason recorded in the "
+            "row's `evidence` field. Credits ALONE used to earn 'receipt' — that graded "
+            "zero-trading families receipt-grade with net_pct_notional=None, which the armed "
+            "gate cannot mark poor, so they opened full two-sided while genuinely unknown "
+            "families were skipped. Fixed 2026-08-03; note the fix cuts BOTH ways — a family "
+            "benched on a thin negative reading now falls back to the model instead.",
             "exclude_taker defaults OFF: canon §M13's taker exclusion CANNOT be ported to a "
             "position-aware cash model. The CSV engine dropped rows carrying self-contained "
             "round-trip P&L; here a taker fill is usually the CLOSING leg, so excluding it "
