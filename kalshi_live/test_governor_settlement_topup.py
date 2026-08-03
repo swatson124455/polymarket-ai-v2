@@ -45,10 +45,17 @@ def _state(tmp_path):
     return json.load(open(p)) if os.path.exists(p) else {}
 
 
-def _settle(ticker="T2", revenue_cents=0, when="2099-01-01T00:00:00.000000Z"):
-    """A venue-shaped settlement row: revenue in CENTS, settled_time an ISO string."""
+def _settle(ticker="T2", revenue_cents=0, when="2099-01-01T00:00:00.000000Z",
+            yes_ct="50.00", no_ct="0.00"):
+    """A venue-shaped settlement row: revenue in CENTS, settled_time an ISO string.
+
+    The counts default to the FULL 50 ct these fixtures hold, i.e. a position that rode into
+    expiry intact. |yes - no| is what actually settled, and the top-up prorates the exposure
+    basis onto it (blind-review fix 2026-08-03) — so a fixture whose counts disagree with the
+    held size is asserting a PARTIAL UNWIND whether it means to or not. The original default
+    of 40 ct against a 50 ct position did exactly that."""
     return {"ticker": ticker, "revenue": revenue_cents, "settled_time": when,
-            "market_result": "no", "yes_count_fp": "40.00", "no_count_fp": "0.00",
+            "market_result": "no", "yes_count_fp": yes_ct, "no_count_fp": no_ct,
             "yes_total_cost_dollars": "40.00", "no_total_cost_dollars": "0.00", "value": 0}
 
 
@@ -105,10 +112,12 @@ def test_flat_before_settlement_produces_no_delta(monkeypatch, tmp_path):
                                  traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"},
                                          {"ticker": "T2", "realized_pnl_dollars": "-9.00"}]),
          str(tmp_path))
+    # A flat market settles NET FLAT: |yes - no| == 0, so nothing survived to settlement.
     row = _run(monkeypatch,
                MockClient(mode="live", positions=[_pos("T1")],
                           traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"}],
-                          settlements=[_settle("T2", revenue_cents=0)]),
+                          settlements=[_settle("T2", revenue_cents=0,
+                                               yes_ct="9.00", no_ct="9.00")]),
                str(tmp_path))
     assert (_state(tmp_path).get("mkt_settle_pnl") or {}).get("T2") == 0.0, \
         "a market that went flat before settling has zero exposure and zero delta"
@@ -158,6 +167,102 @@ def test_the_carry_is_persisted_WITHOUT_the_topup(monkeypatch, tmp_path):
     carry = _state(tmp_path).get("mkt_realized_carry") or {}
     assert carry.get("T2") == 0.0, \
         f"the carry holds the PRE-settlement realized value, not the delta: {carry}"
+
+
+def test_a_position_flattened_during_a_halt_never_mints_a_ban(monkeypatch, tmp_path):
+    """BLIND-REVIEW FIX 2026-08-03 — the wrong-permanent-ban case.
+
+    mkt_exposure is refreshed ONLY inside the governor block, and the STOP branch returns at
+    :2998 before load_state() at :3002. So while the bot is halted, _flatten_all actively sells
+    inventory (maker offsets then taker escalation) while the exposure basis stays FROZEN at
+    its last pre-halt value. Settling on that stale basis omits the sale proceeds entirely and
+    is always biased toward a phantom LOSS: a fully flattened ticker computes
+    delta = -(full pre-halt exposure) and mints a PERMANENT ban — two files, plus every series
+    sibling dragged to probe size — on a market whose true day P&L was about zero.
+
+    The settlement row carries what actually settled. Here the position was sold to flat during
+    the halt, so the settled counts net to ZERO and the delta must be 0.
+    Venue corroboration: 23 of 70 rows in the frozen AUD_setts.json sample settled NET FLAT and
+    still emit a settlement row with revenue 0."""
+    _arm(monkeypatch)
+    # alive with a $40.00 position -> exposure and count snapshotted
+    _run(monkeypatch, MockClient(mode="live",
+                                 positions=[_pos("T1"), _pos("T2", pos="50", expo="40.00")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"},
+                                         {"ticker": "T2", "realized_pnl_dollars": "0.00"}]),
+         str(tmp_path))
+    # ...halt, flatten sells all 50 ct (no governor cycle runs), then it settles NET FLAT
+    flat_settle = dict(_settle("T2", revenue_cents=0))
+    flat_settle["yes_count_fp"], flat_settle["no_count_fp"] = "50.00", "50.00"
+    _run(monkeypatch,
+         MockClient(mode="live", positions=[_pos("T1")],
+                    traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"}],
+                    settlements=[flat_settle]),
+         str(tmp_path))
+    assert (_state(tmp_path).get("mkt_settle_pnl") or {}).get("T2") == 0.0, \
+        "nothing survived to settlement, so the delta must be zero — not the stale $40"
+    assert _state(tmp_path).get("mkt_out") == [], \
+        "a position flattened during a halt must NEVER mint a permanent ban"
+
+
+def test_partial_unwind_prorates_the_settlement_basis(monkeypatch, tmp_path):
+    # Half the position was sold before expiry: only the residual can lose. $40.00 over 50 ct
+    # with 25 ct settling worthless -> -$20.00, not -$40.00.
+    _arm(monkeypatch)
+    _run(monkeypatch, MockClient(mode="live",
+                                 positions=[_pos("T1"), _pos("T2", pos="50", expo="40.00")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"},
+                                         {"ticker": "T2", "realized_pnl_dollars": "0.00"}]),
+         str(tmp_path))
+    part = dict(_settle("T2", revenue_cents=0))
+    part["yes_count_fp"], part["no_count_fp"] = "50.00", "25.00"    # 25 ct net settled
+    _run(monkeypatch,
+         MockClient(mode="live", positions=[_pos("T1")],
+                    traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"}],
+                    settlements=[part]),
+         str(tmp_path))
+    assert (_state(tmp_path).get("mkt_settle_pnl") or {}).get("T2") == -20.0, \
+        "the basis must prorate to the contracts that actually settled"
+
+
+def test_full_ride_into_expiry_still_bans(monkeypatch, tmp_path):
+    # The operator-named case must survive the fix: nothing was sold, the whole position rode
+    # into expiry and expired worthless -> the full loss, and the permanent ban.
+    _arm(monkeypatch)
+    _run(monkeypatch, MockClient(mode="live",
+                                 positions=[_pos("T1"), _pos("T2", pos="50", expo="40.00")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"},
+                                         {"ticker": "T2", "realized_pnl_dollars": "0.00"}]),
+         str(tmp_path))
+    full = dict(_settle("T2", revenue_cents=0))
+    full["yes_count_fp"], full["no_count_fp"] = "50.00", "0.00"     # all 50 ct settled
+    _run(monkeypatch,
+         MockClient(mode="live", positions=[_pos("T1")],
+                    traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"}],
+                    settlements=[full]),
+         str(tmp_path))
+    assert (_state(tmp_path).get("mkt_settle_pnl") or {}).get("T2") == -40.0
+    assert _state(tmp_path).get("mkt_out") == ["T2"], \
+        "a position that genuinely rode into expiry must still reach the permanent rung"
+
+
+def test_settled_position_we_never_saw_held_is_skipped(monkeypatch, tmp_path):
+    # net > 0 but no count basis: no way to prorate, so do not ban on it.
+    _arm(monkeypatch)
+    _run(monkeypatch, MockClient(mode="live", positions=[_pos("T1")],
+                                 traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"},
+                                         {"ticker": "T2", "realized_pnl_dollars": "-1.00"}]),
+         str(tmp_path))
+    row = dict(_settle("T2", revenue_cents=0))
+    row["yes_count_fp"], row["no_count_fp"] = "50.00", "0.00"
+    _run(monkeypatch,
+         MockClient(mode="live", positions=[_pos("T1")],
+                    traded=[{"ticker": "T1", "realized_pnl_dollars": "0.00"}],
+                    settlements=[row]),
+         str(tmp_path))
+    st = _state(tmp_path)
+    assert "T2" not in (st.get("mkt_settle_pnl") or {})
+    assert "T2" not in (st.get("mkt_out") or [])
 
 
 def test_unknown_exposure_never_fabricates_a_ban(monkeypatch, tmp_path):

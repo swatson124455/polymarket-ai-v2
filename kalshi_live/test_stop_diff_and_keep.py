@@ -114,6 +114,52 @@ def test_unparseable_row_is_always_cancelled(monkeypatch, tmp_path):
 
 # ---- never two exits on one ticker ---------------------------------------------------------
 
+def test_duplicate_STALE_offsets_do_not_leave_double_inventory(monkeypatch, tmp_path):
+    """BLIND-REVIEW FIX 2026-08-03. The pin below covers duplicates that MATCH the desired
+    offset; this covers the one that broke. diff_orders builds `have` as a dict comprehension,
+    so two IDENTICAL resting rows collapse to ONE key and only ONE cancel is emitted. Choosing
+    the survivor by cancel-list membership therefore kept the un-cancelled twin AND created a
+    replacement on top — reproduced at 40 ct resting against a 20 ct position, which on a full
+    fill crosses THROUGH flat into the opposite position (_unwind_size:1691-1693 forbids
+    exactly this). The survivor must be chosen by DESIRED-KEY match instead."""
+    _arm(monkeypatch)
+    c = _flat(monkeypatch, tmp_path,
+              MockClient(mode="live",
+                         resting=[_the_offset(price=0.42, oid="stale-a"),
+                                  _the_offset(price=0.42, oid="stale-b")],
+                         positions=_held()))
+    assert set(c.cancelled) == {"stale-a", "stale-b"}, \
+        f"BOTH stale twins must die, not just the one diff_orders noticed: {c.cancelled}"
+    assert len(c.created) == 1
+    resting = sum(o["count"] for o in c.created)
+    assert resting == 20, f"resting size must never exceed the position: {resting} ct vs 20"
+
+
+def test_three_stale_duplicates_still_leave_one_offset(monkeypatch, tmp_path):
+    _arm(monkeypatch)
+    c = _flat(monkeypatch, tmp_path,
+              MockClient(mode="live",
+                         resting=[_the_offset(price=0.42, oid="s1"),
+                                  _the_offset(price=0.42, oid="s2"),
+                                  _the_offset(price=0.42, oid="s3")],
+                         positions=_held()))
+    assert set(c.cancelled) == {"s1", "s2", "s3"}
+    assert sum(o["count"] for o in c.created) == 20
+
+
+def test_mixed_stale_and_matching_keeps_only_the_match(monkeypatch, tmp_path):
+    # One resting offset matches what we want, another is stale. Keep the match, kill the
+    # stale one, create nothing.
+    _arm(monkeypatch)
+    c = _flat(monkeypatch, tmp_path,
+              MockClient(mode="live",
+                         resting=[_the_offset(price=0.42, oid="stale"),
+                                  _the_offset(oid="good")],
+                         positions=_held()))
+    assert c.cancelled == ["stale"]
+    assert c.created == []
+
+
 def test_duplicate_identical_offsets_leave_exactly_one(monkeypatch, tmp_path):
     # diff_orders keys on (side, price, count), so two IDENTICAL rows collapse to one key and
     # BOTH would survive — 2x inventory resting on the reducing side, which on a full fill

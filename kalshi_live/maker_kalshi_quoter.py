@@ -3253,18 +3253,24 @@ def run_once():
                     # maker_kalshi_client.get_settlements.)
                     try:
                         _expo = dict(st.get("mkt_exposure") or {})
+                        _expo_ct = dict(st.get("mkt_exposure_ct") or {})
                         for _te in _realized_raw:
+                            _ct_te = abs(float(held_by.get(_te, 0.0) or 0.0))
                             if _te in cost_by:
-                                _expo[_te] = round(float(cost_by[_te])
-                                                   * abs(float(held_by.get(_te, 0.0) or 0.0)), 6)
+                                _expo[_te] = round(float(cost_by[_te]) * _ct_te, 6)
                             elif _te in held_by:
                                 _expo[_te] = None      # venue omitted the cost field -> unknown
                             else:
                                 _expo[_te] = 0.0       # flat but alive: nothing left to lose
+                            # Contract count alongside the dollars: the settlement re-base
+                            # below needs to know how many contracts that exposure was for.
+                            _expo_ct[_te] = _ct_te
                         st["mkt_exposure"] = _expo
+                        st["mkt_exposure_ct"] = _expo_ct
                     except Exception:
                         _SILENT["settle_expo_fail"] += 1
                         _expo = dict(st.get("mkt_exposure") or {})
+                        _expo_ct = dict(st.get("mkt_exposure_ct") or {})
                     # SETTLEMENT TOP-UP. Own nested try: a settlements outage must never raise
                     # into the governor try, and per operator decision 2026-08-02 it does NOT
                     # feed gov_fail_streak — this feed is ADDITIVE protection, and a new
@@ -3292,6 +3298,33 @@ def run_once():
                                 # Never fabricate a permanent ban on an unknown basis.
                                 _SILENT["settle_exposure_unknown"] += 1
                                 continue
+                            # RE-BASE ONTO WHAT ACTUALLY SETTLED (blind-review fix 2026-08-03).
+                            # mkt_exposure is refreshed ONLY inside this governor block, and the
+                            # STOP branch returns at :2998 before load_state() at :3002 — so
+                            # during a halt _flatten_all sells inventory while the exposure
+                            # basis stays FROZEN at its last pre-halt value. Settling on that
+                            # stale basis understates P&L by exactly the sale proceeds, always
+                            # biased toward a phantom LOSS: a fully flattened ticker would
+                            # compute delta = -(full pre-halt exposure) and mint a PERMANENT
+                            # ban on a market whose true day P&L was ~$0. Permanent bans write
+                            # two files and drag every series sibling to probe size, so this
+                            # must never fire on a stale basis.
+                            # The settlement row carries the counts that actually settled (both
+                            # fields present 127/127, read 2026-08-02T02:30:57Z), so re-base:
+                            _net4 = abs(float(_sr.get("yes_count_fp") or 0.0)
+                                        - float(_sr.get("no_count_fp") or 0.0))
+                            _ct04 = float((_expo_ct or {}).get(_st4, 0.0) or 0.0)
+                            if _net4 <= 0.0:
+                                _e4 = 0.0              # nothing survived to settlement
+                            elif _ct04 <= 0.0:
+                                # A position settled that we never saw held: no basis to
+                                # prorate against, so do not ban on it.
+                                _SILENT["settle_exposure_unknown"] += 1
+                                continue
+                            elif _net4 < _ct04:
+                                _e4 = float(_e4) * (_net4 / _ct04)   # prorate to the residual
+                            # _net4 >= _ct04: the position rode into expiry intact — the
+                            # operator-named case where a settlement loss MAY ban. Basis stands.
                             # ASSIGN, never accumulate -> re-processing a row is idempotent.
                             _settle_pnl[_st4] = round(
                                 float(_sr.get("revenue") or 0.0) / 100.0 - float(_e4), 6)
@@ -3359,6 +3392,9 @@ def run_once():
                         st["mkt_settle_pnl"] = {}
                         st["mkt_exposure"] = {t: v for t, v in (st.get("mkt_exposure") or {}).items()
                                               if t in _realized_raw}
+                        st["mkt_exposure_ct"] = {t: v for t, v
+                                                 in (st.get("mkt_exposure_ct") or {}).items()
+                                                 if t in _realized_raw}
                         _base = dict(_realized)          # fresh day -> fresh baseline
                         _tripped = set()                 # trips are per-day
                         _snap = {}                       # M3: trip snapshots are per-day too
@@ -5232,13 +5268,31 @@ def _flatten_all(client):
     # resting offsets both survive as one key — leaving 2x|inventory| of resting reducing size,
     # which on a full fill crosses THROUGH flat into the opposite position. Today's
     # cancel-everything hid this; keeping orders exposes it, so it is closed here.
+    # The survivor is chosen by DESIRED-KEY MATCH, never by cancel-list membership.
+    # BLIND-REVIEW FIX 2026-08-03: keying off `cancels` was wrong because diff_orders builds
+    # `have` as a dict comprehension (:2509-2510), so two IDENTICAL resting rows collapse to a
+    # single key and only ONE cancel is emitted. The un-cancelled twin then looked like a
+    # legitimate survivor, was kept, and a replacement was created on top — reproduced: two
+    # stale 20-ct offsets against a 20-ct position left 40 ct resting, which on a full fill
+    # crosses THROUGH flat into the opposite position, exactly what _unwind_size's own
+    # docstring (:1691-1693) forbids. Cancel-everything used to hide this; keeping exposes it.
+    # Now: at most ONE order per ticker survives, and only if it matches what we want to rest.
     _cancel_set = set(cancels)
     kept = 0
-    for t, surv in ((t, [o for o in v if o["order_id"] not in _cancel_set]) for t, v in _std.items()):
-        for o in surv[1:]:
-            cancels.append(o["order_id"])
-        if surv:
-            offset_oids[t] = surv[0]["order_id"]       # record the KEPT id for pass 2
+    for t, rows in _std.items():
+        _wk = {(q["side"], round(q["price_dollars"], 4), q["count"])
+               for q in desired.get(t, [])}
+        keeper = None
+        for o in rows:
+            if keeper is None and (o["side"], round(o["price_dollars"], 4),
+                                   o["count"]) in _wk:
+                keeper = o
+                continue
+            if o["order_id"] not in _cancel_set:
+                cancels.append(o["order_id"])
+                _cancel_set.add(o["order_id"])
+        if keeper is not None:
+            offset_oids[t] = keeper["order_id"]        # record the KEPT id for pass 2
             kept += 1
     n += _cancel_each(client, cancels)
     print(f"flatten: cancelled {n}/{len(all_ids)} resting quotes (stopped making)")
