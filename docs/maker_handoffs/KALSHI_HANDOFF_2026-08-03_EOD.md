@@ -113,9 +113,16 @@ The daemon still runs the OLD quoter in memory; the new code takes effect only a
 operator-named restart. `KALSHI_NETEV_GATE` IS hot-reloaded (watch list), so it applies to the
 running process — but that is **operationally moot while halted**: under STOP the cycle returns
 at the sentinel branch before any quoting, so the gate cannot change behaviour until restart.
-⚠ I could NOT confirm the in-memory apply from the journal: the unit sets no `PYTHONUNBUFFERED`,
-so stdout is block-buffered and the newest journal line lagged ~14 min. The
-`SAFETY KNOB LIVE-APPLIED:` line should appear on flush. **UNVERIFIED, not failed.**
+✅ **IN-MEMORY APPLY CONFIRMED 2026-08-04T14:39Z**, closing the gap first logged as unverified.
+The unit sets no `PYTHONUNBUFFERED`, so stdout is block-buffered and the line took ~57 min to
+reach the journal — the buffering diagnosis was right, my 14-minute check was simply too early:
+
+    2026-08-04T03:18:26Z  SAFETY KNOB LIVE-APPLIED: DAILY_LOSS_HALT_USD 40.0 -> 30.0
+    2026-08-04T03:18:26Z  SAFETY KNOB LIVE-APPLIED: NETEV_GATE 0 -> 1
+
+And **no `EMPTY TABLE` alarm** in the 979 journal lines since the deploy — the armed gate has a
+live, non-empty table in the running process, which is the positive confirmation that shipping
+`kalshi_netev_calibrate.py` fixed the defect-7 trap rather than merely appearing to.
 
 **THE CONVENTION CHANGE FIRED at 02:22:14Z** on the cash recorder's next timer run (it is
 timer-invoked, so it took the new code without a restart):
