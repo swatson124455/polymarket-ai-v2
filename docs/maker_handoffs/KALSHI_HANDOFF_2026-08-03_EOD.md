@@ -8,7 +8,7 @@ Every figure here carries its source and denominator. All 13 hook-injected opera
 ## 0. STEP ZERO — verify, trust nothing here
 
 - Worktree `…/5dfe0ebf-2821-475d-946c-72012db34c3b/scratchpad/kalshi-wt`, branch
-  `claude/maker-kalshi-live`, **17 commits** on `0f79f04..HEAD`. Worktree clean.
+  `claude/maker-kalshi-live`, **20 commits** on `0f79f04..HEAD`. Worktree clean.
   The main checkout is ANOTHER LANE — never touch it or master.
 - **HALTED since 2026-08-02T10:26:37Z; stays halted until the operator names a restart.**
   Verified 2026-08-03T21:26:20Z: STOP present (230 B, uid 0, mtime unchanged at
@@ -20,7 +20,7 @@ Every figure here carries its source and denominator. All 13 hook-injected opera
   memory — new code takes effect only at an operator-named restart.
 - ✅ `kalshi_netev_table.json` IS NOW ON THE VPS (§3), and so is `kalshi_netev_calibrate.py`,
   which was ALSO missing and which the loader imports — without it the table loads as `{}`.
-- Test baseline at HEAD: **1131 passed / 2 xfailed**, `python -m pytest kalshi_live/ -q`,
+- Test baseline at HEAD: **1132 passed / 2 xfailed**, `python -m pytest kalshi_live/ -q`,
   **pytest exit 0** (capture the exit code, not a grep of the summary line — see §6).
 - Live knobs (post-deploy, 2026-08-04T02:21:19Z): `MAX_TOTAL_CAPITAL=350`,
   **`DAILY_LOSS_HALT_USD=30`**, `DAILY_DOWN_HALT_USD` DELETED, **`NETEV_GATE=1` (ARMED)**,
@@ -64,6 +64,18 @@ copy, adversarial blind review. **Mutation sweep 14/14 caught** across both chan
 - `06ad273` the table, on the named window.
 - `814256a` three gate tests were secretly reading the committed table file.
 - `b4e60a7` frozen tape + reconciliation study preserved.
+- `a996a1d` **D1** — staleness sets the LABEL, not the VALUE (score-coverage fix).
+- `71c1d36` **own the second adversarial review** — a real D1 value bug (the swing penalty was
+  multiplying the pool-prior component FOREVER: capture 0 / ref_move 0.12 / pool 100 scored
+  7.6923 at every age 0.5d–6.99d instead of converging to 100), D1's false "exploration is
+  byte-unchanged" claim (the stale queue's missing ticker tie-break let a stable sort fall back
+  to VALUE order), defect B reintroduced by my own `844ea16` and SHIPPED (the caveat still
+  quoted −5.78% / "$2.15 / $23.06 identical" after credits moved onto the trading clock), and
+  two D1 pins that were respectively self-fulfilling and vacuous. Plus `credits_out_of_scope`,
+  which makes the document reconcile EXACTLY: $109.17 + $15.00 + $74.78 = $198.95.
+- `f5cde90` **the last two open bugs** — `shadow_rank` replaced a measured stale row with the
+  sweep model (664.5973 → 12.0) and escaped `unknown_haircut` by rewriting `kind`; and
+  `1799c2c`'s "FAIL-CLOSED, NOT FAIL-OPEN" was wrong in one direction, now corrected in source.
 
 ### Measurements now canon (ESTABLISHED; frozen tape read 2026-08-03T17:06:00.554496Z — 1234 fills / 143 settlements / 58 credits, committed as `kalshi_live/netev_tape_2026-08-03T170600Z.json`, md5 `766985871cf48273cd5a4c12ef4cc022`)
 
@@ -168,80 +180,83 @@ agent defects from family economics, and these negatives are **not** a verdict o
 
 ## 4. OPEN DECISIONS
 
-- **Deploy + arm** (§3) — operator-gated.
-- **VERIFY THE DEPOSIT TOTAL.** The cash identity closes to $0.0000 at deposits of
-  **$629.2030**; the operator-stated figure is **$640.00** ($565.00 venue-verified + $75 added
-  2026-08-03). The −$10.7970 residual is a fixed offset, not a leak (§5), so this single number
-  is the whole remaining gap. Needs a bank/venue deposit-record check — no code change can
-  settle it.
-- **The two engines now carry different evidence bars** — rebuild `MIN_RECEIPT_FILLS=40`,
-  calibrate `MIN_RECEIPT_TRADES=20`. Not a defect; an inconsistency nobody has ruled on.
+1. **Restart (E1).** Operator said "no restart" at the 2026-08-04 deploy and has not named one
+   since. Bot stays halted until they do.
+2. **Deploy `kalshi_market_scores.py` + `kalshi_capital_rank.py`** (all D1 work). Deliberately
+   NOT shipped. ⚠ `KALSHI_SCORE_RANK=1`, `KALSHI_ALLOC_KEY=1`, `KALSHI_SWEEP_ENABLED=1` and
+   `KALSHI_CAPRANK_TELEMETRY=1` are ALL set in live.env (read 2026-08-04), so shipping these
+   activates a live ranking path — that is why every D1 defect below had to be fixed first.
+3. **D1 follow-up — haircut only the PRIOR component.** `shadow_rank` still applies
+   `unknown_haircut` to `stale` rows, which since D1 are partly measured. The principled fix
+   haircuts only the prior half of the blend and needs `score()` to expose the split. Left
+   conservative (over-discounting is the safe direction).
+4. **The net-EV gate's fail-open direction.** A `thin` family scored net-negative now takes the
+   model path and OPENS two-sided at `usd_day` 200 / 5000, where pre-fix it skipped. Measured on
+   the T-HARDEN fixture book. Behaviour KEPT (the alternative is trusting a grade no producer
+   defines) and now documented in the quoter; operator may want it changed.
 
-**DECIDED, recorded so it is not re-asked:** `MIN_RECEIPT_FILLS` stays **40** (operator, "not a
-question, go with your rec"). For the record, the families that would flip at 24: full history —
+**DECIDED — recorded so none of it is re-asked.** All operator rulings, 2026-08-03/04:
+
+| Item | Ruling |
+|---|---|
+| Deploy + arm | **DONE** 2026-08-04 — "deploy and arm but no restart" |
+| Cash-identity residual −$10.7970 | **CLOSED — it is the DEPOSIT CHARGE.** Both figures correct; $640.00 gross, $629.2030 net of charge. Not a leak, not a code question. |
+| Ladder rungs $3/$5 | **KEEP AS IS for now** |
+| Gov-D6 / `STRIKES_OUT` | **KEEP AS IS** (stays 0) |
+| `MIN_RECEIPT_FILLS` 40 vs 24 | **40** ("not a question, go with your rec") |
+| rebuild vs calibrate evidence bars | **NOT A QUESTION** — the two engines measure different units; closed |
+| `$0.1093` finalized-NO dust | **NOT A QUESTION** — closed. (I never sourced that figure's derivation; noted so it is not silently dropped.) |
+| `KALSHI_MAX_TOTAL_CAPITAL` | **Portfolio capital amount, and it changes** — not a fixed knob to revisit |
+| NO-family credit gap | Resolved by construction; credits reconcile EXACTLY to $198.95 |
+
+For the record, families that would flip at `MIN_RECEIPT_FILLS=24`: full history —
 `KXGENERICBALLOTVOTEHUB` (29 fills), `KXMLABELSHARE` (30); 07-29→now — `KXMLABELSHARE` (30),
 `KXTRUMPENDORSEMENTS` (38); 08-01→now — `KXTRUMPENDORSEMENTS` (28), `KXTRUMPTIME` (25, **+0.85%**,
 the only allow in the set). Zero flips on the canon window.
 
 ## 5. OPEN ITEMS — nothing here may be dropped (RULE NINE)
 
-- **Phase D — D1 PARTLY DONE, D2 and D3 NOT STARTED** (operator named "do d1-3" 2026-08-04).
-  - **D1 — two of three clauses DONE** (`a996a1d`): never-measured vs stale split, and the
-    swing penalty now survives going stale. ⚠ **The third clause, "widen measurement path", is
-    NOT built** — I did not guess at it. Scoring today only prices books the cycle already read
-    (`maker_kalshi_quoter.py:380-384`), so "widen" means measuring markets we do not otherwise
-    read; the sweeper (`KALSHI_SWEEP_ENABLED`) is the obvious vehicle and needs scoping.
-  - **D1 follow-up, FLAGGED not done:** `kalshi_capital_rank.shadow_rank` still applies
-    `unknown_haircut` to `stale` rows. Since D1 a stale row is PARTLY measured, so the
-    principled fix haircuts only the PRIOR component of the blend — which needs `score()` to
-    expose the split. Left conservative (over-discounting is the safe direction); operator's
-    to name.
-  - **D2 — NOT STARTED.** Wire reward feedback + fill cost + hours-to-close into the rank key;
-    lag exclusion keyed on PROGRAM `end_date`, NOT close+1. The evidence base is identified:
-    payout keys on the reward-PROGRAM window end (close+1 held for only **24 of 33** credited
-    events; **9 of 33** paid BEFORE market close, by 30.7–727.0 h — master plan §3). Proof
-    criteria: the **14 defensibly-never-paid series** (−$127.10 of the 20 that never earned a
-    cent, −$156.12) must rank below comparable payers, and the **5 zero-fill earners**
-    (+$7.51, the only reliably profitable shape observed) must NOT be deranked.
-  - **D3 — NOT STARTED.** Size ramp 5→10→25→50 ct at ≥10 min per rung (operator-ruled 08-02)
-    plus a dollars-at-risk sizing term. Proof criteria: a KXTEMPAUSH replay walks 5→50 across
-    multiple cycles, and dollar caps bind on some of the 2,176 50-ct side quotes.
+- **Phase D — D1 two-of-three clauses done; D2 and D3 NOT STARTED** (operator named "do d1-3").
+  - **D1 DONE** (`a996a1d`, corrected by `71c1d36` and `f5cde90`): never-measured vs stale
+    split, and the swing penalty survives going stale.
+  - ⚠ **D1 clause 3, "widen measurement path" — NOT BUILT.** Not guessed at. Scoring today only
+    prices books the cycle already read (`maker_kalshi_quoter.py:380-384`), so "widen" means
+    measuring markets we do not otherwise read; the sweeper is the obvious vehicle.
+  - **D2 — NOT STARTED.** Reward feedback + fill cost + hours-to-close into the rank key; lag
+    exclusion keyed on PROGRAM `end_date`, NOT close+1. Evidence base identified: close+1 held
+    for only **24 of 33** credited events, **9 of 33** paid BEFORE market close by 30.7–727.0 h
+    (master plan §3). Proof criteria: the **14 defensibly-never-paid series** (−$127.10, of 20
+    that never earned a cent totalling −$156.12) rank below comparable payers, and the **5
+    zero-fill earners** (+$7.51) are NOT deranked.
+  - **D3 — NOT STARTED.** Size ramp 5→10→25→50 ct at ≥10 min per rung plus a dollars-at-risk
+    term. Proof: a KXTEMPAUSH replay walks 5→50 across cycles; dollar caps bind on some of the
+    2,176 50-ct side quotes.
 - **Unknown-market slow probe** + 5-min data checkpoint — ruled BUILD 08-02, still NOT BUILT.
-- **Restart (E1)** — operator-named, gated on all defects fixed.
-- **8-3 re-review** — ladder rungs ($3/$5, "keep, retune later" was the agent's reading, never
-  corrected) and Gov-D6 / `STRIKES_OUT` (ruled LEAVE at 0, revisit only if armed) remain the
-  operator's to rule. Live strike state 2026-08-03T12:48:49Z: 24 tickers, 21 at one strike, 3 at
-  two; 9 permanent bans, `mkt_out_backup.json` agrees exactly.
-- **The cash-identity residual — MEASURED 2026-08-03, and the standing lead is REFUTED.**
-  Against a single-instant snapshot (balance + fills + settlements + credits read together;
-  `kalshi_live/cash_identity_snapshot_2026-08-03T233338Z.json`, re-runnable via
+- **Restart (E1)** — see §4.
+- **8-3 re-review** — ladder rungs and Gov-D6 both RULED "keep as is" (§4). Live strike state
+  2026-08-03T12:48:49Z: 24 tickers, 21 at one strike, 3 at two; 9 permanent bans,
+  `mkt_out_backup.json` agrees exactly. Retained here because the underlying re-review material
+  was delivered and the knobs may still be retuned later.
+- **The cash-identity residual — CLOSED as the deposit charge (§4), and the mechanism is now
+  understood rather than merely unexplained.** Measured on a single-instant snapshot
+  (`kalshi_live/cash_identity_snapshot_2026-08-03T233338Z.json`, re-runnable via
   `kalshi_live/cash_identity_check.py`):
 
       cash == deposits + credits + settlement_revenue + fill_cashflow
       640.0000 + 198.9500 + 74.4100 − 594.9697 = 318.3903 predicted
       307.5933 actual  →  RESIDUAL −$10.7970   (read 2026-08-03T23:33:38Z)
 
-  **IT DOES NOT DRIFT.** Measured at two instants 6h27m apart across 1 new fill and 4 new
-  settlements, the model predicted every cash movement **to the cent** (+$0.6700 predicted vs
-  +$0.6700 actual) and the residual was **identical at both: −$10.7970**. So the prior lead
-  ("the $1.50 drift points at the settlement leg") is **refuted** — that drift was measured with
-  the DEPLOYED recorder, i.e. the defect-13 position-blind fill model, the very instrument now
-  known to be wrong.
-
-  A constant offset with perfect dynamics points at the **initial condition, not a flow**.
-  Deposits implied by a zero residual: **$629.2030** vs operator-stated **$640.00** — a
-  difference of exactly the residual. Credits are clean (58/58 `status=applied`, 0 clawbacks, no
-  single credit or settlement row near $10.7970). **Remaining candidates: the deposit total
-  itself, or a one-time account adjustment no API feed exposes. This is an operator
-  record-check, not a code question** — see §4.
-- **`KALSHI_MAX_TOTAL_CAPITAL=350`** predates the deposit — verified still 350.
-- **$0.1093 of finalized-NO dust.**
-- `KXRAIN-26AUG03-PHIL` self-closed 08-02T18:57:33Z (−$0.62 ticker realized) — **closed**.
-- **NO-family credit gap — RESOLVED by construction.** The rebuild engine creates a family per
-  series root, so in the named window $84.69 of credits across 12 families outside gas/temp are
-  attributed (vs $24.48 gas+temp; $15.00 unattributed = the referral credit, which names no
-  event and keeps the date rule). ⚠ Most of those earners sit BELOW the 40-fill bar, so the
-  table now SEES that income but the gate does not act on receipts for it.
+  **IT DOES NOT DRIFT** — measured at two instants 6h27m apart across 1 new fill and 4 new
+  settlements, the model predicted every cash movement **to the cent** (+$0.6700 vs +$0.6700)
+  and the residual was identical at both. That REFUTED the prior "drift points at the settlement
+  leg" lead, which had been measured with the defect-13 position-blind recorder. A fixed offset
+  with perfect dynamics pointed at the initial condition — and the operator confirmed it is the
+  deposit charge.
+- **⚠ $0.0030 STILL UNEXPLAINED:** the recorder's `cum_settle_payout` 74.4130 vs my independent
+  settlement sum 74.4100. Too small to have blocked the deploy; not chased.
+- **`KALSHI_MAX_TOTAL_CAPITAL=350`** — ruled a changing portfolio-capital figure (§4), not a
+  knob to revisit. Value verified still 350 on 2026-08-04.
+- **$0.1093 of finalized-NO dust** — ruled not a question (§4). Retained per RULE NINE.
 
 ## 6. HOW THIS SESSION WORKED — and what it got wrong
 
