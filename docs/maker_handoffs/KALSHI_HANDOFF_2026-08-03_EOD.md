@@ -14,17 +14,17 @@ Every figure here carries its source and denominator. All 13 hook-injected opera
   Verified 2026-08-03T21:26:20Z: STOP present (230 B, uid 0, mtime unchanged at
   `2026-08-02 10:26:53.414658703 +0000`), service `polymarket-maker-kalshi-ws.service` ACTIVE
   (idles under STOP and rests maker EXIT offsets — canon-confirmed, not a violation).
-- **NOTHING FROM THIS SESSION OR THE PREVIOUS ONE IS DEPLOYED.** Deployed quoter
+- ⚠ **SUPERSEDED — SEE §3: DEPLOYED AND ARMED 2026-08-04.** (Was: nothing deployed.) Deployed quoter
   `9bfac08f6c9251b57749e1c80ddc356a` vs HEAD blob `a88ddc3acb9b4e7ef8e440a7e2f8ef4e`; deployed
   recorder `9d842c41c12afc8de804cab4013bd2c2` vs HEAD `2ec0f5b4e33409d0e0d1941ef261b424`.
   `kalshi_netev_rebuild.py` HEAD blob `f158eec51045bfdd34fab7d2feb029e8` — not on the VPS at all.
-- ⚠ **THERE IS NO `kalshi_netev_table.json` ON THE VPS.** An armed gate today would load `{}`,
-  fire the empty-table alarm, and put every family on the model fallback. The table must ship
-  WITH the code.
+- ✅ `kalshi_netev_table.json` IS NOW ON THE VPS (§3), and so is `kalshi_netev_calibrate.py`,
+  which was ALSO missing and which the loader imports — without it the table loads as `{}`.
 - Test baseline at HEAD: **1128 passed / 2 xfailed**, `python -m pytest kalshi_live/ -q`,
   **pytest exit 0** (capture the exit code, not a grep of the summary line — see §6).
-- Live knobs (read 2026-08-03T21:26:20Z): `MAX_TOTAL_CAPITAL=350`, `DAILY_LOSS_HALT_USD=40`,
-  `DAILY_DOWN_HALT_USD=60`, **`NETEV_GATE=0`**, `MKT_DAY_LOSS_EXITONLY_USD=3`.
+- Live knobs (post-deploy, 2026-08-04T02:21:19Z): `MAX_TOTAL_CAPITAL=350`,
+  **`DAILY_LOSS_HALT_USD=30`**, `DAILY_DOWN_HALT_USD` DELETED, **`NETEV_GATE=1` (ARMED)**,
+  `MKT_DAY_LOSS_EXITONLY_USD=3`.
 - Panic stop: `sudo touch /opt/pa2-maker-kalshi-live/STOP`
 
 ## 1. OPERATOR RULINGS THIS SESSION (binding, not re-litigable)
@@ -87,7 +87,53 @@ copy, adversarial blind review. **Mutation sweep 14/14 caught** across both chan
   — everything else there was net positive. Raw observation on that window only; **not** a
   re-decomposition of the −$122.57 basis, no percentage claimed.
 
-## 3. DEPLOY CHECKLIST (operator-gated; nothing below has been done)
+## 3. DEPLOY — **DONE 2026-08-04, operator-named "deploy and arm but no restart"**
+
+**Shipped 02:20:11–02:20:24Z**, all 7 md5-verified byte-identical to HEAD, backups at
+`*.bak-NETEV-20260804_021957`:
+`maker_kalshi_quoter.py` · `kalshi_cash_recorder.py` · `kalshi_fill_costs.py` ·
+`maker_kalshi_client.py` · **`kalshi_netev_calibrate.py`** · `kalshi_netev_rebuild.py` ·
+`kalshi_netev_table.json`.
+
+⚠ **`kalshi_netev_calibrate.py` WAS MISSING FROM THE VPS.** `_load_netev_table` imports it
+INSIDE its fail-open `try`, so an armed gate would have loaded `{}` — every family unproven,
+markets still skipped on the model, table never consulted. That is the defect-7 trap verbatim,
+and it would have made arming a silent no-op. Verified after deploy by loading the table through
+the deployed loader on the VPS: **33 families, 6 receipt-grade, 0 unknown grades, 0 receipt rows
+with `net_pct_notional=None`** — safe for both old and new gate logic.
+
+**live.env 02:21:19Z:** `KALSHI_NETEV_GATE=0 → 1` (**ARMED**); `KALSHI_DAILY_LOSS_HALT_USD 40 →
+30`; `KALSHI_DAILY_DOWN_HALT_USD` line deleted. Mode 600 root:root preserved, 58 lines.
+
+**NO RESTART, and STOP UNTOUCHED** (230 B, uid 0, mtime `2026-08-02 10:26:53.414658703 +0000`).
+The daemon still runs the OLD quoter in memory; the new code takes effect only at an
+operator-named restart. `KALSHI_NETEV_GATE` IS hot-reloaded (watch list), so it applies to the
+running process — but that is **operationally moot while halted**: under STOP the cycle returns
+at the sentinel branch before any quoting, so the gate cannot change behaviour until restart.
+⚠ I could NOT confirm the in-memory apply from the journal: the unit sets no `PYTHONUNBUFFERED`,
+so stdout is block-buffered and the newest journal line lagged ~14 min. The
+`SAFETY KNOB LIVE-APPLIED:` line should appear on flush. **UNVERIFIED, not failed.**
+
+**THE CONVENTION CHANGE FIRED at 02:22:14Z** on the cash recorder's next timer run (it is
+timer-invoked, so it took the new code without a restart):
+
+| field | 02:17:14Z (old) | 02:22:14Z (new) |
+|---|---|---|
+| `cum_fills_cash` | −232.3697 | −594.9697 |
+| `cum_settle_payout` | 26.9012 | 74.4130 |
+| `unexplained_todate_cash` | 513.0618 | 828.15 |
+| basis markers | absent | `position_aware` / `gross` |
+
+Step **+$315.0882** — **BOOKED AS A CONVENTION CHANGE, NOT INCOME.** The documented tell holds
+exactly: at the boundary `cash` 307.5933→307.5933, `n_fills_todate` 1235→1235,
+`n_settlements_todate` 147→147 — all three zero. (§3's forecast of +$330.0381 was computed from
+the 08-03 snapshot at 1234 fills / 143 settlements; the realized step differs because the tape
+moved, not because the mechanism differed.)
+⚠ Minor open: the recorder's `cum_settle_payout` 74.4130 vs my independent settlement sum
+74.4100 — a $0.0030 difference, unexplained, too small to have blocked the deploy but worth a
+look.
+
+### Original checklist, for the record
 
 1. `deploy.sh` ships quoter + recorder + the new modules — **and `kalshi_netev_table.json`**,
    which does not exist on the VPS (§0).
@@ -99,7 +145,7 @@ copy, adversarial blind review. **Mutation sweep 14/14 caught** across both chan
    while halted. Row markers `fills_cash_basis` / `settle_payout_basis` appear for the first time.
 4. First post-restart governor cycle pulls the whole settlement history once (`min_ts=None`);
    safe only because `mkt_exposure` is empty that cycle. **Do not hand-populate it.**
-5. **`KALSHI_NETEV_GATE=0 → 1` is the arming step.** Still 0. Operator must name it.
+5. **`KALSHI_NETEV_GATE=0 → 1` is the arming step.** DONE 2026-08-04T02:21:19Z.
 
 **What arming does** — verified end-to-end, real table through the real loader and real gate:
 gas −4.68%, temp −6.09%, KXTOPMODEL −3.12%, KXDXYDUD −5.60%, KXTRUMPTIME −5.89%,
