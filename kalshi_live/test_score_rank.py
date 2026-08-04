@@ -196,14 +196,40 @@ def test_d1_swing_penalty_survives_going_stale():
     calm_s, kc = ks.score(calm, "CALM", 100.0, now=t, swing_penalty=1.0)
     swing_s, kw = ks.score(swingy, "SWINGY", 100.0, now=t, swing_penalty=1.0)
     assert kc == kw == "stale"
-    assert swing_s < calm_s, "a swingy market must stay discounted after going stale"
+    # ⚠ A BARE `swing_s < calm_s` IS SELF-FULFILLING and was: adversarial review mutated the
+    # penalty out of the stale branch entirely and this pin still PASSED, because the fixture's
+    # second update bumps SWINGY's ts by 1s and with capture(40) < pool(100) the fresher row
+    # blends fractionally lower on decay alone — margin 0.008. The penalty is worth ~53 here, so
+    # demand a margin decay cannot manufacture, and assert the mechanism directly.
+    assert swing_s < calm_s * 0.5, "the swing discount must DOMINATE, not win by a decay sliver"
+    # measured 2026-08-04 at this age: swingy/calm 0.3484, off/swingy 2.8701. Bounds set BELOW
+    # the measured values so they cannot pass by a hair, and not tuned to them either.
+    off, _ = ks.score(swingy, "SWINGY", 100.0, now=t, swing_penalty=0.0)
+    assert off > swing_s * 2.0, "turning swing_penalty off must materially raise the same row"
+    # AND at a FRESH age the penalty must bite hardest — this is what stops the 2026-08-04 fix
+    # (relaxing the penalty toward 1.0 as the measurement decays) from being over-applied into
+    # "the swing discount barely does anything". Measured ratio there: 0.0873.
+    fresh_c, _ = ks.score(calm, "CALM", 100.0, now=60, swing_penalty=1.0)
+    fresh_s, _ = ks.score(swingy, "SWINGY", 100.0, now=60, swing_penalty=1.0)
+    assert fresh_s < fresh_c * 0.2, "a fresh swingy measurement must be heavily discounted"
 
 
 def test_d1_does_not_change_which_rows_the_explore_quota_resamples():
     """The fix moves the VALUE only. rank() keys exploration on the LABEL, so sweep behaviour
     must be byte-identical — a stale row is still eligible for a sampling slot."""
+    # ⚠ THIS PIN WAS VACUOUS: explore=2 with exactly 2 candidates returns everything whatever
+    # the scores are — adversarial review made score() return a constant 0.0 and it still passed.
+    # Use a SCARCE quota over MANY same-ts stale rows, which is the real shape (run_once stamps a
+    # whole cycle with one `now`), so the pick is decided by the tie-break and not by the value.
     m = {}
-    ks.update(m, "OLD", 40.0, 0.50, now=0.0)
-    rows = [{"ticker": "OLD", "usd_day": 100.0}, {"ticker": "NEW", "usd_day": 100.0}]
-    out = ks.rank(m, rows, now=ks.STALE_S + 10, explore=2)
-    assert {r["ticker"] for r in out if r.get("explore")} == {"OLD", "NEW"}
+    for t in ("AAA", "BBB", "CCC"):
+        ks.update(m, t, 40.0, 0.50, now=0.0)
+    m["BBB"]["capture"] = 999.0        # make the VALUE order differ from the ticker order
+    rows = [{"ticker": t, "usd_day": 100.0} for t in ("AAA", "BBB", "CCC")]
+    out = ks.rank(m, rows, now=ks.STALE_S + 10, explore=1)
+    picked = [r["ticker"] for r in out if r.get("explore")]
+    assert picked == ["AAA"], f"scarce explore slot must go by ts+ticker, not score; got {picked}"
+
+    m["AAA"]["capture"] = 999.0        # flip which row scores best; the pick must NOT move
+    out2 = ks.rank(m, rows, now=ks.STALE_S + 10, explore=1)
+    assert [r["ticker"] for r in out2 if r.get("explore")] == ["AAA"],         "the explore pick must be independent of the score — that is what 'byte-unchanged' means"

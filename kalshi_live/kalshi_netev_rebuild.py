@@ -233,7 +233,7 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
     # the screenshot attribution exactly ($2.15 gas / $23.06 temp), which is what validated
     # per-event parsing against the operator's screenshots. That validation stands; this rule
     # then additionally captures the lagged credits the date window cut off.
-    fam_credits, credits_unattributed = {}, 0.0
+    fam_credits, credits_unattributed, credits_out_of_scope = {}, 0.0, 0.0
     for c in credits:
         amt = _f(c.get("amount_cents")) / 100.0
         ev = credit_event(c)
@@ -244,7 +244,13 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
                 credits_unattributed += amt
             continue
         if not any(t == ev or t.startswith(ev + "-") for t in _traded_in_window):
-            continue                             # we did not trade this event in-window
+            # Real money that is simply OUT OF SCOPE for this window. It must be REPORTED, not
+            # vanish: without this the document's own totals cannot be reconciled against the
+            # lifetime credit figure, and a reader checking the arithmetic finds a silent hole
+            # ($74.78 of $198.95 on the shipped window). Distinct from credits_unattributed,
+            # which is money that maps to no family at all.
+            credits_out_of_scope += amt
+            continue
         fam = family_of(ev)
         if not fam:
             credits_unattributed += amt
@@ -294,6 +300,7 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
         "window": [window[0].isoformat() if window[0] else None,
                    window[1].isoformat() if window[1] else None],
         "credits_unattributed": round(credits_unattributed, 4),
+        "credits_out_of_scope": round(credits_out_of_scope, 4),
         "exclude_taker": bool(exclude_taker),
         "caveats": [
             "Window is an OPERATOR CHOICE, not a default. Most of this account's realized "
@@ -324,12 +331,16 @@ def build_table(fills, settlements, credits, family_of, window, now=None,
             "FAMILY-LEVEL DISAGREEMENT WITH THE CSV CANON — RECONCILED 2026-08-03. ⚠ READ THE "
             "CLOCK FIRST: the canon's window is INCLUSIVE ET DATES (kalshi_netev_calibrate._date "
             "slices a -04:00 close_timestamp), so the like-for-like window is "
-            "2026-07-21T04:00Z..07-23T03:59:59Z, on which this engine gives gas -5.78% and temp "
-            "-4.30% against the CSV's +1.1% / -9.2%. The -2.74% / -7.58% pair quoted in the "
-            "2026-08-03 handoff read the same nominal dates on a UTC clock — a 4-hour shift "
-            "worth ~3 points on gas. Both other legs are exact: credits are IDENTICAL on both "
-            "sides ($2.15 gas / $23.06 temp, credit_history vs the §M8 screenshots) and §M13's "
-            "taker exclusion removes exactly $0.00 (0 rows). THE MECHANISM IS EXPORT-TIME "
+            "2026-07-21T04:00Z..07-23T03:59:59Z. ⚠ EVERY PERCENTAGE HERE MOVES WITH THE CREDIT "
+            "RULE — quote them WITH their rule or not at all. Under the DATE rule this engine "
+            "gave gas -5.78% / temp -4.30%; since credits moved onto the TRADING clock it gives "
+            "gas -4.5757% / temp +0.8011% — TEMP HAS FLIPPED SIGN — because credits go $2.15 -> "
+            "$10.09 (gas) and $23.06 -> $38.55 (temp). The CSV canon records +1.1% / -9.2%; the "
+            "-2.74% / -7.58% pair in the 2026-08-03 handoff read the same nominal dates on a UTC "
+            "clock. The $2.15 / $23.06 pair is the DATE-RULE result — it is what validated "
+            "per-event parsing against the §M8 screenshots, and it is NO LONGER what this engine "
+            "emits. §M13's taker exclusion removes exactly $0.00 (0 rows). "
+            "THE MECHANISM IS EXPORT-TIME "
             "COMPLETENESS, not a cash-vs-realized modelling dispute: a CSV trade row books "
             "close_timestamp = SETTLEMENT time, so canon is structurally blind to any market "
             "that had not settled by the export instant. temp had 0 of 25 in-window markets "

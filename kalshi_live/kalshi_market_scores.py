@@ -214,7 +214,19 @@ def score(markets, ticker, pool_usd_day, now=None, swing_penalty=1.0, unknown_bo
     # blend toward the pool prior as the score ages out, so a stale winner cannot pin the bot
     blended = cap * decay + float(pool_usd_day or 0.0) * unknown_bonus * (1.0 - decay)
     penalty = 1.0 / (1.0 + swing_penalty * float(row.get("ref_move") or 0.0) * 100.0)
-    return blended * penalty, ("stale" if age >= STALE_S else "scored")
+    # ⚠ THE PENALTY MUST AGE OUT WITH THE MEASUREMENT IT DESCRIBES (fix 2026-08-04, found by
+    # adversarial review of the D1 change above). `ref_move` is never decayed — only `capture`
+    # is — so multiplying the WHOLE blend by `penalty` left the swing discount applied to the
+    # POOL-PRIOR component forever. Measured on the first D1 cut: a row with capture 0 and
+    # ref_move 0.12 against a pool of 100 scored 7.6923 at every age from 0.5 to 6.99 days
+    # instead of converging to 100 — i.e. a market with no usable measurement left was buried
+    # at 7.7% of an identical never-seen market, and stayed buried until EVICT_AGE_S (7d).
+    # That directly contradicted the D1 comment's own claim that the value "converges to the
+    # pool prior on its own". It does now: the penalty relaxes to 1.0 on the same decay curve
+    # as the measurement, so at decay=1 this is byte-identical to the pre-D1 scored branch
+    # (blended * penalty) and at decay->0 it is the clean pool prior.
+    penalty_eff = 1.0 + (penalty - 1.0) * decay
+    return blended * penalty_eff, ("stale" if age >= STALE_S else "scored")
 
 
 def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,
@@ -254,8 +266,17 @@ def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,
                     key=lambda t: (float((markets.get(t[2].get(ticker_key)) or {})
                                          .get("ats") or 0.0),
                                    str(t[2].get(ticker_key))))
+    # TICKER TIE-BREAK IS LOAD-BEARING (fix 2026-08-04, found by adversarial review). Sorting on
+    # `ts` ALONE let Python's stable sort fall back to the INPUT order, which is `scored` — i.e.
+    # ordered by VALUE. run_once takes `now` once per cycle and stamps every market it reads with
+    # that identical timestamp, so a whole cycle's rows share one `ts` and ties are the NORM, not
+    # an edge case. That made the explore queue value-ordered through the back door, so the D1
+    # value change silently reordered which markets got sampling slots — the exact thing D1's
+    # commit claimed was byte-unchanged. Matching the `unseen` queue's deterministic tie-break
+    # makes the sweep order depend on staleness and ticker only, never on the score.
     stale = sorted((t for t in scored if t[1] == "stale"),
-                   key=lambda t: float((markets.get(t[2].get(ticker_key)) or {}).get("ts") or 0.0))
+                   key=lambda t: (float((markets.get(t[2].get(ticker_key)) or {}).get("ts") or 0.0),
+                                  str(t[2].get(ticker_key))))
     pool_of_candidates = unseen + stale
     if not pool_of_candidates:
         return [r for _, _, r in scored]
