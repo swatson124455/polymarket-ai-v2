@@ -252,8 +252,19 @@ the only allow in the set). Zero flips on the canon window.
   leg" lead, which had been measured with the defect-13 position-blind recorder. A fixed offset
   with perfect dynamics pointed at the initial condition — and the operator confirmed it is the
   deposit charge.
-- **⚠ $0.0030 STILL UNEXPLAINED:** the recorder's `cum_settle_payout` 74.4130 vs my independent
-  settlement sum 74.4100. Too small to have blocked the deploy; not chased.
+- **$0.0030 — ROOT-CAUSED 2026-08-04, fix NOT applied.** `kalshi_cash_recorder.settlement_payout`
+  reconstructs the payout as `net(yes_count_fp − no_count_fp) × value` instead of reading the
+  venue's `revenue`. Over the complete history (n=147) that is
+  `sum(revenue/100)=74.410000` vs `sum(settlement_payout)=74.413000`, and **exactly ONE row of
+  147 differs**: `KXCLUBFBTTS-26JUL26ERKHIL-BTTS`, `market_result="scalar"`, yes 19.00 / no
+  18.86 / value 45 → model 0.0630 vs venue-paid 0.0600. A binary net×value reconstruction does
+  not describe a SCALAR settlement, and it leans on counts that
+  `kalshi_attribution_ledger.settlement_revenue` documents as GROSS TRADED COUNTS — the same
+  docstring that records `revenue` as validated to the cent on 51/51 and says "Do NOT substitute
+  winning-side-count × $1 here". `kalshi_netev_rebuild` and the ledger BOTH use `revenue`; only
+  the recorder does not. **Proposed one-line fix: `return _f(s.get("revenue")) / 100.0`.** NOT
+  applied — it is a money-path change to a DEPLOYED, timer-invoked recorder, shifts
+  `unexplained_todate_*` by $0.0030, and needs the full protocol plus an operator naming.
 - **`KALSHI_MAX_TOTAL_CAPITAL=350`** — ruled a changing portfolio-capital figure (§4), not a
   knob to revisit. Value verified still 350 on 2026-08-04.
 - **$0.1093 of finalized-NO dust** — ruled not a question (§4). Retained per RULE NINE.

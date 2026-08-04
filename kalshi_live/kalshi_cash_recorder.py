@@ -175,6 +175,27 @@ MISSING_VALUE_FIELDS = [0]   # audit probe 2026-07-30: settlements lacking `valu
 def settlement_payout(s):
     """NET position only, GROSS of fees. Gross/paired model refuted 2026-07-27.
 
+    ⚠ OPEN, ROOT-CAUSED 2026-08-04, NOT YET FIXED — this function disagrees with the venue's own
+    `revenue` field on SCALAR markets, and two other modules use `revenue` instead.
+    Measured over the complete settlement history (n=147, snapshot
+    cash_identity_snapshot_2026-08-03T233338Z.json):
+        sum(revenue/100)       = 74.410000     <- kalshi_attribution_ledger.settlement_revenue
+                                                  and kalshi_netev_rebuild both use this
+        sum(settlement_payout) = 74.413000     <- this function
+        EXACTLY 1 ROW of 147 differs: KXCLUBFBTTS-26JUL26ERKHIL-BTTS,
+        market_result="scalar", yes_count_fp=19.00, no_count_fp=18.86, value=45
+        -> this model gives net(0.14) * v(0.45) = 0.0630; the venue paid revenue = 0.0600.
+    The binary net*value reconstruction does not describe a SCALAR settlement. Worse, it leans on
+    yes_count_fp/no_count_fp, which kalshi_attribution_ledger.settlement_revenue documents as
+    GROSS TRADED COUNTS rather than the settled position — and that same docstring records
+    `revenue` as validated to the cent on 51/51 settlements, ending "Do NOT substitute
+    winning-side-count x $1 here."
+    PROPOSED FIX (one line, deliberately NOT applied here): return _f(s.get("revenue")) / 100.0,
+    which makes all three modules agree and trusts the venue's own payout. It is a money-path
+    change to a DEPLOYED, timer-invoked recorder and shifts cum_settle_payout — and therefore
+    unexplained_todate_* — by $0.0030, so it needs the full protocol (failing-before pin,
+    copy-based mutation, blind review) and an operator naming, not a drive-by edit.
+
     NO FEE TERM (root fix 2026-08-02, operator-named). A settlement's `fee_cost` is a REPORTING
     ROLL-UP of the fees already charged on that market's fills — not a fee levied at settlement —
     so subtracting it here double-counted every one of them against fill_cash(), which already
