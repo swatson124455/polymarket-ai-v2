@@ -168,15 +168,17 @@ def cum_fills_cash(fills):
     return sum(e["cash"] for e in events)
 
 
-MISSING_VALUE_FIELDS = [0]   # audit probe 2026-07-30: settlements lacking `value` — a venue
+MISSING_VALUE_FIELDS = [0]   # audit probe 2026-07-30 (re-pointed W8 2026-08-04: guards `revenue`,
+                             # the load-bearing field since the venue-revenue fix) — a venue
                              # rename would silently zero every payout in the cash model
 
 
 def settlement_payout(s):
     """NET position only, GROSS of fees. Gross/paired model refuted 2026-07-27.
 
-    ⚠ OPEN, ROOT-CAUSED 2026-08-04, NOT YET FIXED — this function disagrees with the venue's own
-    `revenue` field on SCALAR markets, and two other modules use `revenue` instead.
+    FIXED 2026-08-04 (W8, operator-named pull-forward): this function now returns the venue's own
+    `revenue`/100, agreeing with kalshi_attribution_ledger.settlement_revenue and
+    kalshi_netev_rebuild. History of the defect it replaces:
     Measured over the complete settlement history (n=147, snapshot
     cash_identity_snapshot_2026-08-03T233338Z.json):
         sum(revenue/100)       = 74.410000     <- kalshi_attribution_ledger.settlement_revenue
@@ -190,11 +192,11 @@ def settlement_payout(s):
     GROSS TRADED COUNTS rather than the settled position — and that same docstring records
     `revenue` as validated to the cent on 51/51 settlements, ending "Do NOT substitute
     winning-side-count x $1 here."
-    PROPOSED FIX (one line, deliberately NOT applied here): return _f(s.get("revenue")) / 100.0,
-    which makes all three modules agree and trusts the venue's own payout. It is a money-path
-    change to a DEPLOYED, timer-invoked recorder and shifts cum_settle_payout — and therefore
-    unexplained_todate_* — by $0.0030, so it needs the full protocol (failing-before pin,
-    copy-based mutation, blind review) and an operator naming, not a drive-by edit.
+    Applied under the full protocol: failing-before pin (test_w8_scalar_settlement.py),
+    scratch-copy validation over the complete frozen history (sum(settlement_payout) moved
+    74.413000 -> 74.410000 exactly, n=147), blind review. The field-rename alarm now guards
+    `revenue`, the load-bearing field; `value` and the traded counts are no longer read here.
+    Shifts cum_settle_payout (and unexplained_todate_*) by $0.0030 lifetime.
 
     NO FEE TERM (root fix 2026-08-02, operator-named). A settlement's `fee_cost` is a REPORTING
     ROLL-UP of the fees already charged on that market's fills — not a fee levied at settlement —
@@ -227,13 +229,11 @@ def settlement_payout(s):
     Rows already written to cash-YYYYMM.jsonl carry the old column; the recorder re-derives from
     the venue's full cumulative history every run, so every FUTURE row is correct with no state
     to migrate. Rewriting historical rows is a separate operator-named action."""
-    if s.get("value") is None:
+    if s.get("revenue") is None:
         MISSING_VALUE_FIELDS[0] += 1
-        print(f"WARNING settlement missing `value` field (ticker={s.get('ticker')}) — "
+        print(f"WARNING settlement missing `revenue` field (ticker={s.get('ticker')}) — "
               f"payout treated as 0; venue field rename? total={MISSING_VALUE_FIELDS[0]}")
-    v = _f(s.get("value")) / 100.0
-    net = _f(s.get("yes_count_fp")) - _f(s.get("no_count_fp"))
-    return (net * v) if net > 0 else ((-net) * (1.0 - v))
+    return _f(s.get("revenue")) / 100.0
 
 
 def main():
@@ -294,7 +294,10 @@ def main():
         # be booked as a convention change, not income. It is recognisable without trusting
         # these markers: at the boundary d(cash), d(n_fills_todate) and d(n_settlements_todate)
         # are all 0 (the bot is halted), which is structurally impossible for real money.
-        "settle_payout_basis": "gross",
+        "settle_payout_basis": "gross_venue_revenue",   # W8 2026-08-04: net*value model ->
+        # venue `revenue`/100; lifetime step in cum_settle_payout is -$0.0030 (n=147), so
+        # the boundary is far below any real-money signal, but the marker rule above is
+        # unconditional: the string bumps on every convention change.
         "fills_cash_basis": "position_aware",
         "n_fills_todate": len(fills),
         "n_settlements_todate": len(setts),

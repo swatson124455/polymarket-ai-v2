@@ -15,27 +15,29 @@ These pins keep the fee term from being reintroduced.
 import kalshi_cash_recorder as cr
 
 
-def _sett(yes=0, no=0, value=100, fee=0.0, ticker="T"):
+def _sett(yes=0, no=0, value=100, fee=0.0, ticker="T", revenue=0):
+    # `revenue` is the venue's own payout in cents — since the W8 fix it is THE source;
+    # yes/no/value stay in the fixture because the pins document the scenarios they encode.
     return {"ticker": ticker, "yes_count_fp": yes, "no_count_fp": no,
-            "value": value, "fee_cost": fee}
+            "value": value, "fee_cost": fee, "revenue": revenue}
 
 
 def test_winning_yes_payout_ignores_the_fee_rollup():
     # 50 yes @ value 100c settles at $1.00/ct = $50.00 GROSS. A $2.50 roll-up must not reduce it:
     # those dollars were already subtracted by fill_cash() when the fills printed.
-    assert cr.settlement_payout(_sett(yes=50, value=100, fee=2.50)) == 50.0
+    assert cr.settlement_payout(_sett(yes=50, value=100, fee=2.50, revenue=5000)) == 50.0
 
 
 def test_losing_side_payout_is_zero_not_negative():
     # THE DEFECT'S SIGNATURE: a worthless position paid 0 but was booked at -fee, which is what
     # dragged the cumulative sum down. Live worst case 2026-08-02: KXMUSKNW-26JUL31-T700
     # pay=0.0000 fee=8.1987 -> booked -8.1987.
-    assert cr.settlement_payout(_sett(yes=50, value=0, fee=8.1987)) == 0.0
+    assert cr.settlement_payout(_sett(yes=50, value=0, fee=8.1987, revenue=0)) == 0.0
 
 
 def test_net_no_position_pays_the_complement_gross():
     # net = -20 -> payout = 20 x (1 - 0.35) = 13.00, fee roll-up irrelevant.
-    assert cr.settlement_payout(_sett(no=20, value=35, fee=1.75)) == 13.0
+    assert cr.settlement_payout(_sett(no=20, value=35, fee=1.75, revenue=1300)) == 13.0
 
 
 def test_payout_is_never_negative_for_any_fee_size():
@@ -49,8 +51,10 @@ def test_payout_is_never_negative_for_any_fee_size():
 def test_cumulative_payout_is_monotone_across_a_settlement_stream():
     # Replays the live shape: mostly-worthless settlements carrying real fee roll-ups. Under the
     # old code this sequence walked the cumulative DOWN; it must now never decrease.
-    stream = [_sett(yes=50, value=0, fee=8.1987), _sett(yes=30, value=0, fee=2.2269),
-              _sett(no=25, value=100, fee=2.0448), _sett(yes=40, value=100, fee=1.4760)]
+    stream = [_sett(yes=50, value=0, fee=8.1987, revenue=0),
+              _sett(yes=30, value=0, fee=2.2269, revenue=0),
+              _sett(no=25, value=100, fee=2.0448, revenue=0),
+              _sett(yes=40, value=100, fee=1.4760, revenue=4000)]
     cum, prev = 0.0, 0.0
     for s in stream:
         cum += cr.settlement_payout(s)
