@@ -2449,9 +2449,28 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         #     thin/-0.50  usd_day=5000 -> pre: skip | post: 2 quotes  <-- LOOSENED
         # The five T-HARDEN pins all run at the _mkt default usd_day=50.0, where the model
         # returns [] for every input — so the loosened case is exactly the one they cannot see.
-        # Kept deliberately: the alternative is trusting a grade no producer defines. The
-        # producer-side bar (kalshi_netev_rebuild.MIN_RECEIPT_FILLS) carries the same both-ways
-        # caveat; this is the consumer half of it, stated where a reader will actually find it.
+        # KEPT, AND IT MATCHES THE BOT'S THESIS RATHER THAN MERELY BEING TOLERABLE (operator
+        # instruction 2026-08-04: "think of our goals and thesis of the bot and adjust to
+        # match"). The thesis on record is REWARD-POSITIVE, DEFECT-NEGATIVE: presence is what
+        # EARNS, rewards more than cover the structural maker cost, "drips are fine — we make
+        # money on drips", and benching presence to stop small losses is exactly what canon
+        # forbids. A `thin` verdict is BY DEFINITION too little evidence to justify removing
+        # reward-earning presence, so routing it to the model — which still opens only on
+        # positive prospective capture — is the thesis-correct outcome, not a leak to be
+        # apologised for. Benching belongs where the evidence is STRONG: a receipt-grade family
+        # whose net% is negative WITH CREDITS ALREADY COUNTED is genuinely not paying for
+        # itself, and that is what NETEV_MIN_MARGIN_PCT=0.0 acts on.
+        # ⚠ WHERE THE THESIS AND THE ARMED TABLE STILL DISAGREE — flagged, not silently
+        # resolved: every window available was produced by a bot carrying defects 1-14, so the
+        # table cannot separate agent defects from family economics, and all six receipt-grade
+        # families on it read negative (KXTOPMODEL -3.12%, gas -4.68%, KXTRUMPENDORSEMENTS
+        # -5.00%, KXDXYDUD -5.60%, KXTRUMPTIME -5.89%, temp -6.09%) — so at margin 0.0 the gate
+        # benches ALL SIX. Under RULE SEVEN those losses are substantially agent defects, and
+        # benching on them launders defect losses into "this family loses money". Measured
+        # margin ladder if the operator prefers to tolerate drips instead: -4% keeps 1 of 6,
+        # -5% keeps 2, -6% keeps 5, -7% keeps all 6. NOT CHANGED HERE — moving a live money
+        # threshold is the operator's call, and the honest fix is a table rebuilt on post-fix
+        # trading once the bot runs again.
         if (ent is not None and ent.get("confidence") == "receipt"
                 and ent.get("net_pct_notional") is not None):
             net_pct = ent["net_pct_notional"]              # RECEIPT signal (net % of notional)
