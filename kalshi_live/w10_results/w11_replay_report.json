@@ -1,0 +1,126 @@
+{
+ "days": {
+  "20260729": {
+   "d2_feedback": {
+    "cycles": 1861,
+    "median_rank_never_paid": 33,
+    "median_rank_payers": 9.0,
+    "neverpaid_slot_frac": 0.0306,
+    "payer_slot_frac": 0.0184,
+    "zerofill_slot_frac": 0.0061
+   },
+   "recorded": {
+    "cycles": 1861,
+    "median_rank_never_paid": 16,
+    "median_rank_payers": 11.0,
+    "neverpaid_slot_frac": 0.0306,
+    "payer_slot_frac": 0.0184,
+    "zerofill_slot_frac": 0.0061
+   }
+  },
+  "20260730": {
+   "d2_feedback": {
+    "cycles": 3797,
+    "median_rank_never_paid": 31.0,
+    "median_rank_payers": 11.0,
+    "neverpaid_slot_frac": 0.4223,
+    "payer_slot_frac": 0.4226,
+    "zerofill_slot_frac": 0.2219
+   },
+   "recorded": {
+    "cycles": 3797,
+    "median_rank_never_paid": 25.0,
+    "median_rank_payers": 12.0,
+    "neverpaid_slot_frac": 0.4223,
+    "payer_slot_frac": 0.4226,
+    "zerofill_slot_frac": 0.2219
+   }
+  },
+  "20260731": {
+   "d2_feedback": {
+    "cycles": 2319,
+    "median_rank_never_paid": 31,
+    "median_rank_payers": 8,
+    "neverpaid_slot_frac": 0.3962,
+    "payer_slot_frac": 0.3657,
+    "zerofill_slot_frac": 0.1503
+   },
+   "recorded": {
+    "cycles": 2319,
+    "median_rank_never_paid": 23,
+    "median_rank_payers": 10,
+    "neverpaid_slot_frac": 0.3962,
+    "payer_slot_frac": 0.3657,
+    "zerofill_slot_frac": 0.1503
+   }
+  },
+  "20260801": {
+   "d2_feedback": {
+    "cycles": 3481,
+    "median_rank_never_paid": 35.0,
+    "median_rank_payers": 2,
+    "neverpaid_slot_frac": 0.1597,
+    "payer_slot_frac": 0.0872,
+    "zerofill_slot_frac": 0.0304
+   },
+   "recorded": {
+    "cycles": 3481,
+    "median_rank_never_paid": 6.0,
+    "median_rank_payers": 3,
+    "neverpaid_slot_frac": 0.1597,
+    "payer_slot_frac": 0.0872,
+    "zerofill_slot_frac": 0.0304
+   }
+  },
+  "20260802": {
+   "d2_feedback": {
+    "cycles": 1413,
+    "median_rank_never_paid": 22,
+    "median_rank_payers": 2,
+    "neverpaid_slot_frac": 0.8963,
+    "payer_slot_frac": 0.0923,
+    "zerofill_slot_frac": 0.0
+   },
+   "recorded": {
+    "cycles": 1413,
+    "median_rank_never_paid": 20,
+    "median_rank_payers": 8,
+    "neverpaid_slot_frac": 0.8963,
+    "payer_slot_frac": 0.0923,
+    "zerofill_slot_frac": 0.0
+   }
+  }
+ },
+ "never_paid": [
+  "KXA100WS",
+  "KXAAAGASW",
+  "KXACTBLUETOP",
+  "KXAMSAVO",
+  "KXAPRPOTUS",
+  "KXB200WS",
+  "KXBLANCHEWITHDRAW",
+  "KXCHINAAI",
+  "KXCLARITYVOTE",
+  "KXEURUSDAW",
+  "KXLIUKCOUPLE",
+  "KXMAMDANIEO",
+  "KXMCMORROWENDORSE",
+  "KXMLBTRADE",
+  "KXMUSKNW",
+  "KXNHPRIMARY28",
+  "KXRAIN",
+  "KXTRUMPUAP",
+  "KXUSDJPY",
+  "KXYTVIEWSW"
+ ],
+ "read_ts": "2026-08-04T20:12:40.775021+00:00",
+ "schema": 1,
+ "top_n": 40,
+ "zero_fill_earners": [
+  "KXBABELMANDEBWEEKLY",
+  "KXCHIPBURRITO",
+  "KXCLUBFTOTAL",
+  "KXPANAMAWEEKLY",
+  "KXSUEZWEEKLY"
+ ]
+}

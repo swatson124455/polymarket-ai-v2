@@ -1,0 +1,1037 @@
+{
+ "due_margin_h": 72,
+ "n_due": 47,
+ "n_events_traded": 80,
+ "n_paid": 25,
+ "n_zero": 22,
+ "notes": {
+  "credited_events_not_in_orders": {
+   "KXBABELMANDEBWEEKLY-26AUG02": {
+    "n": 1,
+    "ts": [
+     "2026-08-02T06:59:06.595367Z"
+    ],
+    "usd": 1.27
+   },
+   "KXCHIPBURRITO-26AUG02": {
+    "n": 1,
+    "ts": [
+     "2026-08-01T06:27:40.584939Z"
+    ],
+    "usd": 1.14
+   },
+   "KXCLUBFTOTAL-26JUL26ERKHIL": {
+    "n": 1,
+    "ts": [
+     "2026-07-27T05:17:30.631045Z"
+    ],
+    "usd": 1.18
+   },
+   "KXPANAMAWEEKLY-26AUG02": {
+    "n": 1,
+    "ts": [
+     "2026-08-02T06:47:20.250848Z"
+    ],
+    "usd": 2.41
+   },
+   "KXSUEZWEEKLY-26AUG02": {
+    "n": 1,
+    "ts": [
+     "2026-08-02T11:08:41.97447Z"
+    ],
+    "usd": 1.51
+   }
+  },
+  "no_event_reason_usd": 15.0
+ },
+ "paid_events": {
+  "KXAAAGASD-26JUL21": {
+   "all_settled": true,
+   "covered_h": 2.496,
+   "credit_n": 2,
+   "credit_ts": [
+    "2026-07-21T05:36:39.065805Z",
+    "2026-07-21T05:36:39.063995Z"
+   ],
+   "credit_usd": 2.15,
+   "first_rest": "2026-07-20T17:35:56.612381+00:00",
+   "hours_since_close": 352.2,
+   "last_rest": "2026-07-21T00:38:17.480233+00:00",
+   "latest_close": "2026-07-21T03:59:00Z",
+   "markets": 5,
+   "n_settled": 5,
+   "notional_usd_h": 29.396,
+   "orders": 23,
+   "tickers": [
+    "KXAAAGASD-26JUL21-4.030",
+    "KXAAAGASD-26JUL21-4.025",
+    "KXAAAGASD-26JUL21-4.020",
+    "KXAAAGASD-26JUL21-4.010",
+    "KXAAAGASD-26JUL21-4.015"
+   ]
+  },
+  "KXAAAGASD-26JUL23": {
+   "all_settled": true,
+   "covered_h": 9.422,
+   "credit_n": 4,
+   "credit_ts": [
+    "2026-07-23T05:34:03.217543Z",
+    "2026-07-23T05:34:03.188508Z",
+    "2026-07-23T05:34:03.187773Z",
+    "2026-07-23T05:34:03.184295Z"
+   ],
+   "credit_usd": 10.09,
+   "first_rest": "2026-07-22T14:52:37.394452+00:00",
+   "hours_since_close": 304.2,
+   "last_rest": "2026-07-23T02:10:28.983768+00:00",
+   "latest_close": "2026-07-23T03:59:00Z",
+   "markets": 4,
+   "n_settled": 4,
+   "notional_usd_h": 49.89,
+   "orders": 92,
+   "tickers": [
+    "KXAAAGASD-26JUL23-4.100",
+    "KXAAAGASD-26JUL23-4.095",
+    "KXAAAGASD-26JUL23-4.090",
+    "KXAAAGASD-26JUL23-4.105"
+   ]
+  },
+  "KXAAAGASD-26JUL24": {
+   "all_settled": true,
+   "covered_h": 12.683,
+   "credit_n": 4,
+   "credit_ts": [
+    "2026-07-24T05:15:25.06465Z",
+    "2026-07-24T05:15:25.064551Z",
+    "2026-07-24T05:15:25.033242Z",
+    "2026-07-24T05:15:25.030267Z"
+   ],
+   "credit_usd": 8.81,
+   "first_rest": "2026-07-23T16:17:37.239109+00:00",
+   "hours_since_close": 280.2,
+   "last_rest": "2026-07-24T03:35:09.231903+00:00",
+   "latest_close": "2026-07-24T03:59:00Z",
+   "markets": 7,
+   "n_settled": 7,
+   "notional_usd_h": 67.984,
+   "orders": 140,
+   "tickers": [
+    "KXAAAGASD-26JUL24-4.110",
+    "KXAAAGASD-26JUL24-4.105",
+    "KXAAAGASD-26JUL24-4.115",
+    "KXAAAGASD-26JUL24-4.120",
+    "KXAAAGASD-26JUL24-4.100",
+    "KXAAAGASD-26JUL24-4.130",
+    "KXAAAGASD-26JUL24-4.125"
+   ]
+  },
+  "KXAAAGASD-26JUL25": {
+   "all_settled": true,
+   "covered_h": 26.329,
+   "credit_n": 3,
+   "credit_ts": [
+    "2026-07-25T05:48:44.497331Z",
+    "2026-07-25T05:48:44.496524Z",
+    "2026-07-25T05:48:44.465878Z"
+   ],
+   "credit_usd": 11.99,
+   "first_rest": "2026-07-24T12:35:03.075653+00:00",
+   "hours_since_close": 256.2,
+   "last_rest": "2026-07-25T02:26:36.421763+00:00",
+   "latest_close": "2026-07-25T03:59:00Z",
+   "markets": 9,
+   "n_settled": 9,
+   "notional_usd_h": 210.48,
+   "orders": 41,
+   "tickers": [
+    "KXAAAGASD-26JUL25-4.125",
+    "KXAAAGASD-26JUL25-4.115",
+    "KXAAAGASD-26JUL25-4.105",
+    "KXAAAGASD-26JUL25-4.110",
+    "KXAAAGASD-26JUL25-4.120",
+    "KXAAAGASD-26JUL25-4.130",
+    "KXAAAGASD-26JUL25-4.135",
+    "KXAAAGASD-26JUL25-4.085",
+    "KXAAAGASD-26JUL25-4.080"
+   ]
+  },
+  "KXCLUBFBTTS-26JUL26ERKHIL": {
+   "all_settled": true,
+   "covered_h": 0.205,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-27T05:56:24.394258Z"
+   ],
+   "credit_usd": 8.36,
+   "first_rest": "2026-07-27T00:02:12.259402+00:00",
+   "hours_since_close": 170.9,
+   "last_rest": "2026-07-27T05:51:12.039562+00:00",
+   "latest_close": "2026-07-28T17:17:25Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 1.483,
+   "orders": 4,
+   "tickers": [
+    "KXCLUBFBTTS-26JUL26ERKHIL-BTTS"
+   ]
+  },
+  "KXCLUBFSPREAD-26JUL26ERKHIL": {
+   "all_settled": true,
+   "covered_h": 0.066,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-27T05:51:01.443283Z"
+   ],
+   "credit_usd": 4.7,
+   "first_rest": "2026-07-26T23:28:05.210922+00:00",
+   "hours_since_close": 171.0,
+   "last_rest": "2026-07-27T19:40:04.359397+00:00",
+   "latest_close": "2026-07-28T17:13:52Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.433,
+   "orders": 2,
+   "tickers": [
+    "KXCLUBFSPREAD-26JUL26ERKHIL-ERK2"
+   ]
+  },
+  "KXDXYDUD-26JUL27": {
+   "all_settled": true,
+   "covered_h": 0.278,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-29T05:48:56.644848Z"
+   ],
+   "credit_usd": 1.89,
+   "first_rest": "2026-07-27T19:13:30.600274+00:00",
+   "hours_since_close": 170.2,
+   "last_rest": "2026-07-27T19:57:42.371620+00:00",
+   "latest_close": "2026-07-28T17:58:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 3.705,
+   "orders": 9,
+   "tickers": [
+    "KXDXYDUD-26JUL27-T101.4640"
+   ]
+  },
+  "KXGENERICBALLOTVOTEHUB-26JUL31": {
+   "all_settled": true,
+   "covered_h": 9.881,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-08-01T06:13:05.983878Z"
+   ],
+   "credit_usd": 2.33,
+   "first_rest": "2026-07-29T02:04:21.293129+00:00",
+   "hours_since_close": 102.2,
+   "last_rest": "2026-07-29T13:42:56.264558+00:00",
+   "latest_close": "2026-07-31T13:59:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 26.902,
+   "orders": 21,
+   "tickers": [
+    "KXGENERICBALLOTVOTEHUB-26JUL31-T5.7"
+   ]
+  },
+  "KXINXHUD-26JUL271600": {
+   "all_settled": true,
+   "covered_h": 0.077,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-28T05:26:53.543462Z"
+   ],
+   "credit_usd": 13.12,
+   "first_rest": "2026-07-27T19:06:32.202948+00:00",
+   "hours_since_close": 192.2,
+   "last_rest": "2026-07-27T19:40:00.845459+00:00",
+   "latest_close": "2026-07-27T20:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.435,
+   "orders": 4,
+   "tickers": [
+    "KXINXHUD-26JUL271600-T7410.20"
+   ]
+  },
+  "KXMLABELSHARE-W3026JUL30": {
+   "all_settled": true,
+   "covered_h": 12.073,
+   "credit_n": 3,
+   "credit_ts": [
+    "2026-08-01T06:24:31.272958Z",
+    "2026-08-01T06:24:31.269388Z",
+    "2026-08-01T06:24:31.267519Z"
+   ],
+   "credit_usd": 16.15,
+   "first_rest": "2026-07-30T09:06:08.196094+00:00",
+   "hours_since_close": 95.2,
+   "last_rest": "2026-07-31T18:35:32.417544+00:00",
+   "latest_close": "2026-07-31T21:00:00Z",
+   "markets": 3,
+   "n_settled": 3,
+   "notional_usd_h": 410.066,
+   "orders": 17,
+   "tickers": [
+    "KXMLABELSHARE-W3026JUL30-UMG",
+    "KXMLABELSHARE-W3026JUL30-WMG",
+    "KXMLABELSHARE-W3026JUL30-SME"
+   ]
+  },
+  "KXNDQHUD-26JUL271600": {
+   "all_settled": true,
+   "covered_h": 0.04,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-28T05:21:35.87649Z"
+   ],
+   "credit_usd": 9.33,
+   "first_rest": "2026-07-27T19:06:23.399857+00:00",
+   "hours_since_close": 192.2,
+   "last_rest": "2026-07-27T19:41:46.284448+00:00",
+   "latest_close": "2026-07-27T20:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.975,
+   "orders": 9,
+   "tickers": [
+    "KXNDQHUD-26JUL271600-T28000.86"
+   ]
+  },
+  "KXTEMPAUSH-26JUL2021": {
+   "all_settled": true,
+   "covered_h": 0.885,
+   "credit_n": 5,
+   "credit_ts": [
+    "2026-07-21T06:50:27.412788Z",
+    "2026-07-21T06:50:27.404388Z",
+    "2026-07-21T06:50:27.404271Z",
+    "2026-07-21T06:50:27.404198Z",
+    "2026-07-21T06:50:27.400703Z"
+   ],
+   "credit_usd": 16.48,
+   "first_rest": "2026-07-21T00:12:37.016653+00:00",
+   "hours_since_close": 355.2,
+   "last_rest": "2026-07-21T00:38:14.354045+00:00",
+   "latest_close": "2026-07-21T01:00:00Z",
+   "markets": 7,
+   "n_settled": 7,
+   "notional_usd_h": 7.537,
+   "orders": 22,
+   "tickers": [
+    "KXTEMPAUSH-26JUL2021-T89.99",
+    "KXTEMPAUSH-26JUL2021-T90.99",
+    "KXTEMPAUSH-26JUL2021-T93.99",
+    "KXTEMPAUSH-26JUL2021-T92.99",
+    "KXTEMPAUSH-26JUL2021-T94.99",
+    "KXTEMPAUSH-26JUL2021-T91.99",
+    "KXTEMPAUSH-26JUL2021-T88.99"
+   ]
+  },
+  "KXTEMPAUSH-26JUL2208": {
+   "all_settled": true,
+   "covered_h": 0.077,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-23T06:35:11.380939Z"
+   ],
+   "credit_usd": 2.69,
+   "first_rest": "2026-07-22T11:07:59.711873+00:00",
+   "hours_since_close": 320.2,
+   "last_rest": "2026-07-22T11:28:28.338428+00:00",
+   "latest_close": "2026-07-22T12:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.533,
+   "orders": 4,
+   "tickers": [
+    "KXTEMPAUSH-26JUL2208-T75.99"
+   ]
+  },
+  "KXTEMPAUSH-26JUL2212": {
+   "all_settled": true,
+   "covered_h": 0.181,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-23T06:35:35.579255Z"
+   ],
+   "credit_usd": 1.95,
+   "first_rest": "2026-07-22T15:11:01.234496+00:00",
+   "hours_since_close": 316.2,
+   "last_rest": "2026-07-22T15:27:41.021596+00:00",
+   "latest_close": "2026-07-22T16:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 2.901,
+   "orders": 2,
+   "tickers": [
+    "KXTEMPAUSH-26JUL2212-T95.99"
+   ]
+  },
+  "KXTEMPCHIH-26JUL2123": {
+   "all_settled": true,
+   "covered_h": 0.113,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-22T06:58:57.966343Z"
+   ],
+   "credit_usd": 2.23,
+   "first_rest": "2026-07-22T02:27:19.061073+00:00",
+   "hours_since_close": 329.2,
+   "last_rest": "2026-07-22T02:34:31.766845+00:00",
+   "latest_close": "2026-07-22T03:00:00Z",
+   "markets": 2,
+   "n_settled": 2,
+   "notional_usd_h": 1.287,
+   "orders": 7,
+   "tickers": [
+    "KXTEMPCHIH-26JUL2123-T69.99",
+    "KXTEMPCHIH-26JUL2123-T70.99"
+   ]
+  },
+  "KXTEMPCHIH-26JUL2211": {
+   "all_settled": true,
+   "covered_h": 0.634,
+   "credit_n": 2,
+   "credit_ts": [
+    "2026-07-23T06:38:49.874506Z",
+    "2026-07-23T06:38:49.873883Z"
+   ],
+   "credit_usd": 4.56,
+   "first_rest": "2026-07-22T14:04:50.982830+00:00",
+   "hours_since_close": 317.2,
+   "last_rest": "2026-07-22T14:50:47.827786+00:00",
+   "latest_close": "2026-07-22T15:00:00Z",
+   "markets": 2,
+   "n_settled": 2,
+   "notional_usd_h": 8.874,
+   "orders": 4,
+   "tickers": [
+    "KXTEMPCHIH-26JUL2211-T67.99",
+    "KXTEMPCHIH-26JUL2211-T66.99"
+   ]
+  },
+  "KXTEMPCHIH-26JUL2212": {
+   "all_settled": true,
+   "covered_h": 0.054,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-23T05:24:52.079147Z"
+   ],
+   "credit_usd": 1.42,
+   "first_rest": "2026-07-22T15:10:59.936879+00:00",
+   "hours_since_close": 316.2,
+   "last_rest": "2026-07-22T15:23:21.978380+00:00",
+   "latest_close": "2026-07-22T16:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.699,
+   "orders": 4,
+   "tickers": [
+    "KXTEMPCHIH-26JUL2212-T69.99"
+   ]
+  },
+  "KXTEMPDCH-26JUL2123": {
+   "all_settled": true,
+   "covered_h": 0.1,
+   "credit_n": 2,
+   "credit_ts": [
+    "2026-07-22T06:29:17.161246Z",
+    "2026-07-22T06:29:17.160775Z"
+   ],
+   "credit_usd": 4.35,
+   "first_rest": "2026-07-22T02:27:15.387415+00:00",
+   "hours_since_close": 329.2,
+   "last_rest": "2026-07-22T02:34:04.261271+00:00",
+   "latest_close": "2026-07-22T03:00:00Z",
+   "markets": 2,
+   "n_settled": 2,
+   "notional_usd_h": 0.475,
+   "orders": 5,
+   "tickers": [
+    "KXTEMPDCH-26JUL2123-T73.99",
+    "KXTEMPDCH-26JUL2123-T72.99"
+   ]
+  },
+  "KXTEMPDCH-26JUL2206": {
+   "all_settled": true,
+   "covered_h": 0.049,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-23T06:40:54.085129Z"
+   ],
+   "credit_usd": 1.51,
+   "first_rest": "2026-07-22T09:09:06.199537+00:00",
+   "hours_since_close": 322.2,
+   "last_rest": "2026-07-22T09:12:03.930279+00:00",
+   "latest_close": "2026-07-22T10:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.938,
+   "orders": 1,
+   "tickers": [
+    "KXTEMPDCH-26JUL2206-T71.99"
+   ]
+  },
+  "KXTEMPLAXH-26JUL2211": {
+   "all_settled": true,
+   "covered_h": 0.422,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-23T06:29:56.812018Z"
+   ],
+   "credit_usd": 1.85,
+   "first_rest": "2026-07-22T14:02:48.679717+00:00",
+   "hours_since_close": 317.2,
+   "last_rest": "2026-07-22T14:35:12.707703+00:00",
+   "latest_close": "2026-07-22T15:00:00Z",
+   "markets": 2,
+   "n_settled": 2,
+   "notional_usd_h": 3.874,
+   "orders": 7,
+   "tickers": [
+    "KXTEMPLAXH-26JUL2211-T69.99",
+    "KXTEMPLAXH-26JUL2211-T70.99"
+   ]
+  },
+  "KXTEMPNYCH-26JUL2206": {
+   "all_settled": true,
+   "covered_h": 0.036,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-23T06:13:49.154535Z"
+   ],
+   "credit_usd": 12.94,
+   "first_rest": "2026-07-22T09:03:08.335387+00:00",
+   "hours_since_close": 322.2,
+   "last_rest": "2026-07-22T09:05:16.638099+00:00",
+   "latest_close": "2026-07-22T10:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.642,
+   "orders": 1,
+   "tickers": [
+    "KXTEMPNYCH-26JUL2206-T69.99"
+   ]
+  },
+  "KXTEMPNYCH-26JUL2211": {
+   "all_settled": true,
+   "covered_h": 0.135,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-23T06:30:33.835196Z"
+   ],
+   "credit_usd": 1.91,
+   "first_rest": "2026-07-22T14:02:49.159455+00:00",
+   "hours_since_close": 317.2,
+   "last_rest": "2026-07-22T14:19:01.781208+00:00",
+   "latest_close": "2026-07-22T15:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.83,
+   "orders": 3,
+   "tickers": [
+    "KXTEMPNYCH-26JUL2211-T78.99"
+   ]
+  },
+  "KXTEMPNYCH-26JUL2212": {
+   "all_settled": true,
+   "covered_h": 0.187,
+   "credit_n": 1,
+   "credit_ts": [
+    "2026-07-23T06:36:44.251339Z"
+   ],
+   "credit_usd": 3.14,
+   "first_rest": "2026-07-22T15:10:59.484980+00:00",
+   "hours_since_close": 316.2,
+   "last_rest": "2026-07-22T15:22:58.842462+00:00",
+   "latest_close": "2026-07-22T16:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 2.74,
+   "orders": 2,
+   "tickers": [
+    "KXTEMPNYCH-26JUL2212-T80.99"
+   ]
+  },
+  "KXTRUMPENDORSEMENTS-26JUL25": {
+   "all_settled": true,
+   "covered_h": 61.512,
+   "credit_n": 3,
+   "credit_ts": [
+    "2026-07-27T06:02:08.218704Z",
+    "2026-07-27T06:02:08.216831Z",
+    "2026-07-27T06:02:08.215337Z"
+   ],
+   "credit_usd": 6.08,
+   "first_rest": "2026-07-23T19:29:01.695980+00:00",
+   "hours_since_close": 222.2,
+   "last_rest": "2026-07-25T01:32:11.822975+00:00",
+   "latest_close": "2026-07-26T14:00:00Z",
+   "markets": 5,
+   "n_settled": 5,
+   "notional_usd_h": 229.726,
+   "orders": 14,
+   "tickers": [
+    "KXTRUMPENDORSEMENTS-26JUL25-A5",
+    "KXTRUMPENDORSEMENTS-26JUL25-A15",
+    "KXTRUMPENDORSEMENTS-26JUL25-A10",
+    "KXTRUMPENDORSEMENTS-26JUL25-A20",
+    "KXTRUMPENDORSEMENTS-26JUL25-A3"
+   ]
+  },
+  "KXTRUMPTIME-26AUG01": {
+   "all_settled": true,
+   "covered_h": 20.99,
+   "credit_n": 3,
+   "credit_ts": [
+    "2026-08-02T07:48:54.039428Z",
+    "2026-08-02T07:48:54.038406Z",
+    "2026-08-02T07:48:54.038171Z"
+   ],
+   "credit_usd": 7.9,
+   "first_rest": "2026-07-29T23:21:00.811266+00:00",
+   "hours_since_close": 78.2,
+   "last_rest": "2026-08-01T07:58:13.378133+00:00",
+   "latest_close": "2026-08-01T14:00:00Z",
+   "markets": 3,
+   "n_settled": 3,
+   "notional_usd_h": 156.058,
+   "orders": 40,
+   "tickers": [
+    "KXTRUMPTIME-26AUG01-H4",
+    "KXTRUMPTIME-26AUG01-H2",
+    "KXTRUMPTIME-26AUG01-H3"
+   ]
+  }
+ },
+ "read_ts": "2026-08-04T20:12:40.775021+00:00",
+ "schema": 1,
+ "zero_payers": {
+  "KXAAAGASD-26AUG01": {
+   "all_settled": true,
+   "covered_h": 2.145,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-31T16:09:00.571004+00:00",
+   "hours_since_close": 88.2,
+   "last_rest": "2026-08-01T00:52:43.175988+00:00",
+   "latest_close": "2026-08-01T03:59:00Z",
+   "markets": 4,
+   "n_settled": 4,
+   "notional_usd_h": 14.268,
+   "orders": 29,
+   "tickers": [
+    "KXAAAGASD-26AUG01-4.105",
+    "KXAAAGASD-26AUG01-4.110",
+    "KXAAAGASD-26AUG01-4.100",
+    "KXAAAGASD-26AUG01-4.095"
+   ]
+  },
+  "KXAAAGASD-26JUL22": {
+   "all_settled": true,
+   "covered_h": 0.044,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-22T02:32:56.032765+00:00",
+   "hours_since_close": 328.2,
+   "last_rest": "2026-07-22T03:33:49.223536+00:00",
+   "latest_close": "2026-07-22T03:59:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.296,
+   "orders": 2,
+   "tickers": [
+    "KXAAAGASD-26JUL22-4.055"
+   ]
+  },
+  "KXAAAGASD-26JUL27": {
+   "all_settled": true,
+   "covered_h": 0.097,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-27T00:12:16.429245+00:00",
+   "hours_since_close": 208.2,
+   "last_rest": "2026-07-27T00:30:25.871880+00:00",
+   "latest_close": "2026-07-27T03:59:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.667,
+   "orders": 3,
+   "tickers": [
+    "KXAAAGASD-26JUL27-4.110"
+   ]
+  },
+  "KXAAAGASD-26JUL31": {
+   "all_settled": true,
+   "covered_h": 0.011,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-30T19:44:03.555193+00:00",
+   "hours_since_close": 112.2,
+   "last_rest": "2026-07-30T19:46:40.739238+00:00",
+   "latest_close": "2026-07-31T03:59:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.267,
+   "orders": 3,
+   "tickers": [
+    "KXAAAGASD-26JUL31-4.105"
+   ]
+  },
+  "KXAAAGASW-26JUL27": {
+   "all_settled": true,
+   "covered_h": 15.674,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-20T17:51:58.598038+00:00",
+   "hours_since_close": 208.2,
+   "last_rest": "2026-07-24T14:58:56.934800+00:00",
+   "latest_close": "2026-07-27T03:59:00Z",
+   "markets": 6,
+   "n_settled": 6,
+   "notional_usd_h": 162.007,
+   "orders": 44,
+   "tickers": [
+    "KXAAAGASW-26JUL27-4.140",
+    "KXAAAGASW-26JUL27-4.160",
+    "KXAAAGASW-26JUL27-4.120",
+    "KXAAAGASW-26JUL27-4.100",
+    "KXAAAGASW-26JUL27-4.080",
+    "KXAAAGASW-26JUL27-4.060"
+   ]
+  },
+  "KXAMSAVO-26JUL24": {
+   "all_settled": true,
+   "covered_h": 28.516,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-23T17:12:04.391975+00:00",
+   "hours_since_close": 261.2,
+   "last_rest": "2026-07-24T22:57:53.014001+00:00",
+   "latest_close": "2026-07-24T22:59:00Z",
+   "markets": 3,
+   "n_settled": 3,
+   "notional_usd_h": 393.439,
+   "orders": 8,
+   "tickers": [
+    "KXAMSAVO-26JUL24-T0.90",
+    "KXAMSAVO-26JUL24-T1.20",
+    "KXAMSAVO-26JUL24-T1.10"
+   ]
+  },
+  "KXAPRPOTUS-26JUL31": {
+   "all_settled": true,
+   "covered_h": 0.028,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-29T17:16:45.311679+00:00",
+   "hours_since_close": 101.2,
+   "last_rest": "2026-07-29T19:13:48.143890+00:00",
+   "latest_close": "2026-07-31T15:00:00Z",
+   "markets": 2,
+   "n_settled": 2,
+   "notional_usd_h": 0.355,
+   "orders": 5,
+   "tickers": [
+    "KXAPRPOTUS-26JUL31-40.3",
+    "KXAPRPOTUS-26JUL31-40.6"
+   ]
+  },
+  "KXDXYDUD-26JUL28": {
+   "all_settled": true,
+   "covered_h": 0.17,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-29T01:21:57.806659+00:00",
+   "hours_since_close": 146.2,
+   "last_rest": "2026-07-29T02:12:23.400666+00:00",
+   "latest_close": "2026-07-29T17:58:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 1.633,
+   "orders": 39,
+   "tickers": [
+    "KXDXYDUD-26JUL28-T101.3594"
+   ]
+  },
+  "KXEURUSDAW-26JUL31": {
+   "all_settled": true,
+   "covered_h": 12.836,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-30T14:45:15.297472+00:00",
+   "hours_since_close": 95.2,
+   "last_rest": "2026-07-31T18:58:35.864397+00:00",
+   "latest_close": "2026-07-31T21:00:00Z",
+   "markets": 9,
+   "n_settled": 9,
+   "notional_usd_h": 193.129,
+   "orders": 33,
+   "tickers": [
+    "KXEURUSDAW-26JUL31-1.1510",
+    "KXEURUSDAW-26JUL31-1.1470",
+    "KXEURUSDAW-26JUL31-1.1430",
+    "KXEURUSDAW-26JUL31-1.1450",
+    "KXEURUSDAW-26JUL31-1.1410",
+    "KXEURUSDAW-26JUL31-1.1330",
+    "KXEURUSDAW-26JUL31-1.1370",
+    "KXEURUSDAW-26JUL31-1.1550",
+    "KXEURUSDAW-26JUL31-1.1490"
+   ]
+  },
+  "KXLIUKCOUPLE-26AUG31": {
+   "all_settled": true,
+   "covered_h": 0.166,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-27T00:14:15.088011+00:00",
+   "hours_since_close": 189.6,
+   "last_rest": "2026-07-27T01:50:46.373832+00:00",
+   "latest_close": "2026-07-27T22:34:07Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.247,
+   "orders": 3,
+   "tickers": [
+    "KXLIUKCOUPLE-26AUG31-JAKA"
+   ]
+  },
+  "KXMUSKNW-26JUL31": {
+   "all_settled": true,
+   "covered_h": 17.463,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-24T13:11:38.573145+00:00",
+   "hours_since_close": 93.2,
+   "last_rest": "2026-07-31T00:52:13.057202+00:00",
+   "latest_close": "2026-07-31T22:59:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 313.46,
+   "orders": 40,
+   "tickers": [
+    "KXMUSKNW-26JUL31-T700"
+   ]
+  },
+  "KXTEMPAUSH-26JUL2015": {
+   "all_settled": true,
+   "covered_h": 0.018,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-20T18:09:12.298948+00:00",
+   "hours_since_close": 361.2,
+   "last_rest": "2026-07-20T18:22:01.150157+00:00",
+   "latest_close": "2026-07-20T19:00:00Z",
+   "markets": 2,
+   "n_settled": 2,
+   "notional_usd_h": 0.318,
+   "orders": 5,
+   "tickers": [
+    "KXTEMPAUSH-26JUL2015-T92.99",
+    "KXTEMPAUSH-26JUL2015-T91.99"
+   ]
+  },
+  "KXTEMPAUSH-26JUL2123": {
+   "all_settled": true,
+   "covered_h": 0.181,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-22T02:27:16.821445+00:00",
+   "hours_since_close": 329.2,
+   "last_rest": "2026-07-22T02:35:09.740345+00:00",
+   "latest_close": "2026-07-22T03:00:00Z",
+   "markets": 3,
+   "n_settled": 3,
+   "notional_usd_h": 0.606,
+   "orders": 9,
+   "tickers": [
+    "KXTEMPAUSH-26JUL2123-T83.99",
+    "KXTEMPAUSH-26JUL2123-T84.99",
+    "KXTEMPAUSH-26JUL2123-T82.99"
+   ]
+  },
+  "KXTEMPAUSH-26JUL2207": {
+   "all_settled": true,
+   "covered_h": 0.618,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-22T10:03:27.775133+00:00",
+   "hours_since_close": 321.2,
+   "last_rest": "2026-07-22T10:42:32.330322+00:00",
+   "latest_close": "2026-07-22T11:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 3.131,
+   "orders": 3,
+   "tickers": [
+    "KXTEMPAUSH-26JUL2207-T77.99"
+   ]
+  },
+  "KXTEMPCHIH-26JUL2021": {
+   "all_settled": true,
+   "covered_h": 0.121,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-21T00:16:37.313290+00:00",
+   "hours_since_close": 355.2,
+   "last_rest": "2026-07-21T00:38:12.935862+00:00",
+   "latest_close": "2026-07-21T01:00:00Z",
+   "markets": 2,
+   "n_settled": 2,
+   "notional_usd_h": 1.998,
+   "orders": 7,
+   "tickers": [
+    "KXTEMPCHIH-26JUL2021-T76.99",
+    "KXTEMPCHIH-26JUL2021-T77.99"
+   ]
+  },
+  "KXTEMPCHIH-26JUL2206": {
+   "all_settled": true,
+   "covered_h": 0.215,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-22T09:05:05.082367+00:00",
+   "hours_since_close": 322.2,
+   "last_rest": "2026-07-22T09:35:02.369310+00:00",
+   "latest_close": "2026-07-22T10:00:00Z",
+   "markets": 2,
+   "n_settled": 2,
+   "notional_usd_h": 3.357,
+   "orders": 3,
+   "tickers": [
+    "KXTEMPCHIH-26JUL2206-T59.99",
+    "KXTEMPCHIH-26JUL2206-T58.99"
+   ]
+  },
+  "KXTEMPCHIH-26JUL2207": {
+   "all_settled": true,
+   "covered_h": 0.011,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-22T10:03:28.673626+00:00",
+   "hours_since_close": 321.2,
+   "last_rest": "2026-07-22T10:04:08.710912+00:00",
+   "latest_close": "2026-07-22T11:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.191,
+   "orders": 1,
+   "tickers": [
+    "KXTEMPCHIH-26JUL2207-T59.99"
+   ]
+  },
+  "KXTEMPCHIH-26JUL2208": {
+   "all_settled": true,
+   "covered_h": 0.008,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-22T11:09:58.343040+00:00",
+   "hours_since_close": 320.2,
+   "last_rest": "2026-07-22T11:10:27.045345+00:00",
+   "latest_close": "2026-07-22T12:00:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 0.142,
+   "orders": 1,
+   "tickers": [
+    "KXTEMPCHIH-26JUL2208-T59.99"
+   ]
+  },
+  "KXTEMPDCH-26JUL2021": {
+   "all_settled": true,
+   "covered_h": 0.039,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-21T00:36:45.489453+00:00",
+   "hours_since_close": 355.2,
+   "last_rest": "2026-07-21T00:38:11.652024+00:00",
+   "latest_close": "2026-07-21T01:00:00Z",
+   "markets": 3,
+   "n_settled": 3,
+   "notional_usd_h": 0.558,
+   "orders": 11,
+   "tickers": [
+    "KXTEMPDCH-26JUL2021-T80.99",
+    "KXTEMPDCH-26JUL2021-T79.99",
+    "KXTEMPDCH-26JUL2021-T78.99"
+   ]
+  },
+  "KXTEMPLAXH-26JUL2021": {
+   "all_settled": true,
+   "covered_h": 0.063,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-21T00:34:52.383719+00:00",
+   "hours_since_close": 355.2,
+   "last_rest": "2026-07-21T00:38:16.128578+00:00",
+   "latest_close": "2026-07-21T01:00:00Z",
+   "markets": 2,
+   "n_settled": 2,
+   "notional_usd_h": 1.037,
+   "orders": 4,
+   "tickers": [
+    "KXTEMPLAXH-26JUL2021-T74.99",
+    "KXTEMPLAXH-26JUL2021-T75.99"
+   ]
+  },
+  "KXTEMPLAXH-26JUL2212": {
+   "all_settled": true,
+   "covered_h": 0.138,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-22T15:11:01.697357+00:00",
+   "hours_since_close": 316.2,
+   "last_rest": "2026-07-22T15:21:54.469228+00:00",
+   "latest_close": "2026-07-22T16:00:00Z",
+   "markets": 2,
+   "n_settled": 2,
+   "notional_usd_h": 0.89,
+   "orders": 3,
+   "tickers": [
+    "KXTEMPLAXH-26JUL2212-T70.99",
+    "KXTEMPLAXH-26JUL2212-T71.99"
+   ]
+  },
+  "KXTRUMPUAP-26MAY": {
+   "all_settled": true,
+   "covered_h": 3.794,
+   "credit_n": 0,
+   "credit_ts": [],
+   "credit_usd": 0.0,
+   "first_rest": "2026-07-29T15:17:28.928020+00:00",
+   "hours_since_close": 88.2,
+   "last_rest": "2026-07-29T20:28:38.813587+00:00",
+   "latest_close": "2026-08-01T03:59:00Z",
+   "markets": 1,
+   "n_settled": 1,
+   "notional_usd_h": 11.383,
+   "orders": 4,
+   "tickers": [
+    "KXTRUMPUAP-26MAY-AUG01"
+   ]
+  }
+ }
+}
