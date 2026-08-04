@@ -194,16 +194,27 @@ def score(markets, ticker, pool_usd_day, now=None, swing_penalty=1.0, unknown_bo
     if not row or row.get("ts") is None:
         return float(pool_usd_day or 0.0) * unknown_bonus, "unknown"
     age = max(0.0, now - float(row["ts"]))
-    if age >= STALE_S:
-        # Old enough that the book has probably moved. Report it as STALE so the exploration quota
-        # picks it up again — a market that was crowded an hour ago may be empty now.
-        return float(pool_usd_day or 0.0) * unknown_bonus, "stale"
+    # D1 (2026-08-04): STALENESS SETS THE LABEL, NOT THE VALUE. It used to do both, and that
+    # threw away a real measurement at a cliff:
+    #   * NEVER-MEASURED and STALE returned the IDENTICAL value, pool x unknown_bonus. A market
+    #     we measured as hopelessly crowded 31 minutes ago scored exactly like one we have never
+    #     looked at. STALE_S=1800 against HALF_LIFE_S=3600 means decay at the cliff is still
+    #     0.707 — so a market jumped DISCONTINUOUSLY from 70% of its measured capture back to
+    #     the full pool prior, i.e. aging REHABILITATED the markets we had just priced as bad.
+    #   * The stale return also skipped `penalty` entirely, so a market measured as swinging
+    #     violently — the adverse-fill signature, how a maker hands the rewards back — got its
+    #     swing discount ERASED by nothing more than the passage of 30 minutes.
+    # The blend below already handles aging correctly and continuously: as age grows, decay -> 0
+    # and the value converges to the pool prior on its own, which is what the cliff was crudely
+    # approximating. Keeping the LABEL means the exploration quota still re-samples stale rows
+    # exactly as before (rank() keys on the label, not the value), so sweep behaviour is
+    # unchanged — only the ordering value stops lying.
     decay = 0.5 ** (age / HALF_LIFE_S)
     cap = float(row.get("capture") or 0.0)
     # blend toward the pool prior as the score ages out, so a stale winner cannot pin the bot
     blended = cap * decay + float(pool_usd_day or 0.0) * unknown_bonus * (1.0 - decay)
     penalty = 1.0 / (1.0 + swing_penalty * float(row.get("ref_move") or 0.0) * 100.0)
-    return blended * penalty, "scored"
+    return blended * penalty, ("stale" if age >= STALE_S else "scored")
 
 
 def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,

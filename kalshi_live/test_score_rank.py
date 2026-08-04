@@ -157,3 +157,53 @@ def test_flag_off_emits_no_score_keys(monkeypatch, tmp_path):
         {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00+00:00"}])
     row = _run(monkeypatch, MockClient(mode="live"), str(tmp_path))
     assert "scored_markets" not in row
+
+
+# --------------------------------------------------------------------------------------------
+# D1 — staleness sets the LABEL, not the VALUE (2026-08-04)
+# --------------------------------------------------------------------------------------------
+def test_d1_stale_keeps_its_measurement_instead_of_collapsing_to_the_pool_prior():
+    """A market measured as hopelessly crowded must NOT be rehabilitated by mere aging.
+
+    Before D1, `stale` returned pool * unknown_bonus — byte-identical to NEVER-MEASURED. With
+    STALE_S=1800 against HALF_LIFE_S=3600 the decay at the cliff is still 0.707, so the value
+    jumped DISCONTINUOUSLY upward at 1800s: a crowded market (capture 1) on a fat pool (1000)
+    leapt from ~= its measurement to the full pool prior.
+    """
+    m = {}
+    ks.update(m, "CROWDED", 1.0, 0.50, now=0.0)          # measured: nearly worthless to us
+    just_fresh, k1 = ks.score(m, "CROWDED", 1000.0, now=ks.STALE_S - 1)
+    just_stale, k2 = ks.score(m, "CROWDED", 1000.0, now=ks.STALE_S + 1)
+    assert (k1, k2) == ("scored", "stale"), "the LABEL must still flip at the cliff"
+    assert just_stale < 1000.0, "a measured-bad market must not score the full pool prior"
+    assert abs(just_stale - just_fresh) < 1.0, "and the value must be CONTINUOUS across it"
+
+    never = ks.score({}, "CROWDED", 1000.0, now=ks.STALE_S + 1)
+    assert never[1] == "unknown" and never[0] == 1000.0
+    assert just_stale < never[0], "stale evidence must rank BELOW a pure unknown here"
+
+
+def test_d1_swing_penalty_survives_going_stale():
+    """The swing discount is the adverse-fill signal. Before D1 the stale branch skipped
+    `penalty` entirely, so 30 minutes erased what a violently swinging market had earned."""
+    calm, swingy = {}, {}
+    ks.update(calm, "CALM", 40.0, 0.50, now=0.0)
+    ks.update(swingy, "SWINGY", 40.0, 0.50, now=0.0)
+    ks.update(swingy, "SWINGY", 40.0, 0.90, now=1.0)     # big reference move -> ref_move > 0
+    assert (swingy["SWINGY"].get("ref_move") or 0.0) > 0.0
+
+    t = ks.STALE_S + 10
+    calm_s, kc = ks.score(calm, "CALM", 100.0, now=t, swing_penalty=1.0)
+    swing_s, kw = ks.score(swingy, "SWINGY", 100.0, now=t, swing_penalty=1.0)
+    assert kc == kw == "stale"
+    assert swing_s < calm_s, "a swingy market must stay discounted after going stale"
+
+
+def test_d1_does_not_change_which_rows_the_explore_quota_resamples():
+    """The fix moves the VALUE only. rank() keys exploration on the LABEL, so sweep behaviour
+    must be byte-identical — a stale row is still eligible for a sampling slot."""
+    m = {}
+    ks.update(m, "OLD", 40.0, 0.50, now=0.0)
+    rows = [{"ticker": "OLD", "usd_day": 100.0}, {"ticker": "NEW", "usd_day": 100.0}]
+    out = ks.rank(m, rows, now=ks.STALE_S + 10, explore=2)
+    assert {r["ticker"] for r in out if r.get("explore")} == {"OLD", "NEW"}

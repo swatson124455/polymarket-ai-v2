@@ -102,7 +102,14 @@ def shadow_rank(rows, scores, fill_costs, market_cap_usd, inv_hard_ct, now,
       "prospective" — offline sweep measurement (kalshi_capture_sweep.py): the book WAS read,
                       but our join is hypothetical. Used when the live score is absent/stale.
                       x prospective_haircut.
-      "unknown"/"stale" with no sweep data — pool prior only. x unknown_haircut.
+      "unknown" with no sweep data — pool prior only. x unknown_haircut.
+      "stale" — since D1 (2026-08-04) this is NO LONGER "pool prior only": ks.score keeps the
+                decayed measurement and its swing penalty, and only the LABEL is staleness.
+                unknown_haircut is still applied to it, DELIBERATELY and conservatively — the
+                haircut exists to stop guesses outranking receipts (the cycle-1 failure shape),
+                and discounting a partly-measured row too much is the safe direction. The
+                principled refinement is to haircut only the PRIOR component of the blend,
+                which needs ks.score to expose the split; flagged, not done here.
 
     RISK-AVERSION KNOBS (operator ask 2026-07-29; every default 1.0 = exactly the prior
     behavior, provable no-op):

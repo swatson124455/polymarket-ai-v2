@@ -240,13 +240,22 @@ def test_haircuts_stop_guesses_outranking_receipts():
     cut = kcr.shadow_rank([_row("P", 500)], {}, {}, 60.0, 60.0, now=1000.0,
                           prospective=pro, prospective_haircut=0.5)
     assert cut[0]["base_usd_day"] == pytest.approx(10.0)
-    # STALE entries are guesses too (the actual cycle-1 kind) — the haircut must hit them
+    # STALE entries still take the haircut — but D1 (2026-08-04) changed what it is applied TO.
+    # This used to assert 150.0 == "pool prior 300 x 0.5", which encoded the old cliff where a
+    # stale row threw its measurement away and collapsed to the pure pool prior. ks.score now
+    # keeps the decayed measurement (capture 50 at age 1801s, half-life 3600s -> decay 0.7071):
+    #   blended = 50*0.7071 + 300*(1-0.7071) = 123.2573 ; x 0.5 haircut = 61.6287
+    # The INTENT of this case is unchanged and still pinned: kind is "stale" AND the haircut hits
+    # it. Only the hardcoded expectation moved, because the model under it did.
     m2 = {}
     ks.update(m2, "STALEG", 50.0, 0.50, now=0.0)
     outs = kcr.shadow_rank([_row("STALEG", 300)], m2, {}, 60.0, 60.0,
                            now=ks.STALE_S + 1, unknown_haircut=0.5)
     assert outs[0]["kind"] == "stale"
-    assert outs[0]["base_usd_day"] == pytest.approx(150.0), "pool prior 300 x 0.5"
+    assert outs[0]["base_usd_day"] == pytest.approx(61.6287, abs=1e-3), "decayed blend x 0.5"
+    # and the haircut must still BITE: without it the same row scores twice as much
+    full = kcr.shadow_rank([_row("STALEG", 300)], m2, {}, 60.0, 60.0, now=ks.STALE_S + 1)
+    assert full[0]["base_usd_day"] == pytest.approx(2 * outs[0]["base_usd_day"], abs=1e-3)
 
 
 def test_prospective_file_and_rows_fail_open(tmp_path):
