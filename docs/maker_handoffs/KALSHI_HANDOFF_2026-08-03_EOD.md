@@ -8,16 +8,16 @@ Every figure here carries its source and denominator. All 13 hook-injected opera
 ## 0. STEP ZERO — verify, trust nothing here
 
 - Worktree `…/5dfe0ebf-2821-475d-946c-72012db34c3b/scratchpad/kalshi-wt`, branch
-  `claude/maker-kalshi-live`, HEAD **`b4e60a7`**, 10 commits on `0f79f04..HEAD`. Worktree clean.
+  `claude/maker-kalshi-live`, **14 commits** on `0f79f04..HEAD`. Worktree clean.
   The main checkout is ANOTHER LANE — never touch it or master.
 - **HALTED since 2026-08-02T10:26:37Z; stays halted until the operator names a restart.**
   Verified 2026-08-03T21:26:20Z: STOP present (230 B, uid 0, mtime unchanged at
   `2026-08-02 10:26:53.414658703 +0000`), service `polymarket-maker-kalshi-ws.service` ACTIVE
   (idles under STOP and rests maker EXIT offsets — canon-confirmed, not a violation).
-- ⚠ **SUPERSEDED — SEE §3: DEPLOYED AND ARMED 2026-08-04.** (Was: nothing deployed.) Deployed quoter
-  `9bfac08f6c9251b57749e1c80ddc356a` vs HEAD blob `a88ddc3acb9b4e7ef8e440a7e2f8ef4e`; deployed
-  recorder `9d842c41c12afc8de804cab4013bd2c2` vs HEAD `2ec0f5b4e33409d0e0d1941ef261b424`.
-  `kalshi_netev_rebuild.py` HEAD blob `f158eec51045bfdd34fab7d2feb029e8` — not on the VPS at all.
+- ✅ **DEPLOYED AND ARMED 2026-08-04 — see §3.** All 7 shipped files md5-verify byte-identical
+  to HEAD on the VPS (quoter `a88ddc3acb9b4e7ef8e440a7e2f8ef4e`, recorder
+  `2ec0f5b4e33409d0e0d1941ef261b424`). The RUNNING PROCESS still executes the OLD quoter from
+  memory — new code takes effect only at an operator-named restart.
 - ✅ `kalshi_netev_table.json` IS NOW ON THE VPS (§3), and so is `kalshi_netev_calibrate.py`,
   which was ALSO missing and which the loader imports — without it the table loads as `{}`.
 - Test baseline at HEAD: **1128 passed / 2 xfailed**, `python -m pytest kalshi_live/ -q`,
@@ -31,14 +31,17 @@ Every figure here carries its source and denominator. All 13 hook-injected opera
 
 | # | Ruling | State |
 |---|---|---|
-| §4 net-EV | Option **(c) reconcile, then (a) accept whole-market scope and arm** | reconciliation DONE; arming NOT done |
+| §4 net-EV | Option **(c) reconcile, then (a) accept whole-market scope and arm** | reconciliation DONE; **ARMED 2026-08-04T02:21:19Z** |
 | Fix order | Fix A/B/C first, then arm on a named window | A/B/C done + 2 more defects found and fixed |
+| Deploy | **"deploy and arm but no restart"** (2026-08-04) | DONE — §3. STOP untouched, no restart. |
+| Residual | Deposit gap is the **deposit CHARGE**; both numbers correct | CLOSED — see §5 |
+| Ladder / D6 | **Keep as is** | no change |
 | 1 | Close the `thin` hole via **(i) harden the consumer** | DONE (`1799c2c`) |
 | 2 | **Agent names the window** on functional grounds | DONE — `2026-07-24T00:00:00Z` → `2026-08-03T17:06:00Z` (`06ad273`) |
-| 3 | `MIN_RECEIPT_FILLS` — agent's recommendation stands | **40** (canon-equivalent is ~24; see §4) |
+| 3 | `MIN_RECEIPT_FILLS` — agent's recommendation stands | **40** (canon-equivalent is ~24) |
 | 4 | Fix credits/trading different clocks | DONE (`844ea16`) |
 
-## 2. WHAT SHIPPED (10 commits, `0f79f04..b4e60a7`)
+## 2. WHAT SHIPPED (`0f79f04..HEAD`)
 
 Every money-path change: tests failing-before/passing-after, copy-based mutation in a scratch
 copy, adversarial blind review. **Mutation sweep 14/14 caught** across both changed files.
