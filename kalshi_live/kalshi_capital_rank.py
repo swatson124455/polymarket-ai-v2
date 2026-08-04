@@ -124,7 +124,20 @@ def shadow_rank(rows, scores, fill_costs, market_cap_usd, inv_hard_ct, now,
         t = r.get("ticker")
         base, kind = ks.score(scores, t, r.get("usd_day"), now, swing_penalty, unknown_bonus)
         ref = (scores.get(t) or {}).get("ref")
-        if kind != "scored":
+        # ⚠ SUBSTITUTE THE SWEEP MODEL ONLY WHERE THERE IS NO MEASUREMENT — "unknown", never
+        # "stale" (fix 2026-08-04, found by adversarial review). This read `kind != "scored"`.
+        # Before D1 that was strictly an UPGRADE: a stale row carried no measurement at all (it
+        # collapsed to the pool prior), so replacing a pure guess with a model was better. D1
+        # made a stale row carry its DECAYED MEASUREMENT, and this branch then threw that away
+        # for a model this module's own docstring says over-predicts 2-6x. Measured:
+        #     ks.score stale          -> 664.5973 ("stale")
+        #     shadow_rank, no sweep   -> 664.5973
+        #     shadow_rank, sweep row  ->  12.0     ("prospective")   <-- measurement discarded
+        # It also silently escaped the unknown_haircut guard below, because that keys on
+        # kind in ("unknown","stale") and this had already rewritten kind to "prospective".
+        # A very old stale row needs no special case: its value decays to the pool prior on its
+        # own and the explore quota re-measures it.
+        if kind == "unknown":
             p = prospective.get(t)
             if isinstance(p, dict) and p.get("capture") is not None:
                 try:

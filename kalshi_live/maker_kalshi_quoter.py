@@ -2438,6 +2438,20 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # legacy table — because the safety property belongs in the gate, not in a writer.
         # Anything that is not an explicit "receipt" carrying a real number now routes to the
         # model fallback, which is what "we have no verdict for this family" is supposed to mean.
+        # ⚠ THIS IS NOT UNIFORMLY FAIL-CLOSED, and 1799c2c's commit message claiming
+        # "FAIL-CLOSED, NOT FAIL-OPEN" was wrong in one direction. Against an unearned ALLOW it
+        # tightens. Against a NEGATIVE non-receipt verdict it LOOSENS: a `thin` family the CSV
+        # engine scored net-negative used to be hard-skipped when flat, and now takes the model
+        # path, which opens whenever prospective_capture / HAIRCUT - fingerprint > 0. Measured
+        # against this function on the T-HARDEN fixture book, varying only usd_day:
+        #     thin/-0.50  usd_day=  50 -> pre: skip | post: 0 quotes
+        #     thin/-0.50  usd_day= 200 -> pre: skip | post: 2 quotes  <-- LOOSENED
+        #     thin/-0.50  usd_day=5000 -> pre: skip | post: 2 quotes  <-- LOOSENED
+        # The five T-HARDEN pins all run at the _mkt default usd_day=50.0, where the model
+        # returns [] for every input — so the loosened case is exactly the one they cannot see.
+        # Kept deliberately: the alternative is trusting a grade no producer defines. The
+        # producer-side bar (kalshi_netev_rebuild.MIN_RECEIPT_FILLS) carries the same both-ways
+        # caveat; this is the consumer half of it, stated where a reader will actually find it.
         if (ent is not None and ent.get("confidence") == "receipt"
                 and ent.get("net_pct_notional") is not None):
             net_pct = ent["net_pct_notional"]              # RECEIPT signal (net % of notional)

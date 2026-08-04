@@ -390,3 +390,34 @@ def test_fill_cost_feed_builder():
     assert m["LOSER"]["fees_usd"] == pytest.approx(0.50)
     # and the file it writes is readable by the ranking side (schema agreement)
     assert kfc.SCHEMA == kcr.SCHEMA
+
+
+def test_sweep_model_never_overrides_a_measured_stale_row():
+    """FIX 2026-08-04 (adversarial review). shadow_rank branched on `kind != "scored"`, so a
+    sweep row replaced a STALE row's value with the prospective model. Before D1 that was an
+    upgrade (a stale row was a pure pool guess); after D1 a stale row carries its DECAYED
+    MEASUREMENT, and this discarded it for a model the module documents as over-predicting
+    2-6x. It also escaped unknown_haircut, because that keys on kind in ("unknown","stale")
+    and the branch had already rewritten kind to "prospective".
+
+    Live exposure at the time: KALSHI_ALLOC_KEY=1 and KALSHI_SCORE_RANK=1 are both set in
+    live.env, so this is a real ranking path, not telemetry-only.
+    """
+    m = {}
+    ks.update(m, "X", 900.0, 0.50, now=0.0)
+    t = ks.STALE_S + 10
+    rows = [_row("X", 100)]
+    pro = {"X": {"capture": 12.0, "ref": 0.50}}
+
+    measured = kcr.shadow_rank(rows, m, {}, 60.0, 60.0, now=t)
+    swept = kcr.shadow_rank(rows, m, {}, 60.0, 60.0, now=t, prospective=pro)
+    assert measured[0]["kind"] == "stale"
+    assert swept[0]["kind"] == "stale", "a measured stale row must NOT become 'prospective'"
+    assert swept[0]["base_usd_day"] == pytest.approx(measured[0]["base_usd_day"]), \
+        "the sweep model must not overwrite a real measurement"
+
+    # UNKNOWN rows must still take the model — that substitution is a genuine upgrade.
+    unknown = kcr.shadow_rank([_row("U", 100)], {}, {}, 60.0, 60.0, now=t,
+                              prospective={"U": {"capture": 12.0, "ref": 0.50}})
+    assert unknown[0]["kind"] == "prospective"
+    assert unknown[0]["base_usd_day"] == pytest.approx(12.0)
