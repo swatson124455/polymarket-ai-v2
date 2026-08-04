@@ -8,7 +8,7 @@ Every figure here carries its source and denominator. All 13 hook-injected opera
 ## 0. STEP ZERO — verify, trust nothing here
 
 - Worktree `…/5dfe0ebf-2821-475d-946c-72012db34c3b/scratchpad/kalshi-wt`, branch
-  `claude/maker-kalshi-live`, **14 commits** on `0f79f04..HEAD`. Worktree clean.
+  `claude/maker-kalshi-live`, **17 commits** on `0f79f04..HEAD`. Worktree clean.
   The main checkout is ANOTHER LANE — never touch it or master.
 - **HALTED since 2026-08-02T10:26:37Z; stays halted until the operator names a restart.**
   Verified 2026-08-03T21:26:20Z: STOP present (230 B, uid 0, mtime unchanged at
@@ -20,7 +20,7 @@ Every figure here carries its source and denominator. All 13 hook-injected opera
   memory — new code takes effect only at an operator-named restart.
 - ✅ `kalshi_netev_table.json` IS NOW ON THE VPS (§3), and so is `kalshi_netev_calibrate.py`,
   which was ALSO missing and which the loader imports — without it the table loads as `{}`.
-- Test baseline at HEAD: **1128 passed / 2 xfailed**, `python -m pytest kalshi_live/ -q`,
+- Test baseline at HEAD: **1131 passed / 2 xfailed**, `python -m pytest kalshi_live/ -q`,
   **pytest exit 0** (capture the exit code, not a grep of the summary line — see §6).
 - Live knobs (post-deploy, 2026-08-04T02:21:19Z): `MAX_TOTAL_CAPITAL=350`,
   **`DAILY_LOSS_HALT_USD=30`**, `DAILY_DOWN_HALT_USD` DELETED, **`NETEV_GATE=1` (ARMED)**,
@@ -185,9 +185,27 @@ the only allow in the set). Zero flips on the canon window.
 
 ## 5. OPEN ITEMS — nothing here may be dropped (RULE NINE)
 
-- **Phase D, unstarted:** D1 score-coverage + sweeper pts into ranking; D2 reward feedback +
-  fill cost + hours-to-close into the rank key; D3 size ramp (5→10→25→50 @10 min) + a
-  dollars-at-risk sizing term. Specced in master plan §6. **Never named by the operator.**
+- **Phase D — D1 PARTLY DONE, D2 and D3 NOT STARTED** (operator named "do d1-3" 2026-08-04).
+  - **D1 — two of three clauses DONE** (`a996a1d`): never-measured vs stale split, and the
+    swing penalty now survives going stale. ⚠ **The third clause, "widen measurement path", is
+    NOT built** — I did not guess at it. Scoring today only prices books the cycle already read
+    (`maker_kalshi_quoter.py:380-384`), so "widen" means measuring markets we do not otherwise
+    read; the sweeper (`KALSHI_SWEEP_ENABLED`) is the obvious vehicle and needs scoping.
+  - **D1 follow-up, FLAGGED not done:** `kalshi_capital_rank.shadow_rank` still applies
+    `unknown_haircut` to `stale` rows. Since D1 a stale row is PARTLY measured, so the
+    principled fix haircuts only the PRIOR component of the blend — which needs `score()` to
+    expose the split. Left conservative (over-discounting is the safe direction); operator's
+    to name.
+  - **D2 — NOT STARTED.** Wire reward feedback + fill cost + hours-to-close into the rank key;
+    lag exclusion keyed on PROGRAM `end_date`, NOT close+1. The evidence base is identified:
+    payout keys on the reward-PROGRAM window end (close+1 held for only **24 of 33** credited
+    events; **9 of 33** paid BEFORE market close, by 30.7–727.0 h — master plan §3). Proof
+    criteria: the **14 defensibly-never-paid series** (−$127.10 of the 20 that never earned a
+    cent, −$156.12) must rank below comparable payers, and the **5 zero-fill earners**
+    (+$7.51, the only reliably profitable shape observed) must NOT be deranked.
+  - **D3 — NOT STARTED.** Size ramp 5→10→25→50 ct at ≥10 min per rung (operator-ruled 08-02)
+    plus a dollars-at-risk sizing term. Proof criteria: a KXTEMPAUSH replay walks 5→50 across
+    multiple cycles, and dollar caps bind on some of the 2,176 50-ct side quotes.
 - **Unknown-market slow probe** + 5-min data checkpoint — ruled BUILD 08-02, still NOT BUILT.
 - **Restart (E1)** — operator-named, gated on all defects fixed.
 - **8-3 re-review** — ladder rungs ($3/$5, "keep, retune later" was the agent's reading, never
