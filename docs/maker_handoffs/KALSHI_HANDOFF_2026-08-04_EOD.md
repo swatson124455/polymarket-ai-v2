@@ -43,6 +43,34 @@ order; only true DECISIONS go to the operator)
 | W7 | Unknown-market slow probe + 5-min checkpoint | B5 | not started |
 | W8 | Recorder scalar fix `revenue/100` (full protocol; then deploy) | B6 | specified |
 | W9 | Post-restart net-EV table rebuild on clean data | B8 | blocked on P2 data |
+| W10 | **Zero-payer mechanism study** (operator-raised 08-04): why did 20 settled events with real presence pay $0.00 vs a $26.04 forecast (master plan §3)? Test, in order: the **$1 minimum-credit floor** (ESTABLISHED: min credit $1.01 of 54 — sub-$1 accruals may simply truncate to zero), program-window normalization (both-normalized model = 1.07×, n=16), share dilution, and the operator's movement hypothesis ("do books need X movement to pay?" — HYPOTHESIS, untested; program terms pay for RESTING liquidity, so movement should NOT be required, but it must be tested not assumed). Offline vs credit_history + caprank telemetry. | B | not started |
+| W11 | **Offline test/backtest harness while halted** (operator-raised 08-04): STOP halts the live quoter ONLY — it does not block offline work. Raw material EXISTS on the VPS: `caprank-YYYYMMDD.jsonl` daily selection/book telemetry (37–104 MB/day, 07-29→08-02 observed) + `ws_daemon_log.jsonl` + the frozen receipt tapes. Build: replay selection+gates over recorded cycles; validate D2 candidates against days where payment is KNOWN from credit_history. HONEST LIMIT: fills/queue-position CANNOT be backtested faithfully (no historical depth-by-price time series), and payout is venue-side — so backtests validate SELECTION, never fill P&L. | B | not started |
+
+## 1b. GATE-MARGIN REVIEW DATA (generated 2026-08-04 from the ARMED table; operator asked for
+full data). ⚠ Trading columns are DEFECT-ERA measurements (window 07-24→08-03T17:06Z, fixes
+existed but were undeployed) — per RULE SEVEN they are substantially agent-defect, NOT family
+economics. Credits are venue receipts and solid.
+
+| family | net% | credits | trading | notional | fills |
+|---|---|---|---|---|---|
+| KXTOPMODEL | −3.12 | 2.15 | −25.02 | 733.73 | 59 |
+| gas | −4.68 | 20.80 | −98.50 | 1659.75 | 282 |
+| KXTRUMPENDORSEMENTS | −5.00 | 9.68 | −29.97 | 405.62 | 55 |
+| KXDXYDUD | −5.60 | 1.89 | −19.90 | 321.45 | 61 |
+| KXTRUMPTIME | −5.89 | 7.90 | −36.26 | 481.29 | 57 |
+| temp | −6.09 | 3.68 | −16.89 | 216.76 | 44 |
+
+| margin | keeps | credits kept | defect-era trading kept | credits forgone |
+|---|---|---|---|---|
+| 0.0% (live) | 0/6 | $0.00 | $0.00 | **$46.10** (≈$4.31/day of the window) |
+| −4% | 1/6 | $2.15 | −$25.02 | $43.95 |
+| −5% | 2/6 | $22.95 | −$123.53 | $23.15 |
+| −6% | 5/6 | $42.42 | −$209.65 | $3.68 |
+| −7% | 6/6 | $46.10 | −$226.53 | $0.00 |
+
+The real question the data poses: margin 0.0 protects against trading drag that was mostly OUR
+defects, at the price of ~$4.31/day of verified credit income. The defect-free drag is unknown
+until P2. Decision #2 below.
 
 ## 2. DECISIONS FOR THE OPERATOR (decisions only — everything else is W-queue)
 
