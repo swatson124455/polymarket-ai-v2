@@ -33,36 +33,45 @@ CUTOFF = dt.datetime(2026, 7, 19, tzinfo=dt.timezone.utc)
 
 
 def harvest_closed(public_get, want_prefixes):
-    """Paginate status=closed newest-first; keep rows whose market_ticker matches any
-    wanted event prefix; stop when a full page is older than CUTOFF."""
-    kept, cursor, pages, newest_seen, oldest_seen = [], "", 0, None, None
-    while pages < 400:
+    """FULL scan of status=closed (measured 2026-08-04: pagination order is NOT strictly
+    chronological — an early-stop on end_date skipped most of July, so no early stop).
+    Keeps rows whose market_ticker matches any wanted event prefix; follows the cursor to
+    exhaustion with a runaway page cap; reports a per-month end_date histogram so
+    coverage of the study window is checkable, never assumed."""
+    import collections
+    kept, cursor, pages, total = [], "", 0, 0
+    seen_cursors = set()
+    by_month = collections.Counter()
+    newest_seen, oldest_seen = None, None
+    while pages < 1000:
         pages += 1
         d = public_get("/trade-api/v2/incentive_programs?status=closed&limit=1000"
                        + (f"&cursor={cursor}" if cursor else ""))
         rows = d.get("incentive_programs") or []
         if not rows:
             break
+        total += len(rows)
+        for r in rows:
+            e = r.get("end_date") or ""
+            by_month[e[:7]] += 1
+            t = r.get("market_ticker") or ""
+            if any(t == p or t.startswith(p + "-") for p in want_prefixes):
+                kept.append(r)
         ends = [_iso(r["end_date"]) for r in rows if r.get("end_date")]
         if ends:
             newest_seen = max(filter(None, [newest_seen, max(ends)]))
             oldest_seen = min(filter(None, [oldest_seen, min(ends)]))
-        for r in rows:
-            t = r.get("market_ticker") or ""
-            if any(t == p or t.startswith(p + "-") for p in want_prefixes):
-                kept.append(r)
-        if pages % 10 == 0:
-            print(f"  page {pages}: kept={len(kept)} oldest_end={oldest_seen}",
-                  file=sys.stderr)
-        if ends and max(ends) < CUTOFF:
-            break
+        if pages % 20 == 0:
+            print(f"  page {pages}: total={total} kept={len(kept)} "
+                  f"oldest_end={oldest_seen}", file=sys.stderr)
         cursor = d.get("next_cursor") or d.get("cursor") or ""
-        if not cursor:
+        if not cursor or cursor in seen_cursors:
             break
+        seen_cursors.add(cursor)
         time.sleep(0.25)
-    return kept, {"pages": pages, "newest_end": str(newest_seen),
-                  "oldest_end": str(oldest_seen), "kept": len(kept),
-                  "hit_cutoff": bool(oldest_seen and oldest_seen < CUTOFF)}
+    return kept, {"pages": pages, "total_rows": total,
+                  "newest_end": str(newest_seen), "oldest_end": str(oldest_seen),
+                  "kept": len(kept), "by_month": dict(sorted(by_month.items()))}
 
 
 def overlap_seconds(iv_a, windows):
