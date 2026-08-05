@@ -465,6 +465,31 @@ def _load_prospective():
         return {}
 
 
+# W3/D2 FOLLOW-THE-PROFIT (scale plan B1; ships OFF = provable no-op). The feed is built
+# OFFLINE by kalshi_credit_feedback.py from receipts (credit_history + orders + settlements);
+# the rank multiplies a "paid" series' base by D2_BONUS and a filled-never-paid-and-due
+# series' base by D2_NEVERPAID_MULT. Sweep evidence (w3_policy_sweep over 6 recorded days,
+# 2026-08-04): the never-paid penalty is the working lever — never-paid median rank 16-25 ->
+# 31-36 while payer ranks improve; the bonus alone moves almost nothing. Enabling is a
+# separate operator-named deploy after the P2 clean days (ruling 2026-08-04, option a).
+D2_FEEDBACK = _envi("KALSHI_D2_FEEDBACK", 0)
+D2_BONUS = _envf("KALSHI_D2_BONUS", 1.5)
+D2_NEVERPAID_MULT = _envf("KALSHI_D2_NEVERPAID_MULT", 0.5)
+CREDIT_FEEDBACK_PATH = os.environ.get("KALSHI_CREDIT_FEEDBACK_PATH",
+                                      os.path.join(DATA_DIR, "kalshi_credit_feedback.json"))
+
+
+def _load_credit_feedback():
+    """Fail-OPEN to {} (multiplier 1.0 everywhere). Flag OFF -> None without touching disk."""
+    if not D2_FEEDBACK:
+        return None
+    try:
+        import kalshi_capital_rank
+        return kalshi_capital_rank.load_credit_feedback(CREDIT_FEEDBACK_PATH)
+    except Exception:
+        return {}
+
+
 def _caprank_variants():
     """The knob-sets the shadow is scored under EVERY cycle — so risk-aversion settings are
     chosen from logged evidence, not blind (operator 2026-07-29: 'can we shadow on multiple
@@ -507,6 +532,7 @@ def _caprank_telemetry(rows, picked, now):
         import kalshi_capital_rank as _kcr
         costs = _load_fill_costs()           # read ONCE per cycle, shared by every variant
         prospective = _load_prospective()
+        fb = _load_credit_feedback()         # same once-per-cycle contract (review F6)
         actual = [r["ticker"] for r in picked[:FOOTPRINT_TOP]]
         row = {"ts": now.isoformat(), "actual": actual, "variants": []}
         for v in _caprank_variants():
@@ -518,7 +544,10 @@ def _caprank_telemetry(rows, picked, now):
                                           prospective=prospective,
                                           risk_lambda=v["risk_lambda"],
                                           prospective_haircut=v["prospective_haircut"],
-                                          unknown_haircut=v["unknown_haircut"])
+                                          unknown_haircut=v["unknown_haircut"],
+                                          credit_feedback=fb,
+                                          d2_bonus=D2_BONUS,
+                                          d2_neverpaid_mult=D2_NEVERPAID_MULT)
             top = shadow[:FOOTPRINT_TOP]
             shadow_t = [d["ticker"] for d in top]
             row["variants"].append(
@@ -2938,7 +2967,10 @@ def _alloc_priority(footprint_rows, now, usd_day):
                                     prospective=prospective,
                                     risk_lambda=ALLOC_RISK_LAMBDA,
                                     prospective_haircut=ALLOC_PROSPECTIVE_HAIRCUT,
-                                    unknown_haircut=ALLOC_UNKNOWN_HAIRCUT)
+                                    unknown_haircut=ALLOC_UNKNOWN_HAIRCUT,
+                                    credit_feedback=_load_credit_feedback(),
+                                    d2_bonus=D2_BONUS,
+                                    d2_neverpaid_mult=D2_NEVERPAID_MULT)
         return {d["ticker"]: d["cap_score"] for d in comp}
     except Exception:
         _SILENT["alloc_key_fail"] += 1

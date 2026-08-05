@@ -62,6 +62,21 @@ def load_prospective(path):
         return {}
 
 
+def load_credit_feedback(path):
+    """Fail-OPEN to {} -> every series multiplier 1.0 -> D2 feedback is a no-op. Feed written
+    by kalshi_credit_feedback.py (W3/D2, scale plan B1); same schema discipline as the other
+    feeds: a ranking fault must never stop a trading cycle."""
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+        if d.get("schema") != SCHEMA:
+            return {}
+        m = d.get("series")
+        return m if isinstance(m, dict) else {}
+    except Exception:
+        return {}
+
+
 def est_commit_usd(ref_yes, market_cap_usd, inv_hard_ct, quantum=5):
     """Estimate the dollars BOTH resting sides commit for one market, from the cached reference
     price. Mirrors the quoter's `_capped_join` at JOIN_SIZE=0 exactly (dollar cap per side,
@@ -91,7 +106,8 @@ def est_commit_usd(ref_yes, market_cap_usd, inv_hard_ct, quantum=5):
 def shadow_rank(rows, scores, fill_costs, market_cap_usd, inv_hard_ct, now,
                 calib=1.0, swing_penalty=1.0, unknown_bonus=1.0,
                 prospective=None, risk_lambda=1.0, prospective_haircut=1.0,
-                unknown_haircut=1.0):
+                unknown_haircut=1.0, credit_feedback=None, d2_bonus=1.0,
+                d2_neverpaid_mult=1.0):
     """Order `rows` best-first by capital-aware score, WITHOUT mutating them. Returns a NEW list
     of component dicts (ticker + every term) so the telemetry row is self-explanatory and the
     operator can audit each ranking decision from the log alone.
@@ -149,15 +165,37 @@ def shadow_rank(rows, scores, fill_costs, market_cap_usd, inv_hard_ct, now,
                     pass                        # malformed sweep row -> keep the pool prior
         if kind in ("unknown", "stale"):
             base *= unknown_haircut
+        # W3/D2 FOLLOW-THE-PROFIT (scale plan B1). Sweep evidence (w3_policy_sweep, 6 recorded
+        # days 07-29..08-04, artifact kalshi_live/w10_results/w3_policy_sweep.json): with the
+        # HARNESS rule (fills+no-credit, no due gate) the penalty moves never-paid median rank
+        # from 6-25 (recorded) to 22-36 while payer medians hold or improve; the credited
+        # bonus alone moves almost nothing. The SHIPPED verdict rule is stricter — per-EVENT
+        # due evidence (kalshi_credit_feedback.py), so its live coverage is smaller than the
+        # sweep's by construction; the sweep bounds the direction, not the magnitude.
+        # "paid" = venue credits exist; "never_paid_due" = zero credits ever + at least one
+        # fully-due filled event. Anything else multiplies by 1.0 — a zero-fill earner or an
+        # unmeasured market is NEVER punished (B1 proof criterion, test_d2_feedback.py).
+        # Applied to the CAPTURE term only (never the cost term — realized dollars are not
+        # scalable by belief), and NOT folded into base_usd_day, so telemetry keeps the pure
+        # evidence term and shows the multiplier separately in "d2". Defaults 1.0/1.0 = no-op.
+        d2 = 1.0
+        if credit_feedback:
+            fb_row = credit_feedback.get((t or "").split("-")[0])
+            v = fb_row.get("verdict") if isinstance(fb_row, dict) else None
+            if v == "paid":
+                d2 = d2_bonus
+            elif v == "never_paid_due":
+                d2 = d2_neverpaid_mult
         commit = est_commit_usd(ref, market_cap_usd, inv_hard_ct)
         fc = 0.0
         try:
             fc = float((fill_costs.get(t) or {}).get("cost_usd_day") or 0.0)
         except (TypeError, ValueError, AttributeError):
             pass    # a malformed feed row costs $0, it never blocks the rank
-        cap_score = (base * calib - risk_lambda * fc) / max(commit, COMMIT_FLOOR_USD)
+        cap_score = (base * d2 * calib - risk_lambda * fc) / max(commit, COMMIT_FLOOR_USD)
         out.append({"ticker": t, "kind": kind, "base_usd_day": round(base, 4),
                     "ref": ref, "commit_usd": round(commit, 2),
-                    "cost_usd_day": round(fc, 4), "cap_score": round(cap_score, 6)})
+                    "cost_usd_day": round(fc, 4), "d2": d2,
+                    "cap_score": round(cap_score, 6)})
     out.sort(key=lambda d: (-d["cap_score"], str(d["ticker"])))
     return out

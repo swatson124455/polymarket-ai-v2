@@ -1,0 +1,296 @@
+{
+ "days": {
+  "20260729": {
+   "fb_b1.5_m0.25": {
+    "np_medrank": 34,
+    "payer_medrank": 7.0
+   },
+   "fb_b1.5_m0.5": {
+    "np_medrank": 33,
+    "payer_medrank": 9.0
+   },
+   "fb_b1.5_m1.0": {
+    "np_medrank": 17,
+    "payer_medrank": 11.0
+   },
+   "fb_b2.0_m0.25": {
+    "np_medrank": 34,
+    "payer_medrank": 6.5
+   },
+   "fb_b2.0_m0.5": {
+    "np_medrank": 33,
+    "payer_medrank": 9.0
+   },
+   "fb_b2.0_m1.0": {
+    "np_medrank": 18,
+    "payer_medrank": 10.5
+   },
+   "fb_b4.0_m0.25": {
+    "np_medrank": 34,
+    "payer_medrank": 6.0
+   },
+   "fb_b4.0_m0.5": {
+    "np_medrank": 33,
+    "payer_medrank": 7.0
+   },
+   "fb_b4.0_m1.0": {
+    "np_medrank": 18,
+    "payer_medrank": 10.0
+   },
+   "recorded": {
+    "np_medrank": 16,
+    "payer_medrank": 11.0
+   }
+  },
+  "20260730": {
+   "fb_b1.5_m0.25": {
+    "np_medrank": 31.0,
+    "payer_medrank": 9.0
+   },
+   "fb_b1.5_m0.5": {
+    "np_medrank": 31.0,
+    "payer_medrank": 11.0
+   },
+   "fb_b1.5_m1.0": {
+    "np_medrank": 25.0,
+    "payer_medrank": 12.0
+   },
+   "fb_b2.0_m0.25": {
+    "np_medrank": 31.0,
+    "payer_medrank": 9.0
+   },
+   "fb_b2.0_m0.5": {
+    "np_medrank": 31.0,
+    "payer_medrank": 11.0
+   },
+   "fb_b2.0_m1.0": {
+    "np_medrank": 25.0,
+    "payer_medrank": 11.0
+   },
+   "fb_b4.0_m0.25": {
+    "np_medrank": 31.0,
+    "payer_medrank": 9.0
+   },
+   "fb_b4.0_m0.5": {
+    "np_medrank": 31.0,
+    "payer_medrank": 11.0
+   },
+   "fb_b4.0_m1.0": {
+    "np_medrank": 25.0,
+    "payer_medrank": 11.0
+   },
+   "recorded": {
+    "np_medrank": 25.0,
+    "payer_medrank": 12.0
+   }
+  },
+  "20260731": {
+   "fb_b1.5_m0.25": {
+    "np_medrank": 31,
+    "payer_medrank": 8
+   },
+   "fb_b1.5_m0.5": {
+    "np_medrank": 31,
+    "payer_medrank": 9
+   },
+   "fb_b1.5_m1.0": {
+    "np_medrank": 23,
+    "payer_medrank": 10
+   },
+   "fb_b2.0_m0.25": {
+    "np_medrank": 31,
+    "payer_medrank": 7
+   },
+   "fb_b2.0_m0.5": {
+    "np_medrank": 31,
+    "payer_medrank": 8
+   },
+   "fb_b2.0_m1.0": {
+    "np_medrank": 23,
+    "payer_medrank": 10
+   },
+   "fb_b4.0_m0.25": {
+    "np_medrank": 31,
+    "payer_medrank": 7
+   },
+   "fb_b4.0_m0.5": {
+    "np_medrank": 31,
+    "payer_medrank": 8
+   },
+   "fb_b4.0_m1.0": {
+    "np_medrank": 23,
+    "payer_medrank": 9
+   },
+   "recorded": {
+    "np_medrank": 23,
+    "payer_medrank": 10
+   }
+  },
+  "20260801": {
+   "fb_b1.5_m0.25": {
+    "np_medrank": 36.0,
+    "payer_medrank": 2
+   },
+   "fb_b1.5_m0.5": {
+    "np_medrank": 35.0,
+    "payer_medrank": 2
+   },
+   "fb_b1.5_m1.0": {
+    "np_medrank": 6.0,
+    "payer_medrank": 3
+   },
+   "fb_b2.0_m0.25": {
+    "np_medrank": 36.0,
+    "payer_medrank": 2
+   },
+   "fb_b2.0_m0.5": {
+    "np_medrank": 35.0,
+    "payer_medrank": 2
+   },
+   "fb_b2.0_m1.0": {
+    "np_medrank": 6.0,
+    "payer_medrank": 2
+   },
+   "fb_b4.0_m0.25": {
+    "np_medrank": 36.0,
+    "payer_medrank": 2
+   },
+   "fb_b4.0_m0.5": {
+    "np_medrank": 35.0,
+    "payer_medrank": 2
+   },
+   "fb_b4.0_m1.0": {
+    "np_medrank": 6.0,
+    "payer_medrank": 2
+   },
+   "recorded": {
+    "np_medrank": 6.0,
+    "payer_medrank": 3
+   }
+  },
+  "20260802": {
+   "fb_b1.5_m0.25": {
+    "np_medrank": 22,
+    "payer_medrank": 2
+   },
+   "fb_b1.5_m0.5": {
+    "np_medrank": 22,
+    "payer_medrank": 3
+   },
+   "fb_b1.5_m1.0": {
+    "np_medrank": 21,
+    "payer_medrank": 5
+   },
+   "fb_b2.0_m0.25": {
+    "np_medrank": 22,
+    "payer_medrank": 1
+   },
+   "fb_b2.0_m0.5": {
+    "np_medrank": 22,
+    "payer_medrank": 2
+   },
+   "fb_b2.0_m1.0": {
+    "np_medrank": 21,
+    "payer_medrank": 4
+   },
+   "fb_b4.0_m0.25": {
+    "np_medrank": 22,
+    "payer_medrank": 1
+   },
+   "fb_b4.0_m0.5": {
+    "np_medrank": 22,
+    "payer_medrank": 1
+   },
+   "fb_b4.0_m1.0": {
+    "np_medrank": 21,
+    "payer_medrank": 2
+   },
+   "recorded": {
+    "np_medrank": 20,
+    "payer_medrank": 8
+   }
+  },
+  "20260804": {
+   "fb_b1.5_m0.25": {
+    "np_medrank": 31,
+    "payer_medrank": 6
+   },
+   "fb_b1.5_m0.5": {
+    "np_medrank": 31,
+    "payer_medrank": 6
+   },
+   "fb_b1.5_m1.0": {
+    "np_medrank": 16,
+    "payer_medrank": 12
+   },
+   "fb_b2.0_m0.25": {
+    "np_medrank": 31,
+    "payer_medrank": 6
+   },
+   "fb_b2.0_m0.5": {
+    "np_medrank": 31,
+    "payer_medrank": 6
+   },
+   "fb_b2.0_m1.0": {
+    "np_medrank": 16,
+    "payer_medrank": 6
+   },
+   "fb_b4.0_m0.25": {
+    "np_medrank": 31,
+    "payer_medrank": 5
+   },
+   "fb_b4.0_m0.5": {
+    "np_medrank": 31,
+    "payer_medrank": 6
+   },
+   "fb_b4.0_m1.0": {
+    "np_medrank": 16,
+    "payer_medrank": 6
+   },
+   "recorded": {
+    "np_medrank": 10,
+    "payer_medrank": 21
+   }
+  }
+ },
+ "grid": [
+  [
+   1.5,
+   0.25
+  ],
+  [
+   1.5,
+   0.5
+  ],
+  [
+   1.5,
+   1.0
+  ],
+  [
+   2.0,
+   0.25
+  ],
+  [
+   2.0,
+   0.5
+  ],
+  [
+   2.0,
+   1.0
+  ],
+  [
+   4.0,
+   0.25
+  ],
+  [
+   4.0,
+   0.5
+  ],
+  [
+   4.0,
+   1.0
+  ]
+ ],
+ "read_ts": "2026-08-04T20:12:40.775021+00:00",
+ "schema": 1
+}
