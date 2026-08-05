@@ -46,6 +46,10 @@ def test_p4_restart_bundle_creates_the_marker():
     p = os.path.join(os.path.dirname(q.__file__), "restart_bundle.sh")
     src = open(p, encoding="utf-8", errors="replace").read()
     assert "day_baseline_reset" in src
-    assert src.index("day_baseline_reset") < src.index(
-        "systemctl restart polymarket-maker-kalshi-ws.service"), \
-        "marker must exist before the daemon starts its first cycle"
+    # blind review F11 ordering: OLD daemon stopped -> marker touched -> NEW daemon
+    # started, so only the new daemon can ever consume the reset.
+    i_stop = src.index("systemctl stop polymarket-maker-kalshi-ws.service")
+    i_touch = src.index("touch day_baseline_reset")
+    i_start = src.index("systemctl start polymarket-maker-kalshi-ws.service")
+    assert i_stop < i_touch < i_start, \
+        "marker must be created while the daemon is down, before its first cycle"

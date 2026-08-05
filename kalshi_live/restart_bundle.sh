@@ -45,8 +45,11 @@ TS=\$(date -u +%Y%m%d_%H%M%S)
 # A7 (operator-ruled 2026-08-05): an operator-NAMED restart re-baselines the daily-loss
 # governor at current equity (quoter consumes this marker once, first untorn cycle), so
 # the governor's day and the fresh P2 window agree — no more manual halt-absorption.
+# STOP-then-touch-then-START (blind review F11): touching while the OLD daemon still
+# cycles would let IT consume the marker and lose the reset in the SIGTERM window.
+systemctl stop polymarket-maker-kalshi-ws.service
 touch day_baseline_reset && chown polymarket:polymarket day_baseline_reset || true
-systemctl restart polymarket-maker-kalshi-ws.service
+systemctl start polymarket-maker-kalshi-ws.service
 SINCE=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
 echo "restarted_at=\$SINCE"
 nohup ./venv/bin/python -u w1_restart_checkpoint.py --since "\$SINCE" --watch-min 70 \

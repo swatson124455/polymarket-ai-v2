@@ -1254,6 +1254,10 @@ SERIES_ALLOW = [s for s in os.environ.get("KALSHI_SERIES_ALLOW", "").split(",") 
 # depend on them. PREFIX match (startswith) so one entry covers a family's hourly/daily strike
 # variants. Held inventory in a denied series still unwinds via the strand path (same guarantee
 # as the far-close cap). Empty = no-op.
+# ⚠ A6 (operator-ruled 2026-08-05: allowlist wins): deny is NO LONGER absolute — an EXACT
+# SERIES_ALLOW member overrides any deny prefix (KXDXY/KXNDQ/KXINX were shadowing the
+# receipt-proven KXDXYDUD/KXNDQHUD/KXINXHUD). To bench an ALLOWLISTED series, remove it
+# from SERIES_ALLOW (or rely on per-ticker mkt_out); a deny entry alone will not do it.
 SERIES_DENY = [s.strip() for s in os.environ.get("KALSHI_SERIES_DENY", "").split(",") if s.strip()]
 # --- DELTA-NEUTRALITY (inventory control) — the core maker mandate ---
 # TWO signals, distinct jobs:
