@@ -490,6 +490,87 @@ def _load_credit_feedback():
         return {}
 
 
+# W4/D3 SIZE RAMP (operator-ruled 2026-08-02 "5 then 10 then 25 then 50, >=10 min per rung";
+# built 2026-08-05 under the proceed-all-build ruling after the first-touch loss: 78% of the
+# -$7.97 restart-window loss was ONE 30-ct fill on KXNETFLIXTOPVIEWSTV, a series this account
+# had never traded — fills-per-lot separates losers at AUC 0.982 (master plan §4) while every
+# dollar cap sat inert). Ships OFF (KALSHI_D3_RAMP=0 = provable no-op).
+#   Rung = time since WE first intended accumulating quotes on the ticker (persisted in quoter
+#   state under "d3_first_seen", so a restart cannot amnesty a young market to full size; a
+#   ticker that leaves the desired set re-enters at rung 0 — conservative by construction).
+#   W7 NEW-SERIES CLAMP rides the same helper: a series with NO settled evidence of ours
+#   (no credits, no due filled events in the credit-feedback feed) is held at
+#   D3_NEWSERIES_MAX_RUNG regardless of age. Time-based rungs alone would NOT have capped
+#   the NETFLIX loss (the market was ~109 min old at the fill, top rung); the history clamp
+#   is the piece that would have (rung 1 = 10 ct -> ~1/3 the damage). A MISSING feedback
+#   table therefore clamps DOWN, not open — for a risk limiter the conservative direction is
+#   smaller size, the exact opposite of the estimator-fail-open doctrine, and deliberate.
+#   Unwind quotes are NEVER ramped (de-risk is never gated — house doctrine).
+D3_RAMP = _envi("KALSHI_D3_RAMP", 0)
+D3_RUNG_S = _envf("KALSHI_D3_RUNG_S", 600.0)
+D3_NEWSERIES_MAX_RUNG = _envi("KALSHI_D3_NEWSERIES_MAX_RUNG", 1)   # -1 disables the clamp
+try:
+    D3_RUNGS = [int(x) for x in os.environ.get("KALSHI_D3_RUNGS", "5,10,25,50").split(",")
+                if int(x) > 0]
+except (TypeError, ValueError):
+    D3_RUNGS = [5, 10, 25, 50]
+if not D3_RUNGS:
+    D3_RUNGS = [5, 10, 25, 50]
+
+
+def _d3_ramp_ct(ticker, now_ts, first_seen, feedback):
+    """Contract cap for this ticker's ACCUMULATING quotes at this moment. Registers the
+    ticker's first-seen timestamp as a side effect (rung 0 on first sight)."""
+    fs = first_seen.get(ticker)
+    if fs is None:
+        first_seen[ticker] = float(now_ts)
+        fs = now_ts
+    rung = min(int(max(0.0, float(now_ts) - float(fs)) / max(D3_RUNG_S, 1.0)),
+               len(D3_RUNGS) - 1)
+    if D3_NEWSERIES_MAX_RUNG >= 0:
+        row = (feedback or {}).get((ticker or "").split("-")[0])
+        # Proven = the series has actually PAID (credits_n > 0). Review F2 (2026-08-05):
+        # counting due_filled_events as proof let a CONVICTED never-paying series ramp to
+        # full size while the merely-unknown were held at 10 ct — backwards for a
+        # follow-the-profit sizer. Size-trust now requires a receipt; never_paid_due and
+        # unknown alike hold at the clamp rung (presence continues, size stays probe-scale
+        # — sizing is not benching).
+        proven = isinstance(row, dict) and (row.get("credits_n") or 0) > 0
+        if not proven:
+            rung = min(rung, D3_NEWSERIES_MAX_RUNG)
+    return D3_RUNGS[rung]
+
+
+def _d3_apply_ramp(q, ramp_ct, qstats=None):
+    """Clamp accumulating quote counts to ramp_ct in place; unwind quotes untouched."""
+    for o in q:
+        if o.get("reason") != "unwind" and o.get("count", 0) > ramp_ct:
+            if qstats is not None:
+                qstats["d3_ramp_capped"] = qstats.get("d3_ramp_capped", 0) + 1
+            o["count"] = max(1, int(ramp_ct))
+    return q
+
+
+_D3_FIRST_SEEN = None                 # {ticker: epoch} lazily restored from quoter state
+_D3_FB_CACHE = {"ts": 0.0, "table": {}}
+
+
+def _d3_feedback_cached(now_ts, max_age_s=60.0):
+    """The W7 clamp's evidence table, re-read at most once a minute. Independent of the D2
+    flag (the clamp needs it even when the rank multiplier is off). Fail-open {} — which for
+    THIS consumer means the new-series clamp binds (see the D3 block comment: a risk limiter
+    fails toward smaller size, deliberately)."""
+    if now_ts - _D3_FB_CACHE["ts"] > max_age_s:
+        try:
+            import kalshi_capital_rank
+            _D3_FB_CACHE["table"] = kalshi_capital_rank.load_credit_feedback(
+                CREDIT_FEEDBACK_PATH)
+        except Exception:
+            _D3_FB_CACHE["table"] = {}
+        _D3_FB_CACHE["ts"] = now_ts
+    return _D3_FB_CACHE["table"]
+
+
 def _caprank_variants():
     """The knob-sets the shadow is scored under EVERY cycle — so risk-aversion settings are
     chosen from logged evidence, not blind (operator 2026-07-29: 'can we shadow on multiple
@@ -4534,6 +4615,30 @@ def run_once():
                             _q_fullsize = [dict(_o6) for _o6 in q]
                         qstats["explore_probe_capped"] = qstats.get("explore_probe_capped", 0) + 1
                         _o5["count"] = EXPLORE_PROBE_CT
+            # W4/D3 SIZE RAMP + W7 NEW-SERIES CLAMP: accumulating counts capped by ticker age
+            # (rungs) and series track record; unwind never touched. Same post-hoc shape as the
+            # explore clamp above. The full-size copy rule matches it too: a ramped count is a
+            # risk decision, not a measurement of the market.
+            if q and D3_RAMP:
+                global _D3_FIRST_SEEN
+                if _D3_FIRST_SEEN is None:
+                    try:
+                        _D3_FIRST_SEEN = {str(k): float(v) for k, v in
+                                          (load_state().get("d3_first_seen") or {}).items()}
+                    except Exception:
+                        _D3_FIRST_SEEN = {}
+                if any(_o8.get("reason") != "unwind" for _o8 in q):
+                    _fb3 = _d3_feedback_cached(now.timestamp())
+                    if not _fb3:
+                        # review F1: an empty/missing feedback table binds the clamp for
+                        # EVERYTHING — visible, never silent.
+                        qstats["d3_feedback_empty"] = 1
+                    _rct = _d3_ramp_ct(t, now.timestamp(), _D3_FIRST_SEEN, _fb3)
+                    if any(_o8.get("reason") != "unwind" and _o8["count"] > _rct
+                           for _o8 in q):
+                        if _q_fullsize is None:
+                            _q_fullsize = [dict(_o9) for _o9 in q]
+                        _d3_apply_ramp(q, _rct, qstats)
             # LOSS GOVERNOR ENFORCEMENT: a tripped/cooling market keeps ONLY its reducing
             # quotes; accumulating ones are stripped here and the standing diff cancels any
             # already resting. Placed at the choke point every quoted market flows through.
@@ -5238,6 +5343,15 @@ def run_once():
         if DROP_GRACE > 0:
             st["drop_grace"] = grace_used
             plan["grace_retained"] = len(grace_used)
+        # W4/D3: persist first-seen so a restart cannot amnesty a young market to full size.
+        # Pruned to tickers still in the intended book — a dropped ticker re-enters at rung 0.
+        if D3_RAMP and _D3_FIRST_SEEN is not None:
+            _keep3 = {t9 for t9 in _D3_FIRST_SEEN if t9 in desired}
+            st["d3_first_seen"] = {t9: _D3_FIRST_SEEN[t9] for t9 in _keep3}
+            for t9 in list(_D3_FIRST_SEEN):
+                if t9 not in _keep3:
+                    _D3_FIRST_SEEN.pop(t9, None)
+            plan["d3_ramp_tracked"] = len(_keep3)
         # audit batch 3 (J2, operator-approved 2026-07-29): the counters are LIFETIME under
         # the long-lived daemon, so one old failure made every later plan row look actively
         # failing. silent_failures is now what fired THIS cycle; the lifetime total keeps
