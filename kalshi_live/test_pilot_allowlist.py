@@ -47,3 +47,20 @@ def test_flag_on_nonallowlist_passes_probe_only(monkeypatch):
 
 def test_flag_ships_off():
     assert q.ALLOW_PROBE_EXCEPTION == 0
+
+
+def test_probe_slot_cap_binds_best_pool_first(monkeypatch):
+    """Operator 2026-08-05: probes as small as possible — at most PROBE_MAX_SLOTS probe
+    markets survive selection; allowlist rows are never capped."""
+    monkeypatch.setattr(q, "SERIES_ALLOW", ["KXAAAGASD"])
+    monkeypatch.setattr(q, "ALLOW_PROBE_EXCEPTION", 1)
+    monkeypatch.setattr(q, "PROBE_MAX_SLOTS", 2)
+    import datetime as dt2
+    now = dt2.datetime.now(dt2.timezone.utc)
+    progs = [_prog("KXAAAGASD-26AUG09-4.100")] +             [_prog(f"KXPROBE{i}-26AUG09-T1") for i in range(5)]
+    rows = q.select_footprint(progs, now)
+    probes = [r for r in rows if r.get("explore")]
+    allowed = [r for r in rows if not r.get("explore")]
+    assert len(probes) == 2
+    assert len(allowed) == 1 and allowed[0]["ticker"].startswith("KXAAAGASD")
+    assert dict(q.FP_DROPS).get("probe_slots_dropped") == 3

@@ -517,6 +517,11 @@ def _w12_shape(p):
     p = min(0.99, max(0.01, float(p)))
     return (4.0 * p * (1.0 - p)) ** W12_SHAPE_EXP
 ALLOW_PROBE_EXCEPTION = _envi("KALSHI_ALLOW_PROBE_EXCEPTION", 0)   # 0 = allowlist absolute
+PROBE_MAX_SLOTS = _envi("KALSHI_PROBE_MAX_SLOTS", 5)   # concurrent probe markets, "as small
+#   as you can to get what is needed" (operator 2026-08-05): 5 probes x EXPLORE_PROBE_CT=5ct
+#   bounds discovery exposure to ~$12 notional worst-case while each probe stays big enough
+#   for its accrual to clear the venue's $1 credit floor (a smaller probe on a 100-ct-target
+#   book earns a share too small to ever pay, which reads as a false "never pays").
 D3_RAMP = _envi("KALSHI_D3_RAMP", 0)
 D3_RUNG_S = _envf("KALSHI_D3_RUNG_S", 600.0)
 D3_NEWSERIES_MAX_RUNG = _envi("KALSHI_D3_NEWSERIES_MAX_RUNG", 1)   # -1 disables the clamp
@@ -1767,6 +1772,18 @@ def select_footprint(progs, now):
                      # window: entering 80% through caps the score at ~20% however well we execute.
                      "life_min": life_min})
     rows.sort(key=lambda r: (-r["usd_day"], r["ticker"]))
+    # PROBE SLOT CAP: at most PROBE_MAX_SLOTS probe-only (non-allowlist exception) rows
+    # survive selection, best-pool-first; the allowlist rows are never touched.
+    if ALLOW_PROBE_EXCEPTION and PROBE_MAX_SLOTS >= 0:
+        _kept_p, _out = 0, []
+        for r in rows:
+            if r.get("explore") and SERIES_ALLOW and r["ticker"].split("-")[0] not in SERIES_ALLOW:
+                if _kept_p >= PROBE_MAX_SLOTS:
+                    drops["probe_slots_dropped"] = drops.get("probe_slots_dropped", 0) + 1
+                    continue
+                _kept_p += 1
+            _out.append(r)
+        rows = _out
     # MARKET-CLOCK PRE-FILTER (funnel audit 2026-07-29). The far-market-close veto originally ran
     # in run_once AFTER selection — so long-dated markets carrying short reward windows (the
     # KXNHPRIMARY28 pattern: market resolves 2028, program ends this week) consumed footprint
