@@ -58,11 +58,19 @@ def main():
     ap.add_argument("--seed", type=int, default=20260805)
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
-    import maker_kalshi_quoter as q
     from kalshi_capital_rank import est_commit_usd
+    import urllib.request
+
+    def public_get(path):
+        # PLAIN fetch — the quoter's public_get spends the live read budget and the first
+        # run exhausted it 153/250 (bug, 2026-08-05). A study must never touch that budget.
+        req = urllib.request.Request("https://api.elections.kalshi.com" + path,
+                                     headers={"User-Agent": "w5-breadth-study"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
 
     now = dt.datetime.now(dt.timezone.utc)
-    progs = harvest_active(q.public_get)
+    progs = harvest_active(public_get)
     horizon = now + dt.timedelta(days=a.horizon_days)
 
     def _iso(s):
@@ -106,10 +114,11 @@ def main():
     for i, t in enumerate(order):
         row = {"ticker": t, "pool_usd_day": round(pool_by_ticker[t], 2)}
         try:
-            mk = q.public_get(f"/trade-api/v2/markets/{t}").get("market") or {}
-            ob = q.public_get(f"/trade-api/v2/markets/{t}/orderbook").get("orderbook") or {}
-            yes = [(float(p) / 100.0, float(sz)) for p, sz in (ob.get("yes") or [])]
-            no = [(float(p) / 100.0, float(sz)) for p, sz in (ob.get("no") or [])]
+            mk = public_get(f"/trade-api/v2/markets/{t}").get("market") or {}
+            # venue shape (canon): orderbook_fp with *_dollars string pairs
+            ob = public_get(f"/trade-api/v2/markets/{t}/orderbook").get("orderbook_fp") or {}
+            yes = [(float(p), float(sz)) for p, sz in (ob.get("yes_dollars") or [])]
+            no = [(float(p), float(sz)) for p, sz in (ob.get("no_dollars") or [])]
             by = max((p for p, _ in yes), default=None)
             bn = max((p for p, _ in no), default=None)
             row["vol24h"] = float(mk.get("volume_24h") or 0)
