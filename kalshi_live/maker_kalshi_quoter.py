@@ -1772,18 +1772,6 @@ def select_footprint(progs, now):
                      # window: entering 80% through caps the score at ~20% however well we execute.
                      "life_min": life_min})
     rows.sort(key=lambda r: (-r["usd_day"], r["ticker"]))
-    # PROBE SLOT CAP: at most PROBE_MAX_SLOTS probe-only (non-allowlist exception) rows
-    # survive selection, best-pool-first; the allowlist rows are never touched.
-    if ALLOW_PROBE_EXCEPTION and PROBE_MAX_SLOTS >= 0:
-        _kept_p, _out = 0, []
-        for r in rows:
-            if r.get("explore") and SERIES_ALLOW and r["ticker"].split("-")[0] not in SERIES_ALLOW:
-                if _kept_p >= PROBE_MAX_SLOTS:
-                    drops["probe_slots_dropped"] = drops.get("probe_slots_dropped", 0) + 1
-                    continue
-                _kept_p += 1
-            _out.append(r)
-        rows = _out
     # MARKET-CLOCK PRE-FILTER (funnel audit 2026-07-29). The far-market-close veto originally ran
     # in run_once AFTER selection — so long-dated markets carrying short reward windows (the
     # KXNHPRIMARY28 pattern: market resolves 2028, program ends this week) consumed footprint
@@ -1850,7 +1838,16 @@ def select_footprint(progs, now):
             # needs it.
             if _v3 is not None:
                 r["vol24h_ct"] = float(_v3)
-            if MAX_VOL24H_CT > 0 and _v3 is not None and _v3 > MAX_VOL24H_CT:
+            _allowlisted3 = bool(SERIES_ALLOW) and r["ticker"].split("-")[0] in SERIES_ALLOW
+            if (MAX_VOL24H_CT > 0 and _v3 is not None and _v3 > MAX_VOL24H_CT
+                    and not _allowlisted3):
+                # ALLOWLIST EXEMPTION (operator option A, 2026-08-05): a receipts-proven series
+                # is screened by its OWN payment history, and the diagnostic measured this gate
+                # eating 24/40 allowlist rows -- including 17/17 gas strikes (vol 1,001-21,636ct,
+                # the series that paid us 13 credits AT that activity) -- while selecting FOR
+                # decided low-volume strikes that then fail the quote gates (quoted=0 wedge).
+                # The gate stays fully live for probes/unknowns: the 32k-ct probe books it was
+                # built for (operator-named 2026-08-02) are still blocked.
                 drops["drop_high_activity"] = drops.get("drop_high_activity", 0) + 1
                 continue
             try:
@@ -1862,6 +1859,20 @@ def select_footprint(progs, now):
             else:
                 _kept.append(r)
         rows = _kept
+    # PROBE SLOT CAP (moved BELOW the market-clock/activity pre-filter, review 2026-08-05:
+    # capping first burned every slot on rows the pre-filter then killed, so the surviving
+    # probe count was deterministically ZERO and the discovery surface was dead). At most
+    # PROBE_MAX_SLOTS probe-only rows survive, best-pool-first; allowlist rows never touched.
+    if ALLOW_PROBE_EXCEPTION and PROBE_MAX_SLOTS >= 0:
+        _kept_p, _out = 0, []
+        for r in rows:
+            if r.get("explore") and SERIES_ALLOW and r["ticker"].split("-")[0] not in SERIES_ALLOW:
+                if _kept_p >= PROBE_MAX_SLOTS:
+                    drops["probe_slots_dropped"] = drops.get("probe_slots_dropped", 0) + 1
+                    continue
+                _kept_p += 1
+            _out.append(r)
+        rows = _out
     # SCORE-BASED RANKING: replace the pool ordering with measured capture carried across cycles.
     # Falls back to exactly the pool order above for any market with no score yet, so a cold cache
     # (or a flag-off run) is byte-for-byte legacy. Wrapped — a ranking fault must never stop a cycle.

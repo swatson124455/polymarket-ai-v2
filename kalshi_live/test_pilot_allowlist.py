@@ -64,3 +64,31 @@ def test_probe_slot_cap_binds_best_pool_first(monkeypatch):
     assert len(probes) == 2
     assert len(allowed) == 1 and allowed[0]["ticker"].startswith("KXAAAGASD")
     assert dict(q.FP_DROPS).get("probe_slots_dropped") == 3
+
+
+def test_activity_gate_exempts_allowlist_but_blocks_probes(monkeypatch):
+    """Option A (operator 2026-08-05): a receipts-proven allowlist series passes the
+    high-activity gate at any volume (its own payment history is the screen — gas paid
+    13 credits at 1k-21.6k ct); a non-allowlist probe row above the ceiling still drops.
+    Also pins the probe-cap ORDER fix: the cap now runs after the pre-filter, so kept
+    probe slots are survivors, not deterministically-doomed rows."""
+    import datetime as dtx
+    monkeypatch.setattr(q, "SERIES_ALLOW", ["KXAAAGASD"])
+    monkeypatch.setattr(q, "ALLOW_PROBE_EXCEPTION", 1)
+    monkeypatch.setattr(q, "PROBE_MAX_SLOTS", 1)
+    monkeypatch.setattr(q, "MAX_VOL24H_CT", 1000)
+    now = dtx.datetime.now(dtx.timezone.utc)
+    close = (now + dtx.timedelta(days=1)).isoformat()
+    vols = {"KXAAAGASD-26AUG09-4.100": 21636.0,   # gas at real measured activity
+            "KXHOT-26AUG09-T1": 32000.0,          # doomed hot probe
+            "KXCALM-26AUG09-T1": 50.0}            # quiet probe — should take the slot
+    monkeypatch.setattr(q, "_close_cache_get", lambda t: close)
+    monkeypatch.setattr(q, "_vol24_cache_get", lambda t: vols.get(t, 0.0))
+    progs = [_prog("KXAAAGASD-26AUG09-4.100"),
+             _prog("KXHOT-26AUG09-T1"), _prog("KXCALM-26AUG09-T1")]
+    rows = q.select_footprint(progs, now)
+    tickers = {r["ticker"] for r in rows}
+    assert "KXAAAGASD-26AUG09-4.100" in tickers, "allowlist must pass the activity gate"
+    assert "KXHOT-26AUG09-T1" not in tickers, "hot probe must still drop"
+    assert "KXCALM-26AUG09-T1" in tickers, "the probe slot must go to a SURVIVOR"
+    assert dict(q.FP_DROPS).get("drop_high_activity") == 1
