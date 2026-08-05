@@ -4,11 +4,16 @@ works end-to-end on the running bot, from its own telemetry. Read-only.
 
 Checks, from the newest plans-YYYYMMDD.jsonl rows after --since:
   scored     scored_markets grows toward the active-program universe (coverage)
-  fresh      score_age_p50_m / p90_m fall as the sweeper walks (freshness); the 07-30
-             baseline this fixes: cache median age ~3.6 days, 9% under 30 min
-  consuming  pcap_age_p50_m present and bounded (ALLOC merge consuming sweeper rows)
+  fresh      pcap_age_p50_m bounded — the sweeper writes MODEL observations (pcap/pts)
+             ONLY; the 2026-07-31 gauge split deliberately keeps it out of score_age_*
+             (ts = actual-quoting measurements). A4 (logic audit, operator-ruled
+             2026-08-05): the original criterion gated on score_age_p50_m, which the
+             sweeper cannot move — in the 23-series pilot (quoted≈3 of ~8k cached rows)
+             it could NEVER pass while the sweeper was measured healthy (1243/1243
+             stored, 0 errors, pcap p50 ≈69m ≈ its ~72-min full pass). score_age_* is
+             still PRINTED for the record; it just no longer gates.
 Prints each metric's first and latest post-restart values; exit 0 when the latest row has
-scored_markets >= --min-scored AND score_age_p50_m <= --max-p50-min, else exit 1.
+scored_markets >= --min-scored AND pcap_age_p50_m <= --max-p50-min, else exit 1.
 Run:  sudo ./venv/bin/python w6_sweep_verify.py --since <restart-iso> [--max-p50-min 180]
 """
 import argparse
@@ -47,9 +52,9 @@ def main():
               "pcap_age_p50_m", "footprint", "quoted_markets"):
         print(f"{k:18s} first={first.get(k)}  latest={last.get(k)}")
     ok = ((last.get("scored_markets") or 0) >= a.min_scored
-          and (last.get("score_age_p50_m") or 1e9) <= a.max_p50_min)
+          and (last.get("pcap_age_p50_m") or 1e9) <= a.max_p50_min)
     print("W6 VERIFY:", "PASS" if ok else
-          f"NOT YET (need scored>={a.min_scored} and p50<={a.max_p50_min}m; "
+          f"NOT YET (need scored>={a.min_scored} and pcap p50<={a.max_p50_min}m; "
           f"the sweeper's full pass over ~4.3k programs takes ~72 min at 1 read/s)")
     raise SystemExit(0 if ok else 1)
 
