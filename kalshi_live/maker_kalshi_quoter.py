@@ -506,6 +506,8 @@ def _load_credit_feedback():
 #   table therefore clamps DOWN, not open — for a risk limiter the conservative direction is
 #   smaller size, the exact opposite of the estimator-fail-open doctrine, and deliberate.
 #   Unwind quotes are NEVER ramped (de-risk is never gated — house doctrine).
+W12_PRICE_SHAPE = _envi("KALSHI_W12_PRICE_SHAPE", 0)   # 0 = OFF (provable no-op)
+W12_SHAPE_EXP = _envf("KALSHI_W12_SHAPE_EXP", 1.0)     # P2-receipt calibration knob
 D3_RAMP = _envi("KALSHI_D3_RAMP", 0)
 D3_RUNG_S = _envf("KALSHI_D3_RUNG_S", 600.0)
 D3_NEWSERIES_MAX_RUNG = _envi("KALSHI_D3_NEWSERIES_MAX_RUNG", 1)   # -1 disables the clamp
@@ -2213,6 +2215,17 @@ def _prospective_capture(m, yl, nl, best_y, best_n, target):
     if not (qy and qn):
         return 0.0
     snap = (ry / (1.0 + ry) + rn / (1.0 + rn)) / 2.0
+    if W12_PRICE_SHAPE and best_y is not None:
+        # W12 (built 2026-08-05 under proceed-all-build; ships OFF): weight the forecast by
+        # the price-level shape w(p) = 4·p·(1−p), 1.0 at 50c, 0.117 at 97c. W10 measured the
+        # signature this models: KXEURUSDAW-26JUL31 rested 12.84h with 65.8% of presence at
+        # min(p,1−p) < $0.05 and was credited $0.00 while the un-weighted model forecast
+        # dollars — deep-extreme books earn ~nothing, and this estimator feeds the $1.20
+        # floor gate, so over-predicting there is what admits sub-$1 drive-bys (W10 §5).
+        # INFERRED shape: the venue documents P(1−P) for FEES, not for LIP scoring — the
+        # exponent knob exists so P2 receipts can calibrate or refute it before any enable.
+        p = min(0.99, max(0.01, float(best_y)))
+        snap *= (4.0 * p * (1.0 - p)) ** W12_SHAPE_EXP
     return snap * float(m.get("usd_day", 0.0) or 0.0)
 
 
