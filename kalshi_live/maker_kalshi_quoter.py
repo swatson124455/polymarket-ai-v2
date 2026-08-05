@@ -4530,6 +4530,7 @@ def run_once():
                 _tot9, _fam9 = 0.0, defaultdict(float)
                 _keepset9, _saidno9 = set(), set()
                 _drop_budget9 = _drop_family9 = 0
+                _fam_dropped9 = []
                 for _m9 in _order9:
                     _t9 = _m9["ticker"]
                     _f9 = _t9.split("-")[0]
@@ -4557,6 +4558,7 @@ def run_once():
                     if _famcap9 > 0 and _fam9[_f9] + _est9 > _famcap9:
                         _drop_family9 += 1      # family budget full: skip THIS sibling
                         _saidno9.add(_t9)
+                        _fam_dropped9.append(_t9)   # A3 telemetry: name the evicted
                         continue
                     if _tot9 + _est9 > _limit9:
                         _drop_budget9 += 1      # keep walking: a cheaper market may fit
@@ -4576,6 +4578,12 @@ def run_once():
                     plan["drop_budget_full"] = _drop_budget9
                 if _drop_family9:
                     plan["drop_family_budget"] = _drop_family9
+                    # A3 (operator-ruled 2026-08-05, telemetry-now): WHICH siblings the
+                    # family cap evicted — the count alone couldn't answer whether the
+                    # eviction lands on the right (lowest-priority) rows, given the
+                    # alphabetical same-pool tie-break. Capped: worst case one family
+                    # ladder ~50 strikes; 40 keeps the row bounded.
+                    plan["family_dropped_tickers"] = _fam_dropped9[:40]
             except Exception:
                 _SILENT["select_budget_fail"] += 1
         if plan.get("strike_parse_failed"):
