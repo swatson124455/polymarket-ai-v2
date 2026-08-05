@@ -516,6 +516,7 @@ def _w12_shape(p):
     the sweeper/ALLOC feed into mixed shaped/unshaped bases, up to 8.6x apart per ticker)."""
     p = min(0.99, max(0.01, float(p)))
     return (4.0 * p * (1.0 - p)) ** W12_SHAPE_EXP
+ALLOW_PROBE_EXCEPTION = _envi("KALSHI_ALLOW_PROBE_EXCEPTION", 0)   # 0 = allowlist absolute
 D3_RAMP = _envi("KALSHI_D3_RAMP", 0)
 D3_RUNG_S = _envf("KALSHI_D3_RUNG_S", 600.0)
 D3_NEWSERIES_MAX_RUNG = _envi("KALSHI_D3_NEWSERIES_MAX_RUNG", 1)   # -1 disables the clamp
@@ -1705,9 +1706,18 @@ def select_footprint(progs, now):
         t = p.get("market_ticker")
         if not t:
             continue
+        probe_only = False
         if SERIES_ALLOW and t.split("-")[0] not in SERIES_ALLOW:
-            drops["drop_allowlist"] = drops.get("drop_allowlist", 0) + 1
-            continue                       # series allowlist (pilot = weather/temp only)
+            # CLOSED-WORLD PILOT EXCEPTION (operator-ruled 2026-08-05, question 4): with the
+            # flag on, a non-allowlist series is not dropped -- it passes PROBE-ONLY, tagged
+            # explore so the existing probe clamp (EXPLORE_PROBE_CT) sizes it and the D3 ramp
+            # / W7 receipt clamp bound it further. Real presence stays allowlist-only; the
+            # discovery surface costs at most probe scale. Flag off = the absolute allowlist.
+            if not ALLOW_PROBE_EXCEPTION:
+                drops["drop_allowlist"] = drops.get("drop_allowlist", 0) + 1
+                continue                   # series allowlist (pilot = proven payers only)
+            probe_only = True
+            drops["allow_probe_passed"] = drops.get("allow_probe_passed", 0) + 1
         if SERIES_DENY and any(t.startswith(p) for p in SERIES_DENY):
             drops["drop_series_deny"] = drops.get("drop_series_deny", 0) + 1
             continue                       # operator-excluded family (see SERIES_DENY comment)
@@ -1742,7 +1752,8 @@ def select_footprint(progs, now):
         # and bound_creates (:1154), so dividing by window length flattered short-window (hourly)
         # programs ~24x and buried long-window ones by their length in days.
         # period_reward may be present-but-null (pending programs) -> `or 0`, not .get default
-        rows.append({"ticker": t, "usd_day": (p.get("period_reward") or 0) / 10000,
+        rows.append({"ticker": t, **({"explore": True} if probe_only else {}),
+                     "usd_day": (p.get("period_reward") or 0) / 10000,
                      "target": float(p["target_size_fp"]), "end": end.isoformat(),
                      # discount factor for the CAPTURE GATE's R4 walk; discount_factor_bps is
                      # guaranteed non-null by the guard above. Additive key read by nothing except
