@@ -42,6 +42,10 @@ for kv in $FLAGS; do
 done
 TS=\$(date -u +%Y%m%d_%H%M%S)
 [ -f STOP ] && mv STOP "STOP.cleared-\$TS"
+# A7 (operator-ruled 2026-08-05): an operator-NAMED restart re-baselines the daily-loss
+# governor at current equity (quoter consumes this marker once, first untorn cycle), so
+# the governor's day and the fresh P2 window agree — no more manual halt-absorption.
+touch day_baseline_reset && chown polymarket:polymarket day_baseline_reset || true
 systemctl restart polymarket-maker-kalshi-ws.service
 SINCE=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
 echo "restarted_at=\$SINCE"

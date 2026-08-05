@@ -2860,6 +2860,23 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     return quotes
 
 
+DAY_BASELINE_RESET_MARKER = os.path.join(DATA_DIR, "day_baseline_reset")
+
+
+def _consume_day_baseline_marker():
+    """A7 (operator-ruled 2026-08-05): True exactly once when the operator-named-restart
+    marker exists; the marker is deleted on consumption. Anything failing (permission,
+    race) reads as absent — the governor then keeps the ordinary UTC-day baseline, which
+    is the strictly-safer meter."""
+    try:
+        if os.path.exists(DAY_BASELINE_RESET_MARKER):
+            os.remove(DAY_BASELINE_RESET_MARKER)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _l3_default_close_of(ticker):
     """Market close_time for the L3 expiry check — cached (static per market), one public
     read on a miss, negative results cached too (same idiom as the far-close cap)."""
@@ -4345,9 +4362,19 @@ def run_once():
                     if st["equity_torn_streak"] >= 2:
                         _exit_only_all = True
                         plan["equity_torn_reduce_only"] = 1
-                elif st.get("equity_day") != _day:
+                elif st.get("equity_day") != _day or _consume_day_baseline_marker():
+                    # A7 (operator-ruled 2026-08-05): an operator-NAMED restart may drop the
+                    # day_baseline_reset marker (restart_bundle.sh) — the daily-loss governor
+                    # then re-baselines at current equity so its day agrees with the fresh P2
+                    # verdict window instead of inheriting pre-restart tainted carry (the
+                    # 08-05 "18.25 today-only" workaround this replaces). Marker is consumed
+                    # ONCE, only on an untorn cycle, and only widens nothing: the halt still
+                    # measures true drawdown from the new baseline. Auto/crash restarts do
+                    # not create the marker — no amnesty for those.
                     plan["equity_torn"] = 0
                     st["equity_torn_streak"] = 0
+                    if st.get("equity_day") == _day:
+                        plan["day_baseline_reset"] = 1
                     st["equity_day"] = _day
                     st["equity_day_start"] = _equity
                     st["equity_day_peak"] = _equity
