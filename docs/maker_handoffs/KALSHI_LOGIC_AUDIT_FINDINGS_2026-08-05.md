@@ -1,5 +1,20 @@
 # KALSHI LOGIC AUDIT — FINDINGS & OPERATOR DECISION BATCH (2026-08-05, session 2)
 
+> **EXECUTED 2026-08-05 ~23:20-23:40Z — operator ruled every item** (1 GO, 2 GO, 3 GO,
+> 4 GO, 5 GO, 6 do-rec, 7 ok; "do we need a green-lit market list" answered:
+> SERIES_ALLOW already is it, the fixes make every subsystem respect it).
+> Commits `e395fbe` A6 · `b583f7b` A9-F4 · `3bb2475`+`f8073e4` A1b (BOTH tagging
+> sites — deploy-verify caught the governor re-clamp rebuilding the taint raw, site 2)
+> · `2fa5410` A7 · `09a203a` A4 · `2000729` A3-telemetry · `684d34e` review follow-ups
+> (bundle stop→touch→start, deny-comment refresh). Suite 1195 passed / 2 xfailed exit 0;
+> batch blind review 0 blockers. Deployed quoter md5 `6ccbd68f`, w6 `da566eb9`,
+> backups .bak-BATCH-20260805 / .bak-BATCH2-20260805. Live-verified 23:38:42Z:
+> series_probe 12→0; KXTOPMODEL-CLAUM 5/5ct→25/50ct (model capture $1.12→$5.08/day);
+> committed $11.84→$34.14; probe containment intact; family_dropped_tickers live
+> (= the far gas strikes — eviction landing correctly). W6-gate items (near-money
+> tie-break, ramp-aware est, band-discounted rank) are ruled "do rec": design+test at
+> W6 arming. A5/A8/A10 unchanged behind their B8/W12 gates.
+
 Mandate: KALSHI_HANDOFF_2026-08-05_LOGIC_AUDIT.md §§2-4 under §3b rulings.
 Method: every finding below is REPRODUCED from live telemetry (quotes/plans/caprank
 jsonl, VPS state) or pinned to file:line code evidence. Labels per RULE SIX.
