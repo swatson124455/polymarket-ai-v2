@@ -2860,6 +2860,42 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     return quotes
 
 
+def _l3_default_close_of(ticker):
+    """Market close_time for the L3 expiry check — cached (static per market), one public
+    read on a miss, negative results cached too (same idiom as the far-close cap)."""
+    ct = _close_cache_get(ticker)
+    if ct is None:
+        try:
+            ct = public_get(f"/trade-api/v2/markets/{ticker}"
+                            ).get("market", {}).get("close_time")
+            _close_cache_put(ticker, ct)
+        except Exception:
+            return None                    # unknown -> caller keeps the taint
+    return ct
+
+
+def _l3_out_series(mkt_out, now, close_of=None):
+    """Series prefixes whose L3 series-probe taint is LIVE (A1b, operator-ruled
+    2026-08-05: a conviction EXPIRES when its market closes). A settled strike cannot
+    fill again, so it cannot bleed again — measured 08-05: 9/10 mkt_out members were
+    settled markets, permanently probe-sizing 6/23 pilot payer series (TOPMODEL's
+    quotable strike held at 5ct on a $200/day pool). Unknown/unparseable close KEEPS
+    the taint — the risk limiter fails toward smaller size. Reads at most len(mkt_out)
+    cached market clocks (n=10 live). NEVER mutates mkt_out: the per-ticker exit-only
+    ban is a different consumer and keeps its own semantics."""
+    close_of = close_of or _l3_default_close_of
+    live = set()
+    for t in (mkt_out or []):
+        ct = close_of(t)
+        try:
+            expired = bool(ct) and parse_iso(ct) <= now
+        except Exception:
+            expired = False                # unparseable clock -> keep the taint
+        if not expired:
+            live.add(str(t).split("-")[0])
+    return live
+
+
 def apply_drop_grace(standing, desired, footprint_tickers, prev_grace, grace_cycles,
                      held=None, exit_only=None, inv_tolerance=1.0):
     """Retain a ticker's existing book for a few cycles when it merely ROTATED OUT of the footprint.
@@ -3548,7 +3584,9 @@ def run_once():
         # burn to probe scale. Incumbent/held tickers are untouched (their unwind sizing
         # must never shrink; the explore clamp already exempts reason=='unwind').
         if EXPLORE_PROBE_CT > 0:
-            _out_series = {t5.split("-")[0] for t5 in (st.get("mkt_out") or [])}
+            # A1b (operator-ruled 2026-08-05): only convictions whose market is still
+            # OPEN taint their series — settled strikes expire (see _l3_out_series).
+            _out_series = _l3_out_series(st.get("mkt_out") or [], now)
             if _out_series:
                 for _r5 in footprint:
                     if (not _r5.get("explore")
