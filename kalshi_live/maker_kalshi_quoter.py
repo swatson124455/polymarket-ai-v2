@@ -1723,7 +1723,12 @@ def select_footprint(progs, now):
                 continue                   # series allowlist (pilot = proven payers only)
             probe_only = True
             drops["allow_probe_passed"] = drops.get("allow_probe_passed", 0) + 1
-        if SERIES_DENY and any(t.startswith(p) for p in SERIES_DENY):
+        if (SERIES_DENY and any(t.startswith(p) for p in SERIES_DENY)
+                and not (SERIES_ALLOW and t.split("-")[0] in SERIES_ALLOW)):
+            # A6 (operator-ruled 2026-08-05: allowlist wins): an EXACT SERIES_ALLOW member
+            # outranks a deny PREFIX — the KXDXY/KXNDQ/KXINX prefixes were shadowing
+            # allowlisted KXDXYDUD/KXNDQHUD/KXINXHUD whenever their programs return.
+            # Deny keeps full force for every non-allowlisted series, probe rows included.
             drops["drop_series_deny"] = drops.get("drop_series_deny", 0) + 1
             continue                       # operator-excluded family (see SERIES_DENY comment)
         try:
