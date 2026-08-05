@@ -133,4 +133,8 @@ def test_d5_reclamp_is_isolated_in_its_own_guard():
     i = src.index('_SILENT["series_probe_reclamp_fail"] += 1')
     window = src[i - 900:i]
     assert "except Exception:" in window
-    assert "str(_t7).split" in window, "ticker split must be str()-hardened"
+    # A1b (2026-08-05): the taint set is now derived through _l3_out_series, which owns
+    # the str()-hardened split — the isolation property is unchanged, its home moved.
+    assert "_l3_out_series(" in window, "re-clamp must derive its taint via the expiry"
+    assert "str(t).split" in inspect.getsource(q._l3_out_series), \
+        "ticker split must be str()-hardened"

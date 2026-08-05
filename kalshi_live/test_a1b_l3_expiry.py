@@ -56,3 +56,16 @@ def test_p5_mkt_out_not_pruned():
     q._l3_out_series(mkt_out, NOW, close_of=lambda t: PAST)
     assert mkt_out == ["KXTOPMODEL-26AUG03-CLAU5"], \
         "expiry gates the SERIES taint only; the per-ticker ban list is untouched"
+
+
+def test_p6_both_tagging_sites_use_the_expiry():
+    """Deploy-verify 2026-08-05: fixing only the selection-time L3 site left
+    series_probe=12 live — the loss-governor RE-CLAMP rebuilt the taint raw from
+    mkt_out every cycle. Every series-probe tagging site must derive its taint set
+    through _l3_out_series; a raw prefix-set rebuild reintroduces the permanent
+    taint."""
+    src = open(q.__file__, encoding="utf-8", errors="replace").read()
+    assert src.count("_l3_out_series(") >= 3, \
+        "def + two call sites (selection L3 + governor re-clamp) expected"
+    assert "{str(_t7).split" not in src, \
+        "the re-clamp's raw prefix-set rebuild must not come back"

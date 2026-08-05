@@ -4072,7 +4072,11 @@ def run_once():
                     # gov_fail_streak and flip the whole book reduce-only after 3 cycles.
                     if EXPLORE_PROBE_CT > 0:
                         try:
-                            _out_series5 = {str(_t7).split("-")[0] for _t7 in _out4}
+                            # A1b applies HERE too (deploy-verify 2026-08-05: fixing only
+                            # the selection-time site left series_probe=12 — THIS re-clamp
+                            # rebuilt the taint raw every cycle): settled convictions do
+                            # not probe-size their siblings.
+                            _out_series5 = _l3_out_series(sorted(_out4), now)
                             for _r7 in footprint:
                                 if (not _r7.get("explore")
                                         and _r7.get("ticker", "").split("-")[0] in _out_series5):
