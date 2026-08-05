@@ -231,11 +231,20 @@ def score(markets, ticker, pool_usd_day, now=None, swing_penalty=1.0, unknown_bo
 
 def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,
          swing_penalty=1.0, unknown_bonus=1.0, explore=0,
-         incumbents=None, incumbency_bonus=0.0):
+         incumbents=None, incumbency_bonus=0.0, explore_exempt=None):
     """Order `rows` best-first by score. `explore` reserves that many slots at the FRONT for the
     least-recently-seen unscored markets, so the venue keeps getting swept even while known-good
     markets dominate the ranking. Without it the bot converges on whatever it happened to read
-    first and never discovers anything better."""
+    first and never discovers anything better.
+
+    `explore_exempt` (A1, logic audit 2026-08-05): series names whose rows must NEVER be
+    explore-tagged. Explore exists to measure UNKNOWNS; the pilot's receipt-proven allowlist
+    series were absorbing sampling slots as "stale" and the probe clamp then sized proven
+    earners at 5ct (KXTOPMODEL measured 28x capped in one evening). Exempt rows still rank
+    normally and still refresh their scores through real quoting (the D4 fold); they just
+    cannot spend an earning seat on a data budget. Rows arriving pre-tagged (the pilot's
+    probe containment) are never untagged here — this function only ADDS tags. None = no
+    exemption, byte-identical to the pre-A1 behaviour."""
     now = now if now is not None else _now()
     scored = []
     for r in rows:
@@ -262,7 +271,12 @@ def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,
     # unknowns least-recently-ATTEMPTED first (never-attempted lead, deterministic ticker
     # tie-break) — a full sweep whose frontier advances even past unpriceable markets,
     # because touch_attempt() stamps the try itself.
-    unseen = sorted((t for t in scored if t[1] == "unknown"),
+    _exempt = explore_exempt or ()
+
+    def _is_exempt(t):
+        return str(t[2].get(ticker_key) or "").split("-")[0] in _exempt
+
+    unseen = sorted((t for t in scored if t[1] == "unknown" and not _is_exempt(t)),
                     key=lambda t: (float((markets.get(t[2].get(ticker_key)) or {})
                                          .get("ats") or 0.0),
                                    str(t[2].get(ticker_key))))
@@ -274,7 +288,7 @@ def rank(markets, rows, pool_key="usd_day", ticker_key="ticker", now=None,
     # value change silently reordered which markets got sampling slots — the exact thing D1's
     # commit claimed was byte-unchanged. Matching the `unseen` queue's deterministic tie-break
     # makes the sweep order depend on staleness and ticker only, never on the score.
-    stale = sorted((t for t in scored if t[1] == "stale"),
+    stale = sorted((t for t in scored if t[1] == "stale" and not _is_exempt(t)),
                    key=lambda t: (float((markets.get(t[2].get(ticker_key)) or {}).get("ts") or 0.0),
                                   str(t[2].get(ticker_key))))
     pool_of_candidates = unseen + stale

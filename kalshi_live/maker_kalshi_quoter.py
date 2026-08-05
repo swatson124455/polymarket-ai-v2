@@ -1884,6 +1884,9 @@ def select_footprint(progs, now):
                     SCORES, rows, now=now.timestamp(),
                     swing_penalty=SCORE_SWING_PENALTY, unknown_bonus=SCORE_UNKNOWN_BONUS,
                     explore=SCORE_EXPLORE,
+                    # A1 (logic audit 2026-08-05): allowlist payers must never absorb a
+                    # sampling slot — the probe clamp was sizing proven earners at 5ct.
+                    explore_exempt=(frozenset(SERIES_ALLOW) if SERIES_ALLOW else None),
                     incumbents=_INCUMBENT_TICKERS, incumbency_bonus=INCUMBENCY_BONUS)
         except Exception:
             _SILENT["rank_fail"] += 1        # silently fell back to POOL order
