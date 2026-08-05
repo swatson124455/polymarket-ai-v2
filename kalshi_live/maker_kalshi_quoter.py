@@ -2860,7 +2860,8 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     return quotes
 
 
-def apply_drop_grace(standing, desired, footprint_tickers, prev_grace, grace_cycles):
+def apply_drop_grace(standing, desired, footprint_tickers, prev_grace, grace_cycles,
+                     held=None, exit_only=None, inv_tolerance=1.0):
     """Retain a ticker's existing book for a few cycles when it merely ROTATED OUT of the footprint.
 
     Returns (desired, new_grace) where new_grace maps ticker -> cycles used so far.
@@ -2876,10 +2877,23 @@ def apply_drop_grace(standing, desired, footprint_tickers, prev_grace, grace_cyc
 
     Retained orders are copied VERBATIM from standing, so the diff sees an exact match and emits
     neither a cancel nor a create — the book simply stays, keeping its queue position and its
-    time-on-book. Pure function, no I/O."""
+    time-on-book. Pure function, no I/O.
+
+    A9-F4 (logic audit, operator-authorized 2026-08-05): `held` ({ticker: signed naked ct})
+    re-tags the reducing side of a retained held ticker as reason='unwind' — a reason-less
+    copy is invisible to every polarity-aware gate downstream (cap_desired's unconditional
+    keep at its :3181-check, bound_creates priority, the breaker filter), so a tight capital
+    cap could DROP the retained ticker and the diff would cancel a live resting exit on a
+    held position. Mirrors the in-loop fetch-fail retention (review 07-22 skeptic), which
+    already did exactly this. Tagging is diff-neutral (diff keys on side+price+count only).
+    `exit_only` (set of governed tickers) applies the same F6a parity as the fetch-fail
+    block: accumulating copies of a governed market are stripped; if nothing reducing rests,
+    the ticker is not retained at all. Defaults (None/None) are byte-identical pre-F4."""
     new_grace = {}
     if grace_cycles <= 0:
         return desired, new_grace
+    held = held or {}
+    exit_only = exit_only or frozenset()
     out = dict(desired)
     for t, orders in standing.items():
         if not orders or t in out or t in footprint_tickers:
@@ -2887,9 +2901,20 @@ def apply_drop_grace(standing, desired, footprint_tickers, prev_grace, grace_cyc
         used = int(prev_grace.get(t, 0))
         if used >= grace_cycles:
             continue                       # grace exhausted -> let the diff cancel it
-        new_grace[t] = used + 1
-        out[t] = [{"side": o["side"], "price_dollars": o["price_dollars"], "count": o["count"]}
+        copies = [{"side": o["side"], "price_dollars": o["price_dollars"], "count": o["count"]}
                   for o in orders]
+        _pos = float(held.get(t, 0.0) or 0.0)
+        if abs(_pos) >= inv_tolerance:
+            copies = [dict(o, **({"reason": "unwind"} if
+                                 ((_pos > 0 and o["side"] == "no") or
+                                  (_pos < 0 and o["side"] == "yes")) else {}))
+                      for o in copies]
+        if t in exit_only:
+            copies = [o for o in copies if o.get("reason") == "unwind"]
+            if not copies:
+                continue                   # governed + nothing reducing -> let the diff cancel
+        new_grace[t] = used + 1
+        out[t] = copies
     return out, new_grace
 
 
@@ -5062,7 +5087,19 @@ def run_once():
                 _fp_now = {m["ticker"] for m in footprint} | _budget_said_no
                 desired, grace_used = apply_drop_grace(
                     standing, desired, _fp_now,
-                    (load_state().get("drop_grace") or {}), DROP_GRACE)
+                    (load_state().get("drop_grace") or {}), DROP_GRACE,
+                    # A9-F4: retained held tickers keep their unwind tag; governed
+                    # tickers keep only their unwind (F6a parity with fetch-fail).
+                    held=naked_by,
+                    exit_only=(set(standing) if _exit_only_all else _exit_only_mkts),
+                    inv_tolerance=INV_TOLERANCE)
+                _g_tagged = sum(1 for _tg in grace_used
+                                if any(o.get("reason") == "unwind"
+                                       for o in desired.get(_tg, [])))
+                if _g_tagged:
+                    # occurrence counter for the F4 composition (held book carried
+                    # through grace) — zero on quiet cycles, absent pre-F4.
+                    plan["grace_unwind_tagged"] = _g_tagged
             except Exception:
                 grace_used = {}
         _fam_held = None
