@@ -1,0 +1,1953 @@
+{
+ "avg_commit_usd": 29.89,
+ "capital_rungs": {
+  "1000": 33.5,
+  "2500": 83.6,
+  "350": 11.7
+ },
+ "est_qualifying_universe": 1905.5,
+ "in_horizon": 2996,
+ "programs_active": 4304,
+ "qualifying_frac": 0.636,
+ "qualifying_in_sample": 159,
+ "read_ts": "2026-08-05T03:40:17.333240+00:00",
+ "rows": [
+  {
+   "pool_usd_day": 15.0,
+   "skip": "one_sided",
+   "ticker": "KXA100WS-26AUG07-0.500",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXAAAGASD-26AUG05-4.050",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.95,
+   "spread_ticks": 1,
+   "ticker": "KXAAAGASW-26AUG10-3.940",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.85,
+   "spread_ticks": 1,
+   "ticker": "KXABNB-26AUGNEB-145000000",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.11,
+   "spread_ticks": 1,
+   "ticker": "KXACTBLUETOP-26AUG07-AELS",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 41.0,
+   "pool_usd_day": 285.0,
+   "ref_yes": 0.4,
+   "spread_ticks": 1,
+   "ticker": "KXADJOURNRECESS-26AUG-AUG10",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 135.0,
+   "ref_yes": 0.13,
+   "skip": "wide",
+   "spread_ticks": 47,
+   "ticker": "KXALBUMRELEASEDATE-NEWDON-26DEC01",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.7,
+   "pool_usd_day": 125.0,
+   "ref_yes": 0.91,
+   "spread_ticks": 6,
+   "ticker": "KXAMZN-26OCTEMP-1540000.0",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.66,
+   "skip": "wide",
+   "spread_ticks": 30,
+   "ticker": "KXAMZNCC-26SEP07-T102",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 110.0,
+   "ref_yes": 0.53,
+   "skip": "wide",
+   "spread_ticks": 29,
+   "ticker": "KXANFCC-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 35.8,
+   "pool_usd_day": 125.0,
+   "ref_yes": 0.71,
+   "spread_ticks": 1,
+   "ticker": "KXAPRPOTUS-26AUG07-39.2",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.7,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.62,
+   "spread_ticks": 4,
+   "ticker": "KXATPCOMPETE-26USOALC-ALC",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 15.0,
+   "skip": "one_sided",
+   "ticker": "KXB200WS-26AUG07-3.000",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.05,
+   "spread_ticks": 1,
+   "ticker": "KXBIGBROTHERRANK-26DEC31R2-ANG",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 41.3,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.42,
+   "spread_ticks": 1,
+   "ticker": "KXBKFT-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 120.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 1,
+   "ticker": "KXBKNUGGETS-26SEP02-T3.47",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.4,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.08,
+   "spread_ticks": 1,
+   "ticker": "KXBOND-30-AP",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.4,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.92,
+   "spread_ticks": 1,
+   "ticker": "KXBROSFT-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 200.0,
+   "skip": "one_sided",
+   "ticker": "KXCAC40-26AUG31-8650",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 42.45,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.51,
+   "spread_ticks": 2,
+   "ticker": "KXCAVAFT-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 35.0,
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.75,
+   "spread_ticks": 3,
+   "ticker": "KXCBDECISIONBRAZIL-26SEP16-C25",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.03,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXCBDECISIONINDIA-26OCT07-C25",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.22,
+   "skip": "wide",
+   "spread_ticks": 12,
+   "ticker": "KXCBDECISIONMEXICO-26DEC17-C25",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 37.0,
+   "pool_usd_day": 285.0,
+   "ref_yes": 0.35,
+   "spread_ticks": 1,
+   "ticker": "KXCENSUREEDWARDS-26NOV",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.4,
+   "pool_usd_day": 170.0,
+   "ref_yes": 0.92,
+   "spread_ticks": 1,
+   "ticker": "KXCFACHICKSAND-26SEP02-T5.38",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.64,
+   "skip": "wide",
+   "spread_ticks": 29,
+   "ticker": "KXCFILCC-26SEP07-T101",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.25,
+   "pool_usd_day": 135.0,
+   "ref_yes": 0.83,
+   "spread_ticks": 6,
+   "ticker": "KXCHINAAI-26AUG17-ALIB",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 36.4,
+   "pool_usd_day": 230.0,
+   "ref_yes": 0.68,
+   "spread_ticks": 4,
+   "ticker": "KXCHINADATACENTER-26AUG-27JAN01",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 165.0,
+   "ref_yes": 0.94,
+   "spread_ticks": 1,
+   "ticker": "KXCHIPBURRITO-26SEP02-T9.77",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.62,
+   "skip": "wide",
+   "spread_ticks": 31,
+   "ticker": "KXCMGCC-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.89,
+   "spread_ticks": 5,
+   "ticker": "KXCMGFT-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.5,
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.9,
+   "spread_ticks": 7,
+   "ticker": "KXCOINA-27FEBMTU-6500000.0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.0,
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.84,
+   "spread_ticks": 4,
+   "ticker": "KXCOINBASE-26NOVMTU-6500000.0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.5,
+   "pool_usd_day": 230.0,
+   "ref_yes": 0.82,
+   "spread_ticks": 1,
+   "ticker": "KXCOMEYDISMISS-27-26OCT01",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.0,
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.12,
+   "spread_ticks": 1,
+   "ticker": "KXCOMPANYACTIONANTH-27-27JAN01",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 36.6,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.33,
+   "spread_ticks": 6,
+   "ticker": "KXCOSTFT-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.23,
+   "spread_ticks": 5,
+   "ticker": "KXCTCQ-26AUGCOMP-0.0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.05,
+   "spread_ticks": 1,
+   "ticker": "KXDASH-26AUGORDERS-P1000000000",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 35.8,
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.29,
+   "spread_ticks": 1,
+   "ticker": "KXDCGOLFVISITCOUNT-26AUG-0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.94,
+   "spread_ticks": 1,
+   "ticker": "KXDDCOLDBREW-26SEP02-T4.44",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXDIESELD-26AUG05-T5.320",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 120.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 2,
+   "ticker": "KXDIESELW-26AUG09-T5.16",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 500.0,
+   "skip": "one_sided",
+   "ticker": "KXDROPOUTPRIMARY-26-MMIL",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 250.0,
+   "ref_yes": 0.94,
+   "spread_ticks": 1,
+   "ticker": "KXDSAMEMBERSHIP-26DEC31-A130000",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 285.0,
+   "ref_yes": 0.98,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXDXYDUD-26AUG04-T99.7284",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 36.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.3,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONABNB-26AUG06-ACQU",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.16,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONCELH-26AUG06-ALCO",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.25,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.79,
+   "spread_ticks": 2,
+   "ticker": "KXEARNINGSMENTIONDASH-26AUG05-AFFO",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 36.2,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.69,
+   "spread_ticks": 2,
+   "ticker": "KXEARNINGSMENTIONDIS-26AUG05-ABU",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.86,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONDKNG-26AUG07-ALB",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 44.4,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.44,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONDUOL-26AUG05-100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.95,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONEBAY-26AUG05-AI",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONFIG-26AUG05-AI",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 42.45,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.51,
+   "spread_ticks": 3,
+   "ticker": "KXEARNINGSMENTIONLLY-26AUG07-AI",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 35.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.25,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONLYFT-26AUG06-ANTH",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.85,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.61,
+   "spread_ticks": 2,
+   "ticker": "KXEARNINGSMENTIONMELI-26AUG05-ADVE",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 37.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.65,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONNBIS-26AUG06-AETH",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.85,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONSHOP-26AUG05-ACQU",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 42.4,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.52,
+   "spread_ticks": 3,
+   "ticker": "KXEARNINGSMENTIONTLN-26AUG05-AFFO",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 31.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.24,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONUBER-26AUG05-AVRI",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.65,
+   "skip": "wide",
+   "spread_ticks": 11,
+   "ticker": "KXEARNINGSMENTIONWEN-26AUG07-APP",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.25,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.79,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONYOU-26AUG05-AGEN",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 333.33,
+   "skip": "one_sided",
+   "ticker": "KXEOWEEK-26JUL25-2",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.04,
+   "spread_ticks": 5,
+   "ticker": "KXESTPRES-27JAN01-HHAN",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 25.0,
+   "ref_yes": 0.01,
+   "skip": "price_band",
+   "spread_ticks": 4,
+   "ticker": "KXEURUSD-26AUG0510-B1.139",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 120.0,
+   "ref_yes": 0.98,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXEURUSDAW-26AUG07-1.1310",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.4,
+   "pool_usd_day": 240.0,
+   "ref_yes": 0.36,
+   "spread_ticks": 1,
+   "ticker": "KXFEAR-26AUG28-FEAR",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.03,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXFEATURE-26AGE-ALI",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 25.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 1,
+   "ticker": "KXFEDFUNDSYEAR-28JAN01-T1.00",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 41.15,
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.41,
+   "spread_ticks": 1,
+   "ticker": "KXFIFALEAVE-27JAN01-YES",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 37.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.35,
+   "spread_ticks": 6,
+   "ticker": "KXFOURSTATESEN-26NOV03-FFFF",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.1,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.93,
+   "spread_ticks": 1,
+   "ticker": "KXFSLR-26OCTMWSOLD-3700",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.5,
+   "pool_usd_day": 25.0,
+   "ref_yes": 0.95,
+   "spread_ticks": 1,
+   "ticker": "KXGDP-26OCT30-T0.0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.5,
+   "pool_usd_day": 25.0,
+   "ref_yes": 0.95,
+   "spread_ticks": 1,
+   "ticker": "KXGDPNOM-AUS26-1.6",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 25.0,
+   "ref_yes": 0.023,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXGDPYEAR-26-B0.3",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.4,
+   "pool_usd_day": 20.0,
+   "ref_yes": 0.08,
+   "spread_ticks": 1,
+   "ticker": "KXGOLD15M-26AUG042345-45",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.25,
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.87,
+   "spread_ticks": 6,
+   "ticker": "KXGOVTFULLFUND-26AUG-26DEC01",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.5,
+   "pool_usd_day": 115.0,
+   "ref_yes": 0.14,
+   "spread_ticks": 8,
+   "ticker": "KXGPT-ASTRA-26AUG21",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.82,
+   "spread_ticks": 6,
+   "ticker": "KXGRAB-26NOVMTU-55000000.0",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 110.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 5,
+   "ticker": "KXGREEKPM-27JUL25-ATSI",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 15.0,
+   "ref_yes": 0.98,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXH100WS-26AUG07-2.000",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 15.0,
+   "skip": "one_sided",
+   "ticker": "KXH200WS-26AUG07-2.500",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXHANNOVERMAYOR-26SEP13-AFD",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.06,
+   "skip": "wide",
+   "spread_ticks": 35,
+   "ticker": "KXHDCC-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.75,
+   "pool_usd_day": 125.0,
+   "ref_yes": 0.89,
+   "spread_ticks": 4,
+   "ticker": "KXHOOD-26NOVECVOL-10000000000",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.01,
+   "skip": "price_band",
+   "spread_ticks": 3,
+   "ticker": "KXHOODA-27FEBECVOL-100000000000",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.4,
+   "pool_usd_day": 135.0,
+   "ref_yes": 0.64,
+   "spread_ticks": 4,
+   "ticker": "KXHSI-26AUG31-26500",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.03,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXHUNGARYPRES-27JAN01-AHAD",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.4,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.36,
+   "spread_ticks": 3,
+   "ticker": "KXISLEMINISTER-26SEP24-ACAN",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.75,
+   "pool_usd_day": 125.0,
+   "ref_yes": 0.81,
+   "spread_ticks": 8,
+   "ticker": "KXISMPMI-26AUG-52",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.95,
+   "spread_ticks": 1,
+   "ticker": "KXJOINCLUB-26OCT02BGUIMARAES-ARS",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.25,
+   "pool_usd_day": 285.0,
+   "ref_yes": 0.13,
+   "spread_ticks": 2,
+   "ticker": "KXLOOMERADMIN-27JAN01-LLOO",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.89,
+   "spread_ticks": 4,
+   "ticker": "KXLOW-26AUGCOMP-0.0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.0,
+   "pool_usd_day": 110.0,
+   "ref_yes": 0.88,
+   "spread_ticks": 3,
+   "ticker": "KXLOWA-27FEBCOMP-0.0",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 110.0,
+   "ref_yes": 0.53,
+   "skip": "wide",
+   "spread_ticks": 16,
+   "ticker": "KXLOWCC-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.66,
+   "skip": "wide",
+   "spread_ticks": 27,
+   "ticker": "KXLULUCC-26SEP07-T78",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 1,
+   "ticker": "KXLYFT-26AUGRIDES-P248000000",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.0,
+   "pool_usd_day": 1000.0,
+   "ref_yes": 0.12,
+   "spread_ticks": 1,
+   "ticker": "KXMAMDANIEO-26AUG08-T0",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXMAR-26AUGROOMS-1805000.0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.95,
+   "spread_ticks": 1,
+   "ticker": "KXMARA-27FEBROOMS-1845000.0",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 125.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 4,
+   "ticker": "KXMAXSHIPSHORMUZ-26AUG31-AL100",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXMCD-26AUGCOMP-0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.94,
+   "spread_ticks": 1,
+   "ticker": "KXMCDFT-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXMLBNEXTTEAM-26TSKUBAL-ARI",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 36.8,
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.66,
+   "spread_ticks": 2,
+   "ticker": "KXMLBPITCH-26SOHTANI17-Y",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXMLBTRADE-26AUG05-ACHA",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.5,
+   "pool_usd_day": 125.0,
+   "ref_yes": 0.95,
+   "spread_ticks": 3,
+   "ticker": "KXMO-26OCTCIGSHIP-14000000000.0",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXMTCH-26AUGPAYERS-P13150000.0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 2,
+   "ticker": "KXNCLH-26OCTPAX-810000",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "ref_yes": 0.83,
+   "skip": "wide",
+   "spread_ticks": 15,
+   "ticker": "KXNETFLIXTOPVIEWSMOVIE-26AUG10-12",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "ref_yes": 0.57,
+   "skip": "wide",
+   "spread_ticks": 10,
+   "ticker": "KXNETFLIXTOPVIEWSTV-26AUG10-12",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.7,
+   "pool_usd_day": 50.0,
+   "ref_yes": 0.62,
+   "spread_ticks": 2,
+   "ticker": "KXNFLPASSYDS-26AUG06CARARI-ARICBECKQB-100",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 50.0,
+   "ref_yes": 0.01,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXNFLRSHYDS-26AUG06CARARI-ARIJLOVE4-100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.75,
+   "pool_usd_day": 50.0,
+   "ref_yes": 0.11,
+   "spread_ticks": 2,
+   "ticker": "KXNFLTD-26AUG06CARARI-ARIJLOVE4-1",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.04,
+   "spread_ticks": 1,
+   "ticker": "KXNOBELPEACE-26-CE",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 250.0,
+   "ref_yes": 0.04,
+   "spread_ticks": 1,
+   "ticker": "KXOSNABRUCKMAYOR-26SEP13-AFD",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXPBR-26AUGPROD-2900",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 2,
+   "ticker": "KXPBRA-27FEBPROD-2950",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.06,
+   "spread_ticks": 1,
+   "ticker": "KXPIRROOUT-26AUG-26AUG07",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.94,
+   "spread_ticks": 3,
+   "ticker": "KXPLTR-26NOVCUST-1060",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 41.15,
+   "pool_usd_day": 345.0,
+   "ref_yes": 0.41,
+   "spread_ticks": 4,
+   "ticker": "KXPOKEMON-26AUG151ULTCO-939.85",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.94,
+   "spread_ticks": 1,
+   "ticker": "KXPOPCHICKSAND-26SEP02-T5.67",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.25,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.87,
+   "spread_ticks": 1,
+   "ticker": "KXPRIMARYMOV-FLPRIMARY25D26-JMOS-P52",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.5,
+   "pool_usd_day": 350.0,
+   "ref_yes": 0.82,
+   "spread_ticks": 1,
+   "ticker": "KXPRIMARYPLACE-SCRSENS26-1-DGRA",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.9,
+   "spread_ticks": 3,
+   "ticker": "KXRACE-26NOVSHIP-3225",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXRAIN-26AUG04-ATL",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.84,
+   "spread_ticks": 6,
+   "ticker": "KXRDDT-26OCTDAU-132000000",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.25,
+   "pool_usd_day": 285.0,
+   "ref_yes": 0.21,
+   "spread_ticks": 2,
+   "ticker": "KXRFKVACCINE-26AUG-27JAN01",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.12,
+   "spread_ticks": 1,
+   "ticker": "KXROLEINPRODUCTIONDOOMSDAY-AND",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.94,
+   "spread_ticks": 1,
+   "ticker": "KXRT-CLA-45",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 15.0,
+   "skip": "one_sided",
+   "ticker": "KXRTX5090WS-26AUG07-0.25",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 120.0,
+   "skip": "one_sided",
+   "ticker": "KXRUT-26AUG31-3000",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.64,
+   "skip": "wide",
+   "spread_ticks": 14,
+   "ticker": "KXSBUXCC-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 1,
+   "ticker": "KXSBUXSAR-26SEP02-T5.08",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.82,
+   "spread_ticks": 1,
+   "ticker": "KXSCFI-26EOY-T1500",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXSCRSENS1REXACT-26AUG11-FRY-GRA-NOR",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.97,
+   "pool_usd_day": 500.0,
+   "ref_yes": 0.099,
+   "spread_ticks": 1,
+   "ticker": "KXSENATEMND-26-ACRA",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 1,
+   "ticker": "KXSG-26AUGMARGIN-10",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.7,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.91,
+   "spread_ticks": 3,
+   "ticker": "KXSGA-27FEBMARGIN-10",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 35.6,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.72,
+   "spread_ticks": 8,
+   "ticker": "KXSGFT-26SEP07-T109",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.7,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.91,
+   "spread_ticks": 1,
+   "ticker": "KXSHAKFT-26SEP07-T103",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 110.0,
+   "ref_yes": 0.13,
+   "skip": "wide",
+   "spread_ticks": 18,
+   "ticker": "KXSHEINCC-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXSHOP-26AUGGMV-108000000000",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 35.6,
+   "pool_usd_day": 20.0,
+   "ref_yes": 0.28,
+   "spread_ticks": 3,
+   "ticker": "KXSILVER15M-26AUG042345-45",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXSNAP-26AUGDAU-480000000",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 125.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 1,
+   "ticker": "KXTBCRUNCHWRAP-26SEP02-T6.68",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.75,
+   "pool_usd_day": 230.0,
+   "ref_yes": 0.19,
+   "spread_ticks": 7,
+   "ticker": "KXTECHLAYOFF-26JUL-2.3",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.75,
+   "skip": "wide",
+   "spread_ticks": 10,
+   "ticker": "KXTEMUCC-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.1,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.93,
+   "spread_ticks": 5,
+   "ticker": "KXTGT-26NOVCOMP-0.0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.9,
+   "spread_ticks": 2,
+   "ticker": "KXTGTA-27MARCOMP-0.5",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.15,
+   "spread_ticks": 6,
+   "ticker": "KXTGTFT-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXTLN-26AUGGEN-10.0",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXTOPMODEL-26AUG10-CLAU5",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.9,
+   "spread_ticks": 1,
+   "ticker": "KXTOPMOVIE-26AUG06-72HOURS",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXTOST-26AUGLOC-P176000",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXTRUEV-26AUG04-T1161.89",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXTRUMPACT-26AUG02-T1",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 142.86,
+   "skip": "one_sided",
+   "ticker": "KXTRUMPENDORSEMENTS-26AUG07-A10",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.7,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.09,
+   "spread_ticks": 1,
+   "ticker": "KXTRUMPSAY-26AUG10-AMER",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 285.0,
+   "ref_yes": 0.06,
+   "spread_ticks": 1,
+   "ticker": "KXTRUMPUFC-26OCT-DJT",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXTRUTHSOCIAL-26AUG08-B109",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 110.0,
+   "ref_yes": 0.66,
+   "skip": "wide",
+   "spread_ticks": 17,
+   "ticker": "KXURBNCC-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 25.0,
+   "ref_yes": 0.94,
+   "spread_ticks": 4,
+   "ticker": "KXUSCPIYEAR-28FEB01-T0.0",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 25.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 2,
+   "ticker": "KXUSDJPY-26AUG0510-B156.375",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "ref_yes": 0.97,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXUST10AD-26AUG05-T4.55",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 41.3,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.58,
+   "spread_ticks": 1,
+   "ticker": "KXUST10AM-26AUG31-T4.60",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "ref_yes": 0.98,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXUST2AD-26AUG05-T4.10",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.4,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.64,
+   "spread_ticks": 1,
+   "ticker": "KXUST2AM-26AUG31-T4.15",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 80.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 1,
+   "ticker": "KXUST30AD-26AUG05-T5.10",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 36.4,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.68,
+   "spread_ticks": 1,
+   "ticker": "KXUST30AM-26AUG31-T5.10",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.2,
+   "pool_usd_day": 80.0,
+   "ref_yes": 0.96,
+   "spread_ticks": 1,
+   "ticker": "KXUST5AD-26AUG05-T4.25",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 41.45,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.57,
+   "spread_ticks": 1,
+   "ticker": "KXUST5AM-26AUG31-T4.30",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 80.0,
+   "ref_yes": 0.94,
+   "spread_ticks": 1,
+   "ticker": "KXUST7AD-26AUG05-T4.40",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 44.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.55,
+   "spread_ticks": 1,
+   "ticker": "KXUST7AM-26AUG31-T4.45",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 90.0,
+   "ref_yes": 0.98,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXVOTEPRIMARY-FLPRIMARY25D26OLAROLAR-10",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.01,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXWEN-26AUGUSCOMP-0.0",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.67,
+   "skip": "wide",
+   "spread_ticks": 27,
+   "ticker": "KXWENCC-26SEP07-T85",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 20.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXWTI15M-26AUG042345-45",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "ref_yes": 0.1,
+   "skip": "wide",
+   "spread_ticks": 82,
+   "ticker": "KXWTIMAX-26AUG31-T85.50",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 13,
+   "ticker": "KXWTIMIN-26AUG31-T66.00",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.82,
+   "spread_ticks": 5,
+   "ticker": "KXYOU-26AUGMEM-8199999.999999999",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "skip": "one_sided",
+   "ticker": "KXYTDAILYTOPVIDEOG-26AUG05-BAR",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "skip": "one_sided",
+   "ticker": "KXYTTOPSONGGW-26AUG06-ANI",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "skip": "one_sided",
+   "ticker": "KXYTTOPSONGW-26AUG06-ANI",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "skip": "one_sided",
+   "ticker": "KXYTTOPVIDEO2D-26AUG05-BEA",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 80.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 30,
+   "ticker": "KXYTTOPVIDEOG2D-26AUG05-BAR",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXYTVIEWSW-ARI26AUG09-16.0M",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.0,
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.84,
+   "spread_ticks": 2,
+   "ticker": "KXYUM-26NOVKFCSSS-0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.55,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.63,
+   "spread_ticks": 1,
+   "ticker": "KXYUMTBFT-26SEP07-T100",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXZETA-26AUGSSC-190",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 15.0,
+   "ref_yes": 0.98,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXA100WS-26AUG07-0.750",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXAAAGASD-26AUG05-4.055",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.8,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.94,
+   "spread_ticks": 2,
+   "ticker": "KXAAAGASW-26AUG10-3.960",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.4,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.64,
+   "spread_ticks": 1,
+   "ticker": "KXABNB-26AUGNEB-146000000",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.01,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXACTBLUETOP-26AUG07-HSTE",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 135.0,
+   "ref_yes": 0.41,
+   "skip": "wide",
+   "spread_ticks": 50,
+   "ticker": "KXALBUMRELEASEDATE-NEWDON-27APR01",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.1,
+   "pool_usd_day": 125.0,
+   "ref_yes": 0.93,
+   "spread_ticks": 4,
+   "ticker": "KXAMZN-26OCTEMP-1560000.0",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.64,
+   "skip": "wide",
+   "spread_ticks": 30,
+   "ticker": "KXAMZNCC-26SEP07-T103",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 110.0,
+   "ref_yes": 0.38,
+   "skip": "wide",
+   "spread_ticks": 31,
+   "ticker": "KXANFCC-26SEP07-T102",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.25,
+   "pool_usd_day": 125.0,
+   "ref_yes": 0.21,
+   "spread_ticks": 1,
+   "ticker": "KXAPRPOTUS-26AUG07-39.3",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 15.0,
+   "skip": "one_sided",
+   "ticker": "KXB200WS-26AUG07-3.500",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.11,
+   "spread_ticks": 1,
+   "ticker": "KXBIGBROTHERRANK-26DEC31R2-BAR",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.2,
+   "spread_ticks": 6,
+   "ticker": "KXBKFT-26SEP07-T101",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.0,
+   "pool_usd_day": 120.0,
+   "ref_yes": 0.8,
+   "spread_ticks": 1,
+   "ticker": "KXBKNUGGETS-26SEP02-T3.48",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.19,
+   "spread_ticks": 1,
+   "ticker": "KXBOND-30-ATJ",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 27.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.9,
+   "spread_ticks": 3,
+   "ticker": "KXBROSFT-26SEP07-T102",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 21.5,
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.95,
+   "spread_ticks": 1,
+   "ticker": "KXCAC40-26AUG31-8700",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 37.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.35,
+   "spread_ticks": 3,
+   "ticker": "KXCAVAFT-26SEP07-T101",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.03,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXCBDECISIONBRAZIL-26SEP16-C50",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXCBDECISIONINDIA-26OCT07-C25P",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.05,
+   "skip": "wide",
+   "spread_ticks": 22,
+   "ticker": "KXCBDECISIONMEXICO-26DEC17-C50",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.75,
+   "pool_usd_day": 170.0,
+   "ref_yes": 0.23,
+   "spread_ticks": 1,
+   "ticker": "KXCFACHICKSAND-26SEP02-T5.39",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.62,
+   "skip": "wide",
+   "spread_ticks": 31,
+   "ticker": "KXCFILCC-26SEP07-T102",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 135.0,
+   "ref_yes": 0.01,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXCHINAAI-26AUG17-BAID",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.25,
+   "pool_usd_day": 165.0,
+   "ref_yes": 0.87,
+   "spread_ticks": 1,
+   "ticker": "KXCHIPBURRITO-26SEP02-T9.78",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.59,
+   "skip": "wide",
+   "spread_ticks": 30,
+   "ticker": "KXCMGCC-26SEP07-T100.5",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.25,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.83,
+   "spread_ticks": 6,
+   "ticker": "KXCMGFT-26SEP07-T101",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 35.8,
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.71,
+   "spread_ticks": 3,
+   "ticker": "KXCOINA-27FEBMTU-7000000.0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.55,
+   "pool_usd_day": 145.0,
+   "ref_yes": 0.63,
+   "spread_ticks": 7,
+   "ticker": "KXCOINBASE-26NOVMTU-7000000.0",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.25,
+   "pool_usd_day": 230.0,
+   "ref_yes": 0.87,
+   "spread_ticks": 1,
+   "ticker": "KXCOMEYDISMISS-27-27JAN01",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 31.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.24,
+   "spread_ticks": 6,
+   "ticker": "KXCOSTFT-26SEP07-T101",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.25,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.13,
+   "spread_ticks": 4,
+   "ticker": "KXCTCQ-26AUGCOMP-0.5",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXDASH-26AUGORDERS-P1020000000",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.5,
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.22,
+   "spread_ticks": 1,
+   "ticker": "KXDCGOLFVISITCOUNT-26AUG-1",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.75,
+   "pool_usd_day": 200.0,
+   "ref_yes": 0.85,
+   "spread_ticks": 1,
+   "ticker": "KXDDCOLDBREW-26SEP02-T4.45",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "skip": "one_sided",
+   "ticker": "KXDIESELD-26AUG05-T5.325",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 28.0,
+   "pool_usd_day": 120.0,
+   "ref_yes": 0.88,
+   "spread_ticks": 6,
+   "ticker": "KXDIESELW-26AUG09-T5.18",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.75,
+   "pool_usd_day": 250.0,
+   "ref_yes": 0.81,
+   "spread_ticks": 1,
+   "ticker": "KXDSAMEMBERSHIP-26DEC31-A140000",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.4,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.64,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONABNB-26AUG06-BOUT",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 36.8,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.34,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONCELH-26AUG06-COMP",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 35.4,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.73,
+   "spread_ticks": 3,
+   "ticker": "KXEARNINGSMENTIONDASH-26AUG05-AUTO",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.78,
+   "spread_ticks": 5,
+   "ticker": "KXEARNINGSMENTIONDIS-26AUG05-ARTI",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 41.15,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.59,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONDKNG-26AUG07-COMB",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 37.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.65,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONDUOL-26AUG05-ASIA",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 44.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.55,
+   "spread_ticks": 3,
+   "ticker": "KXEARNINGSMENTIONEBAY-26AUG05-AUST",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.23,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONFIG-26AUG05-ANTH",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 30.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.78,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONLLY-26AUG07-ALZH",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 36.8,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.34,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONLYFT-26AUG06-BAID",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.5,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.82,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONMELI-26AUG05-AI",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 41.45,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.43,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONNBIS-26AUG06-BLAC",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 40.7,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.38,
+   "spread_ticks": 6,
+   "ticker": "KXEARNINGSMENTIONSHOP-26AUG05-AMAZ",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 29.75,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.81,
+   "spread_ticks": 2,
+   "ticker": "KXEARNINGSMENTIONTLN-26AUG05-AMAZ",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 22.1,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.93,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONUBER-26AUG05-DELIV",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 35.8,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.29,
+   "spread_ticks": 1,
+   "ticker": "KXEARNINGSMENTIONWEN-26AUG07-BACO",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 45.0,
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.5,
+   "spread_ticks": 4,
+   "ticker": "KXEARNINGSMENTIONYOU-26AUG05-AMEX",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 2,
+   "ticker": "KXESTPRES-27JAN01-ILAU",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 25.0,
+   "ref_yes": 0.02,
+   "skip": "price_band",
+   "spread_ticks": 3,
+   "ticker": "KXEURUSD-26AUG0510-B1.141",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 120.0,
+   "ref_yes": 0.98,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXEURUSDAW-26AUG07-1.1330",
+   "vol24h": 0.0
+  },
+  {
+   "commit_usd": 35.2,
+   "pool_usd_day": 240.0,
+   "ref_yes": 0.26,
+   "spread_ticks": 1,
+   "ticker": "KXFEAR-26AUG28-GREE",
+   "vol24h": 0.0
+  },
+  {
+   "pool_usd_day": 100.0,
+   "ref_yes": 0.03,
+   "skip": "price_band",
+   "spread_ticks": 1,
+   "ticker": "KXFEATURE-26AGE-BBN",
+   "vol24h": 0.0
+  }
+ ],
+ "sample_pool_usd_day_qualifying": 21255.0,
+ "sampled": 250,
+ "schema": 1,
+ "series_in_horizon": 190,
+ "tickers_in_horizon": 2996
+}
