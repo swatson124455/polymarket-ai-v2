@@ -36,6 +36,15 @@ def test_on_mid_price_unchanged_extreme_discounted(monkeypatch):
     assert on_ext > 0.0
 
 
+def test_mirror_books_weighted_equally(monkeypatch):
+    """Review fix: the shape keys on the reflection-invariant MID, so a book and its
+    mirror get the same weight (best_y-only weighted them 8.6x apart)."""
+    monkeypatch.setattr(q, "W12_PRICE_SHAPE", 1)
+    a = q._prospective_capture(M, [(0.90, 500.0)], [(0.05, 500.0)], 0.90, 0.05, 10.0)
+    b = q._prospective_capture(M, [(0.05, 500.0)], [(0.90, 500.0)], 0.05, 0.90, 10.0)
+    assert abs(a - b) < 1e-12
+
+
 def test_exponent_knob_deepens_the_discount(monkeypatch):
     monkeypatch.setattr(q, "W12_PRICE_SHAPE", 1)
     e1 = q._prospective_capture(M, EXT_YL, EXT_NL, 0.97, 0.03, 10.0)

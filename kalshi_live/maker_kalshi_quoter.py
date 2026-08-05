@@ -508,6 +508,14 @@ def _load_credit_feedback():
 #   Unwind quotes are NEVER ramped (de-risk is never gated — house doctrine).
 W12_PRICE_SHAPE = _envi("KALSHI_W12_PRICE_SHAPE", 0)   # 0 = OFF (provable no-op)
 W12_SHAPE_EXP = _envf("KALSHI_W12_SHAPE_EXP", 1.0)     # P2-receipt calibration knob
+
+
+def _w12_shape(p):
+    """The ONE price-shape implementation -- _prospective_capture AND the telemetry row's
+    parallel capture math both call it (review finding A: shaping only one of the two split
+    the sweeper/ALLOC feed into mixed shaped/unshaped bases, up to 8.6x apart per ticker)."""
+    p = min(0.99, max(0.01, float(p)))
+    return (4.0 * p * (1.0 - p)) ** W12_SHAPE_EXP
 D3_RAMP = _envi("KALSHI_D3_RAMP", 0)
 D3_RUNG_S = _envf("KALSHI_D3_RUNG_S", 600.0)
 D3_NEWSERIES_MAX_RUNG = _envi("KALSHI_D3_NEWSERIES_MAX_RUNG", 1)   # -1 disables the clamp
@@ -2215,17 +2223,22 @@ def _prospective_capture(m, yl, nl, best_y, best_n, target):
     if not (qy and qn):
         return 0.0
     snap = (ry / (1.0 + ry) + rn / (1.0 + rn)) / 2.0
-    if W12_PRICE_SHAPE and best_y is not None:
-        # W12 (built 2026-08-05 under proceed-all-build; ships OFF): weight the forecast by
-        # the price-level shape w(p) = 4·p·(1−p), 1.0 at 50c, 0.117 at 97c. W10 measured the
-        # signature this models: KXEURUSDAW-26JUL31 rested 12.84h with 65.8% of presence at
-        # min(p,1−p) < $0.05 and was credited $0.00 while the un-weighted model forecast
-        # dollars — deep-extreme books earn ~nothing, and this estimator feeds the $1.20
-        # floor gate, so over-predicting there is what admits sub-$1 drive-bys (W10 §5).
-        # INFERRED shape: the venue documents P(1−P) for FEES, not for LIP scoring — the
-        # exponent knob exists so P2 receipts can calibrate or refute it before any enable.
-        p = min(0.99, max(0.01, float(best_y)))
-        snap *= (4.0 * p * (1.0 - p)) ** W12_SHAPE_EXP
+    if W12_PRICE_SHAPE and best_y is not None and best_n is not None:
+        # W12 (built 2026-08-05; ships OFF): weight the forecast by the price-level shape
+        # w(p) = 4*p*(1-p) -- 1.0 at 50c, 0.116 at 97c -- via _w12_shape(). p is the book
+        # MID (best_y + 1 - best_n)/2, reflection-INVARIANT (blind review 2026-08-05:
+        # best_y alone weighted mirror books 8.6x apart; a stale far bid on a decided
+        # market dodged the discount entirely). W10 measured the signature this models:
+        # KXEURUSDAW-26JUL31 rested 12.84h with 65.8% of presence at min(p,1-p) < $0.05 and
+        # was credited $0.00, inside a ~20-event population the un-weighted model forecast
+        # ~$26.04 for (aggregate only -- not row-reproducible, W10 study doc §6). This
+        # estimator feeds the $1.20 floor gate; over-predicting at extremes is what admits
+        # sub-$1 drive-bys (W10 §5). INFERRED shape: the venue documents P(1-P) for FEES,
+        # not LIP scoring -- the exponent knob lets P2 receipts calibrate or refute it.
+        # ENABLE INTERACTION (review): NETEV_MODEL_HAIRCUT=3.0 was fitted on the UNSHAPED
+        # model's 2-6x over-prediction; part of that gap IS the extreme-price signature, so
+        # arming W12 without re-fitting the haircut double-discounts extremes. Re-fit at B8.
+        snap *= _w12_shape((float(best_y) + 1.0 - float(best_n)) / 2.0)
     return snap * float(m.get("usd_day", 0.0) or 0.0)
 
 
@@ -2384,8 +2397,12 @@ def _market_telemetry_row(cyc, now, m, yl, nl, quotes, own_side, inv, gates):
         shares.append(share if qual else 0.0)
     # R3: a snapshot pays only if BOTH sides qualify -> otherwise the market pays $0 to everyone.
     two_sided = row["y_qual"] and row["n_qual"]
-    row["capture_usd_day"] = (round((sum(shares) / 2.0) * float(m.get("usd_day") or 0.0), 4)
-                              if two_sided else 0.0)
+    cap = (sum(shares) / 2.0) * float(m.get("usd_day") or 0.0) if two_sided else 0.0
+    if W12_PRICE_SHAPE and two_sided and row.get("y_ref") is not None             and row.get("n_ref") is not None:
+        # same shape as _prospective_capture, same flag -- the offline sweep and the live
+        # gates must never disagree on basis (review finding A).
+        cap *= _w12_shape((float(row["y_ref"]) + 1.0 - float(row["n_ref"])) / 2.0)
+    row["capture_usd_day"] = round(cap, 4)
     return row
 
 
