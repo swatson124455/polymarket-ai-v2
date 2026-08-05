@@ -101,6 +101,25 @@ ALWAYS-EMIT) · FP_DROPS/FP_SHAPE · the offline funnel-replica method (diagnost
 proved select_footprint replicates bit-for-bit offline with live env; reuse that
 pattern under /tmp/diag) · frozen artifacts in `kalshi_live/w10_results/`.
 
+## 3b. OPERATOR RULINGS ON AUDIT EXECUTION (2026-08-05, binding)
+1. **FINDINGS-FIRST (1b):** the audit completes its confirmations, presents ONE decision
+   batch, the operator rules, then fixes land together. EXCEPTION per ruling 2.
+2. **ACTIVE-HARM EXCEPTION (2a):** a CONFIRMED collision that is actively suppressing
+   pilot earnings or causing bleed (e.g. A1 if verified) is fixed IMMEDIATELY under the
+   full NORM protocol, with the verdict window annotated — do not let a known defect
+   under-measure the window. Everything else waits for the batch.
+3. **SIMPLIFICATION ALLOWED, FULL AUTHORIZATION REQUIRED (3-yes, operator emphasis):**
+   the audit MAY recommend removing/merging features (the 4 overlapping entry brains,
+   the 2 capital governors), but EVERY removal/merge needs an explicit, per-item operator
+   authorization before any code changes — no batch blanket, no inferred consent.
+   RULE NINE applies at full strength.
+4. **BREADTH (4a):** deep pass on the live-armed pilot path first; dark/off features get
+   a conflicts-at-arming check second.
+5. **ACCEPTANCE (5a, DEFAULT — operator's letter pending, amendable):** done = every
+   confirmed collision documented with evidence + resolution options, operator rulings
+   recorded, and the ruled fixes deployed. (Upgrade to 5b architecture doc / 5c
+   interaction-test pins if the operator says so.)
+
 ## 4. AUDIT METHOD (what "find them" means operationally)
 1. Re-verify live state + revert-halt-to-10 check first.
 2. Build the interaction MAP mechanically: for every knob/gate, list what it reads and
@@ -125,7 +144,7 @@ Temp scratchpad path); verify `git branch --show-current` before any repo write.
 touch the main checkout or master. STOP file = halt; only the operator lifts holds.
 STEP ZERO — read in order: (1) memory `project_kalshi_halt_0805.md` (full 08-05
 timeline), (2) `docs/maker_handoffs/KALSHI_HANDOFF_2026-08-05_LOGIC_AUDIT.md` — THE
-MANDATE IS ITS §§2-4: full logic audit of interacting algos/parameters; find every
+MANDATE IS ITS §§2-4 UNDER THE §3b EXECUTION RULINGS: full logic audit of interacting algos/parameters; find every
 collision, reproduce it from telemetry or the offline funnel replica, and present
 resolutions with recs and why as an operator decision list. Seed items A1-A10 are in §3;
 A1 (SCORE_EXPLORE tags allowlist payers probe-size, suppressing pilot earnings) is the
