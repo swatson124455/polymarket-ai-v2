@@ -124,6 +124,7 @@ def test_f14_one_cycle_absence_keeps_first_seen(monkeypatch):
     now_ts = _now().timestamp()
     monkeypatch.setattr(q, "D3_RAMP", 1)
     monkeypatch.setattr(q, "_D3_FIRST_SEEN", {"A": now_ts - 3600.0, "B": now_ts - 3600.0})
+    monkeypatch.setattr(q, "_D3_LAST_DESIRED", {})   # review #8: never leak into other tests
     st = {}
     # A still desired; B absent this cycle but seen recently -> BOTH kept
     q._d3_prune_first_seen(st, {"A": []}, now_ts)
@@ -136,11 +137,19 @@ def test_f14_one_cycle_absence_keeps_first_seen(monkeypatch):
 # ---------------- F17 / D-G: wind-down proportionality ----------------
 
 def test_f17_subhour_program_wind_down_is_proportional():
-    # 58-minute program: effective wind-down must be a fraction of the window,
-    # not the 45-min absolute (which forfeited ~78% of it)
+    # 58-minute program: effective wind-down shrinks below the 45-min absolute (which
+    # forfeited ~78% of the window) but NEVER below the settle-taker window (C8 safety,
+    # blind review #3 — accumulating quotes must not rest inside the taker window).
     eff = q._effective_wind_down_min(58.0)
-    assert eff < 20.0, eff
-    assert eff >= 2.0, eff
+    assert eff < float(q.WIND_DOWN_MIN), eff
+    assert eff >= float(q.SETTLE_UNWIND_MIN), eff
+
+
+def test_f17_two_hour_program_gets_proportional_benefit():
+    eff = q._effective_wind_down_min(150.0)
+    assert eff == max(float(q.SETTLE_UNWIND_MIN),
+                      q.WIND_DOWN_FRAC * 150.0), eff
+    assert eff < float(q.WIND_DOWN_MIN), eff
 
 
 def test_f17_long_program_wind_down_unchanged():

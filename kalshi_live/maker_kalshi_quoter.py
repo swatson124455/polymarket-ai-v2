@@ -604,6 +604,11 @@ def _d3_prune_first_seen(st, desired, now_ts):
         if t not in keep:
             _D3_FIRST_SEEN.pop(t, None)
             _D3_LAST_DESIRED.pop(t, None)
+    for t in list(_D3_LAST_DESIRED):
+        # review #6: entries stamped for tickers that never entered first-seen (unwind-only
+        # rows, D3-off intervals) would otherwise accumulate for the daemon's lifetime
+        if t not in _D3_FIRST_SEEN and (float(now_ts) - _D3_LAST_DESIRED[t]) > D3_KEEP_S:
+            _D3_LAST_DESIRED.pop(t, None)
     st["d3_first_seen"] = dict(_D3_FIRST_SEEN)
     st["d3_last_desired"] = {t: v for t, v in _D3_LAST_DESIRED.items() if t in _D3_FIRST_SEEN}
     return len(keep)
@@ -1185,9 +1190,12 @@ def _expected_credit_usd(m, yl, nl, best_y, best_n, target, now, own_orders=None
     if D3_RAMP:
         join_ct = max(_capped_join(best_y, best_n), _capped_join(best_n, best_y), 0.0)
         eff_ct = float(_d3_est_ct(m.get("ticker") or "", now.timestamp()))
-        if (m.get("explore") and SERIES_ALLOW
+        if (EXPLORE_PROBE_CT > 0 and m.get("explore") and SERIES_ALLOW
                 and (m.get("ticker") or "").split("-")[0] not in SERIES_ALLOW):
-            eff_ct = min(eff_ct, float(EXPLORE_PROBE_CT))   # probe clamp (allowlist exempt, A1)
+            # probe clamp (allowlist exempt, A1). EXPLORE_PROBE_CT=0 means NO clamp — same
+            # guard as the actual sizing clamp and the budget-walk mirror (blind review #2:
+            # without it, ct=0 default zeroed every explore market's expected credit).
+            eff_ct = min(eff_ct, float(EXPLORE_PROBE_CT))
         if join_ct > 0 and eff_ct < join_ct:
             pc *= eff_ct / join_ct                   # F3: gate at the size that will actually rest
     ideal = pc * payout_days
@@ -1333,14 +1341,23 @@ WIND_DOWN_MIN_FLOOR = _envf("KALSHI_WIND_DOWN_MIN_FLOOR", 3.0)
 
 
 def _effective_wind_down_min(life_min):
-    """Effective wind-down minutes for a program whose window is `life_min` minutes."""
+    """Effective wind-down minutes for a program whose window is `life_min` minutes.
+
+    Floored at SETTLE_UNWIND_MIN (blind review #3): resting ACCUMULATING quotes inside the
+    armed settle-taker window breaks the C8 maker-first/taker-second ordering — a fill at
+    T-29min would be taker-crossed immediately, re-rested two-sided, and refilled (the exact
+    quote->fill->taker churn C8 prevents). So the wind-down can shrink proportionally for
+    short windows, but never below the taker window; markets shorter than ~SETTLE_UNWIND_MIN
+    stay effectively unenterable, as before this fix. Scaling the taker window itself for
+    short programs is future work, noted, NOT built."""
     try:
         life = float(life_min or 0.0)
     except (TypeError, ValueError):
         life = 0.0
     if life <= 0:
         return float(WIND_DOWN_MIN)                 # unknown window -> legacy absolute
-    return max(WIND_DOWN_MIN_FLOOR, min(float(WIND_DOWN_MIN), WIND_DOWN_FRAC * life))
+    floor = max(WIND_DOWN_MIN_FLOOR, float(SETTLE_UNWIND_MIN))
+    return max(floor, min(float(WIND_DOWN_MIN), WIND_DOWN_FRAC * life))
 WRITE_BUDGET_PER_CYCLE = _envi("KALSHI_WRITE_BUDGET", 400)  # order-ops ceiling/cycle
 JOIN_ALWAYS = _envb("KALSHI_JOIN_ALWAYS")   # drill switch (default off)
 # series allowlist: if set, ONLY quote markets whose series (ticker before the first
@@ -2402,8 +2419,12 @@ def _qualifying_score(bids, our_price, our_size, target, df, own_orders=None):
     if cum < target:
         return 0.0, False                       # book can't reach Target on this side -> $0 for everyone
     if own_orders:
+        # p <= ref guard (blind review #4): a standing order ABOVE the fetched book's
+        # reference (stale book / WS-mirror skew) would get a NEGATIVE tick exponent and an
+        # amplified subtraction — over-admitting for a cycle. Outside [lowest_q, ref] it
+        # cannot be inside the qualifying set of THIS book snapshot; skip it.
         rest = sum((df ** round((ref - p) / TICK)) * c for p, c in own_orders
-                   if p is not None and p >= lowest_q - 1e-9)
+                   if p is not None and lowest_q - 1e-9 <= p <= ref + 1e-9)
         total = max(total - rest, 0.0)
     our = 0.0
     if our_price is not None and our_price >= lowest_q - 1e-9:  # our order is inside the qualifying set
@@ -2601,7 +2622,7 @@ def _market_telemetry_row(cyc, now, m, yl, nl, quotes, own_side, inv, gates, own
         if qual and ref is not None and low_q is not None:
             rest_df = sum((df ** round((ref - p) / TICK)) * c
                           for p, c in (_own_ord.get(side) or [])
-                          if p is not None and p >= low_q - 1e-9)
+                          if p is not None and low_q - 1e-9 <= p <= ref + 1e-9)
             rest_df = min(rest_df, df_total)
         denom = max(df_total - rest_df, 0.0) + score
         share = score / denom if denom > 0 else 0.0
@@ -2925,7 +2946,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
             # model, flat entry only (held inventory unwound above, untouched). Measured
             # exposure: 73 of 7,080 cycles (07-29..08-01 plan rows) had >=1 activate.
             _expA, _idealA, _fracA = _expected_credit_usd(m, yl, nl, best_y, best_n,
-                                                          target, now)
+                                                          target, now, own_orders=own_orders)
             if _expA < MIN_CREDIT_USD:
                 if stats is not None:
                     stats["gate_activate_credit"] = stats.get("gate_activate_credit", 0) + 1
@@ -3985,6 +4006,11 @@ def run_once():
         if client.mode == "dry_run":
             standing = st.get("simulated_standing", {})
             own = {}
+            # F5 blind review #1 (BLOCKER): simulated orders were NEVER PLACED, so the public
+            # book never contained them — subtracting them removes RIVAL depth and inflates
+            # every dark-mode share/capture number in the anti-conservative direction (the
+            # same invariant the `own = {}` line above already enforces for counts).
+            _f5_standing = {}
         else:
             try:
                 standing, raw_rows = _live_standing(client)
@@ -4010,6 +4036,7 @@ def run_once():
                 print(f"WARNING reconcile FAIL: {raw_rows} resting rows parsed to 0 — halting (no order ops)")
                 return 0
             own = own_resting(standing)
+            _f5_standing = standing        # live: the book really contains these orders
             # last_oids: seed from the standing read NOW so the blackout guard always has real
             # resting ids to cancel even if the positions read below fails. Do NOT reset the fail
             # streak yet (review C2): a good standing read alone is NOT a complete cycle, so a
@@ -5094,7 +5121,7 @@ def run_once():
                                    now, own=own.get(t), inv=naked_by.get(t, 0.0),
                                    event_delta=event_delta_for(ev_delta, t), stats=qstats,
                                    cost=cost_by.get(t, 0.0),
-                                   own_orders=_own_order_levels(standing.get(t)))
+                                   own_orders=_own_order_levels(_f5_standing.get(t)))
             except Exception as e:
                 # isolate one degenerate market, but SURFACE it as quote_fail (a
                 # systematic desired_quotes failure must not hide inside gated_out)
@@ -5126,11 +5153,16 @@ def run_once():
             # explore clamp above. The full-size copy rule matches it too: a ramped count is a
             # risk decision, not a measurement of the market.
             if q and D3_RAMP:
-                global _D3_FIRST_SEEN
+                global _D3_FIRST_SEEN, _D3_LAST_DESIRED
                 if _D3_FIRST_SEEN is None:
                     try:
+                        _st14 = load_state()
                         _D3_FIRST_SEEN = {str(k): float(v) for k, v in
-                                          (load_state().get("d3_first_seen") or {}).items()}
+                                          (_st14.get("d3_first_seen") or {}).items()}
+                        # review #7: the belt restore must carry the F14 grace map too, or
+                        # every restart under SELECT_BUDGET=0 restarts all absence clocks
+                        _D3_LAST_DESIRED = {str(k): float(v) for k, v in
+                                            (_st14.get("d3_last_desired") or {}).items()}
                     except Exception:
                         _D3_FIRST_SEEN = {}
                 if any(_o8.get("reason") != "unwind" for _o8 in q):
@@ -5187,7 +5219,7 @@ def run_once():
                               if type(v) is int and v - _pre_stats.get(k, 0) > 0}
                     _row = _market_telemetry_row(cyc, now, m, _byl, _bnl, q,
                                                  own.get(t), naked_by.get(t, 0.0), _gates,
-                                                 own_orders=_own_order_levels(standing.get(t)))
+                                                 own_orders=_own_order_levels(_f5_standing.get(t)))
                     with open(os.path.join(DATA_DIR,
                                            f"quotes-{now.strftime('%Y%m%d')}.jsonl"), "a") as _fh:
                         _fh.write(json.dumps(_row, separators=(",", ":")) + "\n")
@@ -5216,7 +5248,7 @@ def run_once():
                             _cache_row = _market_telemetry_row(
                                 cyc, now, m, _byl, _bnl, _q_fullsize,
                                 own.get(t), naked_by.get(t, 0.0), _gates,
-                                own_orders=_own_order_levels(standing.get(t)))
+                                own_orders=_own_order_levels(_f5_standing.get(t)))
                         import kalshi_market_scores as _kms
                         with SCORES_LOCK:
                             _kms.update(SCORES, t, _cache_row.get("capture_usd_day"),
