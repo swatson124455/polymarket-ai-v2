@@ -557,6 +557,22 @@ def _d3_ramp_ct(ticker, now_ts, first_seen, feedback):
     return D3_RUNGS[rung]
 
 
+def _d3_first_seen_ensure(st):
+    """Restore the ramp first-seen map BEFORE the select-budget walk needs it (wave-1
+    review C-1: the lazy quote-loop restore ran AFTER the walk, so the first cycle after
+    every restart est'd every ticker at rung 0 — over-admitting and firing the backstop
+    alarm whose documented interpretation is 'tighten the margin', i.e. restart noise
+    masquerading as a config signal). Idempotent; the quote-loop loader stays as belt."""
+    global _D3_FIRST_SEEN
+    if _D3_FIRST_SEEN is None:
+        try:
+            _D3_FIRST_SEEN = {str(k): float(v) for k, v in
+                              (st.get("d3_first_seen") or {}).items()}
+        except Exception:
+            _D3_FIRST_SEEN = {}
+    return _D3_FIRST_SEEN
+
+
 def _d3_est_ct(ticker, now_ts):
     """SIDE-EFFECT-FREE ramp ct for BUDGET ESTIMATION (operator-ruled 2026-08-06,
     pulled forward from the W6 gate): the select-budget walk charged FULL est
@@ -1483,10 +1499,14 @@ def _close_cache_restore(saved):
     the POS TTL forces a re-verify within CLOSE_CACHE_POS_TTL_S anyway. Kills the
     ~0.5-2h per-restart warmup fail-open window (measured: 3/5 probe slots on
     beyond-horizon markets, 2026-08-06T00:52Z, one closing 2028)."""
-    stamp = time.monotonic()
+    base = time.monotonic()
     for t, ct in (saved or {}).items():
         if ct and len(_CLOSE_TIME_CACHE) < CLOSE_CACHE_MAX:
-            _CLOSE_TIME_CACHE.setdefault(str(t), (str(ct), stamp))
+            # review C-2: a uniform stamp made all ~8k restored entries expire in the
+            # same instant every POS_TTL — per-ticker jitter (capped TTL/2 so nothing
+            # restores pre-expired) spreads the re-reads over a 3h window.
+            jitter = abs(hash(str(t))) % max(int(CLOSE_CACHE_POS_TTL_S // 2), 1)
+            _CLOSE_TIME_CACHE.setdefault(str(t), (str(ct), base - jitter))
 
 
 # HIGH-ACTIVITY FIRST GATE (operator-named 2026-08-02, coarse v1 — review later): skip
@@ -3808,6 +3828,14 @@ def run_once():
                         _fc_keep.append(_m)
                         continue
                 try:
+                    if bool(_ct) and parse_iso(_ct) <= now:
+                        # review C-3: the belt mirrors B-1 — a past-close row that rode
+                        # a selection fail-open dies here instead of quoting one cycle.
+                        plan["close_past_belt"] = plan.get("close_past_belt", 0) + 1
+                        continue
+                except Exception:
+                    pass
+                try:
                     _far = bool(_ct) and parse_iso(_ct) > now + timedelta(days=MAX_DAYS_TO_CLOSE)
                 except Exception:
                     _far = False
@@ -4679,6 +4707,8 @@ def run_once():
         if SELECT_BUDGET and footprint:
             try:
                 import kalshi_capital_rank as _kcr
+                if D3_RAMP:
+                    _d3_first_seen_ensure(st)      # review C-1: est needs real rungs
                 _limit9 = _total_cap() * (1.0 + SELECT_BUDGET_MARGIN)
                 _famcap9 = _series_cap()
                 _refs9 = {}

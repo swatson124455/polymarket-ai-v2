@@ -101,6 +101,25 @@ def test_t4_positive_close_entries_expire(monkeypatch):
         "an aged positive entry must force a re-read (venue can amend close_time)"
 
 
+def test_t6_first_seen_ensured_before_walk(monkeypatch):
+    """Review C-1: the walk must see REAL rungs on the first post-restart cycle, not
+    rung-0 for everything (over-admission + false backstop alarms every restart)."""
+    monkeypatch.setattr(q, "_D3_FIRST_SEEN", None)
+    out = q._d3_first_seen_ensure({"d3_first_seen": {"KXT-9": 123.0}})
+    assert out == {"KXT-9": 123.0}
+    out2 = q._d3_first_seen_ensure({"d3_first_seen": {"OTHER": 1.0}})
+    assert out2 == {"KXT-9": 123.0}, "idempotent — never reloads over a live map"
+    src = open(q.__file__, encoding="utf-8", errors="replace").read()
+    i = src.index("_d3_first_seen_ensure(st)")
+    assert i < src.index("_limit9 = _total_cap()"), \
+        "restore must precede the walk's est loop"
+
+
+def test_t7_belt_mirrors_past_close():
+    src = open(q.__file__, encoding="utf-8", errors="replace").read()
+    assert "close_past_belt" in src, "review C-3: the belt drops past-close rows too"
+
+
 def test_t5_close_cache_persist_restore():
     q._CLOSE_TIME_CACHE.clear()
     q._close_cache_put("KXT-2", "2026-09-01T00:00:00Z")
