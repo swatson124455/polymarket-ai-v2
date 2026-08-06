@@ -637,9 +637,13 @@ def _d3_est_ct(ticker, now_ts):
 
 
 def _d3_apply_ramp(q, ramp_ct, qstats=None):
-    """Clamp accumulating quote counts to ramp_ct in place; unwind quotes untouched."""
+    """Clamp accumulating quote counts to ramp_ct in place; unwind quotes untouched.
+    macro_probe quotes are ALSO untouched (blind review 2026-08-06 #1): the ladder's whole
+    purpose is meeting Target Size — rung-clamping it to 5-10ct re-creates the exact
+    receipts deadlock D-C exists to break, while its risk is already bounded in DOLLARS
+    (deep-discount levels; reserved $ = max loss), which contract rungs cannot express."""
     for o in q:
-        if o.get("reason") != "unwind" and o.get("count", 0) > ramp_ct:
+        if o.get("reason") not in ("unwind", "macro_probe") and o.get("count", 0) > ramp_ct:
             if qstats is not None:
                 qstats["d3_ramp_capped"] = qstats.get("d3_ramp_capped", 0) + 1
             o["count"] = max(1, int(ramp_ct))
@@ -674,28 +678,41 @@ MACRO_PROBE_USD = _envf("KALSHI_MACRO_PROBE_USD", 60.0)   # reserved-$ cap per m
 MACRO_PROBE_TOP = _envf("KALSHI_MACRO_PROBE_TOP", 0.03)   # top ladder level, dollars
 
 
-def _macro_probe_quotes(m, yl, nl, stats=None):
+def _macro_probe_quotes(m, yl, nl, stats=None, own=None):
     """Two-sided Target-meeting ladder for a designated macro-probe market. Per side:
-    need = Target − external depth; 3-level ladder MACRO_PROBE_TOP..−2 ticks (floored at 1c),
-    counts split 40/30/30 (ceil so the ladder covers `need`). If the per-side cost cap
-    (MACRO_PROBE_USD/2) cannot reach Target, rest NOTHING on the whole market — partial depth
-    that cannot qualify is pure fill risk with zero reward (counted, never silent)."""
+    need = Target − RIVAL external depth (the public book includes our own resting ladder —
+    blind review 2026-08-06 #2: without subtracting it, cycle 2 reads 'target met', pulls
+    everything, cycle 3 re-rests: a permanent cancel/create oscillation halving snapshot
+    capture); 3-level ladder MACRO_PROBE_TOP..−2 ticks (floored at 1c, and NEVER a single
+    level — review #13: top=0.01 would produce the 1c-only wall the D-F ruling forbids).
+    Per-side cost cap = min(MACRO_PROBE_USD/2, 0.9×HELD_MAX_USD) — review #5: a full-side
+    fill above HELD_MAX_USD trips the whole-book reduce-only breaker, so the ladder must
+    never be able to create a held position the breaker treats as catastrophic; raising the
+    cap is an OPERATOR decision on both knobs together. Unaffordable Target -> rest NOTHING
+    on the whole market (partial depth cannot qualify = pure fill risk; counted)."""
     target = float(m.get("target") or 0.0)
     if target <= 0:
         return []
+    own = own or {}
+    side_cap = min(MACRO_PROBE_USD / 2.0, 0.9 * HELD_MAX_USD)
     quotes = []
     for side, levels in (("yes", yl), ("no", nl)):
         ext = sum(s for _, s in levels if s > 0)
-        need = max(0.0, target - ext)
+        ext_rivals = max(0.0, ext - float(own.get(side) or 0.0))
+        need = max(0.0, target - ext_rivals)
         if need <= 0:
-            continue                      # side already qualifies on external depth alone
+            continue                      # side already qualifies on RIVAL depth alone
         prices = [round(MACRO_PROBE_TOP - i * TICK, 2) for i in range(3)]
         prices = [p for p in prices if p >= 0.01 - 1e-9]
+        if len(prices) < 2:
+            if stats is not None:
+                stats["macro_probe_wall_refused"] = stats.get("macro_probe_wall_refused", 0) + 1
+            return []                     # single-level wall — configuration refused, never rested
         weights = [0.4, 0.3, 0.3][:len(prices)]
         wsum = sum(weights)
         counts = [int(need * w / wsum) + 1 for w in weights]      # ceil-ish: covers need
         cost = sum(p * c for p, c in zip(prices, counts))
-        if cost > MACRO_PROBE_USD / 2.0:
+        if cost > side_cap:
             if stats is not None:
                 stats["macro_probe_unaffordable"] = stats.get("macro_probe_unaffordable", 0) + 1
             return []
@@ -709,6 +726,11 @@ def _macro_probe_quotes(m, yl, nl, stats=None):
 
 EST_FEED = _envi("KALSHI_EST_FEED", 0)
 EST_FEED_MAX_AGE_S = _envf("KALSHI_EST_FEED_MAX_AGE_S", 1800.0)   # ignore snapshots older
+EST_FEED_MIN_FRAC = _envf("KALSHI_EST_FEED_MIN_FRAC", 0.25)  # review #3: the estimate is
+# (at least partly) accrued-to-date; late in a window those are BANKED dollars that pay
+# regardless of quoting now, so flooring a flat re-ENTRY on them buys pure fill risk.
+# The floor applies only while >= this fraction of the program window remains; semantics
+# refine at the 2026-08-07T15:00Z APRPOTUS est->credit checkpoint.
 _EST_FEED_CACHE = {"ts": 0.0, "table": {}}
 
 
@@ -717,8 +739,8 @@ def _est_feed_cached(now_ts, max_age_s=120.0):
     every max_age_s. Fail-open {} on any read/parse problem and on snapshots older than
     EST_FEED_MAX_AGE_S (a dead recorder must degrade to the model, never freeze a value)."""
     if now_ts - _EST_FEED_CACHE["ts"] > max_age_s:
-        table = {}
         try:
+            table = {}
             import glob as _glob
             files = sorted(_glob.glob(os.path.join(DATA_DIR, "estimates-*.jsonl")))
             last = None
@@ -729,16 +751,32 @@ def _est_feed_cached(now_ts, max_age_s=120.0):
                             last = _ln
             if last:
                 snap = json.loads(last)
-                if now_ts - parse_iso(snap["ts"]).timestamp() <= EST_FEED_MAX_AGE_S:
+                snap_ts = parse_iso(snap["ts"]).timestamp()
+                if now_ts - snap_ts <= EST_FEED_MAX_AGE_S:
                     pmap = json.load(open(os.path.join(DATA_DIR, "kalshi_program_map.json")))
                     for e in snap.get("estimates") or []:
-                        mt = (pmap.get(str(e.get("program_id"))) or {}).get("market_ticker")
+                        pr = pmap.get(str(e.get("program_id"))) or {}
+                        mt = pr.get("market_ticker")
+                        # review #4: an ENDED program's estimate is banked dollars pending
+                        # payout, not earnable-future credit — it must never floor an
+                        # ENTRY gate. Rows whose program end has passed are skipped.
+                        try:
+                            _pend = pr.get("end_date")
+                            if _pend and parse_iso(_pend).timestamp() <= now_ts:
+                                continue
+                        except Exception:
+                            continue          # unparseable program end -> not evidence
                         if mt:
                             table[mt] = table.get(mt, 0.0) + \
                                 float(e.get("reward_centicents") or 0) / 10000.0
+            _EST_FEED_CACHE["table"] = table
+            _EST_FEED_CACHE["snap_ts"] = snap_ts if last else 0.0
         except Exception:
-            table = {}
-        _EST_FEED_CACHE["table"] = table
+            # review #9: a torn last line (recorder mid-append) is transient — keep the
+            # previous GOOD table while ITS snapshot is still inside the staleness bound,
+            # so est-floor-admitted markets don't flap on one bad read.
+            if now_ts - _EST_FEED_CACHE.get("snap_ts", 0.0) > EST_FEED_MAX_AGE_S:
+                _EST_FEED_CACHE["table"] = {}
         _EST_FEED_CACHE["ts"] = now_ts
     return _EST_FEED_CACHE["table"]
 
@@ -1293,8 +1331,9 @@ def _expected_credit_usd(m, yl, nl, best_y, best_n, target, now, own_orders=None
             pc *= eff_ct / join_ct                   # F3: gate at the size that will actually rest
     ideal = pc * payout_days
     expected = ideal * _presence_factor(m.get("ticker"), m.get("life_min"))
-    if EST_FEED:
-        # D-A: the venue's own per-program estimate floors the expectation (never lowers it)
+    if EST_FEED and frac >= EST_FEED_MIN_FRAC:
+        # D-A: the venue's own per-program estimate floors the expectation (never lowers it);
+        # late-window entries fall back to the pure model (see EST_FEED_MIN_FRAC).
         _est = _est_feed_cached(now.timestamp()).get(m.get("ticker"))
         if _est is not None and _est > 0.0:
             ideal = max(ideal, _est)
@@ -1999,13 +2038,16 @@ def select_footprint(progs, now):
         # via the strand path. Always at least the wind-down cutoff.
         cutoff_min = min(MAX_ENTRY_CUTOFF_MIN,
                          max(_effective_wind_down_min(life_min), LATE_LIFE_FRAC * life_min))
-        if end < now + timedelta(minutes=cutoff_min):
-            drops["drop_late_life"] = drops.get("drop_late_life", 0) + 1
-            continue
+        _is_macro = t in MACRO_PROBE_TICKERS   # D-C review #6: designation overrides the
+        if end < now + timedelta(minutes=cutoff_min) and not _is_macro:  # horizon prefs (the
+            drops["drop_late_life"] = drops.get("drop_late_life", 0) + 1  # operator designated
+            continue                                                      # a specific ticker
         # FAR-CLOSE CAP — refuse markets resolving beyond the horizon we can actually stay present
         # in. Measured presence in 14d+ markets was a 0.02% median (n=5). Structural, so it holds
-        # even with no presence calibration loaded.
-        if MAX_DAYS_TO_CLOSE > 0 and end > now + timedelta(days=MAX_DAYS_TO_CLOSE):
+        # even with no presence calibration loaded. Designated macro tickers exempt (review #6);
+        # date-parse and close-past safety drops still apply to them.
+        if (MAX_DAYS_TO_CLOSE > 0 and end > now + timedelta(days=MAX_DAYS_TO_CLOSE)
+                and not _is_macro):
             drops["drop_far_close"] = drops.get("drop_far_close", 0) + 1
             continue
         # window length in days — still needed for the per-market ramp below (NOT for usd_day).
@@ -2825,7 +2867,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     if MACRO_PROBE_TICKERS and m.get("ticker") in MACRO_PROBE_TICKERS:
         if abs(inv) >= INV_TOLERANCE:
             return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
-        return _macro_probe_quotes(m, yl, nl, stats)
+        return _macro_probe_quotes(m, yl, nl, stats, own=own)
     # THE NEXT TWO GATES REJECT AN *ENTRY*. Each used to `return []`, which also discarded
     # the reducing quote built further down — so a held position on a one-sided or extreme
     # book got NO exit order at all, which is precisely the book a losing position ends on.
@@ -3835,7 +3877,17 @@ def _refresh_safety_knobs():
     restart_only = {"KALSHI_SWEEP_VETO_TICKS": ("SWEEP_VETO_TICKS", int),
                     "KALSHI_EXPLORE_PROBE_CT": ("EXPLORE_PROBE_CT", int),
                     "KALSHI_SERIES_MAX_USD": ("SERIES_MAX_USD", float),
-                    "KALSHI_FILLCOST_REFRESH_S": ("FILLCOST_REFRESH_S", float)}
+                    "KALSHI_FILLCOST_REFRESH_S": ("FILLCOST_REFRESH_S", float),
+                    # D-A/D-C knobs (review #10): an operator killing a runaway macro probe
+                    # or estimate floor mid-incident must get the needs-restart warning,
+                    # never a silent no-op
+                    "KALSHI_EST_FEED": ("EST_FEED", int),
+                    "KALSHI_EST_FEED_MIN_FRAC": ("EST_FEED_MIN_FRAC", float),
+                    "KALSHI_MACRO_PROBE_USD": ("MACRO_PROBE_USD", float),
+                    "KALSHI_MACRO_PROBE_TOP": ("MACRO_PROBE_TOP", float),
+                    "KALSHI_MACRO_PROBE_TICKERS": (
+                        "MACRO_PROBE_TICKERS",
+                        lambda s: frozenset(x.strip() for x in s.split(",") if x.strip()))}
     try:
         g = globals()
         with open(path) as fh:
@@ -5305,7 +5357,8 @@ def run_once():
             # INCUMBENT-ONLY enforcement: a market outside the captured set keeps ONLY its
             # unwind quotes (same strip as the loss governor above — de-risk never blocked,
             # accumulation never allowed). Flat non-incumbents strip to [] = never opened.
-            if q and _incumbent_only is not None and t not in _incumbent_only:
+            if (q and _incumbent_only is not None and t not in _incumbent_only
+                    and t not in MACRO_PROBE_TICKERS):   # D-C review #11: designation overrides
                 _kept9 = [o for o in q if o.get("reason") == "unwind"]
                 if len(_kept9) != len(q):
                     qstats["incumbent_only_stripped"] = (

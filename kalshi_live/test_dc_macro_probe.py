@@ -32,6 +32,9 @@ def _cfg(monkeypatch, tickers, usd=60.0, top=0.03):
     monkeypatch.setattr(q, "MACRO_PROBE_TOP", top)
     monkeypatch.setattr(q, "W12_PRICE_SHAPE", 0)
     monkeypatch.setattr(q, "SETTLE_UNWIND_MIN", 30)
+    # review #5: the per-side cap is min(MACRO_PROBE_USD/2, 0.9*HELD_MAX_USD) — arm both
+    # knobs coherently; the fixture raises the held ceiling so the $60 default is testable
+    monkeypatch.setattr(q, "HELD_MAX_USD", 40.0)
 
 
 _EMPTYISH_Y = [(0.02, 10.0)]      # near-empty book: 10ct resting each side
@@ -40,7 +43,7 @@ _EMPTYISH_N = [(0.02, 10.0)]
 
 def test_flag_off_default_is_noop(monkeypatch):
     _cfg(monkeypatch, ())
-    out = q.desired_quotes(_mkt(macro=False), _EMPTYISH_Y, _EMPTYISH_N, q.utcnow(), inv=0.0)
+    out = q.desired_quotes(_mkt(macro=False), _EMPTYISH_Y, _EMPTYISH_N, _now(), inv=0.0)
     # not designated -> whatever legacy does, but never a macro_probe reason
     assert all(o.get("reason") != "macro_probe" for o in out)
 
@@ -48,7 +51,7 @@ def test_flag_off_default_is_noop(monkeypatch):
 def test_designated_flat_rests_two_sided_target_ladder(monkeypatch):
     _cfg(monkeypatch, ("KXMACRO-26AUG08-T1",))
     m = _mkt()
-    out = q.desired_quotes(m, _EMPTYISH_Y, _EMPTYISH_N, q.utcnow(), inv=0.0, stats={})
+    out = q.desired_quotes(m, _EMPTYISH_Y, _EMPTYISH_N, _now(), inv=0.0, stats={})
     mac = [o for o in out if o.get("reason") == "macro_probe"]
     assert mac, out
     for side in ("yes", "no"):
@@ -64,7 +67,7 @@ def test_designated_flat_rests_two_sided_target_ladder(monkeypatch):
 
 def test_designated_with_inventory_reduces_only(monkeypatch):
     _cfg(monkeypatch, ("KXMACRO-26AUG08-T1",))
-    out = q.desired_quotes(_mkt(), [(0.02, 10.0)], [(0.90, 10.0)], q.utcnow(), inv=40.0,
+    out = q.desired_quotes(_mkt(), [(0.02, 10.0)], [(0.90, 10.0)], _now(), inv=40.0,
                            stats={})
     assert all(o.get("reason") != "macro_probe" for o in out)
 
@@ -74,6 +77,6 @@ def test_unaffordable_target_rests_nothing(monkeypatch):
     fill risk with zero qualification — skip the market and count it."""
     _cfg(monkeypatch, ("KXMACRO-26AUG08-T1",), usd=5.0)   # $2.50/side can't buy ~990ct at 1-3c
     stats = {}
-    out = q.desired_quotes(_mkt(), _EMPTYISH_Y, _EMPTYISH_N, q.utcnow(), inv=0.0, stats=stats)
+    out = q.desired_quotes(_mkt(), _EMPTYISH_Y, _EMPTYISH_N, _now(), inv=0.0, stats=stats)
     assert all(o.get("reason") != "macro_probe" for o in out)
     assert stats.get("macro_probe_unaffordable", 0) >= 1
