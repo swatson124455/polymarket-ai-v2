@@ -660,6 +660,53 @@ _D3_FB_CACHE = {"ts": 0.0, "table": {}}
 # est→credit truth checkpoint = KXAPRPOTUS program end 2026-08-07T15:00Z).
 # Disk-only: the trading cycle NEVER calls the estimates API itself — recorder dies -> feed
 # goes stale -> fail-open to the model (staleness bound below).
+# --- D-C: MACRO-PROBE (operator-ruled 2026-08-06; ships OFF via empty ticker list) ----------
+# The 5ct probe is formula-invisible where Target Size is 1000ct and the book is empty — the
+# side never qualifies, so receipts can never arrive from exactly the LOW-competition pools
+# the thesis targets (reward audit §3.5). The macro-probe rests a TWO-SIDED deep-discount
+# ladder meeting Target on operator-DESIGNATED tickers only. Deep-discount levels mean the
+# reserved dollars ARE the max loss and any fill is far below fair (a bargain, not a pickoff);
+# per the D-F ruling the ladder spans 3 real levels, never a 1c-only wall. Flat-only — held
+# inventory routes to the standard reducing/exit machinery untouched.
+MACRO_PROBE_TICKERS = frozenset(
+    t.strip() for t in os.environ.get("KALSHI_MACRO_PROBE_TICKERS", "").split(",") if t.strip())
+MACRO_PROBE_USD = _envf("KALSHI_MACRO_PROBE_USD", 60.0)   # reserved-$ cap per market (both sides)
+MACRO_PROBE_TOP = _envf("KALSHI_MACRO_PROBE_TOP", 0.03)   # top ladder level, dollars
+
+
+def _macro_probe_quotes(m, yl, nl, stats=None):
+    """Two-sided Target-meeting ladder for a designated macro-probe market. Per side:
+    need = Target − external depth; 3-level ladder MACRO_PROBE_TOP..−2 ticks (floored at 1c),
+    counts split 40/30/30 (ceil so the ladder covers `need`). If the per-side cost cap
+    (MACRO_PROBE_USD/2) cannot reach Target, rest NOTHING on the whole market — partial depth
+    that cannot qualify is pure fill risk with zero reward (counted, never silent)."""
+    target = float(m.get("target") or 0.0)
+    if target <= 0:
+        return []
+    quotes = []
+    for side, levels in (("yes", yl), ("no", nl)):
+        ext = sum(s for _, s in levels if s > 0)
+        need = max(0.0, target - ext)
+        if need <= 0:
+            continue                      # side already qualifies on external depth alone
+        prices = [round(MACRO_PROBE_TOP - i * TICK, 2) for i in range(3)]
+        prices = [p for p in prices if p >= 0.01 - 1e-9]
+        weights = [0.4, 0.3, 0.3][:len(prices)]
+        wsum = sum(weights)
+        counts = [int(need * w / wsum) + 1 for w in weights]      # ceil-ish: covers need
+        cost = sum(p * c for p, c in zip(prices, counts))
+        if cost > MACRO_PROBE_USD / 2.0:
+            if stats is not None:
+                stats["macro_probe_unaffordable"] = stats.get("macro_probe_unaffordable", 0) + 1
+            return []
+        for p, c in zip(prices, counts):
+            quotes.append({"side": side, "price_dollars": p, "count": c,
+                           "reason": "macro_probe"})
+    if quotes and stats is not None:
+        stats["macro_probe_markets"] = stats.get("macro_probe_markets", 0) + 1
+    return quotes
+
+
 EST_FEED = _envi("KALSHI_EST_FEED", 0)
 EST_FEED_MAX_AGE_S = _envf("KALSHI_EST_FEED_MAX_AGE_S", 1800.0)   # ignore snapshots older
 _EST_FEED_CACHE = {"ts": 0.0, "table": {}}
@@ -1915,7 +1962,13 @@ def select_footprint(progs, now):
         if not t:
             continue
         probe_only = False
-        if SERIES_ALLOW and t.split("-")[0] not in SERIES_ALLOW:
+        if t in MACRO_PROBE_TICKERS:
+            # D-C (operator-ruled 2026-08-06): an operator-DESIGNATED macro-probe ticker is
+            # force-admitted at full designation — never probe_only, never activity-gated
+            # (exemptions below key off this flag). Deny and the clock drops still apply.
+            probe_only = False
+            drops["macro_probe_admitted"] = drops.get("macro_probe_admitted", 0) + 1
+        elif SERIES_ALLOW and t.split("-")[0] not in SERIES_ALLOW:
             # CLOSED-WORLD PILOT EXCEPTION (operator-ruled 2026-08-05, question 4): with the
             # flag on, a non-allowlist series is not dropped -- it passes PROBE-ONLY, tagged
             # explore so the existing probe clamp (EXPLORE_PROBE_CT) sizes it and the D3 ramp
@@ -2047,7 +2100,8 @@ def select_footprint(progs, now):
             # needs it.
             if _v3 is not None:
                 r["vol24h_ct"] = float(_v3)
-            _allowlisted3 = bool(SERIES_ALLOW) and r["ticker"].split("-")[0] in SERIES_ALLOW
+            _allowlisted3 = ((bool(SERIES_ALLOW) and r["ticker"].split("-")[0] in SERIES_ALLOW)
+                             or r["ticker"] in MACRO_PROBE_TICKERS)   # D-C designation exempts
             if (MAX_VOL24H_CT > 0 and _v3 is not None and _v3 > MAX_VOL24H_CT
                     and not _allowlisted3):
                 # ALLOWLIST EXEMPTION (operator option A, 2026-08-05): a receipts-proven series
@@ -2764,6 +2818,14 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if stats is not None:
             stats["gate_crossed_book"] = stats.get("gate_crossed_book", 0) + 1
         return []
+    # D-C MACRO-PROBE: an operator-designated ticker takes the Target-ladder path and
+    # BYPASSES the quality gates below (designation IS the override) — but never the safety
+    # gates above (bad clock, wind-down, crossed book) and never inventory handling: held
+    # inventory unwinds through the standard reducing path exactly like every other market.
+    if MACRO_PROBE_TICKERS and m.get("ticker") in MACRO_PROBE_TICKERS:
+        if abs(inv) >= INV_TOLERANCE:
+            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
+        return _macro_probe_quotes(m, yl, nl, stats)
     # THE NEXT TWO GATES REJECT AN *ENTRY*. Each used to `return []`, which also discarded
     # the reducing quote built further down — so a held position on a one-sided or extreme
     # book got NO exit order at all, which is precisely the book a losing position ends on.
