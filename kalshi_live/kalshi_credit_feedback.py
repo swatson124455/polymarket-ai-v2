@@ -48,15 +48,22 @@ def _series(t):
 
 
 def _event(t):
-    """Event key = ticker minus its strike suffix. Matches the credit reason's event grain
-    (verified over the W10 snapshot: every credited event maps to order tickers this way)."""
+    """STRING-FALLBACK event key = ticker minus its strike suffix. A-2 (identity review,
+    operator 'go' 2026-08-06): this fragments real venue shapes (a 4-field legacy ticker
+    or a T-negative strike splits one event into fragments, and a fully-settled FRAGMENT
+    read 'due' while sibling strikes were open — prematurely arming never_paid_due).
+    The builder now resolves the TRUE event via market metadata (event_of); this string
+    form remains only as the counted fallback when a metadata read fails."""
     parts = (t or "").split("-")
     return "-".join(parts[:-1]) if len(parts) > 2 else (t or "")
 
 
-def build_feedback(credits, orders, settlements, now):
-    """Pure. credits/orders/settlements are raw venue rows; now is a tz-aware datetime."""
-    credited = collections.defaultdict(lambda: {"usd": 0.0, "n": 0})
+def build_feedback(credits, orders, settlements, now, event_of=None):
+    """Pure. credits/orders/settlements are raw venue rows; now is a tz-aware datetime.
+    event_of: optional callable ticker -> venue event_ticker (metadata-resolved);
+    None/per-ticker-None falls back to the string _event."""
+    ev_of = event_of or (lambda t: None)
+    credited = collections.defaultdict(lambda: {"usd": 0.0, "n": 0, "last": ""})
     for r in credits:
         reason = r.get("reason") or ""
         if not reason.startswith(CREDIT_PREFIX):
@@ -64,6 +71,9 @@ def build_feedback(credits, orders, settlements, now):
         s = _series(reason[len(CREDIT_PREFIX):])
         credited[s]["usd"] += float(r.get("amount_cents") or 0) / 100.0
         credited[s]["n"] += 1
+        ts = str(r.get("created_at") or "")
+        if ts > credited[s]["last"]:
+            credited[s]["last"] = ts          # B-4: trust gets a timestamp
 
     fills_ct = collections.defaultdict(float)
     filled_by_event = collections.defaultdict(set)   # event -> its filled tickers
@@ -79,7 +89,7 @@ def build_feedback(credits, orders, settlements, now):
             ct = 0.0
         if ct > 0:
             fills_ct[_series(t)] += ct
-            filled_by_event[_event(t)].add(t)
+            filled_by_event[ev_of(t) or _event(t)].add(t)
 
     settled_at = {}
     for s in settlements:
@@ -105,6 +115,7 @@ def build_feedback(credits, orders, settlements, now):
     for s in set(credited) | set(fills_ct) | seen_series:
         row = {"credited_usd": round(credited[s]["usd"], 2) if s in credited else 0.0,
                "credits_n": credited[s]["n"] if s in credited else 0,
+               "last_credit_ts": (credited[s]["last"] or None) if s in credited else None,
                "filled_ct": round(fills_ct.get(s, 0.0), 2),
                "due_filled_events": due_events.get(s, 0)}
         if row["credits_n"] > 0:
@@ -115,6 +126,28 @@ def build_feedback(credits, orders, settlements, now):
             row["verdict"] = "insufficient"
         out[s] = row
     return out
+
+
+def feed_integrity_alarms(credits, matched_n, limit, prev_series, new_series):
+    """A-1/B-7 (identity review, operator 'go' 2026-08-06): the whole trust plane parses
+    one venue string — alarm loudly on anything that smells like silent decay. Pure;
+    returns alarm strings (empty = healthy)."""
+    alarms = []
+    total = len(credits)
+    if total and matched_n < total * 0.9:
+        alarms.append(f"!! CREDIT PARSE RATE {matched_n}/{total} — the venue may have "
+                      f"reworded the credit reason (A-1); verdicts UNTRUSTWORTHY")
+    if limit and total >= limit:
+        alarms.append(f"!! credit_history rows == limit ({limit}) — TRUNCATION LIKELY "
+                      f"(B-7); a dropped credit can flip paid->convicted")
+    for s, prev in (prev_series or {}).items():
+        if (prev.get("verdict") == "paid"
+                and (new_series.get(s) or {}).get("verdict") != "paid"):
+            alarms.append(f"!! VERDICT REGRESSION {s}: paid -> "
+                          f"{(new_series.get(s) or {}).get('verdict')} — a paid series "
+                          f"can only lose that verdict through data loss; investigate "
+                          f"before consuming this feed")
+    return alarms
 
 
 def main():
@@ -130,7 +163,48 @@ def main():
         orders += (c.get_orders(status=stt).get("orders") or [])
     creds = c.get_credit_history().get("credits") or []
     setts = c.get_settlements().get("settlements") or []
-    fb = build_feedback(creds, orders, setts, now)
+    # A-2: resolve the TRUE event ticker for every FILLED ticker via market metadata,
+    # persisted in an alongside cache (events are static per market). String fallback
+    # only on read failure, and counted.
+    import urllib.request
+    cache_path = os.path.join(os.path.dirname(a.out) or ".", "kalshi_event_map.json")
+    try:
+        ev_map = json.load(open(cache_path))
+    except Exception:
+        ev_map = {}
+    filled = sorted({o.get("ticker") for o in orders
+                     if o.get("ticker") and float(o.get("fill_count_fp") or 0) > 0})
+    misses = [t for t in filled if t not in ev_map]
+    fell_back = 0
+    for t in misses:
+        try:
+            m = json.load(urllib.request.urlopen(
+                f"https://api.elections.kalshi.com/trade-api/v2/markets/{t}",
+                timeout=15)).get("market", {})
+            if m.get("event_ticker"):
+                ev_map[t] = m["event_ticker"]
+            else:
+                fell_back += 1
+        except Exception:
+            fell_back += 1
+        import time as _t
+        _t.sleep(0.2)
+    try:
+        with open(cache_path, "w") as fh:
+            json.dump(ev_map, fh, indent=0, sort_keys=True)
+    except Exception:
+        pass
+    print(f"event map: {len(filled)} filled tickers, {len(misses)} fetched, "
+          f"{fell_back} STRING-FALLBACK" + ("  !! metadata degraded" if fell_back else ""))
+    matched_n = sum(1 for r in creds
+                    if (r.get("reason") or "").startswith(CREDIT_PREFIX))
+    fb = build_feedback(creds, orders, setts, now, event_of=ev_map.get)
+    try:
+        prev_series = (json.load(open(a.out)).get("series") or {})
+    except Exception:
+        prev_series = {}
+    for alarm in feed_integrity_alarms(creds, matched_n, 1000, prev_series, fb):
+        print(alarm)
     doc = {"schema": SCHEMA, "generated": now.isoformat(), "series": fb}
     counts = collections.Counter(r["verdict"] for r in fb.values())
     print(f"series={len(fb)} verdicts={dict(counts)}")

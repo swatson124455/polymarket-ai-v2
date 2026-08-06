@@ -97,14 +97,40 @@ def main():
             time.sleep(0.25)
         return meta[s]
 
-    print("\n## successor candidates (programless payer -> active series, ranked)")
+    # C-2 (identity review, operator 'go' 2026-08-06): the INVERSE direction — a
+    # convicted / denied / banned franchise re-entering clean under a new name. Scan the
+    # same way; matches are operator decisions for CONVICTION transfer (lineage table
+    # kalshi_lineage.json holds ruled mappings, both trust and conviction).
+    convicted = set()
+    try:
+        fbdoc = json.load(open("/opt/pa2-maker-kalshi-live/kalshi_credit_feedback.json"))
+        convicted |= {s for s, r in (fbdoc.get("series") or {}).items()
+                      if r.get("verdict") == "never_paid_due"}
+    except Exception:
+        pass
+    try:
+        st = json.load(open("/opt/pa2-maker-kalshi-live/quoter_state.json"))
+        convicted |= {str(t).split("-")[0] for t in (st.get("mkt_out") or [])}
+    except Exception:
+        pass
+    scan_sets = [("programless payer", sorted(dead_allow)),
+                 ("CONVICTED/BANNED (conviction-evasion watch)",
+                  sorted(convicted - set(allow)))]
+    print("\n## successor candidates (ranked; both directions)")
     active_nonallow = [s for s in by_series if s not in set(allow)]
-    for dead in sorted(dead_allow):
+    for _label, _dead_list in scan_sets:
+        print(f"# direction: {_label}")
+        for dead in _dead_list:
+            _scan_one(dead, active_nonallow, by_series, a, series_meta)
+    return
+
+
+def _scan_one(dead, active_nonallow, by_series, a, series_meta):
         dm = series_meta(dead)
         dt_, dc = _tokens(dm.get("title")), (dm.get("category") or "")
         if not dt_:
             print(f"  {dead}: (no title metadata)")
-            continue
+            return
         scored = []
         for cand in active_nonallow:
             cm = series_meta(cand)

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "comment": "C-1/C-2 lineage table (identity review, operator 'go' 2026-08-06). Each mapping is an OPERATOR-RULED franchise continuity: old series -> successor series, with what transfers. Fed by the daily W16 both-direction scan; consumed by future ruled work (trust/conviction transfer is never automatic). ruled_by/ruled_at are mandatory on every entry.",
+  "mappings": [
+    {
+      "old": "KXSENATEADJOURN",
+      "new": "KXADJOURNRECESS",
+      "transfers": "trust (allowlisted by operator ruling)",
+      "ruled_by": "operator",
+      "ruled_at": "2026-08-06"
+    }
+  ]
+}
