@@ -36,11 +36,16 @@ class TestJ1CloseCache:
         assert q._close_cache_get("T2") is None     # expired -> caller refetches
         assert "T2" not in q._CLOSE_TIME_CACHE      # and the dead entry is gone
 
-    def test_positive_entry_never_expires(self):
+    def test_positive_entry_expires_after_pos_ttl(self):
+        # B-3 (identity review, operator-ruled 2026-08-06): positives USED to live
+        # forever ("never expires" was the old pin) — but the venue can amend
+        # close_time, so a positive entry now forces a re-read after
+        # CLOSE_CACHE_POS_TTL_S. Fresh entries still serve from cache.
         q._close_cache_put("T3", "2026-08-05T00:00:00Z")
-        ct, stamp = q._CLOSE_TIME_CACHE["T3"]
-        q._CLOSE_TIME_CACHE["T3"] = (ct, stamp - 10 * q.CLOSE_CACHE_NEG_TTL_S)
         assert q._close_cache_get("T3") == "2026-08-05T00:00:00Z"
+        ct, stamp = q._CLOSE_TIME_CACHE["T3"]
+        q._CLOSE_TIME_CACHE["T3"] = (ct, stamp - q.CLOSE_CACHE_POS_TTL_S - 1)
+        assert q._close_cache_get("T3") is None
 
     def test_bound_evicts_oldest(self, monkeypatch):
         monkeypatch.setattr(q, "CLOSE_CACHE_MAX", 16)

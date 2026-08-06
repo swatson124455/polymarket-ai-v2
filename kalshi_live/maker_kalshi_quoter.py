@@ -557,6 +557,28 @@ def _d3_ramp_ct(ticker, now_ts, first_seen, feedback):
     return D3_RUNGS[rung]
 
 
+def _d3_est_ct(ticker, now_ts):
+    """SIDE-EFFECT-FREE ramp ct for BUDGET ESTIMATION (operator-ruled 2026-08-06,
+    pulled forward from the W6 gate): the select-budget walk charged FULL est
+    (~$45-50) for markets the ramp then sizes at 5-25ct — measured binding 00:52Z:
+    used 208.4/210.25 'deployed' vs $16.85 actually committed (~12x over-read),
+    blocking CHIPBURRITO ($990/day) at drop_budget_full and family-evicting
+    established books. Mirrors _d3_ramp_ct WITHOUT registering first-seen (the walk
+    must never start a ticker's ramp clock). Unknown ticker -> rung 0."""
+    fs = (_D3_FIRST_SEEN or {}).get(ticker)
+    if fs is None:
+        rung = 0
+    else:
+        rung = min(int(max(0.0, now_ts - float(fs)) / max(D3_RUNG_S, 1e-9)),
+                   len(D3_RUNGS) - 1)
+    if D3_NEWSERIES_MAX_RUNG >= 0:
+        row = _d3_feedback_cached(now_ts).get((ticker or "").split("-")[0])
+        proven = isinstance(row, dict) and (row.get("credits_n") or 0) > 0
+        if not proven:
+            rung = min(rung, D3_NEWSERIES_MAX_RUNG)
+    return D3_RUNGS[rung]
+
+
 def _d3_apply_ramp(q, ramp_ct, qstats=None):
     """Clamp accumulating quote counts to ramp_ct in place; unwind quotes untouched."""
     for o in q:
@@ -1443,7 +1465,28 @@ FLATTEN_MAX_SLIP = _envf("KALSHI_FLATTEN_MAX_SLIP", 0.10)
 # rotating programs; unbounded growth is the same class as the SCORES/telemetry leaks).
 _CLOSE_TIME_CACHE = {}
 CLOSE_CACHE_NEG_TTL_S = 3600.0
+# B-3 (identity review, operator "go" 2026-08-06): POSITIVE entries used to live forever,
+# but the venue can amend close_time (early determination / extension) — re-verify every
+# 6h. With state persistence (B-2) the TTL also bounds how stale a restored clock can be.
+CLOSE_CACHE_POS_TTL_S = _envf("KALSHI_CLOSE_CACHE_POS_TTL_S", 21600.0)
 CLOSE_CACHE_MAX = 8192
+
+
+def _close_cache_snapshot():
+    """B-2: positives only ({ticker: close_time}) for state persistence — negatives are
+    cheap to re-learn and must not survive a restart with a stale stamp."""
+    return {t: v[0] for t, v in _CLOSE_TIME_CACHE.items() if v[0]}
+
+
+def _close_cache_restore(saved):
+    """B-2: repopulate at startup with a FRESH stamp — close_times are near-static and
+    the POS TTL forces a re-verify within CLOSE_CACHE_POS_TTL_S anyway. Kills the
+    ~0.5-2h per-restart warmup fail-open window (measured: 3/5 probe slots on
+    beyond-horizon markets, 2026-08-06T00:52Z, one closing 2028)."""
+    stamp = time.monotonic()
+    for t, ct in (saved or {}).items():
+        if ct and len(_CLOSE_TIME_CACHE) < CLOSE_CACHE_MAX:
+            _CLOSE_TIME_CACHE.setdefault(str(t), (str(ct), stamp))
 
 
 # HIGH-ACTIVITY FIRST GATE (operator-named 2026-08-02, coarse v1 — review later): skip
@@ -1473,7 +1516,11 @@ def _close_cache_get(ticker):
     if v is None:
         return None
     ct, stamp = v
-    if not ct and (time.monotonic() - stamp) > CLOSE_CACHE_NEG_TTL_S:
+    age = time.monotonic() - stamp
+    if not ct and age > CLOSE_CACHE_NEG_TTL_S:
+        _CLOSE_TIME_CACHE.pop(ticker, None)
+        return None
+    if ct and age > CLOSE_CACHE_POS_TTL_S:       # B-3: amended clocks get re-read
         _CLOSE_TIME_CACHE.pop(ticker, None)
         return None
     return ct
@@ -1859,6 +1906,16 @@ def select_footprint(progs, now):
                 # built for (operator-named 2026-08-02) are still blocked.
                 drops["drop_high_activity"] = drops.get("drop_high_activity", 0) + 1
                 continue
+            # B-1 (identity review, operator "go" 2026-08-06): selection previously only
+            # asked "too far?" never "already past?" — a settled market with a lingering
+            # active program (KXEOWEEK-26JUL25 class) burned footprint/probe slots and
+            # reads every cycle. One predicate kills the class.
+            try:
+                if bool(_ct3) and parse_iso(_ct3) <= now:
+                    drops["close_past_selected"] = drops.get("close_past_selected", 0) + 1
+                    continue
+            except Exception:
+                pass                                   # unparseable clock -> legacy path
             try:
                 _far3 = bool(_ct3) and parse_iso(_ct3) > now + timedelta(days=MAX_DAYS_TO_CLOSE)
             except Exception:
@@ -2905,11 +2962,26 @@ def _cap_probe_slots(rows, drops):
       3. row pool within a series.
     Non-probe rows pass through untouched; surviving rows keep their original relative
     order (downstream round-robin/rank depend on it). Emits FP_SHAPE['probe_slots']."""
-    probe_idx = [i for i, r in enumerate(rows)
-                 if r.get("explore") and SERIES_ALLOW
-                 and r["ticker"].split("-")[0] not in SERIES_ALLOW]
-    if not probe_idx:
+    probe_idx, _unknown_close = [], []
+    for i, r in enumerate(rows):
+        if (r.get("explore") and SERIES_ALLOW
+                and r["ticker"].split("-")[0] not in SERIES_ALLOW):
+            # B-2 (identity review, operator "go" 2026-08-06): a probe is pure discovery
+            # with zero urgency — it must never ride the close-cache warmup fail-open
+            # into a slot (measured: 2028-close market probed at 00:52Z). Close-unknown
+            # candidates wait for the cache; the ALLOWLIST fail-open path is untouched.
+            if not _close_cache_get(r["ticker"]):
+                _unknown_close.append(i)
+            else:
+                probe_idx.append(i)
+    if _unknown_close:
+        drops["probe_close_unknown"] = (drops.get("probe_close_unknown", 0)
+                                        + len(_unknown_close))
+    if not probe_idx and not _unknown_close:
         return rows
+    if not probe_idx:
+        _dropset0 = set(_unknown_close)
+        return [r for i, r in enumerate(rows) if i not in _dropset0]
     spool = {}
     for i in probe_idx:
         s = rows[i]["ticker"].split("-")[0]
@@ -2940,7 +3012,7 @@ def _cap_probe_slots(rows, drops):
     if dropped:
         drops["probe_slots_dropped"] = drops.get("probe_slots_dropped", 0) + len(dropped)
     FP_SHAPE["probe_slots"] = [rows[i]["ticker"] for i in sorted(picked)]
-    _dropset = set(dropped)
+    _dropset = set(dropped) | set(_unknown_close)
     return [r for i, r in enumerate(rows) if i not in _dropset]
 
 
@@ -3682,6 +3754,9 @@ def run_once():
         _PROBE_GATE_REFUSED.clear()
         _PROBE_GATE_REFUSED.update({str(k): int(v) for k, v in
                                     (st.get("probe_gate_refused") or {}).items()})
+        # B-2: close clocks survive restarts — kills the warmup fail-open window.
+        if not _CLOSE_TIME_CACHE and st.get("close_cache"):
+            _close_cache_restore(st.get("close_cache"))
         footprint = select_footprint(progs, now)
         # L3 (operator-named 2026-07-31, series probe insurance): a NEW ticker whose series
         # already has a permanently-OUT member ($5 rung) enters PROBE-SIZED (the explore
@@ -4651,6 +4726,10 @@ def run_once():
                         # probes rest EXPLORE_PROBE_CT contracts a side; at any yes/no
                         # split the two sides' dollars sum to ~probe_ct x $1
                         _est9 = min(_est9, float(EXPLORE_PROBE_CT))
+                    if D3_RAMP:
+                        # ramp-aware est (operator-ruled 2026-08-06): charge what the
+                        # ramp will actually let rest (~$1/ct), not the full join.
+                        _est9 = min(_est9, float(_d3_est_ct(_t9, now.timestamp())))
                     if _famcap9 > 0 and _fam9[_f9] + _est9 > _famcap9:
                         _drop_family9 += 1      # family budget full: skip THIS sibling
                         _saidno9.add(_t9)
@@ -5661,6 +5740,7 @@ def run_once():
         if DROP_GRACE > 0:
             st["drop_grace"] = grace_used
             plan["grace_retained"] = len(grace_used)
+        st["close_cache"] = _close_cache_snapshot()      # B-2: clocks survive restarts
         # W4/D3: persist first-seen so a restart cannot amnesty a young market to full size.
         # Pruned to tickers still in the intended book — a dropped ticker re-enters at rung 0.
         if D3_RAMP and _D3_FIRST_SEEN is not None:

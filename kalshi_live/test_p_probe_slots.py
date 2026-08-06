@@ -37,6 +37,8 @@ def _select(monkeypatch, rows, slots=2, refused=None):
     monkeypatch.setattr(q, "ALLOW_PROBE_EXCEPTION", 1)
     monkeypatch.setattr(q, "PROBE_MAX_SLOTS", slots)
     monkeypatch.setattr(q, "_PROBE_GATE_REFUSED", dict(refused or {}))
+    # B-2: probe slots require a KNOWN close clock; these tests exercise slot logic
+    monkeypatch.setattr(q, "_close_cache_get", lambda t: "2099-01-01T00:00:00Z")
     kept = q._cap_probe_slots(list(rows), q.FP_DROPS)
     return kept
 

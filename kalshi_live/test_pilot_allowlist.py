@@ -22,6 +22,10 @@ def _run(monkeypatch, exception_on):
     monkeypatch.setattr(q, "SERIES_ALLOW", {"KXAAAGASD"})
     monkeypatch.setattr(q, "ALLOW_PROBE_EXCEPTION", 1 if exception_on else 0)
     now = dt.datetime.now(dt.timezone.utc)
+    # B-2 (2026-08-06): probe slots need a KNOWN close clock — stub it
+    close = (now + dt.timedelta(days=1)).isoformat()
+    monkeypatch.setattr(q, "_close_cache_get", lambda t: close)
+    monkeypatch.setattr(q, "_vol24_cache_get", lambda t: 0.0)
     progs = [_prog("KXAAAGASD-26AUG09-4.100"), _prog("KXOTHER-26AUG09-T1")]
     return q.select_footprint(progs, now), dict(q.FP_DROPS)
 
@@ -57,6 +61,9 @@ def test_probe_slot_cap_binds_best_pool_first(monkeypatch):
     monkeypatch.setattr(q, "PROBE_MAX_SLOTS", 2)
     import datetime as dt2
     now = dt2.datetime.now(dt2.timezone.utc)
+    _close = (now + dt2.timedelta(days=1)).isoformat()
+    monkeypatch.setattr(q, "_close_cache_get", lambda t: _close)   # B-2 stub
+    monkeypatch.setattr(q, "_vol24_cache_get", lambda t: 0.0)
     progs = [_prog("KXAAAGASD-26AUG09-4.100")] +             [_prog(f"KXPROBE{i}-26AUG09-T1") for i in range(5)]
     rows = q.select_footprint(progs, now)
     probes = [r for r in rows if r.get("explore")]
