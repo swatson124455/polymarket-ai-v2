@@ -40,7 +40,7 @@ class TestD8FullSizeRecompute:
     def test_cache_fold_recomputes_at_full_size(self):
         src = inspect.getsource(q)
         i = src.index("_q_fullsize is not None")
-        window = src[i:i + 900]
+        window = src[i:i + 1200]     # widened for the F5 own_orders threading (2026-08-06)
         assert "_market_telemetry_row(" in window, "full-size recompute must feed the cache"
         assert "_kms.update(SCORES, t, _cache_row.get" in window
 

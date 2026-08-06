@@ -187,26 +187,37 @@ def test_the_margin_band_between_venue_floor_and_gate_is_rejected(monkeypatch):
     assert q.VENUE_PAYOUT_FLOOR_USD < exp < q.MIN_CREDIT_USD
 
 
-def test_long_thin_market_cannot_pass_by_multiplying_days(monkeypatch):
-    """THE HOLE THIS CLOSES. Kalshi never states whether the $1 floor is per DAY or per PERIOD.
-    Scaling by the full remaining window fails in the dangerous direction under the per-day
-    reading: a long market earning well under the floor each day accumulates to a number that
-    clears it, then pays ZERO every single day. Gate on min(one day, remaining window) so a market
-    must clear under EITHER reading."""
+def test_long_thin_market_floor_integrates_the_program_period(monkeypatch):
+    """F1 (reward audit 2026-08-06) — REWRITTEN, previously
+    test_long_thin_market_cannot_pass_by_multiplying_days, which pinned a deliberately
+    conservative min(1 day, window) unit taken while the venue never stated the floor's unit.
+    Both the old test docstring and _expected_credit_usd's said the first multi-day payout
+    would settle the ambiguity. It is settled: help article 13823851 (updated 2026-08-05)
+    scores over the TIME PERIOD ("Up to 31 days each") with "a final reward below $1 for an
+    individual program is not paid" per PROGRAM, and KXSENATEADJOURN-27 was credited as ONE
+    $6.44 lump on 2026-08-02 for its multi-day period. So a long program accruing under $1
+    PER DAY but over $1 PER PERIOD is a PAYER, and refusing it was the audit's
+    spread-thin-earn-zero mechanism. Operator-ruled fix (D-B yes, 2026-08-06)."""
     _cfg_gate(monkeypatch, on=True, floor=q.MIN_CREDIT_USD)
+    monkeypatch.setattr(q, "D3_RAMP", 0)     # isolate F1 from the F3 clamped-size scaling
     now = q.utcnow()
     yl, nl = _levels(_THIN)
     # 30-day window, tiny pool: the per-day take is far below the floor...
     thin_long = _mkt((now + dt.timedelta(days=29)).isoformat(), _LIFE_30D, usd_day=2.0)
     exp, ideal, frac = q._expected_credit_usd(thin_long, yl, nl, 0.50, 0.49, 1000, now)
     assert frac > 0.9, "almost the whole window remains"
-    # ...and the naive full-window figure WOULD have cleared the floor many times over
     pc = q._prospective_capture(thin_long, yl, nl, 0.50, 0.49, 1000)
-    naive_whole_window = pc * (_LIFE_30D / 1440.0) * frac
-    assert naive_whole_window > q.MIN_CREDIT_USD, "fixture must be one the old maths passed"
-    assert exp < q.MIN_CREDIT_USD, "but one payout period cannot clear it -> rejected"
-    assert q.desired_quotes(thin_long, _THIN["yes_dollars"], _THIN["no_dollars"], now,
-                            inv=0.0) == []
+    assert pc * 1.0 < q.MIN_CREDIT_USD, "fixture: one DAY alone cannot clear the floor"
+    # ...but the PERIOD integral can, and the period is the documented payout unit:
+    assert exp >= q.MIN_CREDIT_USD, "period-integral must clear -> admitted"
+    # the floor still has teeth: a program whose WHOLE remaining period is under $1 is refused
+    thin_short = _mkt((now + dt.timedelta(minutes=100)).isoformat(), 100.0, usd_day=2.0)
+    exp_s, _, _ = q._expected_credit_usd(thin_short, yl, nl, 0.50, 0.49, 1000, now)
+    assert exp_s < q.MIN_CREDIT_USD, "sub-$1 period stays rejected"
+    stats = {}
+    assert q.desired_quotes(thin_short, _THIN["yes_dollars"], _THIN["no_dollars"], now,
+                            inv=0.0, stats=stats) == []
+    assert stats.get("presence_skipped") == 1
 
 
 def test_sub_day_window_is_judged_on_the_whole_window_not_a_day(monkeypatch):

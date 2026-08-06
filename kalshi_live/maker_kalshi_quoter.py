@@ -563,14 +563,50 @@ def _d3_first_seen_ensure(st):
     every restart est'd every ticker at rung 0 — over-admitting and firing the backstop
     alarm whose documented interpretation is 'tighten the margin', i.e. restart noise
     masquerading as a config signal). Idempotent; the quote-loop loader stays as belt."""
-    global _D3_FIRST_SEEN
+    global _D3_FIRST_SEEN, _D3_LAST_DESIRED
     if _D3_FIRST_SEEN is None:
         try:
             _D3_FIRST_SEEN = {str(k): float(v) for k, v in
                               (st.get("d3_first_seen") or {}).items()}
         except Exception:
             _D3_FIRST_SEEN = {}
+        try:                                       # F14: the grace map survives restarts too
+            _D3_LAST_DESIRED = {str(k): float(v) for k, v in
+                                (st.get("d3_last_desired") or {}).items()}
+        except Exception:
+            _D3_LAST_DESIRED = {}
     return _D3_FIRST_SEEN
+
+
+D3_KEEP_S = _envf("KALSHI_D3_KEEP_S", 1800.0)   # F14: ramp memory survives absences up to this
+_D3_LAST_DESIRED = {}                           # ticker -> last ts it was in the intended book
+
+
+def _d3_prune_first_seen(st, desired, now_ts):
+    """F14 (reward audit 2026-08-06): pruning first-seen to `t in desired` reset a proven
+    earner's ramp to rung 0 on ANY one-cycle absence (gate blip, budget refusal, fetch fail)
+    — a 5ct sawtooth on payers whose cost is credit, not risk. A ticker now keeps its ramp
+    clock through absences up to D3_KEEP_S; only a SUSTAINED absence re-enters at rung 0.
+    Writes the pruned map to st['d3_first_seen'] (and the last-seen map beside it) and
+    returns the tracked count for the plan row."""
+    global _D3_LAST_DESIRED
+    for t in desired:
+        _D3_LAST_DESIRED[t] = float(now_ts)
+    for t in _D3_FIRST_SEEN:
+        # first observation of an absence (or first cycle after deploy/restart with no
+        # stamp): the grace clock starts NOW — never backdates to 0/epoch, which would
+        # prune instantly and reproduce the sawtooth this fix removes.
+        _D3_LAST_DESIRED.setdefault(t, float(now_ts))
+    keep = {t for t in _D3_FIRST_SEEN
+            if t in desired
+            or (float(now_ts) - float(_D3_LAST_DESIRED.get(t, 0.0))) <= D3_KEEP_S}
+    for t in list(_D3_FIRST_SEEN):
+        if t not in keep:
+            _D3_FIRST_SEEN.pop(t, None)
+            _D3_LAST_DESIRED.pop(t, None)
+    st["d3_first_seen"] = dict(_D3_FIRST_SEEN)
+    st["d3_last_desired"] = {t: v for t, v in _D3_LAST_DESIRED.items() if t in _D3_FIRST_SEEN}
+    return len(keep)
 
 
 def _d3_est_ct(ticker, now_ts):
@@ -1117,35 +1153,43 @@ def _window_frac_left(m, now):
     return max(0.0, min(1.0, left_min / life_min))
 
 
-def _expected_credit_usd(m, yl, nl, best_y, best_n, target, now):
-    """Credit we can still earn HERE in ONE PAYOUT PERIOD, in dollars.
+def _expected_credit_usd(m, yl, nl, best_y, best_n, target, now, own_orders=None):
+    """Credit we can still earn HERE over the REMAINING PROGRAM PERIOD, in dollars.
 
-    ⚠ WHY ONE PAYOUT PERIOD AND NOT THE WHOLE REMAINING WINDOW — the conservative reading.
-    Kalshi's LIP page states the floor ("Minimum payout: $1.00, rounded down to nearest cent") but
-    NEVER states what unit it applies to. Two readings are live and they disagree for multi-day
-    programs:
-      per PERIOD : score is "the Sum of all your snapshot scores during the time period" and
-                   "Time periods: Up to 31 days each" -> one payout per window.
-      per DAY    : Kalshi help elsewhere says "your daily payout equals your score divided by the
-                   total scores, multiplied by THAT DAY'S reward pool for that specific market".
-    Under the per-DAY reading, scaling by the FULL remaining window is wrong in the DANGEROUS
-    direction: a 7-day market earning $0.30/day shows $2.10, clears the floor, and then pays ZERO
-    every single day. That is exactly the long, thin market an 8-day horizon makes visible.
+    F1 (reward audit 2026-08-06): the payout unit was min(ONE DAY, remaining window) — a
+    deliberate conservative reading taken while the venue never stated the floor's unit. That
+    ambiguity is now RESOLVED, in both directions of evidence:
+      * help article 13823851 (updated 2026-08-05): score and reward are computed over the TIME
+        PERIOD ("Time periods: Up to 31 days each"), and the where-to-find article states "a
+        final reward below $1 for an individual program is not paid" — per PROGRAM PERIOD.
+      * receipt: KXSENATEADJOURN-27 was credited as ONE $6.44 lump on 2026-08-02 for its
+        multi-day program period (market still open to 08-15) — one payout per period, exactly
+        the discriminating observation the old docstring said would settle this.
+    So a multi-day program accruing $0.50/day for 5 remaining days is a $2.50 period credit and
+    MUST clear a $1 floor; the per-day unit refused exactly those payers (the audit's
+    spread-thin-earn-zero mechanism).
 
-    So the payout unit is taken as min(ONE DAY, remaining window). That is the smaller of the two
-    readings, so a market clearing it clears under EITHER — and it collapses to the whole-window
-    amount for sub-day programs (temp's ~58-minute windows), which is correct there.
+    F3 (same audit): pc models the FULL _capped_join size, but the D3 ramp/new-series clamp then
+    rests 5-10ct — the gate admitted markets whose CLAMPED size cannot clear the floor. When the
+    ramp is armed, scale the expectation by (ramp ct / modeled join ct) — share is ~linear in our
+    size while our share is small, which is precisely the regime where the clamp binds.
+    Uses _d3_est_ct (side-effect-free; never starts a ramp clock).
 
-    Every reward receipt we hold came from a period of a day or less (temp hourly, gas daily), so
-    our own data cannot discriminate. `KXAAAGASW-26JUL27` is a ~6.5-day program crediting ~07-28;
-    that one payout settles it, and this conservatism can be relaxed then.
-
-    Returns (expected_usd, expected_usd_at_perfect_execution, frac_left) — both dollar figures are
-    now PER PAYOUT PERIOD."""
-    pc = _prospective_capture(m, yl, nl, best_y, best_n, target)     # $/day, instantaneous
+    Returns (expected_usd, expected_usd_at_perfect_execution, frac_left) — both dollar figures
+    are PER REMAINING PROGRAM PERIOD."""
+    pc = _prospective_capture(m, yl, nl, best_y, best_n, target,
+                              own_orders=own_orders)               # $/day, instantaneous
     frac = _window_frac_left(m, now)
     days_left = (float(m.get("life_min") or 0.0) / 1440.0) * frac
-    payout_days = min(1.0, days_left)               # the conservative unit — see above
+    payout_days = days_left                          # F1: the period IS the unit (see above)
+    if D3_RAMP:
+        join_ct = max(_capped_join(best_y, best_n), _capped_join(best_n, best_y), 0.0)
+        eff_ct = float(_d3_est_ct(m.get("ticker") or "", now.timestamp()))
+        if (m.get("explore") and SERIES_ALLOW
+                and (m.get("ticker") or "").split("-")[0] not in SERIES_ALLOW):
+            eff_ct = min(eff_ct, float(EXPLORE_PROBE_CT))   # probe clamp (allowlist exempt, A1)
+        if join_ct > 0 and eff_ct < join_ct:
+            pc *= eff_ct / join_ct                   # F3: gate at the size that will actually rest
     ideal = pc * payout_days
     return ideal * _presence_factor(m.get("ticker"), m.get("life_min")), ideal, frac
 # --- NET-EV GATE (KALSHI_NETEV_GATE, default 0 = OFF, provable no-op) ----------------------------
@@ -1279,6 +1323,24 @@ MIN_PRICE_DOLLARS = _envf("KALSHI_MIN_PRICE_DOLLARS", 0.01)  # never OPEN a bid 
 EXIT_MAX_PRICE_DOLLARS = _envf("KALSHI_EXIT_MAX_PRICE_DOLLARS", 0.99)
 EXIT_MIN_PRICE_DOLLARS = _envf("KALSHI_EXIT_MIN_PRICE_DOLLARS", 0.01)
 WIND_DOWN_MIN = _envi("KALSHI_WIND_DOWN_MIN", 45)   # pull quotes N min before end
+# F17 / D-G (reward audit 2026-08-06, operator-ruled): the ABSOLUTE 45-min wind-down forfeited
+# ~78% of a sub-hour program window (58-min hourly temp: enterable ~13 min, quoted-down 45) —
+# C13 fixed exactly this over-coverage for the ramp (RAMP_LIFE_FRAC) but not here. The wind-down
+# is now proportional for short windows: min(WIND_DOWN_MIN, WIND_DOWN_FRAC x window), floored at
+# WIND_DOWN_MIN_FLOOR so we always stop entering before the very end. Long programs unchanged.
+WIND_DOWN_FRAC = _envf("KALSHI_WIND_DOWN_FRAC", 0.2)
+WIND_DOWN_MIN_FLOOR = _envf("KALSHI_WIND_DOWN_MIN_FLOOR", 3.0)
+
+
+def _effective_wind_down_min(life_min):
+    """Effective wind-down minutes for a program whose window is `life_min` minutes."""
+    try:
+        life = float(life_min or 0.0)
+    except (TypeError, ValueError):
+        life = 0.0
+    if life <= 0:
+        return float(WIND_DOWN_MIN)                 # unknown window -> legacy absolute
+    return max(WIND_DOWN_MIN_FLOOR, min(float(WIND_DOWN_MIN), WIND_DOWN_FRAC * life))
 WRITE_BUDGET_PER_CYCLE = _envi("KALSHI_WRITE_BUDGET", 400)  # order-ops ceiling/cycle
 JOIN_ALWAYS = _envb("KALSHI_JOIN_ALWAYS")   # drill switch (default off)
 # series allowlist: if set, ONLY quote markets whose series (ticker before the first
@@ -1812,7 +1874,8 @@ def select_footprint(progs, now):
         # LATE-LIFE ENTRY GATE (2026-07-22): no entry past LATE_LIFE_FRAC of THIS market's own
         # life (abs-capped for long markets); held inventory on excluded markets goes reduce-only
         # via the strand path. Always at least the wind-down cutoff.
-        cutoff_min = min(MAX_ENTRY_CUTOFF_MIN, max(WIND_DOWN_MIN, LATE_LIFE_FRAC * life_min))
+        cutoff_min = min(MAX_ENTRY_CUTOFF_MIN,
+                         max(_effective_wind_down_min(life_min), LATE_LIFE_FRAC * life_min))
         if end < now + timedelta(minutes=cutoff_min):
             drops["drop_late_life"] = drops.get("drop_late_life", 0) + 1
             continue
@@ -2304,11 +2367,21 @@ def _standdown_market(m, void):
     return eff < STANDDOWN_MIN_USD_DAY, eff
 
 
-def _qualifying_score(bids, our_price, our_size, target, df):
+def _qualifying_score(bids, our_price, our_size, target, df, own_orders=None):
     """R4 walk (a byte-equivalent replica of kalshi_market_scorecard.qualifying_share): reference =
     highest bid (<1.0); walk bids desc accumulating size to Target; score = DF^N*size (N = ticks
     below reference). Returns (our_score/book_total, side_qualifies) — book_total EXCLUDES our
     not-yet-placed order (the reward denominator once we rest is book_total + our_score).
+
+    F5 (reward audit 2026-08-06, BLOCKER): in live mode the fetched book INCLUDES our RESTING
+    orders, so book_total silently violated this function's own contract and callers composing
+    raw/(1+raw) double-counted us — an empty book we occupied alone measured share ~S/(B+2S)=0.5
+    instead of ~1.0, steering the rank AWAY from exactly the books the thesis targets.
+    `own_orders` = [(price, count), ...] of OUR resting orders on THIS side; their df-weighted
+    contribution (only where inside the qualifying set) is subtracted from the total, restoring
+    the documented rivals-only denominator. Default None = byte-identical legacy behavior.
+    Qualification (cum >= target) is deliberately judged on the RAW book: the venue counts our
+    resting depth toward Target, so removing it would model $0 for a side we ourselves qualify.
 
     A LOCAL copy (not an import of the scorecard) keeps the ledger's credential-path/env-resolution
     machinery out of the live quoter's import graph; test_capture_gate pins equivalence to the
@@ -2328,23 +2401,33 @@ def _qualifying_score(bids, our_price, our_size, target, df):
             break
     if cum < target:
         return 0.0, False                       # book can't reach Target on this side -> $0 for everyone
+    if own_orders:
+        rest = sum((df ** round((ref - p) / TICK)) * c for p, c in own_orders
+                   if p is not None and p >= lowest_q - 1e-9)
+        total = max(total - rest, 0.0)
     our = 0.0
     if our_price is not None and our_price >= lowest_q - 1e-9:  # our order is inside the qualifying set
         our = (df ** round((ref - our_price) / TICK)) * our_size
-    return (our / total if total > 0 else 0.0), True
+    return (our / max(total, 1e-9) if our > 0 else 0.0), True
 
 
-def _prospective_capture(m, yl, nl, best_y, best_n, target):
+def _prospective_capture(m, yl, nl, best_y, best_n, target, own_orders=None):
     """Our PROSPECTIVE R4 capture $/day if we rested our intended JOIN size at reference on both
     sides. Per side raw = our_score/book_total (book excludes our not-yet-placed order); the
     reward denominator once we rest is book_total + our_score, so the prospective per-side share is
     raw/(1+raw). R3 (both sides must qualify) two-sided snapshot = (share_yes + share_no)/2, times
     the R1 pool (m['usd_day']). We join AT reference (N=0, DF^0=1) so our_score = our_size. Intended
     size = _capped_join — the exact size the JOIN branch would rest — so the gate models the order
-    it is deciding whether to place. MODEL (M7 over-predicts 2-6x): a RELATIVE signal only."""
+    it is deciding whether to place. MODEL (M7 over-predicts 2-6x): a RELATIVE signal only.
+    F5: `own_orders` = {"yes": [(price, count)...], "no": [...]} of OUR resting orders — the live
+    book includes them, and without the subtraction the raw/(1+raw) composition double-counts us
+    (~0.5 measured share on a book we hold alone). None = legacy byte-identical."""
     df = m.get("df") or CAPTURE_DF_DEFAULT     # present-but-None / 0 -> default (stress: "no df")
-    ry, qy = _qualifying_score(yl, best_y, _capped_join(best_y, best_n), target, df)
-    rn, qn = _qualifying_score(nl, best_n, _capped_join(best_n, best_y), target, df)
+    _own = own_orders or {}
+    ry, qy = _qualifying_score(yl, best_y, _capped_join(best_y, best_n), target, df,
+                               own_orders=_own.get("yes"))
+    rn, qn = _qualifying_score(nl, best_n, _capped_join(best_n, best_y), target, df,
+                               own_orders=_own.get("no"))
     if not (qy and qn):
         return 0.0
     snap = (ry / (1.0 + ry) + rn / (1.0 + rn)) / 2.0
@@ -2488,7 +2571,7 @@ def _qualifying_breakdown(bids, target, df):
     return total, cum, ref, lowest_q, (cum >= target)
 
 
-def _market_telemetry_row(cyc, now, m, yl, nl, quotes, own_side, inv, gates):
+def _market_telemetry_row(cyc, now, m, yl, nl, quotes, own_side, inv, gates, own_orders=None):
     """Build ONE per-market-per-cycle telemetry row. Pure function (no I/O) so it is testable."""
     t = m["ticker"]
     target = float(m.get("target") or 0.0)
@@ -2500,6 +2583,7 @@ def _market_telemetry_row(cyc, now, m, yl, nl, quotes, own_side, inv, gates):
     if gates:
         row["gates"] = gates
     shares = []
+    _own_ord = own_orders or {}
     for tag, levels, side in (("y", yl, "yes"), ("n", nl, "no")):
         df_total, cum, ref, low_q, qual = _qualifying_breakdown(levels, target, df)
         oq = next((x for x in quotes if x.get("side") == side), None)
@@ -2508,8 +2592,21 @@ def _market_telemetry_row(cyc, now, m, yl, nl, quotes, own_side, inv, gates):
         score = 0.0
         if qual and our_px is not None and low_q is not None and our_px >= low_q - 1e-9:
             score = (df ** round((ref - our_px) / TICK)) * our_ct
-        share = score / (df_total + score) if (df_total + score) > 0 else 0.0
+        # F5 (reward audit 2026-08-06): df_total is the PUBLIC book, which includes our own
+        # RESTING orders — adding `score` on top double-counted us (a solo book read ~0.5
+        # share). Subtract our resting orders' df-contribution (only where inside the
+        # qualifying set) so the denominator is rivals + our intended order, matching the
+        # venue's per-side normalization. own_orders None = legacy byte-identical.
+        rest_df = 0.0
+        if qual and ref is not None and low_q is not None:
+            rest_df = sum((df ** round((ref - p) / TICK)) * c
+                          for p, c in (_own_ord.get(side) or [])
+                          if p is not None and p >= low_q - 1e-9)
+            rest_df = min(rest_df, df_total)
+        denom = max(df_total - rest_df, 0.0) + score
+        share = score / denom if denom > 0 else 0.0
         row[tag + "_ref"] = ref
+        row[tag + "_rest_df"] = round(rest_df, 2)       # F5 audit trail (0.0 when not resting)
         row[tag + "_book_df"] = round(df_total, 2)      # INCLUDES our own resting order (public
         row[tag + "_cum_ct"] = round(cum, 2)            # depth); *_rest_ct below makes the
         row[tag + "_qual"] = bool(qual)                 # rival-only denominator recoverable.
@@ -2532,7 +2629,7 @@ def _market_telemetry_row(cyc, now, m, yl, nl, quotes, own_side, inv, gates):
 
 
 def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta=0.0, stats=None,
-                   cost=0.0):
+                   cost=0.0, own_orders=None):
     """Desired resting orders for one market. Returns list of
     {side, price_dollars, count, reason} — reason 'unwind' marks a RISK-REDUCING order
     (exempt from the capital cap). Delta-neutral shaping is driven by TWO signals:
@@ -2569,7 +2666,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     # (`_priceable` lived here and gated the wind-down EXIT on the ENTRY band. Its only caller
     # now uses _reducing_quotes, which checks the one side it rests on at venue bounds, so the
     # variable is dead and is removed rather than left to be re-used by mistake.)
-    if end < now + timedelta(minutes=WIND_DOWN_MIN):
+    if end < now + timedelta(minutes=_effective_wind_down_min(m.get("life_min"))):
         # wind_down: pull the two-sided quotes. But if we still HOLD inventory here, keep
         # resting the REDUCING side (passive $0 maker unwind) until the settlement taker
         # backstop takes over — never abandon an open position into resolution (fix F).
@@ -2640,7 +2737,8 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     # nothing while the fill risk is unchanged. Held inventory is NEVER blocked (reduce-only, full
     # size), identical to the capture-gate clone below.
     if PRESENCE_GATE and not void:
-        _exp, _ideal, _frac = _expected_credit_usd(m, yl, nl, best_y, best_n, target, now)
+        _exp, _ideal, _frac = _expected_credit_usd(m, yl, nl, best_y, best_n, target, now,
+                                                   own_orders=own_orders)
         if stats is not None:
             stats["presence_min_credit"] = min(stats.get("presence_min_credit", 1e18), _exp)
         # ENTRY GATE, NOT AN EXIT GATE. The floor asks "could this market earn MIN_CREDIT_USD from
@@ -2742,7 +2840,8 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
             poor = net_pct < NETEV_MIN_MARGIN_PCT
             signal = net_pct
         else:                                               # UNPROVEN: conservative model fallback
-            pc = _prospective_capture(m, yl, nl, best_y, best_n, target)
+            pc = _prospective_capture(m, yl, nl, best_y, best_n, target,
+                                      own_orders=own_orders)
             signal = pc / NETEV_MODEL_HAIRCUT - NETEV_FINGERPRINT_USD_DAY
             poor = signal <= 0.0                            # model-not-receipt: open only if +ve
         if stats is not None:
@@ -2766,7 +2865,8 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     # Void/activate books are scoped OUT (we supply Target depth there -> high share; the existing
     # activate economics govern). Uses only the in-cycle book + intended size — no extra API read.
     if CAPTURE_GATE and not void:
-        pc = _prospective_capture(m, yl, nl, best_y, best_n, target)
+        pc = _prospective_capture(m, yl, nl, best_y, best_n, target,
+                                  own_orders=own_orders)
         if stats is not None:
             stats["capture_min_pc"] = min(stats.get("capture_min_pc", 1e18), pc)
         if pc < CAPTURE_MIN_USD_DAY:
@@ -3264,6 +3364,20 @@ def own_resting(standing):
         for o in orders:
             if o.get("side") in ("yes", "no"):
                 out[t][o["side"]] += float(o.get("count") or 0)
+    return out
+
+
+def _own_order_levels(rows):
+    """F5: standing rows for ONE ticker -> {"yes": [(price, count)...], "no": [...]} for the
+    own-size subtraction in the share model. None/empty -> {} (legacy behavior everywhere)."""
+    out = {"yes": [], "no": []}
+    for o in (rows or []):
+        s = o.get("side")
+        if s in out:
+            try:
+                out[s].append((float(o.get("price_dollars")), float(o.get("count") or 0)))
+            except (TypeError, ValueError):
+                continue
     return out
 
 
@@ -4979,7 +5093,8 @@ def run_once():
                 q = desired_quotes(m, ob.get("yes_dollars") or [], ob.get("no_dollars") or [],
                                    now, own=own.get(t), inv=naked_by.get(t, 0.0),
                                    event_delta=event_delta_for(ev_delta, t), stats=qstats,
-                                   cost=cost_by.get(t, 0.0))
+                                   cost=cost_by.get(t, 0.0),
+                                   own_orders=_own_order_levels(standing.get(t)))
             except Exception as e:
                 # isolate one degenerate market, but SURFACE it as quote_fail (a
                 # systematic desired_quotes failure must not hide inside gated_out)
@@ -5071,7 +5186,8 @@ def run_once():
                     _gates = {k: v - _pre_stats.get(k, 0) for k, v in qstats.items()
                               if type(v) is int and v - _pre_stats.get(k, 0) > 0}
                     _row = _market_telemetry_row(cyc, now, m, _byl, _bnl, q,
-                                                 own.get(t), naked_by.get(t, 0.0), _gates)
+                                                 own.get(t), naked_by.get(t, 0.0), _gates,
+                                                 own_orders=_own_order_levels(standing.get(t)))
                     with open(os.path.join(DATA_DIR,
                                            f"quotes-{now.strftime('%Y%m%d')}.jsonl"), "a") as _fh:
                         _fh.write(json.dumps(_row, separators=(",", ":")) + "\n")
@@ -5099,7 +5215,8 @@ def run_once():
                             # the telemetry ROW above still records what actually rested.
                             _cache_row = _market_telemetry_row(
                                 cyc, now, m, _byl, _bnl, _q_fullsize,
-                                own.get(t), naked_by.get(t, 0.0), _gates)
+                                own.get(t), naked_by.get(t, 0.0), _gates,
+                                own_orders=_own_order_levels(standing.get(t)))
                         import kalshi_market_scores as _kms
                         with SCORES_LOCK:
                             _kms.update(SCORES, t, _cache_row.get("capture_usd_day"),
@@ -5772,14 +5889,9 @@ def run_once():
             plan["grace_retained"] = len(grace_used)
         st["close_cache"] = _close_cache_snapshot()      # B-2: clocks survive restarts
         # W4/D3: persist first-seen so a restart cannot amnesty a young market to full size.
-        # Pruned to tickers still in the intended book — a dropped ticker re-enters at rung 0.
+        # F14: pruning is grace-aware — a one-cycle absence no longer resets the ramp.
         if D3_RAMP and _D3_FIRST_SEEN is not None:
-            _keep3 = {t9 for t9 in _D3_FIRST_SEEN if t9 in desired}
-            st["d3_first_seen"] = {t9: _D3_FIRST_SEEN[t9] for t9 in _keep3}
-            for t9 in list(_D3_FIRST_SEEN):
-                if t9 not in _keep3:
-                    _D3_FIRST_SEEN.pop(t9, None)
-            plan["d3_ramp_tracked"] = len(_keep3)
+            plan["d3_ramp_tracked"] = _d3_prune_first_seen(st, desired, now.timestamp())
         # audit batch 3 (J2, operator-approved 2026-07-29): the counters are LIFETIME under
         # the long-lived daemon, so one old failure made every later plan row look actively
         # failing. silent_failures is now what fired THIS cycle; the lifetime total keeps
