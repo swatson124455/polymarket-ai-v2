@@ -650,6 +650,52 @@ _D3_FIRST_SEEN = None                 # {ticker: epoch} lazily restored from quo
 _D3_FB_CACHE = {"ts": 0.0, "table": {}}
 
 
+# --- D-A: VENUE PER-USER REWARD-ESTIMATE FEED (operator-ruled 2026-08-06, ships OFF) --------
+# The web chip's own data source (GET /v1/incentives/users/{uid}/estimates, discovered
+# 2026-08-06) is snapshotted every 5 min by kalshi_estimates_recorder.py. With the flag ON,
+# the $1-floor gate sees max(model, venue_est): the venue's own number can only REDUCE false
+# refusals (the reward audit's spread-thin-earn-zero class) — it never admits less than the
+# model would, and it never substitutes for the model (semantics caveat: the venue calls it
+# a live estimate that "can move up or down"; observed 08-06 it climbed like an accrual;
+# est→credit truth checkpoint = KXAPRPOTUS program end 2026-08-07T15:00Z).
+# Disk-only: the trading cycle NEVER calls the estimates API itself — recorder dies -> feed
+# goes stale -> fail-open to the model (staleness bound below).
+EST_FEED = _envi("KALSHI_EST_FEED", 0)
+EST_FEED_MAX_AGE_S = _envf("KALSHI_EST_FEED_MAX_AGE_S", 1800.0)   # ignore snapshots older
+_EST_FEED_CACHE = {"ts": 0.0, "table": {}}
+
+
+def _est_feed_cached(now_ts, max_age_s=120.0):
+    """{market_ticker: venue_est_usd} from the newest recorder snapshot, re-read at most
+    every max_age_s. Fail-open {} on any read/parse problem and on snapshots older than
+    EST_FEED_MAX_AGE_S (a dead recorder must degrade to the model, never freeze a value)."""
+    if now_ts - _EST_FEED_CACHE["ts"] > max_age_s:
+        table = {}
+        try:
+            import glob as _glob
+            files = sorted(_glob.glob(os.path.join(DATA_DIR, "estimates-*.jsonl")))
+            last = None
+            if files:
+                with open(files[-1]) as fh:
+                    for _ln in fh:
+                        if _ln.strip():
+                            last = _ln
+            if last:
+                snap = json.loads(last)
+                if now_ts - parse_iso(snap["ts"]).timestamp() <= EST_FEED_MAX_AGE_S:
+                    pmap = json.load(open(os.path.join(DATA_DIR, "kalshi_program_map.json")))
+                    for e in snap.get("estimates") or []:
+                        mt = (pmap.get(str(e.get("program_id"))) or {}).get("market_ticker")
+                        if mt:
+                            table[mt] = table.get(mt, 0.0) + \
+                                float(e.get("reward_centicents") or 0) / 10000.0
+        except Exception:
+            table = {}
+        _EST_FEED_CACHE["table"] = table
+        _EST_FEED_CACHE["ts"] = now_ts
+    return _EST_FEED_CACHE["table"]
+
+
 def _d3_feedback_cached(now_ts, max_age_s=60.0):
     """The W7 clamp's evidence table, re-read at most once a minute. Independent of the D2
     flag (the clamp needs it even when the rank multiplier is off). Fail-open {} — which for
@@ -1199,7 +1245,14 @@ def _expected_credit_usd(m, yl, nl, best_y, best_n, target, now, own_orders=None
         if join_ct > 0 and eff_ct < join_ct:
             pc *= eff_ct / join_ct                   # F3: gate at the size that will actually rest
     ideal = pc * payout_days
-    return ideal * _presence_factor(m.get("ticker"), m.get("life_min")), ideal, frac
+    expected = ideal * _presence_factor(m.get("ticker"), m.get("life_min"))
+    if EST_FEED:
+        # D-A: the venue's own per-program estimate floors the expectation (never lowers it)
+        _est = _est_feed_cached(now.timestamp()).get(m.get("ticker"))
+        if _est is not None and _est > 0.0:
+            ideal = max(ideal, _est)
+            expected = max(expected, _est)
+    return expected, ideal, frac
 # --- NET-EV GATE (KALSHI_NETEV_GATE, default 0 = OFF, provable no-op) ----------------------------
 # The RECEIPT-CALIBRATED market-quality brain. Every gate above (unqualifiable, selection, capture,
 # stand-down) asks a REWARD question — "can the book pay / can WE capture a slice". None asks the
