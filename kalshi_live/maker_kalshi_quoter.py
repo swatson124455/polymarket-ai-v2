@@ -1863,25 +1863,22 @@ def select_footprint(progs, now):
                 _far3 = bool(_ct3) and parse_iso(_ct3) > now + timedelta(days=MAX_DAYS_TO_CLOSE)
             except Exception:
                 _far3 = False
+            if _far3 and _farclose_paying_keep(r["ticker"].split("-")[0], r.get("end"), now):
+                # FIX H: receipt-proven series with a paying program inside the horizon
+                # rides past the market clock; the program's own expiry evicts it later.
+                drops["farclose_paying_kept"] = drops.get("farclose_paying_kept", 0) + 1
+                _far3 = False
             if _far3:
                 drops["drop_far_market_close_sel"] = drops.get("drop_far_market_close_sel", 0) + 1
             else:
                 _kept.append(r)
         rows = _kept
     # PROBE SLOT CAP (moved BELOW the market-clock/activity pre-filter, review 2026-08-05:
-    # capping first burned every slot on rows the pre-filter then killed, so the surviving
-    # probe count was deterministically ZERO and the discovery surface was dead). At most
-    # PROBE_MAX_SLOTS probe-only rows survive, best-pool-first; allowlist rows never touched.
+    # capping first burned every slot on rows the pre-filter then killed). FIX P
+    # (operator-ruled 2026-08-06): slots are now streak-rotated, series-diverse, and
+    # series-total-pool ranked -- see _cap_probe_slots. Allowlist rows never touched.
     if ALLOW_PROBE_EXCEPTION and PROBE_MAX_SLOTS >= 0:
-        _kept_p, _out = 0, []
-        for r in rows:
-            if r.get("explore") and SERIES_ALLOW and r["ticker"].split("-")[0] not in SERIES_ALLOW:
-                if _kept_p >= PROBE_MAX_SLOTS:
-                    drops["probe_slots_dropped"] = drops.get("probe_slots_dropped", 0) + 1
-                    continue
-                _kept_p += 1
-            _out.append(r)
-        rows = _out
+        rows = _cap_probe_slots(rows, drops)
     # SCORE-BASED RANKING: replace the pool ordering with measured capture carried across cycles.
     # Falls back to exactly the pool order above for any market with no score yet, so a cold cache
     # (or a flag-off run) is byte-for-byte legacy. Wrapped — a ranking fault must never stop a cycle.
@@ -2864,6 +2861,88 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     return quotes
 
 
+# --- FIX H (operator-ruled 2026-08-06): FAR-CLOSE PAYING EXCEPTION (default 0 = hard rule).
+# Measured 2026-08-06T00:05Z: KXCHIPBURRITO (receipt-proven payer) carried a $990/day
+# program (6 x $165, 08-03->08-09) on markets closing 09-02 -- the 8-day market-clock cap
+# dropped every row all day, excluding the largest live allowlist pool entirely. The cap's
+# lockup fear is answered by existing machinery: entry cutoffs key on the PROGRAM window,
+# and a program's expiry evicts its rows from the harvest so strand-unwind flattens holds.
+# With the flag on, a row is kept past the market clock ONLY when its series has venue
+# credit RECEIPTS (credits_n>0 -- the same proof the W7 ramp trusts) AND its program window
+# ends inside MAX_DAYS_TO_CLOSE. Probes/unknowns keep the hard rule.
+FARCLOSE_PAYING_EXCEPTION = _envi("KALSHI_FARCLOSE_PAYING_EXCEPTION", 0)
+
+
+def _farclose_paying_keep(series, prog_end_iso, now):
+    """True when the FAR-CLOSE PAYING EXCEPTION keeps a market-clock-far row: flag on,
+    series receipt-proven, and the PROGRAM (not market) ends inside the horizon.
+    Any parse/read failure -> False (the hard rule stands; fail-toward-drop)."""
+    if not FARCLOSE_PAYING_EXCEPTION or not prog_end_iso:
+        return False
+    try:
+        if parse_iso(prog_end_iso) > now + timedelta(days=MAX_DAYS_TO_CLOSE):
+            return False
+        row = _d3_feedback_cached(now.timestamp()).get(series)
+        return isinstance(row, dict) and (row.get("credits_n") or 0) > 0
+    except Exception:
+        return False
+
+
+# --- FIX P (operator-ruled 2026-08-06): PROBE SLOT QUALITY. Measured 23:59:54Z: 4/5 slots
+# burned on gate-refused books (3 same-series KXAPRPOTUS strikes + a July-dated KXEOWEEK)
+# while $1,000/day W16 successor candidates went unsampled. Selection was per-market-pool
+# with no diversity and no feedback from the quote gates.
+_PROBE_GATE_REFUSED = {}      # ticker -> consecutive cycles a probe slot rested nothing
+
+
+def _cap_probe_slots(rows, drops):
+    """Keep at most PROBE_MAX_SLOTS probe-only rows, chosen by:
+      1. lowest gate-refusal streak (a probe that keeps failing the book gates YIELDS its
+         slot -- deprioritization, never a ban: with no competition it still samples),
+      2. round-robin ONE PER SERIES, series ordered by TOTAL pool (a $1,000/day series
+         split over 10 strikes must outrank one $333 market),
+      3. row pool within a series.
+    Non-probe rows pass through untouched; surviving rows keep their original relative
+    order (downstream round-robin/rank depend on it). Emits FP_SHAPE['probe_slots']."""
+    probe_idx = [i for i, r in enumerate(rows)
+                 if r.get("explore") and SERIES_ALLOW
+                 and r["ticker"].split("-")[0] not in SERIES_ALLOW]
+    if not probe_idx:
+        return rows
+    spool = {}
+    for i in probe_idx:
+        s = rows[i]["ticker"].split("-")[0]
+        spool[s] = spool.get(s, 0.0) + float(rows[i].get("usd_day") or 0.0)
+    # per-series candidate queues, best row first
+    per_series = {}
+    for i in probe_idx:
+        per_series.setdefault(rows[i]["ticker"].split("-")[0], []).append(i)
+    for s in per_series:
+        per_series[s].sort(key=lambda i: (
+            int(_PROBE_GATE_REFUSED.get(rows[i]["ticker"], 0)),
+            -float(rows[i].get("usd_day") or 0.0), rows[i]["ticker"]))
+    # series precedence: least-refused best candidate first (rotation beats pool), then
+    # series TOTAL pool -- so an untried series outranks a gate-refused veteran even when
+    # the veteran's pool is larger, and pools decide among equally-fresh candidates.
+    def _series_key(s):
+        best = per_series[s][0]
+        return (int(_PROBE_GATE_REFUSED.get(rows[best]["ticker"], 0)), -spool[s], s)
+
+    series_order = sorted(per_series, key=_series_key)
+    picked, ring = set(), 0
+    while len(picked) < max(PROBE_MAX_SLOTS, 0) and any(per_series.values()):
+        s = series_order[ring % len(series_order)]
+        ring += 1
+        if per_series[s]:
+            picked.add(per_series[s].pop(0))
+    dropped = [i for i in probe_idx if i not in picked]
+    if dropped:
+        drops["probe_slots_dropped"] = drops.get("probe_slots_dropped", 0) + len(dropped)
+    FP_SHAPE["probe_slots"] = [rows[i]["ticker"] for i in sorted(picked)]
+    _dropset = set(dropped)
+    return [r for i, r in enumerate(rows) if i not in _dropset]
+
+
 DAY_BASELINE_RESET_MARKER = os.path.join(DATA_DIR, "day_baseline_reset")
 
 
@@ -3597,6 +3676,11 @@ def run_once():
                 break
         _INCUMBENT_TICKERS.clear()
         _INCUMBENT_TICKERS.update(st.get("prev_standing_tickers") or [])
+        # FIX P: gate-refusal streaks feed probe slot rotation (restored so a restart
+        # cannot amnesty a book that refuses to quote — same doctrine as d3_first_seen).
+        _PROBE_GATE_REFUSED.clear()
+        _PROBE_GATE_REFUSED.update({str(k): int(v) for k, v in
+                                    (st.get("probe_gate_refused") or {}).items()})
         footprint = select_footprint(progs, now)
         # L3 (operator-named 2026-07-31, series probe insurance): a NEW ticker whose series
         # already has a permanently-OUT member ($5 rung) enters PROBE-SIZED (the explore
@@ -3651,6 +3735,9 @@ def run_once():
                     _far = bool(_ct) and parse_iso(_ct) > now + timedelta(days=MAX_DAYS_TO_CLOSE)
                 except Exception:
                     _far = False
+                if _far and _farclose_paying_keep(_m["ticker"].split("-")[0],
+                                                  _m.get("end"), now):
+                    _far = False                      # FIX H: belt honors the same exception
                 if _far:
                     plan["drop_far_market_close"] = plan.get("drop_far_market_close", 0) + 1
                 else:
@@ -5155,6 +5242,26 @@ def run_once():
         plan["off_ref_usd"] = round(off_ref, 2)
         plan["at_ref_pct"] = round(100 * at_ref / max(at_ref + off_ref, 1e-9), 1)
 
+        # FIX P: score the probes' cycle — a probe slot whose BOOK gates rested nothing
+        # this cycle bumps its refusal streak (slot rotation input); resting anything
+        # clears it. Budget/capital cuts later in the chain deliberately do NOT count —
+        # only book quality rotates a slot.
+        if ALLOW_PROBE_EXCEPTION:
+            try:
+                for _m6 in footprint:
+                    _t6 = _m6["ticker"]
+                    if (_m6.get("explore") and SERIES_ALLOW
+                            and _t6.split("-")[0] not in SERIES_ALLOW):
+                        if desired.get(_t6):
+                            _PROBE_GATE_REFUSED.pop(_t6, None)
+                        else:
+                            _PROBE_GATE_REFUSED[_t6] = min(
+                                int(_PROBE_GATE_REFUSED.get(_t6, 0)) + 1, 99)
+                while len(_PROBE_GATE_REFUSED) > 500:      # bound: dead tickers age out
+                    _PROBE_GATE_REFUSED.pop(next(iter(_PROBE_GATE_REFUSED)))
+                st["probe_gate_refused"] = dict(_PROBE_GATE_REFUSED)
+            except Exception:
+                _SILENT["probe_streak_fail"] += 1
         # DROP HYSTERESIS — before the diff, give a ROTATED-OUT ticker (absent from this cycle's
         # footprint, i.e. never looked at) a few cycles to come back instead of tearing its book
         # down and rebuilding it identically. Runs BEFORE cap_desired so a retained book is still
