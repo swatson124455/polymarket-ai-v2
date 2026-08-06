@@ -29,6 +29,8 @@ import datetime as dt
 import json
 import os
 import sys
+import time
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -40,7 +42,19 @@ HORIZON_DAYS = 8.0
 
 
 def _get(path):
-    return json.load(urllib.request.urlopen(BASE + path, timeout=30))
+    """Throttled + 429-retried public read: the first run lost 15/35 event reads to
+    HTTP 429 bursts, leaving 24/57 credits unclassifiable — a denominator hole, not
+    a data limit."""
+    last_err = None
+    for attempt in range(5):
+        time.sleep(0.6 + attempt * 2.0)
+        try:
+            return json.load(urllib.request.urlopen(BASE + path, timeout=30))
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code != 429:
+                raise
+    raise last_err
 
 
 def _iso(s):
