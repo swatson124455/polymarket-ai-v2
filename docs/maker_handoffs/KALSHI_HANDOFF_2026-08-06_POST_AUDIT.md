@@ -66,7 +66,24 @@ L3-suppressed →23:40. Day-2 (08-06) is the first fully-fixed day. Daily read: 
 since 14:13:28Z vs recorder d_cash (window credits were $0.00 at the 08-05T19:38:42Z
 read — payouts lump at close+1).
 
-## 4. OPEN QUEUE (nothing unruled is pending; these are calendar/standing)
+## 4. OPEN QUEUE
+**0a. FIRST (operator-ordered 2026-08-06, "stop assuming, find real answers"): REWARD-CHIP
+SEMANTICS.** Operator hovered the TOPMODEL chip: est reward $0.29 (~03:00Z); our model
+integral since order placement was $0.296 — but the chip's MEANING (accrual basis, time
+window, per-order vs per-market) is UNVERIFIED and I offered guesses instead of an
+answer. Establish it from evidence: the HAR of the chip's API call and/or repeated
+matched chip-vs-telemetry observations. Report ESTABLISHED only.
+**0b. FIRST (same order): FIX H FAR-DATED PAYOUT TIMING + ADMITTED SET.** Operator
+flagged the 8-day cap vs KXTOPMODEL-26AUG31 (close 2026-08-31, program to 08-09; venue
+read 03:0xZ) admitted via the farclose exception. Unanswered with evidence: (1) WHEN the
+venue pays a program whose market closes weeks after the program ends — canon says lump
+at close+1, which would lock CHIPBURRITO/TOPMODEL-monthly reward cash until Sep 1-3;
+verify from credit_history timing (a program-end-pays vs close-pays discriminator) or
+HAR. (2) The FULL current FIX-H-admitted set with close dates. (3) Then present whether
+the exception matches operator intent, with options (per-series opt-in / revert / keep).
+No assumptions.
+
+(calendar/standing:)
 1. **W14 HAR** — chips visible WHENEVER our orders rest (they rest now): operator does
    F12→Network→HAR on a chip-bearing market page; analyze for the per-user accrual
    signal. Highest-value blocked item.
