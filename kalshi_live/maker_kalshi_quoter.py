@@ -2869,7 +2869,8 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
 # and a program's expiry evicts its rows from the harvest so strand-unwind flattens holds.
 # With the flag on, a row is kept past the market clock ONLY when its series has venue
 # credit RECEIPTS (credits_n>0 -- the same proof the W7 ramp trusts) AND its program window
-# ends inside MAX_DAYS_TO_CLOSE. Probes/unknowns keep the hard rule.
+# ends inside MAX_DAYS_TO_CLOSE. UNPROVEN series keep the hard rule (receipts are the
+# criterion, allowlist membership is not -- a once-paid probe series qualifies, review F3).
 FARCLOSE_PAYING_EXCEPTION = _envi("KALSHI_FARCLOSE_PAYING_EXCEPTION", 0)
 
 
@@ -4861,8 +4862,10 @@ def run_once():
             # Snapshot the gate counters so THIS market's skip reason is attributable by diffing
             # them after the call — desired_quotes returns a bare [] and its signature is a contract
             # (Rule 2), so the reason is recovered without touching it.
-            _pre_stats = ({k: v for k, v in qstats.items() if type(v) is int}
-                          if MKT_TELEMETRY else {})
+            # always computed (was MKT_TELEMETRY-only): FIX P's streak needs the same
+            # gate diff to know a probe was refused by BOOK quality specifically —
+            # ~30 int keys per market, negligible; telemetry WRITES stay flag-guarded.
+            _pre_stats = {k: v for k, v in qstats.items() if type(v) is int}
             try:
                 q = desired_quotes(m, ob.get("yes_dollars") or [], ob.get("no_dollars") or [],
                                    now, own=own.get(t), inv=naked_by.get(t, 0.0),
@@ -4875,6 +4878,15 @@ def run_once():
                 quote_fail += 1
                 if first_quote_err is None:
                     first_quote_err = f"{t}: {e!r}"
+            # FIX P (review F1): mark a PROBE row refused by the BOOK gates this pass —
+            # the ONLY signal that rotates its slot. Strips/breaker/budget later in the
+            # chain deliberately never set this; a fetch-fail never reaches here.
+            if (not q and m.get("explore") and SERIES_ALLOW
+                    and t.split("-")[0] not in SERIES_ALLOW):
+                _gd6 = {k: v - _pre_stats.get(k, 0) for k, v in qstats.items()
+                        if type(v) is int and v - _pre_stats.get(k, 0) > 0}
+                if any(k.startswith("gate_") or k == "empty_books" for k in _gd6):
+                    m["_book_refused"] = True
             # EXPLORE PROBE SIZING (item E): a sampling market rests probe-sized accumulating
             # quotes — data budget, not an earnings seat. Unwind quotes are never shrunk.
             _q_fullsize = None                      # D8: pre-clamp copy for the score cache
@@ -5242,10 +5254,13 @@ def run_once():
         plan["off_ref_usd"] = round(off_ref, 2)
         plan["at_ref_pct"] = round(100 * at_ref / max(at_ref + off_ref, 1e-9), 1)
 
-        # FIX P: score the probes' cycle — a probe slot whose BOOK gates rested nothing
-        # this cycle bumps its refusal streak (slot rotation input); resting anything
-        # clears it. Budget/capital cuts later in the chain deliberately do NOT count —
-        # only book quality rotates a slot.
+        # FIX P: score the probes' cycle — ONLY a BOOK-gate refusal (the _book_refused
+        # marker set beside the gate diff in the quote loop) bumps the streak; resting
+        # anything clears it; every other emptiness cause (governor/incumbent strips,
+        # breaker, fetch-fail, untried tail) changes NOTHING (review F1: bumping those
+        # rotated slots for non-book reasons). Bump re-inserts the key so dict order =
+        # recency and the 500-bound evicts the least-recently-REFUSED ticker, never an
+        # actively-rotating veteran (review F2).
         if ALLOW_PROBE_EXCEPTION:
             try:
                 for _m6 in footprint:
@@ -5254,10 +5269,11 @@ def run_once():
                             and _t6.split("-")[0] not in SERIES_ALLOW):
                         if desired.get(_t6):
                             _PROBE_GATE_REFUSED.pop(_t6, None)
-                        else:
-                            _PROBE_GATE_REFUSED[_t6] = min(
-                                int(_PROBE_GATE_REFUSED.get(_t6, 0)) + 1, 99)
-                while len(_PROBE_GATE_REFUSED) > 500:      # bound: dead tickers age out
+                        elif _m6.get("_book_refused"):
+                            _v6 = min(int(_PROBE_GATE_REFUSED.get(_t6, 0)) + 1, 99)
+                            _PROBE_GATE_REFUSED.pop(_t6, None)
+                            _PROBE_GATE_REFUSED[_t6] = _v6
+                while len(_PROBE_GATE_REFUSED) > 500:
                     _PROBE_GATE_REFUSED.pop(next(iter(_PROBE_GATE_REFUSED)))
                 st["probe_gate_refused"] = dict(_PROBE_GATE_REFUSED)
             except Exception:
