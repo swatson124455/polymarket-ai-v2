@@ -1,5 +1,14 @@
 # KALSHI MAKER — ADVERSARIAL REVIEW DECISION BATCH — 2026-08-06 (operator-ruled 1a+, findings-first)
 
+> **⭐ ADDITIVE NOTICE (2026-08-06, operator-ordered "triple blind findings to verify"): every MAJOR finding in this
+> document was RE-VERIFIED by three independent blind verifiers. Results: `KALSHI_TRIPLE_BLIND_VERIFY_2026-08-06.md`.
+> 93 blind votes, ZERO REFUTED. Per-finding majority: 23 CONFIRMED / 8 DOWNGRADE / 0 REFUTED; 22 of 31 panels
+> unanimous. Six findings changed verdict vs the single-verifier pass — M-9 was RAISED (DOWNGRADE -> CONFIRMED),
+> and M-1/M-10/M-14/M-15/M-20 came back DOWNGRADE on majority.
+> **RULE NINE: nothing in this document has been demoted, reordered, or dropped.** Every M-number keeps its position
+> and its place in decision items R-1..R-12; the verdict changes are REPORTED for operator ruling, not applied.
+> The verdicts written inline below are the ORIGINAL single-verifier verdicts, preserved as-written for comparison.**
+
 SCOPE ECHO-BACK (RULE TWELVE): this session's commits ae89543..7e43554 first (9 commits, checked against their
 failing-before tests), THEN full line-depth on the 10 runtime money-path files (~10,900 lines, quoter first) AND the
 canon-feeding measurement tools (netev rebuild/calibrate, settlement_pnl, presence_calibrate, ledgers, w16, w17, w11,
