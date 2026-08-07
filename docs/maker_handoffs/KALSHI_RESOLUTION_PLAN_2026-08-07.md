@@ -1,5 +1,58 @@
 # KALSHI MAKER — COMPREHENSIVE RESOLUTION PLAN — 2026-08-07 (proposal; NOTHING BUILT, NOTHING DEMOTED)
 
+## S0. OPERATOR RULINGS — 2026-08-07 (BINDING; recorded verbatim, applied to the sequence below)
+
+**RULING 1 — P2 WINDOW: FREEZE LIVE CHANGES UNTIL THE VERDICT (2026-08-10T14:13Z).**
+Until the verdict, ship ONLY offline/telemetry items — atomic-write guards, knob-derivation prints,
+shadow columns. NOTHING touching admission, sizing, or the halt meter.
+*Consequence applied:* the plan's Waves that change live trading behaviour are all gated behind
+2026-08-10T14:13Z. The permitted universe is the 45 items whose files are NOT executed inside the
+live quoter process (computed, listed in S0.1) — MINUS any item whose OUTPUT is a hot-reloaded JSON
+table, because those are ungated live config pushes (see S1 finding B).
+
+**RULING 2 — D-A (KALSHI_EST_FEED): HOLD ARMING UNTIL THE GUARD LANDS.**
+Do not arm EST_FEED until M-9 (activate emitter/gate arithmetic) plus M-6/M-10 (flat-activate
+refusal) are fixed and tested.
+*Consequence applied:* queue item 2 of the 08-06 EOD handoff (arm D-A after the APRPOTUS
+checkpoint) is SUSPENDED pending those three fixes. The 2026-08-07T15:00Z APRPOTUS est->credit
+checkpoint READ still proceeds — it is a measurement, not an arming. M-9/M-6/M-10 are live-path
+fixes, so under Ruling 1 they land after 2026-08-10T14:13Z; D-A arming therefore follows the
+verdict, not the checkpoint.
+
+**RULING 3 — R-1 (reference-price model): SHADOW-MEASURE FIRST, THEN ARM.**
+Land a pure venue-faithful Target/5 reference as a shadow telemetry column (no behaviour change),
+collect ~a week against the estimates feed to measure the real bias, then arm the corrected scorer
+on evidence.
+*Consequence applied:* n-19 (the pure `_lip_reference` shadow column) becomes the long pole for the
+entire R-1 class and should start as early as the freeze permits. **TENSION TO RESOLVE (flagged,
+not silently decided):** a shadow column is telemetry and is permitted by Ruling 1, but publishing
+it into the live process requires a RESTART, and a restart costs presence-seconds and queue
+position inside the very window Ruling 1 protects. The two rulings point opposite ways here.
+Options: (a) start the shadow column at the first restart that happens for another reason;
+(b) accept one annotated restart now to start the measurement clock ~3 days earlier; (c) hold the
+shadow column until after the verdict, accepting R-1 arming slips by ~3 days. DEFAULT if unruled:
+(c) — it is the only option that keeps Ruling 1 absolute.
+
+### S0.1 What the freeze permits (computed from the fix set, not asserted)
+45 of 147 items touch NO file that executes inside the live quoter process. Highest-value and
+time-critical inside that set:
+- **M-3 + n-3 (`w0b_payout_timing.py`)** — TIME-CRITICAL. The BEFORE_CLOSE tag uses the event's
+  LATEST close, so a normal close+1 credit on an early-closing strike is mis-tagged. The
+  2026-08-07T15:00Z APRPOTUS checkpoint is interpreted through this canon. Pure study tool.
+- **M-16 + m-3 (`kalshi_estimates_recorder.py`)** — TIME-CRITICAL. Non-atomic map write +
+  reset-to-empty on a torn read can permanently lose ended-program rows; the FIX-H program endings
+  are 2026-08-09T03:59Z. Runs on its own timer, not in the quoter. Strictly safer.
+- **M-26 (`w17_coverage_ledger.py`)** — alarm that cannot fire; report-only.
+- **M-19 (`kalshi_market_scorecard.py`)**, **M-23/M-24 (ledger family)**, **M-25/m-49/n-44
+  (`w11_replay.py`)** — report-only, but each RETRACTS or RESCALES numbers the operator reads
+  daily during this window. Landing them mid-window is an operator-attention cost, not a bot risk.
+- **M-21/M-22 (`kalshi_netev_rebuild.py`)** — the CODE is offline, but its OUTPUT
+  (`kalshi_netev_table.json`) hot-reloads into the live net-EV gate. Under Ruling 1 the code may be
+  fixed; the table must NOT be regenerated until after the verdict.
+
+NOTHING in this section has been built. These are the items the rulings make eligible, awaiting an
+item-level go.
+
 SCOPE ECHO-BACK (RULE TWELVE): a fix for EVERY item in the 2026-08-06 decision batch — all 147 findings
 (31 MAJOR triple-blind-verified, 61 MINOR, 55 NOTE) plus the 3 operator-added funnel-waste catalog items
 (OP-ADD-1a/1b/1c) — each with the fix, why it is needed, its standing detector, its failing-before test, effort,
