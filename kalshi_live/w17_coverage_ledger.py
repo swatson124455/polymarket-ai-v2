@@ -40,12 +40,33 @@ def _get(path):
 
 
 def _env():
-    env = {}
-    with open(os.path.join(DATA, "live.env")) as fh:
-        for line in fh:
-            if "=" in line and not line.startswith("#"):
-                k, _, v = line.strip().partition("=")
-                env[k] = v
+    """Config for this report — os.environ FIRST, live.env only as a fallback.
+
+    The timer unit already carries `EnvironmentFile=/opt/pa2-maker-kalshi-live/live.env`, so
+    systemd (root) reads the 0600 root-owned file and injects KALSHI_* into this process. The
+    direct file read was therefore redundant AND fatal: the unit runs as `polymarket`, which
+    cannot open a root-owned 0600 file, so EVERY timer run died with PermissionError before
+    printing a single bucket (measured: w17 broken from 2026-08-06T14:00:01Z, w16 from at least
+    2026-08-07T14:00Z). Fallback retained so a manual run by a user that CAN read the file still
+    works. Fixed 2026-08-08."""
+    env = {k: v for k, v in os.environ.items() if k.startswith("KALSHI_")}
+    src = "environ"
+    if not env:
+        src = "live.env"
+        try:
+            with open(os.path.join(DATA, "live.env")) as fh:
+                for line in fh:
+                    if "=" in line and not line.startswith("#"):
+                        k, _, v = line.strip().partition("=")
+                        env[k] = v
+        except OSError as exc:
+            # STANDING DETECTOR: an empty allow/deny list silently makes every bucket read
+            # "nothing to cover" — which is indistinguishable from a clean run. Say it out loud.
+            src = f"NONE ({exc.__class__.__name__})"
+            print(f"# ALARM config unreadable: no KALSHI_* in the environment and live.env "
+                  f"could not be opened ({exc}) — allow/deny are EMPTY and every coverage "
+                  f"bucket below is meaningless", flush=True)
+    print(f"# config source: {src} ({len(env)} KALSHI_* keys)", flush=True)
     return env
 
 

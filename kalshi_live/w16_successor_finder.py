@@ -22,6 +22,7 @@ Run (VPS): sudo ./venv/bin/python w16_successor_finder.py [--min-score 0.25]
 import argparse
 import collections
 import json
+import os
 import re
 import time
 import urllib.request
@@ -40,6 +41,34 @@ def _tokens(title):
             if w not in STOP and len(w) > 2}
 
 
+def _env():
+    """Config for this report — os.environ FIRST, live.env only as a fallback.
+
+    Same mechanism (and same fix) as w17_coverage_ledger._env: the timer unit already carries
+    `EnvironmentFile=/opt/pa2-maker-kalshi-live/live.env`, so systemd (root) injects KALSHI_*
+    into this process. Opening the 0600 root-owned file directly as `polymarket` raised
+    PermissionError and killed every timer run before any output. Fixed 2026-08-08."""
+    env = {k: v for k, v in os.environ.items() if k.startswith("KALSHI_")}
+    src = "environ"
+    if not env:
+        src = "live.env"
+        try:
+            with open("/opt/pa2-maker-kalshi-live/live.env") as fh:
+                for line in fh:
+                    if "=" in line and not line.startswith("#"):
+                        k, _, v = line.strip().partition("=")
+                        env[k] = v
+        except OSError as exc:
+            # STANDING DETECTOR: an empty allowlist makes "0 programless series" print as a
+            # clean bill of health. Never let that pass silently.
+            src = f"NONE ({exc.__class__.__name__})"
+            print(f"# ALARM config unreadable: no KALSHI_* in the environment and live.env "
+                  f"could not be opened ({exc}) — the allowlist is EMPTY, so the health and "
+                  f"successor sections below cover NOTHING", flush=True)
+    print(f"# config source: {src} ({len(env)} KALSHI_* keys)", flush=True)
+    return env
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--min-score", type=float, default=0.25)
@@ -48,14 +77,7 @@ def main():
     if a.allow:
         allow = [s for s in a.allow.split(",") if s.strip()]
     else:
-        import os
-        env = {}
-        with open("/opt/pa2-maker-kalshi-live/live.env") as fh:
-            for line in fh:
-                if "=" in line:
-                    k, _, v = line.strip().partition("=")
-                    env[k] = v
-        allow = [s for s in env.get("KALSHI_SERIES_ALLOW", "").split(",") if s.strip()]
+        allow = [s for s in _env().get("KALSHI_SERIES_ALLOW", "").split(",") if s.strip()]
     progs, cursor = [], ""
     for _ in range(5):
         d = _get("/incentive_programs?status=active&limit=10000"
