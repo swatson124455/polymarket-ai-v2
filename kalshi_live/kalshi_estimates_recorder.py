@@ -37,6 +37,56 @@ BASE = "https://api.elections.kalshi.com/trade-api/v2"
 MAP_PATH = os.path.join(HERE, "kalshi_program_map.json")
 
 
+def load_map(path=None):
+    """(pmap, status) — 'absent' | 'ok' | 'corrupt'.
+
+    M-16/m-3 (2026-08-08): the old loader was a bare `except Exception: pmap = {}`, which
+    treated a TORN FILE exactly like a missing one and silently restarted the cache empty.
+    Combined with the non-atomic write below that is unrecoverable data loss: an ended
+    program has already left /incentive_programs?status=active, so the re-merge cannot put
+    it back — and ended-program rows are precisely what a MERGE-ONLY cache exists to hold
+    (they persist in the estimates feed until payout, which is how est->credit is joined).
+    A corrupt file is therefore preserved, not overwritten, and it ALARMS."""
+    p = path or MAP_PATH
+    if not os.path.exists(p):
+        return {}, "absent"
+    try:
+        with open(p) as fh:
+            m = json.load(fh)
+        if not isinstance(m, dict):
+            raise ValueError(f"expected a JSON object, got {type(m).__name__}")
+        return m, "ok"
+    except Exception as exc:
+        keep = f"{p}.corrupt-{dt.datetime.now(dt.timezone.utc):%Y%m%d_%H%M%S}"
+        try:
+            os.replace(p, keep)
+        except OSError:
+            keep = "(could not preserve)"
+        print(f"ALARM program map UNREADABLE ({exc}) — preserved at {keep}; continuing from "
+              f"the ACTIVE feed only, so any ENDED-program entries it held are LOST")
+        return {}, "corrupt"
+
+
+def save_map(pmap, prior_n, path=None):
+    """Atomic write + merge-only shrink guard. Returns True if written.
+
+    The old form was `json.dump(pmap, open(MAP_PATH, "w"))`, which truncates the live file
+    before writing a byte: a crash, OOM-kill or reboot mid-dump leaves invalid JSON on disk.
+    tmp + fsync + os.replace is the pattern the sibling state writers already use."""
+    p = path or MAP_PATH
+    if len(pmap) < prior_n:
+        print(f"ALARM refusing to SHRINK the program map ({prior_n} -> {len(pmap)}) — the "
+              f"merge-only invariant was violated; keeping the file already on disk")
+        return False
+    tmp = p + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(pmap, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, p)
+    return True
+
+
 def main():
     now = dt.datetime.now(dt.timezone.utc)
     c = KalshiOrderClient(mode="live")
@@ -50,10 +100,8 @@ def main():
 
     # merge-only program map: ended programs leave the active feed but their
     # estimate rows persist until payout — the map must remember them.
-    try:
-        pmap = json.load(open(MAP_PATH))
-    except Exception:
-        pmap = {}
+    pmap, map_status = load_map()
+    prior_n = len(pmap)
     progs, cursor = [], ""
     try:
         for _ in range(5):
@@ -70,7 +118,7 @@ def main():
                 pmap[pid] = {"market_ticker": p.get("market_ticker"),
                              "end_date": p.get("end_date"),
                              "period_reward": p.get("period_reward")}
-        json.dump(pmap, open(MAP_PATH, "w"))
+        save_map(pmap, prior_n)
     except Exception as e:
         # map refresh is best-effort; the raw estimate rows are the record
         print(f"program-map refresh failed (rows still recorded): {e}")
@@ -78,7 +126,7 @@ def main():
     total = sum(e.get("reward_centicents") or 0 for e in est)
     unmapped = sum(1 for e in est if e.get("program_id") not in pmap)
     print(f"estimates {len(est)} rows, total {total} cc = ${total/10000.0:.4f}, "
-          f"unmapped {unmapped}, map {len(pmap)} programs")
+          f"unmapped {unmapped}, map {len(pmap)} programs (map_status={map_status})")
 
 
 if __name__ == "__main__":
