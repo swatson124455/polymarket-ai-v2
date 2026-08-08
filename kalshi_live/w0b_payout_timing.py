@@ -44,7 +44,12 @@ HORIZON_DAYS = 8.0
 def _get(path):
     """Throttled + 429-retried public read: the first run lost 15/35 event reads to
     HTTP 429 bursts, leaving 24/57 credits unclassifiable — a denominator hole, not
-    a data limit."""
+    a data limit.
+
+    n-3 (2026-08-08): the retry arm caught HTTPError ONLY, so a transient URLError /
+    socket timeout — a DNS blip or a dropped connection, not a rate limit — propagated out
+    of the loop and aborted the whole evidence run, re-opening the same denominator hole
+    the throttle was added to close."""
     last_err = None
     for attempt in range(5):
         time.sleep(0.6 + attempt * 2.0)
@@ -54,11 +59,43 @@ def _get(path):
             last_err = e
             if e.code != 429:
                 raise
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_err = e            # transient transport fault — retry, do not abort the run
     raise last_err
 
 
 def _iso(s):
     return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+
+
+def classify(ts, close_min, close_max, nmk):
+    """(tag, delta_h, basis) for one credit. M-3 fix (2026-08-08).
+
+    Credits are per EVENT (the reason string carries only the event ticker), but an event can
+    hold many strikes with DIFFERENT close times. The old rule measured every credit against
+    close_MAX — the LATEST close in the event — so an ordinary close+1 payment for a strike
+    that closed early printed as `BEFORE_CLOSE` with a large negative delta. That single tag is
+    what the "payment is NOT gated on close" canon rests on, so the defect could mint a false
+    timing canon (and the 2026-08-07T15:00Z APRPOTUS checkpoint is read through it).
+
+    Only two shapes are watertight evidence:
+      * single-market event (nmk <= 1)      -> basis 'single'    — close is unambiguous
+      * multi-market, credit before EVERY close (ts < close_min) -> basis 'multi-min'
+    A multi-market credit landing BETWEEN the earliest and latest close is genuinely
+    AMBIGUOUS — it may be close+1 for an early strike or before-close for a late one — and is
+    now reported as such instead of being counted as before-close evidence."""
+    if nmk is not None and nmk <= 1:
+        d_h = (ts - close_max).total_seconds() / 3600.0
+        tag = "BEFORE_CLOSE" if d_h < 0 else "CLOSE_WINDOW" if d_h <= 48 else "LATE"
+        return tag, d_h, "single"
+    if ts < close_min:
+        return "BEFORE_CLOSE", (ts - close_min).total_seconds() / 3600.0, "multi-min"
+    d_h = (ts - close_max).total_seconds() / 3600.0
+    if d_h > 48:
+        return "LATE", d_h, "multi-max"
+    if d_h >= 0:
+        return "CLOSE_WINDOW", d_h, "multi-max"
+    return "AMBIGUOUS", d_h, "multi-ambiguous"
 
 
 def main():
@@ -90,26 +127,35 @@ def main():
 
     print(f"\n## per-credit timing vs the credited event's market close "
           f"(n={len(rows)} credits, {len(ev_close)} events)")
-    before, window, late, unknown = [], [], [], []
+    before, window, late, unknown, ambig = [], [], [], [], []
     for ev, ts, usd in sorted(rows, key=lambda x: x[1]):
         cc = ev_close.get(ev)
         if not cc:
             unknown.append((ev, ts, usd))
             continue
-        _, close_max, nmk = cc
-        d_h = (ts - close_max).total_seconds() / 3600.0
-        tag = ("BEFORE_CLOSE" if d_h < 0 else
-               "CLOSE_WINDOW" if d_h <= 48 else "LATE")
-        (before if d_h < 0 else window if d_h <= 48 else late).append((ev, ts, usd, d_h))
+        close_min, close_max, nmk = cc
+        tag, d_h, basis = classify(ts, close_min, close_max, nmk)
+        {"BEFORE_CLOSE": before, "CLOSE_WINDOW": window,
+         "LATE": late, "AMBIGUOUS": ambig}[tag].append((ev, ts, usd, d_h, basis))
         print(f"  {tag:12s} {ev:38s} ${usd:7.2f}  credit {ts:%Y-%m-%d %H:%M}Z  "
-              f"close {close_max:%Y-%m-%d %H:%M}Z  delta {d_h:+9.1f}h  (mkts {nmk})")
+              f"close {close_max:%Y-%m-%d %H:%M}Z  delta {d_h:+9.1f}h  "
+              f"(mkts {nmk}, basis {basis})")
     for ev, ts, usd in unknown:
         print(f"  UNKNOWN      {ev:38s} ${usd:7.2f}  credit {ts:%Y-%m-%d %H:%M}Z  "
               f"close UNREADABLE")
-    n = len(before) + len(window) + len(late)
+    n = len(before) + len(window) + len(late) + len(ambig)
     print(f"\n  summary (denominator: {n} close-readable credits of {len(rows)} total): "
           f"BEFORE_CLOSE {len(before)} | CLOSE_WINDOW(0-48h) {len(window)} | "
-          f"LATE(>48h) {len(late)} | UNKNOWN {len(unknown)}")
+          f"LATE(>48h) {len(late)} | AMBIGUOUS {len(ambig)} | UNKNOWN {len(unknown)}")
+    # STANDING DETECTOR: the discriminator is the WATERTIGHT subset, never the raw tally.
+    watertight = [r for r in before if r[4] in ("single", "multi-min")]
+    print(f"  WATERTIGHT before-close evidence: {len(watertight)} of {len(before)} "
+          f"BEFORE_CLOSE tags (single-market events, or credited before EVERY close in the "
+          f"event). Only these support 'payment is not gated on close'.")
+    if ambig:
+        print(f"  ⚠ {len(ambig)} credit(s) landed BETWEEN the earliest and latest close of a "
+              f"multi-market event — direction UNDECIDABLE from event-grain data; resolve "
+              f"per-market via the estimates recorder's program_id -> market_ticker map.")
     if before:
         print("  BEFORE_CLOSE cases (payment not gated on close — the 0b discriminator):")
         for ev, ts, usd, d_h in sorted(before, key=lambda x: x[3]):
