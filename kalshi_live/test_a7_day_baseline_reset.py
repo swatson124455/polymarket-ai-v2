@@ -36,10 +36,21 @@ def test_p2_failure_reads_as_absent(tmp_path, monkeypatch):
 
 
 def test_p3_equity_block_consults_the_marker():
+    """UPDATED 2026-08-09 — this pin previously asserted the `or` form, which WAS THE DEFECT.
+
+    `st.get("equity_day") != _day or _consume_day_baseline_marker()` short-circuits: when the
+    day has ALSO changed, the marker is never consumed and stays on disk, so the NEXT cycle
+    re-enters this branch and re-baselines a SECOND time. Measured live 2026-08-09: day-change
+    re-baseline at 23:52:05Z (marker untouched) then marker consumed at 23:54:33Z = two
+    baselines 2.5 min apart, then the 00:00:09Z UTC roll made three in eight minutes.
+    The `|` form evaluates BOTH operands, consuming the marker at the re-baseline it belongs
+    to. Asserting the old string here would re-pin the defect."""
     src = open(q.__file__, encoding="utf-8", errors="replace").read()
-    i = src.index('st.get("equity_day") != _day or _consume_day_baseline_marker()')
-    assert 'st["equity_day_peak"] = _equity' in src[i:i + 1200], \
+    i = src.index('(st.get("equity_day") != _day) | _consume_day_baseline_marker()')
+    assert 'st["equity_day_peak"] = _equity' in src[i:i + 4200], \
         "the marker must trigger the same start/peak re-baseline as a new day"
+    assert " or _consume_day_baseline_marker()" not in src, \
+        "short-circuiting `or` leaves the marker unconsumed on a day-change cycle"
 
 
 def test_p4_restart_bundle_creates_the_marker():

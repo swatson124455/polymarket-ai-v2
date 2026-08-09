@@ -1669,6 +1669,15 @@ HELD_MAX_USD = _envf("KALSHI_HELD_MAX_USD", 20.0)
 # toward a halt; only the drawdown arm stands. The equity snapshot itself is torn-read-proof —
 # see the consistency re-read in the meter (run_once).
 DAILY_LOSS_HALT_USD = _envf("KALSHI_DAILY_LOSS_HALT_USD", 20.0)
+# DD CARRY (2026-08-09) — ships ON, deliberately, unlike most new knobs. The behaviour it
+# replaces is a HOLE, not a feature: the day/marker re-baseline re-seeded the peak at current
+# equity, so any drawdown still open at the boundary was forgiven and the bot got a full fresh
+# envelope while already down (measured live 2026-08-09: dd $3.00 at 23:58:18Z -> $0.00 at
+# 00:00:09Z, $7.55 of slide erased). Shipping this OFF would leave that hole open every single
+# midnight, which is the opposite of a safe default. Set KALSHI_DD_CARRY=0 to restore the old
+# forgive-at-baseline behaviour. The carry DECAYS as equity recovers — a debt, not a penalty —
+# so it can only make the halt fire EARLIER on a bleed that is still open, never later.
+DD_CARRY = _envb("KALSHI_DD_CARRY", True)
 # --- config-coherence clamps (review 07-22): foot-gun envs must not silently disable trading
 # or the gate ordering. LATE_LIFE_FRAC >= 1 would exclude every short-lived market entirely;
 # MAX_ENTRY_CUTOFF below WIND_DOWN would violate the always-at-least-wind-down guarantee.
@@ -4869,7 +4878,15 @@ def run_once():
                     if st["equity_torn_streak"] >= 2:
                         _exit_only_all = True
                         plan["equity_torn_reduce_only"] = 1
-                elif st.get("equity_day") != _day or _consume_day_baseline_marker():
+                elif (st.get("equity_day") != _day) | _consume_day_baseline_marker():
+                    # BOTH operands are evaluated on purpose (bitwise | on two bools, never
+                    # short-circuiting `or`). DEFECT FOUND LIVE 2026-08-09: with `or`, a day
+                    # change short-circuits and leaves the marker ON DISK, so the NEXT cycle
+                    # takes this branch a SECOND time and re-baselines again. Measured that
+                    # night: 23:52:05Z day-change re-baseline (08-07 -> 08-08, marker
+                    # untouched), then 23:54:33Z marker consumed = second reset 2.5 min later,
+                    # then 00:00:09Z the UTC roll = a third. Three baselines in 8 minutes.
+                    # Evaluating both consumes the marker AT the re-baseline it belongs to.
                     # A7 (operator-ruled 2026-08-05): an operator-NAMED restart may drop the
                     # day_baseline_reset marker (restart_bundle.sh) — the daily-loss governor
                     # then re-baselines at current equity so its day agrees with the fresh P2
@@ -4882,6 +4899,28 @@ def run_once():
                     st["equity_torn_streak"] = 0
                     if st.get("equity_day") == _day:
                         plan["day_baseline_reset"] = 1
+                    # DRAWDOWN CARRY ACROSS THE BASELINE (KALSHI_DD_CARRY, default ON).
+                    # DEFECT FOUND LIVE 2026-08-09, cost real money: this branch re-seeded the
+                    # peak at CURRENT equity unconditionally, so a drawdown still OPEN at the
+                    # boundary was simply forgiven. Measured that night: dd had correctly
+                    # climbed to $3.00 at 23:58:18Z (equity 272.16 vs peak 275.16) and was
+                    # tracking toward the $10 halt; at 00:00:09Z the UTC roll re-seeded the peak
+                    # at 267.61 — the bottom — and dd went to 0.00 with $7.55 of the slide
+                    # erased. A bot bleeding at 23:59 got a clean full envelope at 00:00 with
+                    # no operator action and no log line. The daily budget is meant to cap NEW
+                    # losses, not to launder an in-flight one.
+                    # Carry = the unresolved drawdown at the instant of re-baseline. It DECAYS
+                    # as equity climbs back (see the else-branch), so recovering out of the hole
+                    # returns the room — it is a debt, not a permanent penalty.
+                    _prev_peak = float(st.get("equity_day_peak", _equity) or _equity)
+                    _carry = max(0.0, _prev_peak - _equity) if DD_CARRY else 0.0
+                    if _carry > 0.0:
+                        print(f"DD CARRY: re-baselining with ${_carry:.2f} of drawdown still "
+                              f"OPEN (prev peak ${_prev_peak:.2f} -> equity ${_equity:.2f}); "
+                              f"it stays against the ${DAILY_LOSS_HALT_USD:.2f} limit until "
+                              f"equity climbs back out")
+                    st["equity_day_carry"] = round(_carry, 6)
+                    plan["daily_dd_carry"] = round(_carry, 2)
                     st["equity_day"] = _day
                     st["equity_day_start"] = _equity
                     st["equity_day_peak"] = _equity
@@ -4899,7 +4938,16 @@ def run_once():
                     # regression is caught red-handed, cycle-stamped.)
                     plan["equity_day_peak"] = round(_peak, 2)
                     st["equity_prev"] = _equity        # mark-equity telemetry continuity
-                    _dd = _peak - _equity
+                    _dd_raw = _peak - _equity
+                    # CARRIED DEBT, DECAYING (see the re-baseline branch). Every dollar of
+                    # equity recovered above the day's start pays the carry down first; once it
+                    # is repaid the meter is a pure same-day drawdown again. Without this, a
+                    # bleed that straddles the baseline is invisible to the halt.
+                    _carry = float(st.get("equity_day_carry", 0.0) or 0.0) if DD_CARRY else 0.0
+                    _carry_eff = max(0.0, _carry - max(0.0, _equity - _start))
+                    _dd = _dd_raw + _carry_eff
+                    plan["daily_dd_raw"] = round(_dd_raw, 2)
+                    plan["daily_dd_carry"] = round(_carry_eff, 2)
                     plan["daily_dd"] = round(_dd, 2)
                     # SINGLE MEASURE, SINGLE LIMIT (the cumulative-down arm was removed by
                     # operator order 2026-08-02):
@@ -4911,8 +4959,11 @@ def run_once():
                     # error this lane has made, so the halt says so itself.
                     _breaches = []
                     if _dd > DAILY_LOSS_HALT_USD:
-                        _breaches.append(f"DRAWDOWN ${_dd:.2f} > ${DAILY_LOSS_HALT_USD:.2f} "
-                                         f"(from day-peak ${_peak:.2f})")
+                        _breaches.append(
+                            f"DRAWDOWN ${_dd:.2f} > ${DAILY_LOSS_HALT_USD:.2f} "
+                            f"(from day-peak ${_peak:.2f}"
+                            + (f"; ${_carry_eff:.2f} CARRIED across the baseline"
+                               if _carry_eff > 0 else "") + ")")
                     # F1 (operator-named 2026-07-31): N-of-5 WINDOW, not a hard-reset streak
                     # -- an oscillating mark used to reset the streak to 0 on any single
                     # non-breach cycle, deferring confirmation forever under real losses.
