@@ -31,10 +31,13 @@ def carry_at_rebaseline(prev_peak, equity, enabled=True):
 
 
 def effective_dd(peak, equity, day_start, carry, enabled=True):
-    """Mirror of the fix's steady-state arm."""
+    """Mirror of the fix's steady-state arm.
+
+    Repayment is measured against the day PEAK (monotone), not current equity — otherwise a
+    repaid carry RESURRECTS on any dip back toward day-start."""
     dd_raw = peak - equity
     c = carry if enabled else 0.0
-    carry_eff = max(0.0, c - max(0.0, equity - day_start))
+    carry_eff = max(0.0, c - max(0.0, peak - day_start))
     return dd_raw + carry_eff, carry_eff
 
 
@@ -50,14 +53,33 @@ def test_the_live_incident_would_now_be_carried():
 
 
 def test_carry_decays_as_equity_recovers():
-    carry = 7.55
-    start = 267.61
+    carry, start = 7.55, 267.61
     _, c_at_start = effective_dd(267.61, 267.61, start, carry)
-    _, c_up_3 = effective_dd(271.0, 270.61, start, carry)
-    _, c_repaid = effective_dd(276.0, 275.16, start, carry)
+    _, c_up_3 = effective_dd(270.61, 270.61, start, carry)
+    _, c_repaid = effective_dd(275.16, 275.16, start, carry)
     assert round(c_at_start, 2) == 7.55
-    assert round(c_up_3, 2) == 4.55           # recovered $3.00 of the hole
+    assert round(c_up_3, 2) == 4.55           # climbed $3.00 out of the hole
     assert c_repaid == 0.0                    # climbed all the way out -> debt cleared
+
+
+def test_repaid_carry_never_resurrects():
+    """REGRESSION (caught in adversarial review before deploy): the first cut measured
+    repayment against CURRENT equity, so a dip after a recovery revived a cleared debt and
+    could halt a bot sitting near its own peak."""
+    carry, start = 7.55, 267.61
+    peak = 275.16                              # fully recovered at some point in the day
+    _, c_after_recovery = effective_dd(peak, 275.16, start, carry)
+    _, c_after_dip = effective_dd(peak, 270.00, start, carry)
+    assert c_after_recovery == 0.0
+    assert c_after_dip == 0.0, "a repaid carry must stay repaid"
+
+
+def test_dd_equals_not_resetting_the_peak():
+    """The carry formula is algebraically 'do not reset the peak while a drawdown is open'."""
+    prev_peak, start, carry = 275.16, 267.61, 7.55
+    for eq, pk in ((268.54, 268.71), (267.61, 267.61), (272.0, 272.0)):
+        dd, _ = effective_dd(pk, eq, start, carry)
+        assert round(dd, 4) == round(prev_peak - eq, 4)
 
 
 def test_no_carry_when_rebaselining_at_a_new_high():
@@ -75,7 +97,8 @@ def test_source_carries_the_terms_and_ships_on():
     src = open(q.__file__, encoding="utf-8", errors="replace").read()
     assert 'DD_CARRY = _envb("KALSHI_DD_CARRY", True)' in src, "must ship ON — the old path is a hole"
     assert 'st["equity_day_carry"]' in src, "carry must persist across cycles"
-    assert '_carry_eff = max(0.0, _carry - max(0.0, _equity - _start))' in src, "carry must decay"
+    assert '_carry_eff = max(0.0, _carry - max(0.0, _peak - _start))' in src, (
+        "repayment must latch against the monotone PEAK, never current equity")
     assert "_dd = _dd_raw + _carry_eff" in src, "the halt must test the CARRIED drawdown"
     i = src.index("_dd = _dd_raw + _carry_eff")
     assert "DD CARRY" in src[:i], "re-baseline must announce a carried drawdown out loud"

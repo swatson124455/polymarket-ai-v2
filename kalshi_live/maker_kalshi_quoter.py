@@ -4944,7 +4944,16 @@ def run_once():
                     # is repaid the meter is a pure same-day drawdown again. Without this, a
                     # bleed that straddles the baseline is invisible to the halt.
                     _carry = float(st.get("equity_day_carry", 0.0) or 0.0) if DD_CARRY else 0.0
-                    _carry_eff = max(0.0, _carry - max(0.0, _equity - _start))
+                    # REPAYMENT IS LATCHED — measured against the day's PEAK, never against the
+                    # instantaneous equity. Using current equity (the first cut of this fix, and
+                    # a defect caught in adversarial review before deploy) let a repaid carry
+                    # RESURRECT: recover to a new high, carry_eff -> 0, then dip back while still
+                    # above day-start and the debt reappears, so the halt could fire on a bot
+                    # sitting near its own peak. _peak is monotone within the day, so once the
+                    # hole is climbed out of it stays climbed out.
+                    # Algebraically this makes dd == prev_peak - equity, i.e. exactly "do not
+                    # reset the peak while a drawdown is still open" — which is the intent.
+                    _carry_eff = max(0.0, _carry - max(0.0, _peak - _start))
                     _dd = _dd_raw + _carry_eff
                     plan["daily_dd_raw"] = round(_dd_raw, 2)
                     plan["daily_dd_carry"] = round(_carry_eff, 2)
