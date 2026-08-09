@@ -158,8 +158,8 @@ def main():
               f"per-market via the estimates recorder's program_id -> market_ticker map.")
     if before:
         print("  BEFORE_CLOSE cases (payment not gated on close — the 0b discriminator):")
-        for ev, ts, usd, d_h in sorted(before, key=lambda x: x[3]):
-            print(f"    {ev:38s} paid {-d_h:8.1f}h BEFORE close  (${usd:.2f})")
+        for ev, ts, usd, d_h, basis in sorted(before, key=lambda x: x[3]):
+            print(f"    {ev:38s} paid {-d_h:8.1f}h BEFORE close  (${usd:.2f})  [{basis}]")
 
     # ---- current FIX-H admitted set ----
     print("\n## FIX-H admitted set (receipt-proven series, close beyond "
