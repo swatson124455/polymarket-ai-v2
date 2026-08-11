@@ -71,6 +71,20 @@ vs venue cost-vs-value **−$0.97**. Venue-basis unrealized never exceeded −$1
 damage ≈ the **$2.63** of printed taker-cross cost + fees. The "−$7.55" figure is ~87% a
 mark-convention artifact. **Any fix built on the $7.55 as if it were destroyed value is mis-aimed.**
 
+**D4a UPDATE (2026-08-11, operator-ruled) — the canonical CLOSED-EPISODE realized is −$5.5078, not
+$2.63; both are correct at different scopes, keep both.** The KXTRUMPTIME-26AUG15 episode is now
+FLAT and COMPLETE (net position 0.0 in all 5 strikes). Position-aware `replay_fills` over the full
+tape (read 2026-08-10T03:00:30Z; 1,484-fill tape reconciles to the recorder's `n_fills_todate`
+1484) gives the round trip: 5 maker YES buys −$12.10 (23:56:31→23:58:59Z), 6 taker sells +$4.5222
+(00:05:14→00:09:01Z), then 2 maker sells on H1 at 2026-08-09T03:06:04/06Z **+$2.0700** (a resting
+flatten offset that filled ~2h53m AFTER the halt). **Episode realized = −$5.5078, final, fill-side
+only (not decomposed into defect vs structural).** The **$2.63** is the printed taker-cross
+*component*; −$5.5078 is the full realized round trip and is the number a future session must size
+against. No credit has been paid for KXTRUMPTIME-26AUG15 (credit_history 2026-08-11T14:22:21Z: 0
+credits for that event; peak accrued $0.0355 across its 5 markets; programs run to
+2026-08-15T14:00Z, so not yet due). Reproduce: `replay_fills` over `/portfolio/fills`, filter
+ticker prefix `KXTRUMPTIME-26AUG15`.
+
 ## 3. THE ONE OPEN QUESTION — this is the actual work
 
 **The bot entered a series it had not touched in five days, immediately after the restart, and that
@@ -166,3 +180,87 @@ credited as of that read — pending, not failed. **Re-check it.**
 All 13 hook-injected operator rules bind. Plus: never restart within ~60 min of 00:00Z; the 2026-07-27
 session stays quarantined; money-path changes need failing-before tests + md5-verified deploys with
 `.bak` backups; nothing deploys to the trading path without explicit operator naming.
+
+## 8. SESSION 2026-08-11 — M-1 CENSUS, MATCHED STUDY, FIX-H VERDICT (findings only, nothing deployed)
+
+Step Zero re-verified this session: STOP present, quoter md5 `5c7aed6f…`, credit_feedback
+`bdeccf08…`, suite **1255 passed / 2 xfailed exit 0** (captured, not grepped). Live-path files still
+byte-identical to `233ee86`.
+
+**THE OPEN QUESTION (§3) IS ANSWERED — the premise was wrong.** Selection never "ranked KXTRUMPTIME
+out for 5 days." The five `KXTRUMPTIME-26AUG15-H1..H5` liquidity programs were CREATED at
+`2026-08-08T16:01:52.885728Z` (venue read 2026-08-10T00:50:21Z), i.e. DURING the 31h halt; the
+market opened `2026-08-08T14:00:00Z`. The first live cycle that could see them WAS the first cycle
+after the restart. The 5-day gap was a DIFFERENT event (`KXTRUMPTIME-26AUG08`, closed
+2026-08-08T13:03:52Z) that had NO active liquidity program in any record (program map 5,299 progs =
+0 for 26AUG08; persistent close-cache = 0). Admission was NOT competitive: KXTRUMPTIME is in
+`KALSHI_SERIES_ALLOW` (allowlist bypass), the per-series coverage floor is uncapped
+(`PIVOT_COVERAGE=1`, quoter :2286-2289), and pool p50 (45) < capacity (FOOTPRINT_TOP 40). Caprank
+cycle 1 shows it at `kind:"unknown", ref:null, cap_score 0.4` — it out-ranked nothing; it landed on
+the coverage floor at index 8 of 11 distinct series. ALL FOUR handoff hypotheses REFUTED as cause
+(stale close-cache / market-scores / ramp-first-seen / reentry-cooldown=0 on every incident cycle).
+Recurrence is NOT restart-conditional: any new event in any of the 24 allowlist series is quoted on
+the first cycle its programs appear.
+
+**M-1 CENSUS (frozen; census 2026-08-10T02:52Z, canonical replay_fills read 02:56:07Z — 1,484
+fills / 195 settlements matches recorder n_fills_todate):** all 24 allowlist series, every ticker
+first-seen ≥2026-08-01. **394 new tickers admitted; 346 (87.8%) NEVER sized ($0, book gates
+blocked them: gate_entry_band 140, gate_one_sided_book 126, gate_wide_or_asym 35, presence_skipped
+26); 48 ever sized; 35 sized on their FIRST footprint row across 20 events.** KXTRUMPTIME was
+mid-pack, not an outlier: cohort A (first-row-sized) realized −$37.8575 over 35 tickers; KXTRUMPTIME
+5/35 = −$5.5078. Worst single first-entry ticker = `KXTEMPAUSH-26AUG0203-T81.99` −$9.4939 on 2 fills
+in 108s (it sits in `mkt_out`). Target-conditioned first-row sizing: **target-300 6/13 (46%) vs
+target-1000 29/381 (7.6%)** — but 7 KXTRUMPENDORSEMENTS-26AUG07 target-300 markets were NEVER sized
+over 1,465–2,341 rows each, so Target is not sufficient. Reward leg (credit_history
+2026-08-11T14:22:21Z, 62 credits/$204.06): of 42 new events, **3 have paid credits** (KXTEMPAUSH-
+26AUG0202 $3.68, KXTOPMODEL-26AUG31 $2.46, KXADJOURNRECESS-26AUG $1.02) — the estimates feed
+predicted each to the cent. Reward is a LAGGING receipt feed; not an earnings statement.
+
+**D1 (operator-ruled A1): TWO items, both live. Item-admission** = "the uncapped per-series
+coverage floor seats every allowlisted series on sight" (unchanged). **NEW Item-sizing** = "a
+brand-new allowlisted market is SIZED on its first footprint cycle at ramp size (5ct) with zero
+score, zero history, and a book the model has never measured." The census shows sizing, not
+admission, is where the cost lands (346 admissions = $0). Both stay; neither demoted.
+
+**D2 (operator-ruled B3): matched A-vs-B timing study is NOT ESTIMABLE — and it is a
+null-because-UNMEASURABLE, NOT a null-because-tested-and-absent. Do not read it as "timing has no
+effect".** Frozen input `study_frozen.json` (md5 `ab239530…`), deterministic `matched_study.py`,
+exact permutation (no RNG). Cohort B (sized-later) lives ENTIRELY in one series — KXAAAGASD (13/13);
+9 of A's 10 series have no B counterpart, so the contrast is unidentified for every non-gas type.
+Matched pool (settled + series-in-both) collapses to gas: A n=4 mean −$1.7932 vs B n=13 mean
+−$1.1172; A−B = −$0.676 (A nominally worse). Exact permutation on the 17-ticker gas pool (2,380
+assignments): **two-sided p = 0.2651** — indistinguishable from label noise, and n_A=4 from only 2
+events / 3 entry timestamps is essentially powerless. The matching binds ONLY on series (target
+1000 and two_sided_qual are constant in the pool); the pool is SHARPLY UNBALANCED on everything
+else — n_book_df 760.99 vs 104.15 (**7.31×**), y_px 0.665 vs 0.435, and cohort is perfectly
+confounded with the entry gate (A all `explore_probe_capped`, B all `d3_ramp_capped`/None) and with
+day/event (A only AUG02/06, B mostly AUG07/08). So the −$0.68 "timing" gap is inseparable from a
+sizing-pathway and a between-day-regime effect. ⚠ OUTCOME IS COST-ONLY: `realized` = fill_cash +
+settle_revenue; the reward/rebate leg is NOT joined, so this does not say either cohort was
+profitable — and the reward is DIFFERENTIALLY censored (all 4 matched-pool A entered 08-01/08-05,
+before the estimates tape began 08-06T03:31:49Z → reward unobservable; only 3/13 B pre-tape), so a
+reward join cannot rescue A's comparison either. ⚠ THE −$0.68/ticker "A worse" gap is a VOLUME
+ARTIFACT, not execution quality: cost-per-fill is near-identical (A −$0.1435 over 50 fills vs B
+−$0.1529 over 95 — B nominally WORSE per fill); A just traded more (12.5 vs 7.3 fills/ticker). ⚠
+Cohort is PERFECTLY confounded with sizing pathway (A 100% `explore_probe_capped`, B 100%
+`d3_ramp`/None) — so even within gas, "timing" and "explore-probe-vs-d3-ramp sizing" are the SAME
+variable and no clean timing effect is identifiable. The raw "A≈B" pooled number (A −$1.08, B −$1.12
+per sized ticker) was mixing gas with temp/topmodel/trumptime. **Verified by an 8-agent adversarial workflow (3 blind re-derivations +
+3-lens refutation + completeness critic + synthesis): verdict B3 HOLDS, high confidence; every
+anchor number independently reproduced; no refutation conclusion-changing.** (Workflow honesty note:
+my first run had a schema typo that errored the 3 dedicated re-derivers; the synthesis agent
+independently reproduced all 7 numbers, and a resume re-ran the 3 re-derivers clean.)
+
+**D3 (operator-ruled C2): FIX-H VERDICT = PASS, window closed.** `KXTOPMODEL-26AUG31` credited
+**$2.46** (2 credits, 2026-08-10T18:25:53Z), ~38.4h after programs ended 2026-08-09T03:59:59Z — the
+SECOND daily batch, not September, matching the pre-registered prediction. Accrued-estimate row was
+$2.4691 → credited $2.46 (CLAUM $1.4187→$1.41, CLAU5 $1.0504→$1.05): the estimates feed predicted
+its own credit to the cent AGAIN (second D-A checkpoint pass on a pre-registered number, independent
+of agent judgment). The 48h envelope (closed 2026-08-11T03:59:59Z) and operator observation deadline
+(2026-08-11T14:13:00Z) are both PAST; this line is terminal.
+
+**⚠ FLAGGED, NOT RULED (Rule Nine):** the census pointed the mechanism at first-cycle SIZING rather
+than admission — reported as D1's new item, admission item untouched. The P2 verdict window
+observation deadline (2026-08-11T14:13Z) has now passed; whether to void/re-run it (handoff §6.6)
+is still unruled. FIX-H position capital stays locked to close 2026-08-31 even though its reward
+timing passed.
