@@ -278,10 +278,13 @@ but the **KXAAAGASD series earned $33.04 in JULY** (26JUL21 $2.15, 23 $10.09, 24
 last 2026-07-25) — gas was a credit-PROVEN series whose fresh August daily strikes we sized paid
 $0, which STRENGTHENS the "proven-series, unobserved-fresh-ticker" class, not weakens it.
 **COUNTERFACTUAL (leg 2, 346 never-sized):** 165 one-sided at first sight ($0-payable regardless,
-correctly skipped), **181 two-sided qualifiable** ($24,733/day pool) skipped mostly by
-`gate_entry_band` (**112/181** — price outside our band = price discipline, NOT free money); total
-$46,510/day pool represented; the 181's reward counterfactual is NOT readable from any frozen tape
-(0/181 in the participation-gated feed) — it needs a dry shadow-quote log.
+correctly skipped), **181 two-sided qualifiable** ($24,733/day pool) skipped with
+`gate_entry_band` present on **112/181** first rows (self-review F5: computed via a one-off Bash
+cross-tab this session, NOT frozen in `netev_cf_frozen.json`, and gate buckets can co-occur per
+ticker, so read it as "gate_entry_band present on 112" not a clean partition — price outside our band
+= price discipline, NOT free money); total $46,510/day pool represented; the 181's reward
+counterfactual is NOT readable from any frozen tape (0/181 in the participation-gated feed) — it needs
+a dry shadow-quote log.
 **⚠ SCOPE CLARIFICATION to §8's "cohort perfectly confounded with pathway":** that is exact only in
 the n=4 MATCHED gas pool (gas-A there is 4/4 `explore_probe`). At FULL-cohort level **A is 26
 `explore_probe` / 8 `d3_ramp` / 1 other**, B is 11 `d3_ramp` / 2 other — so a full-cohort stratified
@@ -311,14 +314,19 @@ EXPLORE_PROBE_CT / D3 cycle-1 size. Plan detail: session chat + `net_ev_and_coun
 **OFFLINE STEPS 1–11 RUN (operator "run"; `offline_steps.py`, `offline_results.json` md5
 `deaeed07…`, est-timing `est_timing.json`; 4-agent verify: 2 blind re-derivers + skeptic + synth,
 ALL anchors reproduced, high confidence). RESULT: NO live change on the first-cycle-sizing item —
-but for a SHARPER reason than "no penalty".** Steps: (1) accrued→paid ratio median 0.99 over the 3
-paid events; 3 leakage events (accrued>$0.5, paid $0: KXACTBLUETOP-26AUG07 $1.24, KXAAAGASD-26AUG07
-$1.12, -26AUG08 $0.92). (2) tape-covered net A −$9.5147 (n=6) vs B −$9.6083 (n=10). (4) cohort-A cost
-= fill_cash −$38.0675 + settle +$0.21 = **~100% real cross cost, NOT a mark artifact.** (5) **0 of 16
-post-tape sized tickers ever reached the $1.20 accrued floor.** (7) **16/16 blind at size-up** (we
-always size before the feed can see the market). (8) concurrency bursts cheap (K=1 avoidable only
-−$4.91 of −$37.86). (10) warrant NOT met (C1 net<−$0.50 true; **C2 p<0.05 FALSE at 0.4446**; C3
-delay-cost DEFERRED/9a).
+but for a SHARPER reason than "no penalty".** Steps: (1) accrued→paid ratio **min 0.48 / median 0.99
+/ max 1.00** over the 3 paid events (self-review F3: I earlier quoted only the median — **KXAPRPOTUS-
+26AUG07 over-predicts 2×: accrued $3.3881 vs paid $1.63 = 0.481**; the binary filter misses partial
+over-prediction, so accrued→paid fidelity is **UNVALIDATED for a floor gate**); 3 full-leakage events
+(accrued>$0.5, paid $0: KXACTBLUETOP-26AUG07 $1.24, KXAAAGASD-26AUG07 $1.12, -26AUG08 $0.92). (2)
+tape-covered net A −$9.5147 (n=6) vs B −$9.6083 (n=10). (4) cohort-A cost = fill_cash −$38.0675 +
+settle +$0.21 = **~100% real cross cost, NOT a mark artifact.** (5) **0 of 16 post-tape sized tickers
+ever reached the $1.20 accrued floor.** (7) **16/16 blind at size-up** (we always size before the feed
+can see the market). (8) concurrency avoidable-cost is a RANGE, not a point (self-review F6 — my
+earlier "−$4.91" was the cost-MINIMIZING ordering): K=1 **defer-mildest −$4.91 / random-arrival
+≈−$10.79 / defer-worst −$16.62** of −$37.86; a real cap defers by arrival, so ≈−$10.79 is the honest
+expectation — Proposal B is NOT as low-value as −$4.91 implied. (10) warrant NOT met (C1 net<−$0.50
+true; **C2 p<0.05 FALSE at 0.4446**; C3 delay-cost DEFERRED/9a).
 **⚠ THREE CORRECTIONS the verification forced (adopt these; my step-2 draft framing was wrong):**
 (i) The no-change holds because the first-cycle effect is **UNIDENTIFIABLE + underpowered**, NOT
 because "A≈B, no penalty" — within d3_ramp (the only pathway where cohort varies) cohort A is 100%
@@ -334,12 +342,17 @@ demoted):** SERIES/MARKET SELECTION is the actual loss driver. By-series realize
 KXAAAGASD **−$21.6965** (n=17), KXTEMPAUSH −$12.9029 (n=9), KXTRUMPTIME −$5.5078 (n=5),
 KXGENERICBALLOTVOTEHUB −$4.17 (n=1), KXTEMPDCH −$3.0083 (n=3), KXTOPMODEL −$2.1823 (n=3),
 KXADJOURNRECESS −$1.9377 (n=1), + small temp; **every sized series net-negative on realized; only
-KXTOPMODEL turns net-positive (+$0.5151) and ONLY via unpaid accrued reward.** ASK: should selection/
-accrual-based series gating be measured as the PRIMARY lever, ahead of anything first-cycle-specific?
+KXTOPMODEL turns net-positive (+$0.5151)** — via reward that is **PAID, not unpaid (self-review
+correction F1): its $2.4691 accrual was CREDITED $2.46 on 2026-08-10 (= the D3 FIX-H credit).** ASK:
+should selection/accrual-based series gating be measured as the PRIMARY lever, ahead of anything
+first-cycle-specific?
 **⚠ SERIES-SELECTION MEASURED WITH THE REWARD LEG (operator "proceed"; `series_netev.py`,
 `series_netev.json`; credit_history read 2026-08-11T14:55:38Z; Table 1 sums to $204.06 = lifetime
-total, exact) — THE COST-ONLY "series is the loss driver" IS REFUTED ON A PAID BASIS.** Every series
-we sized fresh Aug strikes in HAS paid us lifetime credits, and **8 of 10 have lifetime paid >
+total, exact) — the cost-only "series is the loss driver" is DIRECTIONALLY reframed (self-review
+correction F2 downgraded the earlier "REFUTED ON A PAID BASIS" verb): these series HAVE paid us
+historically, but on the MATCHED scope the fresh Aug strikes themselves paid $0 while costing ~$52
+realized — so this is "the series pays historically", NOT "keep sizing the fresh strikes".** Every
+series we sized fresh Aug strikes in has paid us lifetime credits, and **8 of 10 have lifetime paid >
 |fresh-strike cost|**: KXAAAGASD fresh −$21.70 vs paid **$33.04** (all July), KXTEMPAUSH −$12.90 vs
 **$24.80**, KXTEMPNYCH −$0.52 vs **$17.99**, KXTEMPCHIH −$0.31 vs $8.21, KXTEMPDCH −$3.01 vs $5.86,
 KXTRUMPTIME −$5.51 vs $7.90, KXTOPMODEL −$2.18 vs $4.61, KXTEMPLAXH −$0.15 vs $1.85. Only TWO invert
@@ -350,13 +363,33 @@ census-Aug strikes only — DIFFERENT tickers/months/cost-bases, so this is DIRE
 series ever pay?" = yes for 8/10), NOT a net-EV (July fill costs not loaded). So these are
 REWARD-POSITIVE series with a fresh-strike reward-TIMING/observability cost, not "bad series". One
 unparsed non-liquidity credit ($15.00, 2026-07-24) excluded from series attribution.
-**PROPOSAL-A PAID RE-EVAL (`series_netev.json`):** the 16 post-tape never-floor tickers cost
-**−$21.3271** and their events paid **$0.00** → a floor/accrual gate benching them SAVES the cost and
-forgoes $0 PAID reward = it benches NON-payers, so Proposal A is NOT contraindicated. ⚠ THE GATE'S
-KEY UNVERIFIED RISK: whether the $1.20 accrued floor actually SEPARATES payers from non-payers is
-UNVERIFIED — no pre-2026-08-06 estimates tape (so the July PAYING gas strikes' accrual is unseen) and
-only 3 paid events fall inside the tape (step-6 sensor-validation is underpowered). Do not arm a
-floor gate until that separation is validated on a paid basis.
+**PROPOSAL-A PAID RE-EVAL (`series_netev.json`) — SPLIT concluded vs pending (self-review F4; my flat
+"$0 forgone, benches non-payers" conflated leakage with pending):** the 16 post-tape never-floor
+tickers = **10 CONCLUDED (settled; cost −$11.6493; events truly paid $0 = genuine non-payers)** + **6
+PENDING (unsettled; cost −$9.6778, part mark-based/not final; not due until Aug 14/15:
+KXGENERICBALLOTVOTEHUB-26AUG14 + 5× KXTRUMPTIME-26AUG15) — their $0 is PENDING, NOT proven
+non-payment.** So a floor gate benches proven non-payers for the 10 concluded (saves −$11.65, forgoes
+$0); the 6 pending are unresolved. Proposal A is NOT contraindicated, but the "saves ~$21" figure is
+an upper bound resting partly on not-yet-due markets. ⚠ THE GATE'S KEY UNVERIFIED RISK: whether the
+$1.20 accrued floor actually SEPARATES payers from non-payers is UNVERIFIED — no pre-2026-08-06
+estimates tape (July PAYING gas strikes' accrual unseen), only 3 paid events inside the tape, and the
+accrued→paid sensor itself over-predicts 2× on KXAPRPOTUS (F3). Do not arm a floor gate until that
+separation is validated on a paid basis.
 **DEFERRED (not dropped):** step 9a (book-better-later, needs box quotes scan) + 9b (181-ticker dry
 shadow-quote replay) — so warrant C3 stays unevaluable and the no-change is a conservative default,
 not a closed proof.
+
+**⚠ SELF-REVIEW (operator "review and report"; 5-agent adversarial pass over this session's scripts +
+claims; extraction foundation independently re-counted from raw box tapes — 394/48/35/42 EXACT match;
+live state re-verified 2026-08-12T00:03:28Z: STOP present, quoter `5c7aed6f`, cash $274.4691, 0
+resting, n_pos 0). RAW NUMBERS ALL SOUND; 6 FRAMING DEFECTS FOUND + CORRECTED IN PLACE ABOVE:** F1
+(KXTOPMODEL net-pos was via PAID not "unpaid" reward — contradicted my own D3), F2 (the "series is the
+loss driver REFUTED on paid basis" verb overstated a directional, cross-month/cross-ticker comparison
+— downgraded), F3 (I quoted accrued→paid median 0.99 but hid min 0.48 / KXAPRPOTUS 2× over-predict —
+sensor now flagged UNVALIDATED), F4 (Proposal-A "$0 forgone, benches non-payers" conflated 6 pending
+markets with 10 concluded non-payers — split), F5 (112/181 is a session Bash cross-tab, not frozen;
+gates co-occur — relabelled), F6 (Proposal-B "−$4.91 low value" was the cost-MINIMIZING ordering;
+honest range −$4.91/≈−$10.79/−$16.62). None changed a headline CONCLUSION (first-cycle no-change
+holds; series pay historically; Proposal A needs paid-basis floor-separation validation), but four
+were operator-decision-relevant framing errors. The load-bearing figures were reproduced to precision
+by independent blind re-derivers earlier and by the review's own recompute.
