@@ -48,9 +48,21 @@ ssh -i "C:/Users/samwa/.ssh/LightsailDefaultKey-eu-west-1.pem" ubuntu@18.201.216
 | `kalshi-reward-pnl.timer` | daily 07:30Z | accrued-vs-paid by event; PENDING never = LEAKAGE; appends reward_pnl-YYYYMM.jsonl |
 | `kalshi-obs-gate-eval.timer` | Tue 08:00Z (first 2026-08-18) | scores Pre-reg 2; first manual run = UNPOWERED (0 concluded paid post-T0) |
 | w16+w17 (both run inside `kalshi-w16-report.service`; no separate w17 unit) | 14:00Z | NOW exit nonzero on any alarm (§13) — a `failed` unit means READ THE REPORT. EXIT-MASK FIXED 2026-08-12T18:52Z: the old `w16; w17` ExecStart chain returned only w17's exit, silently masking a w16 alarm; unit now exits max(ra,rb) (backup `kalshi-w16-report.service.bak-EXITMASK-20260812_185157`; verified: systemd argv byte-exact, real run exit 0 both logs appended, file-shipped negative test 1/1/0) |
+| `kalshi-window-scoreboard.timer` (ADDED 08-12, operator-named) | daily 07:40Z | running window gauge: in-window-concluded credits vs position-aware replay_fills drag since T0; appends window_scoreboard-YYYYMM.jsonl. Script `kalshi_window_scoreboard.py` md5 `8f0f8883` (= `6bc46f5` blob); first run 19:37:48Z exit 0, identity_gap 0.0000 vs the T0 cash baseline. ⚠ READ IT RIGHT: drag includes the COST BASIS of currently-open inventory with zero credit for its value (same construction as the §5 verdict basis) — a live book overstates the running drag vs a flat one; `pass_now` is a trajectory hint, NEVER the verdict. Bucket check on run 1: pre_t0 $5.11/3 + unmapped $198.95/36 = $204.06 = exact credit_history lifetime |
 | `kalshi-tape-compress.timer` | 02:30Z | gzips >7-day tapes; live consumers read newest only |
 | estimates + cash recorders | 5 min | unchanged, healthy |
 | logrotate | nightly | root-fixed §13; 0 failed units on the box at handoff |
+
+**ONE-TIME CHECK DUE 2026-08-13 morning (operator-named 08-12):** first 00:00Z day-rollover on
+the DD_CARRY build (deployed 14:22:30Z 08-12). Read the first plan rows of plans-20260813.jsonl:
+expect `daily_dd` reset and `daily_dd_carry` 0.0 (no halt outstanding). Any carry ≠ 0 without a
+halt = a DD_CARRY rollover bug — report before anything else.
+
+**MONITOR-ON-EVERY-REVIEW (operator 08-12: "monitor the other 3 on all reviews"):** (a) 9a/9b
+early-run option — default stays 08-19; (b) tape-compress gzip-failure non-propagation
+(`find -exec {} \;` masks gzip exit; consequence = uncompressed tape retries nightly); (c)
+plan-row schema drift — keys are legitimately conditional (106–183 measured 08-12), no alarm
+buildable without a mandatory-key spec; cfg_stamp covers the two footguns once deployed.
 
 ## 4. IF THE BOT IS HALTED WHEN YOU ARRIVE
 An auto daily-loss STOP is operator-reserved — do NOT clear without the operator naming a
