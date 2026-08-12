@@ -3298,6 +3298,18 @@ def _farclose_paying_keep(series, prog_end_iso, now):
 _PROBE_GATE_REFUSED = {}      # ticker -> consecutive cycles a probe slot rested nothing
 
 
+def _cfg_stamp():
+    """B2 footgun telemetry (deploy review 2026-08-12): the EFFECTIVE risk-geometry config,
+    stamped on every plan row. Closes two silent classes: (1) a malformed KALSHI_D3_RUNGS env
+    silently falls back to 5,10,25,50 — this stamps the ladder the process is ACTUALLY using;
+    (2) OBS_HOLD=1 is inert unless D3_RAMP=1 — armed-but-dead becomes a NAMED alarm key a
+    detector can grep, instead of tribal knowledge. Pure function; a few bytes per row."""
+    s = {"cfg_d3_rungs": list(D3_RUNGS), "cfg_obs_hold": int(bool(OBS_HOLD))}
+    if OBS_HOLD and not D3_RAMP:
+        s["cfg_obs_hold_inert"] = 1
+    return s
+
+
 def _cap_probe_slots(rows, drops):
     """Keep at most PROBE_MAX_SLOTS probe-only rows, chosen by:
       1. lowest gate-refusal streak (a probe that keeps failing the book gates YIELDS its
@@ -4073,6 +4085,7 @@ def run_once():
     # KALSHI_PRECLOSE_FLATTEN (built + tested, never switched on) while every cycle
     # printed "cycle ok". Full list into the plan row; the protection-bearing ones are
     # NAMED in the log, because a bare count is exactly as ignorable as silence was.
+    plan.update(_cfg_stamp())
     _absent = env_absent()
     plan["env_absent_n"] = len(_absent)
     # DEDUP (operator-authorized 2026-08-03). This list is near-constant for a process, and it
