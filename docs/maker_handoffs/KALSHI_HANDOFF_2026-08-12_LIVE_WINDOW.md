@@ -1,4 +1,26 @@
-# KALSHI MAKER — HANDOFF 2026-08-12. BOT LIVE ON THE FIXED BUILD; 7-DAY WINDOW RUNNING.
+# KALSHI MAKER — HANDOFF 2026-08-12. ⛔ SUPERSEDED SAME DAY: OPERATOR-NAMED WIND-DOWN (Option B) EXECUTED 19:50Z. BOT DOWN.
+
+## ⛔ 0-A. WIND-DOWN RECORD (operator: "wind down as cleanly as possible", 2026-08-12 ~19:49Z)
+- Sequence executed: STOP written 19:50:13Z (text names the operator order) → `systemctl stop`
+  polymarket-maker-kalshi-ws (last plan row 19:50:03Z, dd 9.29 mark-basis — ~1 cycle from the
+  $10 auto-halt) → `flatten_kalshi.py` 19:50:24Z: 11/11 resting cancelled HTTP 200, re-read
+  **resting=0**, exit 0, balance $252.5294 → service **disabled** (reboot cannot relight).
+  Re-verified 23:54:16Z after a session restart: inactive/disabled/STOP present/0 resting.
+- **8 positions left to SETTLE by design** (cost sunk; held contracts can only pay or expire —
+  no further cash at risk; taker-dumping fractional dust would only pay spread+fees):
+  KXRAIN-26AUG13-BOS −3.00; gas 26AUG13 strikes +0.94/−0.29/−0.01/−1.83 (settle ~08-13T04:00Z);
+  KXTRUMPTIME-26AUG15-H3 +0.30; KXTRUMPENDORSEMENTS-26AUG14-A20 −0.15;
+  KXTOPMODEL-26AUG17-CLAUM −0.43. All conclude ≤ 08-17, inside credit observation.
+- **Observation infra stays UP intentionally** (recorders, reward-pnl 07:30Z, scoreboard
+  07:40Z, w16 14:00Z, gate-eval 08-18, tape-compress): credits still land and are recorded to
+  2026-08-21T01:40:43Z; the window is scored ON THE RECORD on 2026-08-19 per §5 with whatever
+  concluded. Window context at wind-down: drag −$20.1788 / credits counted $0 / identity_gap
+  0.0000 (scoreboard run-1 19:37:48Z); the drag includes the open-inventory cost basis above,
+  part of which returns via the settlements listed.
+- Relight, if ever, is a fresh operator-named decision: re-enable + STOP clearing + governor
+  baseline reset (§11 precedent) — nothing below this block is live guidance anymore.
+
+# (below = the superseded live-window handoff, kept for the record)
 
 Deep record: `KALSHI_HANDOFF_2026-08-10_POST_INCIDENT.md` §1–§13 (read §8–§13 for this arc).
 Worktree: `git worktree list` → kalshi-wt (Temp scratchpad), branch `claude/maker-kalshi-live`
