@@ -527,6 +527,26 @@ line (reset took); `daily_dd`/`raw`/`carry` all **0.0**, peak seeded 264.65 = fr
 footprint 34, quoted 7, creates 14/fail 0; **`obs_hold_bound` firing on 6 of 34 quote rows since
 deploy** = the hold is live and binding fresh tickers to 5ct.
 
+## 12. RESOLUTION PLAN EXECUTED (operator "proceed", 2026-08-12 ~17:2xZ)
+
+**B1 DONE — reward-P&L timer LIVE:** `reward_pnl_report.py` deployed (md5 `14948cc1` = HEAD blob),
+`kalshi-reward-pnl.service` + `.timer` (daily 07:30:00 UTC, Persistent, recorder-unit pattern,
+EnvironmentFile=live.env). First run ExecMainStatus=0, report producing; appends to
+`reward_pnl-YYYYMM.jsonl`. The daily earnings gauge now runs itself.
+**B2 DONE (dark, commit `6cd6917`):** `_cfg_stamp()` on every plan row — `cfg_d3_rungs` = the
+EFFECTIVE ladder (closes the malformed-env silent-fallback footgun) + `cfg_obs_hold_inert=1` alarm
+when OBS_HOLD is armed but D3_RAMP is off. 4 failing-before pins; suite 1278/2 exit 0. NOT
+deployed — box quoter stays `57adab17`; rides the next named deploy.
+**C1 DONE:** `w18_credit_watch.py` DELETED (operator-adopted default; untracked/untested/never run;
+covered by estimates recorder + reward report).
+**C2 DONE — the "?" $15.00 credit CLASSIFIED (venue read 2026-08-12T17:25:57Z):** it is a
+**REFERRAL credit** ("Referee Credit", type=referral, 2026-07-24T01:41:48Z), not a liquidity
+incentive. **⚠ CORRECTION TO EVERY "LIFETIME CREDITS $204.06" USE AS LIP EARNINGS: the
+liquidity-incentive lifetime is $189.06 over 61 credits; $204.06 includes the $15 referral.**
+(The series-attribution tables were already correct — the '?' row was excluded from series.)
+Remaining per the plan: C3 inverting series folds into the weekly eval; 9a/9b + EST_FEED + halt-
+meter mark basis stay parked on their named triggers; OS-unit hygiene pass still needs naming.
+
 **BUILT DARK THIS SESSION (commits `122dd44`, `42f06ed`; suite 1274 passed / 2 xfailed exit 0):**
 OBS_HOLD (Proposal A) behind `KALSHI_OBS_HOLD=0`, 10 failing-before pins, blocking-read-only,
 fresh-window-scoped fail-closed, `_d3_est_ct` budget parity, `obs_hold_bound` telemetry;
