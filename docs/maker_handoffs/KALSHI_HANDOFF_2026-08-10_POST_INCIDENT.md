@@ -449,6 +449,23 @@ Fixing the mark basis first, then re-deciding DD_CARRY, stays an open item.
    is a deploy, name it); watch LEAKAGE + PAID_PARTIAL rows; weekly E-evaluation per
    Pre-registration 2.
 
+**⛔⭐ C EXECUTED — RESTART NAMED BY OPERATOR ("now") AND PERFORMED. T0 = 2026-08-12T01:40:43Z.**
+Preconditions verified at 01:40:26Z: 100 min past 00:00Z; STOP was the operator-named 08-09 halt
+(operator clearing by this naming); `day_baseline_reset` marker ABSENT; live.env carries NO new
+flags (OBS_HOLD/DD_CARRY grep = 0); quoter md5 `5c7aed6f` = verified baseline; NO deploy performed.
+Baseline at T0 (recorder 01:39:03Z): cash **$274.4691**, 0 resting, 0 positions, 1484 fills.
+STOP archived `STOP.cleared-20260812_014043`; `systemctl restart` at 01:40:43Z; service active.
+**THE PRE-REGISTERED 7-DAY WINDOW IS LIVE: [2026-08-12T01:40:43Z → 2026-08-19T01:40:43Z]**, credit
+observation to 2026-08-21T01:40:43Z; verdict rule per Pre-registration 1 (PASS iff in-window-
+concluded credits > |position-aware drag|; halts do not extend the window). First-cycle
+verification appended below when the first plan row lands.
+**FIRST CYCLE VERIFIED (plan row 2026-08-12T01:40:44.227755Z, read 01:42:36Z):** footprint 28,
+quoted 3, creates 6 / create_fail 0 / cancels 0; `equity_mark_usd` **274.47** = the T0 cash
+baseline exactly (day-change re-baseline; peak/dd unseeded on cycle 1 as designed);
+`reentry_cooldown` 0 (the 08-09 cooldowns long expired); `mkt_out` 10 preserved (permanent bans
+intact); `settle_topups` 12 (cycle-1 settled-position reconciliation, the designed path);
+`two_sided_markets` 3; `inv_naked_ct` 0; no quote/create errors. programs_seen 3,291. CLEAN START.
+
 **BUILT DARK THIS SESSION (commits `122dd44`, `42f06ed`; suite 1274 passed / 2 xfailed exit 0):**
 OBS_HOLD (Proposal A) behind `KALSHI_OBS_HOLD=0`, 10 failing-before pins, blocking-read-only,
 fresh-window-scoped fail-closed, `_d3_est_ct` budget parity, `obs_hold_bound` telemetry;
