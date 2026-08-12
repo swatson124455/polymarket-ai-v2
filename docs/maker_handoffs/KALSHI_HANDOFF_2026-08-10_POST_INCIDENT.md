@@ -466,6 +466,67 @@ baseline exactly (day-change re-baseline; peak/dd unseeded on cycle 1 as designe
 intact); `settle_topups` 12 (cycle-1 settled-position reconciliation, the designed path);
 `two_sided_markets` 3; `inv_naked_ct` 0; no quote/create errors. programs_seen 3,291. CLEAN START.
 
+## 11. 2026-08-12 AUTO-HALT (2nd KXTRUMPTIME incident) + OPERATOR ORDER: FIX AND TURN ALL ON
+
+**AUTO-HALT 06:43:34Z, dd $11.61 mark-basis; VENUE-REAL window loss [T0→halt] = −$9.9663**
+(cash 274.4691→264.5028, recorder 13:05:10Z; canonical replay_fills read 13:10:14Z: 43 fills,
+25 taker). Decomposition: **KXTRUMPTIME-26AUG15-H3 −$5.7359** — one maker fill at 06:42:15Z swept
+our resting **50-contract** YES bid at $0.19 (−$9.50), halt fired, taker flatten recovered $3.76;
+KXGENERICBALLOTVOTEHUB-26AUG14 −$1.7740; KXTOPMODEL-26AUG17 −$1.6562 over 18 churn fills; drips
+rest. **Root cause = the SAME class, 2nd occurrence, 10× size: the D3 ramp released 5→10→25→50ct
+by CLOCK AGE (quote tape 01:43/01:54/02:08) on a market whose accrued reward was ≈$0 the whole
+time; KXTRUMPTIME's series-proof (26AUG01 paid $7.90) exempted it from the W7 clamp. OBS_HOLD —
+built for exactly this — sat dark behind the validation gate.** Self-critique on record: gating a
+risk-REDUCING size limiter behind data that costs ~$10/incident to collect was the wrong caution
+(its worst failure is under-earning, not loss). Reward side at 13:09:27Z: accrued $3.3028 total
+across 14 rows (much sub-$1-floor); credits unchanged 62/$204.06 (nothing in-window concluded yet).
+Window continues per Pre-registration 1 (halts do not extend); day 1 drag ≈ −$9.97.
+
+**OPERATOR ORDER ("proceed with fixes to these known problems and turn all on"):** deploy the built
+fixes ARMED — supersedes Ruling B on DD_CARRY by explicit instruction. Scope: **KALSHI_OBS_HOLD=1**
+(per-ticker observability hold), **KALSHI_DD_CARRY=1** (midnight forgiveness hole closed),
+**KALSHI_D3_RUNGS=5,10,25** (ladder trimmed — max clock-released size can no longer put a whole
+day's envelope in one thin book). **EST_FEED stays 0** — different item, known flat-activate
+hazard, M-9/M-6/M-10 guards not built; turning it on was NOT part of this order's known-problems
+scope (flagged, not demoted).
+
+**⚠ DEPLOY-BLOCKING INTERACTION CAUGHT PRE-DEPLOY (code read :4919-5024):** the on-disk governor
+state (equity_day 2026-08-12, equity_day_peak 274.47 vs equity ≈264.5) means with DD_CARRY ON any
+restart — same-day OR after any number of halted days — computes ≈$9.97 of carried debt against the
+$10 limit (≈$0.03 envelope → instant re-halt; a halted bot cannot "climb out"). RESOLUTION =
+**one-time OPERATOR-NAMED baseline reset while stopped** (set equity_day_start & equity_day_peak to
+current equity, clear halt_breach_hist): the hole DD_CARRY closes is UNNAMED midnight forgiveness;
+this is a NAMED forgiveness of a loss the operator explicitly accepted by ordering the relight.
+Applied once, logged here, never automated.
+
+**Deploy protocol:** adversarial review of the full 233ee86→HEAD quoter delta (verified = exactly
+`ee12958`+`635fc1b`+`122dd44`, no stowaways) gates the push; suite 1274/2 exit 0 re-run fresh;
+scp + md5-vs-git-blob verify + `.bak-OBSHOLD-20260812` backup; env appended (Tier-2 — blocked:
+clock-age size release on unobserved fresh tickers beyond 5ct, >25ct rungs anywhere, midnight dd
+forgiveness; rollback: restore `.bak`, delete the 3 env lines, restart). Restart >60min from
+00:00Z; window annotation: config changed mid-window at deploy time — the verdict still scores
+[T0, T0+7d] as pre-registered.
+
+**✅ DEPLOYED + LIVE 2026-08-12T14:22:30Z.** Review verdict **DEPLOY-SAFE, 0 code blockers** (my
+carry-deadlock reading CONFIRMED — "the state edit is not optional"; also confirmed: OBS_HOLD is
+min()-only with every est-feed fail mode landing HELD; D3_RUNGS indexing safe at len 3; a dead
+recorder can only pin FRESH tickers at 5ct, never the established book; the or→| marker fix is the
+only other behavior change and is desirable). Review preconditions folded in: service stopped
+BEFORE the state edit; `equity_day_carry` pinned 0.0 explicitly; `KALSHI_D3_RAMP=1` verified
+(OBS_HOLD is inert without it — standing check for any future env change); rung string
+byte-verified `5,10,25` (malformed value silently falls back to 5,10,25,50 with NO telemetry —
+known footgun, left as-is this deploy); `MACRO_PROBE_TICKERS` empty verified (macro-probe is an
+OBS_HOLD bypass by design). Deployed md5 `57adab17…` = branch HEAD blob; backup
+`.bak-OBSHOLD-20260812`; STOP archived `STOP.cleared-20260812_142230`; named reset applied
+(peak/start 274.4691→262.86, breach hist cleared). **Pre-reg 2's arming gate: OVERRIDDEN BY
+OPERATOR NAMING** ("proceed with fixes to these known problems and turn all on", given after the
+review's explicit flag that arming overrides the gate) — the weekly gate evaluation CONTINUES as
+telemetry (never demoted), now scoring an armed hold instead of gating a dark one.
+**FIRST CYCLE UNDER NEW CODE (plan 14:22:31Z): CLEAN + FIXES VISIBLY WORKING** — no "DD CARRY:"
+line (reset took); `daily_dd`/`raw`/`carry` all **0.0**, peak seeded 264.65 = fresh ~$10 envelope;
+footprint 34, quoted 7, creates 14/fail 0; **`obs_hold_bound` firing on 6 of 34 quote rows since
+deploy** = the hold is live and binding fresh tickers to 5ct.
+
 **BUILT DARK THIS SESSION (commits `122dd44`, `42f06ed`; suite 1274 passed / 2 xfailed exit 0):**
 OBS_HOLD (Proposal A) behind `KALSHI_OBS_HOLD=0`, 10 failing-before pins, blocking-read-only,
 fresh-window-scoped fail-closed, `_d3_est_ct` budget parity, `obs_hold_bound` telemetry;
