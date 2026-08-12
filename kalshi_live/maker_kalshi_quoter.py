@@ -523,6 +523,25 @@ PROBE_MAX_SLOTS = _envi("KALSHI_PROBE_MAX_SLOTS", 5)   # concurrent probe market
 #   for its accrual to clear the venue's $1 credit floor (a smaller probe on a 100-ct-target
 #   book earns a share too small to ever pay, which reads as a false "never pays").
 D3_RAMP = _envi("KALSHI_D3_RAMP", 0)
+# --- OBS_HOLD: per-ticker observability hold (Proposal A, operator plan 2026-08-11; ships
+# OFF = byte-identical). THE CLASS (M-1 census, offline_results.json `deaeed07`): 16/16
+# post-tape sized new-allowlist tickers were BLIND at size-up — the W7 clamp is SERIES-
+# granular, so a fresh ticker of a proven series walks the rung ladder on age alone
+# (KXTRUMPTIME-26AUG15: 5 strikes sized cycle-1). With the flag ON, a FRESH ticker
+# (first-seen age < OBS_HOLD_FRESH_S) holds at rung OBS_HOLD_MAX_RUNG until the venue
+# estimates feed COVERS that ticker AND its accrued >= OBS_HOLD_MIN_USD.
+# BLOCKING READ ONLY: this consumer of the est feed can only LOWER a rung — it never lifts
+# the W7 clamp, never floors an entry, and never touches the EST_FEED expected-credit path
+# (:1334), so it carries none of the flat-activate/sub-Target hazard. Stale/missing feed ->
+# held (fails CLOSED toward smaller size, the D3 doctrine) — but ONLY inside the fresh
+# window, so a dead recorder can never deflate an established book.
+# ⛔ DO NOT ARM until the floor-separation validation passes on a PAID basis (pre-registered
+# in KALSHI_HANDOFF_2026-08-10_POST_INCIDENT.md §10): the accrued->paid sensor over-predicted
+# 2x once (KXAPRPOTUS 0.481) and 0/16 held-class tickers ever reached $1.20 accrued.
+OBS_HOLD = _envi("KALSHI_OBS_HOLD", 0)
+OBS_HOLD_MIN_USD = _envf("KALSHI_OBS_HOLD_MIN_USD", 1.20)
+OBS_HOLD_FRESH_S = _envf("KALSHI_OBS_HOLD_FRESH_S", 86400.0)
+OBS_HOLD_MAX_RUNG = _envi("KALSHI_OBS_HOLD_MAX_RUNG", 0)
 D3_RUNG_S = _envf("KALSHI_D3_RUNG_S", 600.0)
 D3_NEWSERIES_MAX_RUNG = _envi("KALSHI_D3_NEWSERIES_MAX_RUNG", 1)   # -1 disables the clamp
 try:
@@ -534,9 +553,10 @@ if not D3_RUNGS:
     D3_RUNGS = [5, 10, 25, 50]
 
 
-def _d3_ramp_ct(ticker, now_ts, first_seen, feedback):
+def _d3_ramp_ct(ticker, now_ts, first_seen, feedback, qstats=None):
     """Contract cap for this ticker's ACCUMULATING quotes at this moment. Registers the
-    ticker's first-seen timestamp as a side effect (rung 0 on first sight)."""
+    ticker's first-seen timestamp as a side effect (rung 0 on first sight). qstats is an
+    additive optional counter sink (obs_hold_bound) — every existing caller is unchanged."""
     fs = first_seen.get(ticker)
     if fs is None:
         first_seen[ticker] = float(now_ts)
@@ -554,6 +574,17 @@ def _d3_ramp_ct(ticker, now_ts, first_seen, feedback):
         proven = isinstance(row, dict) and (row.get("credits_n") or 0) > 0
         if not proven:
             rung = min(rung, D3_NEWSERIES_MAX_RUNG)
+    # OBS_HOLD (see the knob block above): a FRESH ticker holds at OBS_HOLD_MAX_RUNG until
+    # the est feed covers IT (not its series) at accrued >= OBS_HOLD_MIN_USD. min() only —
+    # this can never raise a rung the clamps above set, and it consults the feed ONLY for
+    # fresh tickers so the OFF path and established books never pay the read.
+    if OBS_HOLD and (float(now_ts) - float(fs)) < OBS_HOLD_FRESH_S:
+        _est = _est_feed_cached(float(now_ts)).get(ticker)
+        if _est is None or _est < OBS_HOLD_MIN_USD:
+            _held = min(rung, max(int(OBS_HOLD_MAX_RUNG), 0))
+            if _held < rung and qstats is not None:
+                qstats["obs_hold_bound"] = qstats.get("obs_hold_bound", 0) + 1
+            rung = _held
     return D3_RUNGS[rung]
 
 
@@ -633,6 +664,13 @@ def _d3_est_ct(ticker, now_ts):
         proven = isinstance(row, dict) and (row.get("credits_n") or 0) > 0
         if not proven:
             rung = min(rung, D3_NEWSERIES_MAX_RUNG)
+    # OBS_HOLD mirror (budget parity): the select-budget walk must estimate a held ticker
+    # at held size, or it over-charges — the exact D1/W6 over-read class. Unknown ticker
+    # (fs None) is already rung 0 <= the hold, so only stamped-fresh tickers pay the read.
+    if OBS_HOLD and fs is not None and (float(now_ts) - float(fs)) < OBS_HOLD_FRESH_S:
+        _est = _est_feed_cached(float(now_ts)).get(ticker)
+        if _est is None or _est < OBS_HOLD_MIN_USD:
+            rung = min(rung, max(int(OBS_HOLD_MAX_RUNG), 0))
     return D3_RUNGS[rung]
 
 
@@ -5398,7 +5436,8 @@ def run_once():
                         # review F1: an empty/missing feedback table binds the clamp for
                         # EVERYTHING — visible, never silent.
                         qstats["d3_feedback_empty"] = 1
-                    _rct = _d3_ramp_ct(t, now.timestamp(), _D3_FIRST_SEEN, _fb3)
+                    _rct = _d3_ramp_ct(t, now.timestamp(), _D3_FIRST_SEEN, _fb3,
+                                       qstats=qstats)
                     if any(_o8.get("reason") != "unwind" and _o8["count"] > _rct
                            for _o8 in q):
                         if _q_fullsize is None:
