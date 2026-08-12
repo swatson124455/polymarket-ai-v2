@@ -547,6 +547,31 @@ liquidity-incentive lifetime is $189.06 over 61 credits; $204.06 includes the $1
 Remaining per the plan: C3 inverting series folds into the weekly eval; 9a/9b + EST_FEED + halt-
 meter mark basis stay parked on their named triggers; OS-unit hygiene pass still needs naming.
 
+## 13. §6 DEFECT SET CLOSED + AUTOMATION GAPS RESOLVED (operator "proceed", 2026-08-12 ~17:5xZ)
+
+**§6.1–.5 ALL ROOT-FIXED (commit `33ff2a8`, 13 failing-before pins, suite 1291/2 exit 0;
+DEPLOYED md5s w16 `3a9c2897` / w17 `1f8b9d8c` / credit_feedback `c3d03712`, `.bak-S6FIX-20260812`
+kept; verified through the real systemd unit, ExecMainStatus=0 on a healthy run):** alarms are
+counted and main exits nonzero when any fired (machine-visible again); w16 gained `DATA` so the
+env-source pins are host-independent; the 3 silent-empty side reads go through an alarming
+`_read_json`; empty allowlist from a partial environ alarms (w16 stops pre-network, w17 continues
+on proven-only); the credit-feedback builder's regression baseline resolves `--baseline` →
+CANONICAL table → `--out` (the 08-09 build-to-/tmp bypass is dead), unreadable baselines alarm,
+VANISHED-vs-baseline series alarm, any alarm → exit 1. Table NOT regenerated.
+**AUTOMATION GAPS (commit for gate-eval; all deployed + verified):** `obs_hold_gate_eval.py`
+(md5 `dab96a44`) scores Pre-reg 2 weekly — `kalshi-obs-gate-eval.timer` Tuesdays 08:00Z, first
+fire 2026-08-18; first run verdict **UNPOWERED (0 concluded paid events post-T0, 16 fresh tickers
+tracked)** — honest for 16h of runtime. **OS hygiene:** logrotate root-caused —
+`/var/log/polymarket/close_wait_history.log` was root-owned inside a `su polymarket` stanza
+(S177, installed by shared deploy.sh), failing the WHOLE nightly rotation since the file appeared;
+fixed by chowning the FILE to match the stanza (stanza untouched — editing it would drift from
+deploy.sh; ⚠ shared-infra touch, minimal, on the record). logrotate now runs clean; the two stale
+boot-failure units reset; **0 failed units on the box.** `kalshi-tape-compress.timer` daily 02:30Z
+gzips >7-day-old dated tapes (17 compressed on first run; live globs read newest files only —
+consumers unaffected).
+**Still parked on their named triggers (unchanged):** EST_FEED + M-9/M-6/M-10 guards; 9a/9b;
+halt-meter mark basis; Proposal B; scale rungs; cfg_stamp deploy (rides next quoter restart).
+
 **BUILT DARK THIS SESSION (commits `122dd44`, `42f06ed`; suite 1274 passed / 2 xfailed exit 0):**
 OBS_HOLD (Proposal A) behind `KALSHI_OBS_HOLD=0`, 10 failing-before pins, blocking-read-only,
 fresh-window-scoped fail-closed, `_d3_est_ct` budget parity, `obs_hold_bound` telemetry;
