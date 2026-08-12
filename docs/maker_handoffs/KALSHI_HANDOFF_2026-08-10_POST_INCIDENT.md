@@ -264,3 +264,99 @@ than admission — reported as D1's new item, admission item untouched. The P2 v
 observation deadline (2026-08-11T14:13Z) has now passed; whether to void/re-run it (handoff §6.6)
 is still unruled. FIX-H position capital stays locked to close 2026-08-31 even though its reward
 timing passed.
+
+## 9. NET-EV DATA FOR THE SIZING ITEM + PLAN (2026-08-11 cont., findings + plan only)
+
+**NET-EV (leg 1, `net_ev_and_counterfactual.py` over frozen local files; reward read
+2026-08-11T14:55:38Z; verified by 2 independent workflow agents, all anchors matched):** cohort A
+(first-cycle sized) cost **−$37.8575/35 tickers**; reward is barely observable — accrued estimate
+covers only **12/35** (29 entered before the estimates tape existed, 2026-08-06T03:31:49Z), summing
+**$3.9784**; only **3 of 23** sized events earned any credit (**$7.16** total, event-level, NOT
+divisible to a ticker: KXADJOURNRECESS-26AUG $1.02, KXTOPMODEL-26AUG31 $2.46, KXTEMPAUSH-26AUG0202
+$3.68). ⚠ CORRECTION to a chat-only mis-scope: the **SIZED (August) gas events earned $0 credits**,
+but the **KXAAAGASD series earned $33.04 in JULY** (26JUL21 $2.15, 23 $10.09, 24 $8.81, 25 $11.99;
+last 2026-07-25) — gas was a credit-PROVEN series whose fresh August daily strikes we sized paid
+$0, which STRENGTHENS the "proven-series, unobserved-fresh-ticker" class, not weakens it.
+**COUNTERFACTUAL (leg 2, 346 never-sized):** 165 one-sided at first sight ($0-payable regardless,
+correctly skipped), **181 two-sided qualifiable** ($24,733/day pool) skipped mostly by
+`gate_entry_band` (**112/181** — price outside our band = price discipline, NOT free money); total
+$46,510/day pool represented; the 181's reward counterfactual is NOT readable from any frozen tape
+(0/181 in the participation-gated feed) — it needs a dry shadow-quote log.
+**⚠ SCOPE CLARIFICATION to §8's "cohort perfectly confounded with pathway":** that is exact only in
+the n=4 MATCHED gas pool (gas-A there is 4/4 `explore_probe`). At FULL-cohort level **A is 26
+`explore_probe` / 8 `d3_ramp` / 1 other**, B is 11 `d3_ramp` / 2 other — so a full-cohort stratified
+de-confound IS feasible (plan step 3).
+
+**PLAN (6-agent design panel: verify + 3 approaches + synthesis; confidence high). 10 OFFLINE steps
+first, 3 LIVE-PATH proposals gated behind a pre-registered warrant — nothing armed without operator
+naming.** OFFLINE spine: (1) calibrate accrued-estimate→paid-credit ratio + leakage list; (2)
+tape-covered apples-to-apples net-EV (both cohorts on/after tape0, A:6/B:10) — the fair test; (3)
+full-cohort de-confound first-cycle × pathway × series × two_sided, re-run gas permutation; (4)
+cost decomp fill_cash vs settle (do not inherit the −$7.55 bid-mark pattern); (5) est-feed
+warmup-latency vs market life (the hazard: warmup > short-daily life ⇒ observe-first becomes a
+de-facto bench = drips violation); (6) sensor-validation accrued→paid; (7) two standing detectors
+(blind-at-sizeup coverage bucket + fresh-sizing burst detector, KXTRUMPTIME cyc=1786233125 the
+proof case); (8) F-sweep + concurrency cap-vs-cost curve; (9) delay-to-observability cost + dry
+shadow-quote harness for the 181; (10) pre-register the warrant threshold. LIVE-PATH proposals
+(operator-named only if step-10 threshold met, one fix per commit, flag defaults byte-identical,
+failing-before tests): **A (primary)** — layer a per-TICKER observability HOLD on the D3 ramp that
+clamps a fresh ticker to probe size until the estimate feed COVERS it AND accrued≥F, consuming
+`KALSHI_EST_FEED` as a **size-lowering BLOCKING READ only** (NOT the expected-credit floor the HELD
+gate uses) — ships WITHOUT the flat-activate/sub-Target hazard and WITHOUT M-9/M-6/M-10; **B
+(secondary)** — per-event fresh-market concurrency cap that DEFERS (never bans) excess same-cycle
+fresh sizings above K≈2, wrapping BOTH pathways; **C (fallback)** — Tier-1/2 tune of
+EXPLORE_PROBE_CT / D3 cycle-1 size. Plan detail: session chat + `net_ev_and_counterfactual.py`,
+`netev_cf_frozen.json` (md5 `aa9fd970…`).
+
+**OFFLINE STEPS 1–11 RUN (operator "run"; `offline_steps.py`, `offline_results.json` md5
+`deaeed07…`, est-timing `est_timing.json`; 4-agent verify: 2 blind re-derivers + skeptic + synth,
+ALL anchors reproduced, high confidence). RESULT: NO live change on the first-cycle-sizing item —
+but for a SHARPER reason than "no penalty".** Steps: (1) accrued→paid ratio median 0.99 over the 3
+paid events; 3 leakage events (accrued>$0.5, paid $0: KXACTBLUETOP-26AUG07 $1.24, KXAAAGASD-26AUG07
+$1.12, -26AUG08 $0.92). (2) tape-covered net A −$9.5147 (n=6) vs B −$9.6083 (n=10). (4) cohort-A cost
+= fill_cash −$38.0675 + settle +$0.21 = **~100% real cross cost, NOT a mark artifact.** (5) **0 of 16
+post-tape sized tickers ever reached the $1.20 accrued floor.** (7) **16/16 blind at size-up** (we
+always size before the feed can see the market). (8) concurrency bursts cheap (K=1 avoidable only
+−$4.91 of −$37.86). (10) warrant NOT met (C1 net<−$0.50 true; **C2 p<0.05 FALSE at 0.4446**; C3
+delay-cost DEFERRED/9a).
+**⚠ THREE CORRECTIONS the verification forced (adopt these; my step-2 draft framing was wrong):**
+(i) The no-change holds because the first-cycle effect is **UNIDENTIFIABLE + underpowered**, NOT
+because "A≈B, no penalty" — within d3_ramp (the only pathway where cohort varies) cohort A is 100%
+non-gas and B is 100% gas, zero series overlap, so p=0.4446 is a gas-vs-non-gas contrast mislabelled
+as first-cycle. Absence of evidence, not evidence of absence. (ii) The "A≈B net parity" is an
+**accrual artifact**: cohort B's entire +$2.041 covered reward is KXAAAGASD-26AUG06/07/08 accrued,
+all events **paid $0**; on a PAID basis B reward=$0 and A is worse per-ticker (−$1.586 vs −$0.961).
+(iii) **Proposal A is NOT contraindicated** — the 16 never-floor tickers are 100% net-negative with
+$0-paid accrual, so a floor/accrual gate would likely SAVE ~$19–21, not bench payable markets;
+**re-evaluate Proposal A on a PAID (credit_history) basis** before any verdict.
+**⚠ STEP 11 — DISTINCT NEW FINDING (additive, report+ask, Rule Nine — the first-cycle item is NOT
+demoted):** SERIES/MARKET SELECTION is the actual loss driver. By-series realized over the 48 sized:
+KXAAAGASD **−$21.6965** (n=17), KXTEMPAUSH −$12.9029 (n=9), KXTRUMPTIME −$5.5078 (n=5),
+KXGENERICBALLOTVOTEHUB −$4.17 (n=1), KXTEMPDCH −$3.0083 (n=3), KXTOPMODEL −$2.1823 (n=3),
+KXADJOURNRECESS −$1.9377 (n=1), + small temp; **every sized series net-negative on realized; only
+KXTOPMODEL turns net-positive (+$0.5151) and ONLY via unpaid accrued reward.** ASK: should selection/
+accrual-based series gating be measured as the PRIMARY lever, ahead of anything first-cycle-specific?
+**⚠ SERIES-SELECTION MEASURED WITH THE REWARD LEG (operator "proceed"; `series_netev.py`,
+`series_netev.json`; credit_history read 2026-08-11T14:55:38Z; Table 1 sums to $204.06 = lifetime
+total, exact) — THE COST-ONLY "series is the loss driver" IS REFUTED ON A PAID BASIS.** Every series
+we sized fresh Aug strikes in HAS paid us lifetime credits, and **8 of 10 have lifetime paid >
+|fresh-strike cost|**: KXAAAGASD fresh −$21.70 vs paid **$33.04** (all July), KXTEMPAUSH −$12.90 vs
+**$24.80**, KXTEMPNYCH −$0.52 vs **$17.99**, KXTEMPCHIH −$0.31 vs $8.21, KXTEMPDCH −$3.01 vs $5.86,
+KXTRUMPTIME −$5.51 vs $7.90, KXTOPMODEL −$2.18 vs $4.61, KXTEMPLAXH −$0.15 vs $1.85. Only TWO invert
+(fresh cost > lifetime paid), both n=1: **KXGENERICBALLOTVOTEHUB −$4.17 vs $2.33** and
+**KXADJOURNRECESS −$1.94 vs $1.02** — candidates for a look, not conclusions. ⚠ SCOPE (Rule Six):
+lifetime-paid is EVENT-level over ALL our activity in the series and mostly JULY; fresh-cost is the
+census-Aug strikes only — DIFFERENT tickers/months/cost-bases, so this is DIRECTIONAL ("does the
+series ever pay?" = yes for 8/10), NOT a net-EV (July fill costs not loaded). So these are
+REWARD-POSITIVE series with a fresh-strike reward-TIMING/observability cost, not "bad series". One
+unparsed non-liquidity credit ($15.00, 2026-07-24) excluded from series attribution.
+**PROPOSAL-A PAID RE-EVAL (`series_netev.json`):** the 16 post-tape never-floor tickers cost
+**−$21.3271** and their events paid **$0.00** → a floor/accrual gate benching them SAVES the cost and
+forgoes $0 PAID reward = it benches NON-payers, so Proposal A is NOT contraindicated. ⚠ THE GATE'S
+KEY UNVERIFIED RISK: whether the $1.20 accrued floor actually SEPARATES payers from non-payers is
+UNVERIFIED — no pre-2026-08-06 estimates tape (so the July PAYING gas strikes' accrual is unseen) and
+only 3 paid events fall inside the tape (step-6 sensor-validation is underpowered). Do not arm a
+floor gate until that separation is validated on a paid basis.
+**DEFERRED (not dropped):** step 9a (book-better-later, needs box quotes scan) + 9b (181-ticker dry
+shadow-quote replay) — so warrant C3 stays unevaluable and the no-change is a conservative default,
+not a closed proof.
