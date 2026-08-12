@@ -393,3 +393,64 @@ honest range −$4.91/≈−$10.79/−$16.62). None changed a headline CONCLUSIO
 holds; series pay historically; Proposal A needs paid-basis floor-separation validation), but four
 were operator-decision-relevant framing errors. The load-bearing figures were reproduced to precision
 by independent blind re-derivers earlier and by the review's own recompute.
+
+## 10. OPERATOR RULINGS 2026-08-12 ("all proceed as planned") + PRE-REGISTRATIONS + RESTART PACKAGE
+
+**Interpretation on the record (auditable):** the operator approved the 6-item action plan
+(A–F, presented 2026-08-12 session) with "ok all proceed as planned". That adopts the plan's
+recommended defaults for A and B, authorizes building D/E/F, and does NOT itself start the bot —
+the standing directive ("halted until I explicitly name a restart") plus the plan's own wording
+("name C") reserve the start command. **C therefore still requires one explicit operator word.**
+
+**RULING A (adopted default): P2 VERDICT WINDOW = VOID.** The 2026-08-05T14:13:28Z →
+2026-08-10T14:13Z window (credit-observation extended to 08-11T14:13Z) is VOID — ~30h dead from
+halts + a mid-window restart; no verdict is scored from it. Its replacement is the pre-registered
+window below, which starts at the next restart. The drag data collected in P2 remains on record,
+unscored, never re-decomposed.
+
+**RULING B (adopted default): DD_CARRY (`ee12958`+`635fc1b`) stays committed, NOT DEPLOYED.** No
+deploy bundled with a restart. Consequence accepted and on record: the 00:00Z forgiveness hole
+(quoter day-rollover re-seeds `equity_day_peak` unconditionally) REMAINS OPEN on the box;
+mitigations = never restart within ~60min of 00:00Z + the daily $10 halt re-arming each day.
+Fixing the mark basis first, then re-deciding DD_CARRY, stays an open item.
+
+**PRE-REGISTRATION 1 — measurement window (replaces P2; registered BEFORE any result is visible):**
+- T0 = the moment of the next operator-named restart. Window = T0 → T0+7 days (presence + drag).
+  Credit observation to T0+7d+48h (the observed payment envelope; FIX-H paid at ~38.4h).
+- CREDITS gauge = credit_history rows whose PROGRAM concluded inside [T0, T0+7d], observed to the
+  deadline. Accrued-but-unconcluded at window end is REPORTED alongside, never counted.
+- DRAG gauge = position-aware replay_fills delta over [T0, T0+7d] (fills + settlements), the
+  recorder's basis; bid-mark artifacts excluded by construction.
+- VERDICT RULE (same as P2's): PASS iff counted credits > |drag|. Halts inside the window do not
+  extend it (uptime is part of what is being measured).
+**PRE-REGISTRATION 2 — OBS_HOLD arming gate (E; the floor-separation validation):**
+- Sample: fresh allowlist tickers first sized after T0 whose event's programs CONCLUDE before
+  evaluation; minimum n=10 concluded fresh-ticker events AND >=2 events that actually PAID >=$1
+  (else UNPOWERED — keep collecting, do not arm).
+- FALSE-BENCH rate = fraction of eventually-PAID (>=$1) events in the sample where NO strike of
+  the event reached accrued >=$1.20 (per recorder tape) while fresh. PASS iff false-bench <=10%.
+- SENSOR-FIDELITY check: for every PAID event in the sample, paid >= 0.5 x accrued-at-conclusion
+  (the KXAPRPOTUS 0.481 shape is the known floor). FAIL -> re-derive the floor constant before
+  arming; do not arm on the default $1.20.
+- Evaluation is run from `reward_pnl_report.py` output + the estimates tape; result goes to the
+  operator with the arming decision — ARMING IS A SEPARATE NAMED DEPLOY in all cases.
+
+**RESTART PACKAGE (C) — everything staged; needs ONE operator word + a time:**
+1. Preconditions: >60min from 00:00Z; no `day_baseline_reset` marker; env UNCHANGED (OBS_HOLD
+   stays 0/absent; EST_FEED stays 0; no new flags); **NO DEPLOY** — the box runs the verified
+   pre-session code (quoter `5c7aed6f` = `233ee86` blob); DD_CARRY not deployed (Ruling B).
+2. Sequence: archive STOP (operator-named clearing — the STOP is an auto-halt class) → start
+   service → verify first cycle (plan row: footprint>0, `reentry_cooldown` restored, equity/peak/dd
+   sane) → record T0 in the handoff.
+3. Watch protocol, first 30 min: plan rows each cycle; any fresh-ticker entries expected at 5ct
+   ramp scale (OBS_HOLD is OFF — the fresh-strike drip class is ACCEPTED for this window per the
+   first-cycle no-change ruling); daily-loss halt armed at $10.
+4. Daily during the window: run `reward_pnl_report.py` (manual root run or a timer — timer install
+   is a deploy, name it); watch LEAKAGE + PAID_PARTIAL rows; weekly E-evaluation per
+   Pre-registration 2.
+
+**BUILT DARK THIS SESSION (commits `122dd44`, `42f06ed`; suite 1274 passed / 2 xfailed exit 0):**
+OBS_HOLD (Proposal A) behind `KALSHI_OBS_HOLD=0`, 10 failing-before pins, blocking-read-only,
+fresh-window-scoped fail-closed, `_d3_est_ct` budget parity, `obs_hold_bound` telemetry;
+`reward_pnl_report.py` (item F) with 9 pins, PENDING-never-LEAKAGE classifier, PAID_PARTIAL
+over-prediction flag. Neither is deployed; the box is byte-identical to before this session.
