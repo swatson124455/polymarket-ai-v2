@@ -6,7 +6,10 @@ Worktree: `git worktree list` → kalshi-wt (Temp scratchpad), branch `claude/ma
 
 ## 0. TRUST POSTURE (unchanged)
 Verify, never inherit: md5-vs-git-blob, test EXIT CODES (never grep), timestamped venue reads,
-pre-registered predictions. Plan rows have 181 keys — ENUMERATE, never guess names. The 13
+pre-registered predictions. Plan-row keys are CONDITIONALLY EMITTED — no fixed count (08-12
+rows measured 106–183 keys, 189 distinct across the day; the 106-key row is the halt row;
+`daily_dd_carry`/`daily_dd_raw` appear only in post-relight fixed-build rows) — ENUMERATE the
+row you are reading, never guess names or assume a count. The 13
 hook-injected operator rules bind. The 2026-07-27 session stays quarantined.
 
 ## 1. LIVE STATE (verified 2026-08-12T17:49Z — re-verify; stale by definition)
@@ -44,7 +47,7 @@ ssh -i "C:/Users/samwa/.ssh/LightsailDefaultKey-eu-west-1.pem" ubuntu@18.201.216
 |---|---|---|
 | `kalshi-reward-pnl.timer` | daily 07:30Z | accrued-vs-paid by event; PENDING never = LEAKAGE; appends reward_pnl-YYYYMM.jsonl |
 | `kalshi-obs-gate-eval.timer` | Tue 08:00Z (first 2026-08-18) | scores Pre-reg 2; first manual run = UNPOWERED (0 concluded paid post-T0) |
-| `kalshi-w16/w17` timers | 14:00Z | NOW exit nonzero on any alarm (§13) — a `failed` unit means READ THE REPORT |
+| w16+w17 (both run inside `kalshi-w16-report.service`; no separate w17 unit) | 14:00Z | NOW exit nonzero on any alarm (§13) — a `failed` unit means READ THE REPORT. EXIT-MASK FIXED 2026-08-12T18:52Z: the old `w16; w17` ExecStart chain returned only w17's exit, silently masking a w16 alarm; unit now exits max(ra,rb) (backup `kalshi-w16-report.service.bak-EXITMASK-20260812_185157`; verified: systemd argv byte-exact, real run exit 0 both logs appended, file-shipped negative test 1/1/0) |
 | `kalshi-tape-compress.timer` | 02:30Z | gzips >7-day tapes; live consumers read newest only |
 | estimates + cash recorders | 5 min | unchanged, healthy |
 | logrotate | nightly | root-fixed §13; 0 failed units on the box at handoff |
