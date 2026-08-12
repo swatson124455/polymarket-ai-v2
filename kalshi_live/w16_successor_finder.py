@@ -24,12 +24,41 @@ import collections
 import json
 import os
 import re
+import sys
 import time
 import urllib.request
 
 BASE = "https://api.elections.kalshi.com/trade-api/v2"
+DATA = "/opt/pa2-maker-kalshi-live"
 STOP = {"the", "a", "an", "of", "on", "in", "for", "will", "be", "by", "at",
         "to", "this", "week", "today", "daily", "what", "when", "how", "its"}
+
+# §6.1 (operator "proceed" 2026-08-12): an alarm that exits 0 is machine-invisible — the
+# 08-08 fix was WEAKER than the crash it replaced (exit 1 -> systemd `failed`). Every alarm
+# now counts, and main exits nonzero when any fired: full output still prints, and systemd
+# marks the unit failed so the alarm is visible without reading prose.
+_ALARMS = [0]
+
+
+def _alarm(msg):
+    _ALARMS[0] += 1
+    print(f"# ALARM {msg}", flush=True)
+
+
+def _exit_code():
+    return 1 if _ALARMS[0] else 0
+
+
+def _read_json(path, label):
+    """§6.3: a side-input that fails to load must ALARM, never silently shrink the scan
+    universe (the pre-fix `except: pass` made 'file unreadable' identical to 'no data')."""
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception as exc:
+        _alarm(f"{label} unreadable ({exc.__class__.__name__}: {exc}) — this input is "
+               f"EMPTY for this run; the sections that consume it cover less than they claim")
+        return None
 
 
 def _get(path):
@@ -53,18 +82,19 @@ def _env():
     if not env:
         src = "live.env"
         try:
-            with open("/opt/pa2-maker-kalshi-live/live.env") as fh:
+            with open(os.path.join(DATA, "live.env")) as fh:
                 for line in fh:
                     if "=" in line and not line.startswith("#"):
                         k, _, v = line.strip().partition("=")
                         env[k] = v
         except OSError as exc:
             # STANDING DETECTOR: an empty allowlist makes "0 programless series" print as a
-            # clean bill of health. Never let that pass silently.
+            # clean bill of health. Never let that pass silently — counted, and main exits
+            # nonzero (§6.1).
             src = f"NONE ({exc.__class__.__name__})"
-            print(f"# ALARM config unreadable: no KALSHI_* in the environment and live.env "
-                  f"could not be opened ({exc}) — the allowlist is EMPTY, so the health and "
-                  f"successor sections below cover NOTHING", flush=True)
+            _alarm(f"config unreadable: no KALSHI_* in the environment and live.env "
+                   f"could not be opened ({exc}) — the allowlist is EMPTY, so the health and "
+                   f"successor sections below cover NOTHING")
     print(f"# config source: {src} ({len(env)} KALSHI_* keys)", flush=True)
     return env
 
@@ -78,6 +108,13 @@ def main():
         allow = [s for s in a.allow.split(",") if s.strip()]
     else:
         allow = [s for s in _env().get("KALSHI_SERIES_ALLOW", "").split(",") if s.strip()]
+    if not allow:
+        # §6.4: a PARTIAL environ (KALSHI_* present but SERIES_ALLOW missing/empty) used to
+        # yield allowlist=[] with no alarm — every section then covered nothing while
+        # printing cleanly. Alarm and stop BEFORE spending any venue reads.
+        _alarm("allowlist is EMPTY (KALSHI_SERIES_ALLOW missing or blank) — nothing to "
+               "cover; refusing to print a vacuous clean bill of health")
+        sys.exit(_exit_code())
     progs, cursor = [], ""
     for _ in range(5):
         d = _get("/incentive_programs?status=active&limit=10000"
@@ -124,17 +161,15 @@ def main():
     # same way; matches are operator decisions for CONVICTION transfer (lineage table
     # kalshi_lineage.json holds ruled mappings, both trust and conviction).
     convicted = set()
-    try:
-        fbdoc = json.load(open("/opt/pa2-maker-kalshi-live/kalshi_credit_feedback.json"))
+    fbdoc = _read_json(os.path.join(DATA, "kalshi_credit_feedback.json"),
+                       "credit-feedback table (conviction-evasion scan input)")
+    if fbdoc:
         convicted |= {s for s, r in (fbdoc.get("series") or {}).items()
                       if r.get("verdict") == "never_paid_due"}
-    except Exception:
-        pass
-    try:
-        st = json.load(open("/opt/pa2-maker-kalshi-live/quoter_state.json"))
+    st = _read_json(os.path.join(DATA, "quoter_state.json"),
+                    "quoter state (mkt_out conviction-evasion scan input)")
+    if st:
         convicted |= {str(t).split("-")[0] for t in (st.get("mkt_out") or [])}
-    except Exception:
-        pass
     scan_sets = [("programless payer", sorted(dead_allow)),
                  ("CONVICTED/BANNED (conviction-evasion watch)",
                   sorted(convicted - set(allow)))]
@@ -144,7 +179,7 @@ def main():
         print(f"# direction: {_label}")
         for dead in _dead_list:
             _scan_one(dead, active_nonallow, by_series, a, series_meta)
-    return
+    sys.exit(_exit_code())
 
 
 def _scan_one(dead, active_nonallow, by_series, a, series_meta):

@@ -150,9 +150,39 @@ def feed_integrity_alarms(credits, matched_n, limit, prev_series, new_series):
     return alarms
 
 
+CANONICAL_TABLE = "/opt/pa2-maker-kalshi-live/kalshi_credit_feedback.json"
+
+
+def _load_baseline(out_path, baseline_arg, canonical=CANONICAL_TABLE):
+    """§6.5 (the 2026-08-09 bypass): the paid->convicted regression alarm used to read its
+    baseline from --out, so building to /tmp compared against NOTHING and the alarm was
+    structurally inert. The baseline is now, in order: --baseline if given; else the
+    CANONICAL deployed table if present; else --out; else first-build. An EXISTING but
+    unreadable baseline is an ALARM, never a silent {}.
+    Returns (prev_series, provenance_str, alarm_list)."""
+    for path, prov in ((baseline_arg, f"--baseline {baseline_arg}"),
+                       (canonical, f"canonical {canonical}"),
+                       (out_path, f"--out {out_path}")):
+        if not path:
+            continue
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as fh:
+                return ((json.load(fh).get("series") or {}), prov, [])
+        except Exception as exc:
+            return ({}, f"UNREADABLE {prov}",
+                    [f"!! baseline {prov} exists but is UNREADABLE "
+                     f"({exc.__class__.__name__}: {exc}) — the paid->convicted regression "
+                     f"alarm has NO baseline this run"])
+    return ({}, "first build (no baseline found)", [])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="kalshi_credit_feedback.json")
+    ap.add_argument("--baseline", default=None,
+                    help="regression-alarm baseline; default = the canonical deployed table")
     ap.add_argument("--print-only", action="store_true")
     a = ap.parse_args()
     from maker_kalshi_client import KalshiOrderClient
@@ -199,11 +229,19 @@ def main():
     matched_n = sum(1 for r in creds
                     if (r.get("reason") or "").startswith(CREDIT_PREFIX))
     fb = build_feedback(creds, orders, setts, now, event_of=ev_map.get)
-    try:
-        prev_series = (json.load(open(a.out)).get("series") or {})
-    except Exception:
-        prev_series = {}
-    for alarm in feed_integrity_alarms(creds, matched_n, 1000, prev_series, fb):
+    prev_series, baseline_prov, baseline_alarms = _load_baseline(a.out, a.baseline)
+    print(f"regression baseline: {baseline_prov} ({len(prev_series)} series)")
+    alarms = baseline_alarms + feed_integrity_alarms(creds, matched_n, 1000,
+                                                     prev_series, fb)
+    # §6.5 companion: series present in the baseline but ABSENT from the new build (and the
+    # reverse) were silently droppable — the 08-09 rebuild lost 4 and gained 2 unreported.
+    gone = sorted(set(prev_series) - set(fb))
+    born = sorted(set(fb) - set(prev_series))
+    if gone:
+        alarms.append(f"!! {len(gone)} series VANISHED vs baseline: {gone}")
+    if born:
+        print(f"new series vs baseline: {born}")
+    for alarm in alarms:
         print(alarm)
     doc = {"schema": SCHEMA, "generated": now.isoformat(), "series": fb}
     counts = collections.Counter(r["verdict"] for r in fb.values())
@@ -215,6 +253,10 @@ def main():
         with open(a.out, "w") as fh:
             json.dump(doc, fh, indent=1, sort_keys=True)
         print("wrote", a.out)
+    if alarms:
+        # §6.1 doctrine: an alarm must be machine-visible — a caller (restart bundle, timer)
+        # sees a nonzero exit instead of prose scrolling past.
+        sys.exit(1)
 
 
 if __name__ == "__main__":

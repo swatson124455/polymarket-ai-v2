@@ -34,6 +34,32 @@ DATA = "/opt/pa2-maker-kalshi-live"
 CREDIT_PREFIX = "Liquidity Incentive for event "
 PROBE_SCALE_CT = 5.0
 
+# §6.1 (operator "proceed" 2026-08-12): alarms are counted and main exits nonzero when any
+# fired — systemd marks the unit failed (machine-visible), full output still prints.
+_ALARMS = [0]
+
+
+def _alarm(msg):
+    _ALARMS[0] += 1
+    print(f"# ALARM {msg}", flush=True)
+
+
+def _exit_code():
+    return 1 if _ALARMS[0] else 0
+
+
+def _read_json(path, label):
+    """§6.3: a side-input that fails to load must ALARM, never silently shrink the ledger's
+    universe — the pre-fix `except: pass` on the credit-feedback table silently emptied
+    `proven`, the very set this ledger exists to cover."""
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception as exc:
+        _alarm(f"{label} unreadable ({exc.__class__.__name__}: {exc}) — this input is "
+               f"EMPTY for this run; coverage below is NARROWER than the invariant claims")
+        return None
+
 
 def _get(path):
     return json.load(urllib.request.urlopen(BASE + path, timeout=30))
@@ -61,11 +87,12 @@ def _env():
                         env[k] = v
         except OSError as exc:
             # STANDING DETECTOR: an empty allow/deny list silently makes every bucket read
-            # "nothing to cover" — which is indistinguishable from a clean run. Say it out loud.
+            # "nothing to cover" — which is indistinguishable from a clean run. Counted, and
+            # main exits nonzero (§6.1).
             src = f"NONE ({exc.__class__.__name__})"
-            print(f"# ALARM config unreadable: no KALSHI_* in the environment and live.env "
-                  f"could not be opened ({exc}) — allow/deny are EMPTY and every coverage "
-                  f"bucket below is meaningless", flush=True)
+            _alarm(f"config unreadable: no KALSHI_* in the environment and live.env "
+                   f"could not be opened ({exc}) — allow/deny are EMPTY and every coverage "
+                   f"bucket below is meaningless")
     print(f"# config source: {src} ({len(env)} KALSHI_* keys)", flush=True)
     return env
 
@@ -99,12 +126,16 @@ def main():
     for t, pool in active.items():
         active_series[t.split("-")[0]] += pool
 
-    try:
-        fb = json.load(open(os.path.join(DATA, "kalshi_credit_feedback.json")))
-        proven = {s for s, r in (fb.get("series") or {}).items()
-                  if (r.get("credits_n") or 0) > 0}
-    except Exception:
-        fb, proven = {}, set()
+    if not allow:
+        # §6.4: partial environ -> empty allowlist. The ledger still covers `proven`, but
+        # the invariant ("every trusted-series dollar bucketed") is silently narrower —
+        # alarm it; the run continues on the proven set alone.
+        _alarm("allowlist is EMPTY (KALSHI_SERIES_ALLOW missing or blank) — trusted "
+               "universe is the receipts-proven set only")
+    fbdoc = _read_json(os.path.join(DATA, "kalshi_credit_feedback.json"),
+                       "credit-feedback table (the ledger's `proven` universe)")
+    proven = ({s for s, r in ((fbdoc or {}).get("series") or {}).items()
+               if (r.get("credits_n") or 0) > 0})
     trusted = set(allow) | proven
 
     # ---- telemetry: what the bot actually did, last N cycles ----
@@ -257,9 +288,10 @@ def main():
             if stale and noprog:
                 print(f"  paid-but-STALE+PROGRAMLESS {s} last_credit={last[:10]} (B-4)")
     except Exception as e:
-        print(f"  credit feed read failed: {e}")
+        _alarm(f"credit feed read failed ({e}) — FEED INTEGRITY section is EMPTY this run")
 
     print("\n(read-only; alarms are operator decisions — nothing was changed)")
+    sys.exit(_exit_code())
 
 
 if __name__ == "__main__":
