@@ -80,3 +80,39 @@ class TestWindowDrag:
             events, [], T0_DT, T7_DT)
         assert fills_cash == -1.0
         assert (n_fills, no_ts) == (1, 0)
+
+
+class TestFilterCreditsAndWindowState:
+    """Review F1/F8: per-observation credit filter + window lifecycle stamp."""
+
+    def test_pre_t0_and_post_deadline_excluded(self):
+        from kalshi_window_scoreboard import filter_credits, OBS_DEADLINE
+        deadline = parse_iso(OBS_DEADLINE)
+        credits = [
+            {"created_at": "2026-07-24T00:00:00Z", "amount_cents": 1500},   # referral, pre-T0
+            {"created_at": "2026-08-13T12:00:00Z", "amount_cents": 200},    # in observation
+            {"created_at": "2026-08-25T00:00:00Z", "amount_cents": 300},    # past deadline
+        ]
+        rows, dropped = filter_credits(credits, T0_DT, deadline)
+        assert [c["amount_cents"] for c in rows] == [200]
+        assert dropped == 0
+
+    def test_no_ts_and_unparseable_counted_not_silent(self):
+        from kalshi_window_scoreboard import filter_credits
+        credits = [{"amount_cents": 100}, {"created_at": "junk", "amount_cents": 100},
+                   {"created_at": "2026-08-13T00:00:00Z", "amount_cents": 100}]
+        rows, dropped = filter_credits(credits, T0_DT, None)
+        assert len(rows) == 1 and dropped == 2
+
+    def test_naive_created_at_does_not_crash(self):
+        from kalshi_window_scoreboard import filter_credits
+        rows, dropped = filter_credits([{"created_at": "2026-08-13T00:00:00",
+                                         "amount_cents": 100}], T0_DT, None)
+        assert len(rows) == 1 and dropped == 0
+
+    def test_window_state_three_phases(self):
+        from kalshi_window_scoreboard import window_state, OBS_DEADLINE
+        deadline = parse_iso(OBS_DEADLINE)
+        assert window_state(parse_iso("2026-08-15T00:00:00Z"), T7_DT, deadline) == "open"
+        assert window_state(parse_iso("2026-08-20T00:00:00Z"), T7_DT, deadline) == "post_window"
+        assert window_state(parse_iso("2026-08-22T00:00:00Z"), T7_DT, deadline) == "concluded"

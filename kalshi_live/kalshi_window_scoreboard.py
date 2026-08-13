@@ -55,6 +55,37 @@ def event_end_map(program_map):
     return out
 
 
+def filter_credits(credits, lo, hi):
+    """Keep credit rows whose created_at is inside [lo, hi] (hi=None → uncapped).
+    Returns (rows, n_dropped_no_ts) — rows without a parseable created_at are COUNTED,
+    never silently dropped (review F1/F7). This filter is what makes the counted gauge
+    per-observation instead of lifetime (review F1) and enforces the credit-observation
+    deadline (review F8)."""
+    rows, dropped = [], 0
+    for c in credits or []:
+        ts = c.get("created_at")
+        if not ts:
+            dropped += 1
+            continue
+        try:
+            t = parse_iso(ts)
+        except (ValueError, TypeError):
+            dropped += 1
+            continue
+        if t >= lo and (hi is None or t <= hi):
+            rows.append(c)
+    return rows, dropped
+
+
+def window_state(now, t7, obs_deadline):
+    """open (inside the 7 days) / post_window (credits still observable) / concluded."""
+    if now <= t7:
+        return "open"
+    if now <= obs_deadline:
+        return "post_window"
+    return "concluded"
+
+
 def score_credits(credits_by_ev, ev_end, t0, t7):
     """Bucket per-event paid credits against the window. Returns (counted_usd, buckets)
     where buckets = {counted, pre_t0, post_t7, unmapped} each {'usd', 'events'}."""
@@ -142,7 +173,13 @@ def main():
     hi = min(now, t7)
 
     credits = KalshiOrderClient(mode="live").get_credit_history(limit=1000)["credits"]
-    by_ev = credits_by_event(credits)
+    obs_deadline = parse_iso(OBS_DEADLINE)
+    state = window_state(now, t7, obs_deadline)
+    # F1/F8: only credits PAID inside [T0, obs_deadline] enter the gauge — an event's
+    # lifetime pre-window credits must never ride in on a program that concludes in-window,
+    # and nothing paid after the pre-registered deadline is ever counted.
+    cr_obs, cr_dropped = filter_credits(credits, t0, obs_deadline)
+    by_ev = credits_by_event(cr_obs)
     ev_end = event_end_map(json.load(open(os.path.join(DATA, "kalshi_program_map.json"))))
     counted, buckets = score_credits(by_ev, ev_end, t0, t7)
 
@@ -154,21 +191,15 @@ def main():
     drag_total = fills_cash + settle_rev
 
     # credits paid since T0 regardless of program-conclusion bucket (for the cash identity)
-    paid_since_t0 = 0.0
-    for c in credits:
-        ts = c.get("created_at")
-        if not ts:
-            continue
-        try:
-            if parse_iso(ts) >= t0:
-                paid_since_t0 += (c.get("amount_cents") or 0) / 100.0
-        except ValueError:
-            pass  # unparseable created_at: excluded from the identity, visible via the gap
+    # identity leg: ALL credits since T0 regardless of bucket or deadline (cash moved).
+    cr_since_t0, _ = filter_credits(credits, t0, None)
+    paid_since_t0 = sum((c.get("amount_cents") or 0) / 100.0 for c in cr_since_t0)
     cash_now, cash_ts = latest_recorder_cash()
     identity_gap = (round(cash_now - T0_CASH - paid_since_t0 - drag_total, 4)
                     if cash_now is not None else None)
 
     row = {"ts": now.isoformat(), "t0": T0, "t7": T7, "obs_deadline": OBS_DEADLINE,
+           "window_state": state, "credits_dropped_no_ts": cr_dropped,
            "credits_counted": round(counted, 2),
            "credits_buckets": {k: {"usd": v["usd"], "n": len(v["events"])}
                                for k, v in buckets.items()},
