@@ -116,3 +116,21 @@ class TestFilterCreditsAndWindowState:
         assert window_state(parse_iso("2026-08-15T00:00:00Z"), T7_DT, deadline) == "open"
         assert window_state(parse_iso("2026-08-20T00:00:00Z"), T7_DT, deadline) == "post_window"
         assert window_state(parse_iso("2026-08-22T00:00:00Z"), T7_DT, deadline) == "concluded"
+
+
+class TestPassGauge:
+    """Review F2: net form of the pre-registered rule; correct for both drag signs."""
+
+    def test_loss_drag_matches_preregistered_rule(self):
+        from kalshi_window_scoreboard import pass_gauge
+        assert pass_gauge(10.0, -9.0) is True     # credits > |drag|
+        assert pass_gauge(8.0, -9.0) is False
+
+    def test_profitable_window_passes_with_any_credits(self):
+        from kalshi_window_scoreboard import pass_gauge
+        assert pass_gauge(3.0, 8.0) is True       # abs() bug reported False here
+        assert pass_gauge(0.0, 8.0) is True
+
+    def test_zero_zero_is_not_pass(self):
+        from kalshi_window_scoreboard import pass_gauge
+        assert pass_gauge(0.0, 0.0) is False

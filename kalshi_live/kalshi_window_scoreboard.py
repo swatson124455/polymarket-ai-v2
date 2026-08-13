@@ -77,6 +77,13 @@ def filter_credits(credits, lo, hi):
     return rows, dropped
 
 
+def pass_gauge(counted, drag_total):
+    """Pre-reg 1 rule 'PASS iff credits > |drag|' stated for a drag that is a LOSS.
+    Net form counted + drag_total > 0 is identical there and stays correct when the
+    window's trading cash nets positive (review F2: abs() turned a profit into a hurdle)."""
+    return counted + drag_total > 0
+
+
 def window_state(now, t7, obs_deadline):
     """open (inside the 7 days) / post_window (credits still observable) / concluded."""
     if now <= t7:
@@ -206,7 +213,7 @@ def main():
            "drag_fills_cash": round(fills_cash, 4), "drag_settle_rev": round(settle_rev, 4),
            "drag_total": round(drag_total, 4), "n_fills_window": n_fills,
            "n_setts_window": n_setts, "n_rows_no_ts": no_ts,
-           "pass_now": counted > abs(drag_total),
+           "pass_now": pass_gauge(counted, drag_total),
            "recorder_cash": cash_now, "recorder_cash_ts": cash_ts,
            "paid_since_t0": round(paid_since_t0, 2), "identity_gap": identity_gap}
     print(json.dumps({k: row[k] for k in ("ts", "credits_counted", "drag_total",
