@@ -98,3 +98,59 @@ with per-market medians alongside totals so one outlier is visible.
 ## Build order (today): money-map job → scorecard → quoter mode → 8-angle review → shadow →
 relight ask. Timeline: relight target 08-14 (slips to 08-15 only under T7's honesty clause);
 proof 7 days from relight; scale-or-kill ~08-21/22.
+
+# ============ v2.0 — POST TRIPLE-BLIND REDESIGN (2026-08-13 ~14:3xZ) ============
+Three blind adversaries (economics / systems / process lenses; full findings in the session
+record) invalidated core v1.1 assumptions. The 24 blind threats + the 11 registered ones
+force this structure. v1.1's breadth-at-min-size leg is SUSPENDED pending the probe result
+(not deleted — reinstated if the probe refutes the floor reading).
+
+## The three load-bearing findings
+1. **ZERO-PAYER FLOOR vs BANKROLL (econ-T1):** W10 canon — a book that never reaches the
+   program target pays NOBODY. In empty books WE are the book; target ≈ 1000ct (300 EOWEEK)
+   ≈ $300–1000 collateral PER market. $252 across 20–40 markets = 1–4% of target = likely
+   $0 credits + real fills. If true, breadth-at-min-size is dead; concentration at full
+   target in FEW markets is the only honest shape. MUST BE TESTED EMPIRICALLY FIRST.
+2. **THE FILTERED UNIVERSE IS UNMEASURED (econ-T2/T3/T4):** close≤8d + mechanism-based
+   toxicity (ladder-near-strike, announcement exposure — by MECHANISM not series name)
+   kills ~12/15 of the D2 shortlist; survivors are crypto ladders = measured-toxic class.
+   The true addressable pool must be counted venue-wide (all ~3,700 programs) before any
+   revenue claim.
+3. **A 1-DAY REBUILD OF A 7,429-LINE QUOTER IS ITSELF THE TOP RISK (sys-T1..T8):** cancel
+   budget caps live markets at ~12 single-sided (80 writes × 0.6s = 48s mass-cancel at 40);
+   the est-feed's fail-open {} inverts into a portfolio-wide fire-sale under the new gate;
+   the 24h-observation gate is unenforceable at the recorder's 40-ticker cap; state
+   migration (DD_CARRY 9.29 vs new $10 halt) must be operator-named; shadow mode can only
+   prove no-crash, not economics.
+
+## v2.0 SEQUENCE (cheapest-truth-first)
+**P0a — PAPER BACKTEST (zero risk, ~today):** apply ALL plan filters retroactively to our
+own fill/credit tape; report what the filtered subset actually earned. If not clearly
+credit-positive, the live proof is redundant with the tape.
+**P0b — FILTERED VENUE CENSUS (zero risk, ~today):** all ~3,700 programs × [close≤8d,
+mechanism-toxicity, expected $/day = pool × share-formula × DF at realistic size]; output
+the TRUE addressable list and its summed $/day. If < ~$500/day addressable, the revenue
+target is unreachable and the mandate decision is made by arithmetic, not a live run.
+**P0c — THE FLOOR PROBE (operator-named, ~$5–20 collateral, 48h):** ONE standalone reviewed
+script (NOT the quoter) rests min-size paired quotes in 1–2 empty-book pool markets; read
+the estimates feed at +24/48h. Answers: does sub-target presence accrue ANYTHING (floor
+mechanics), and who fills a lone quote (empty-book toxicity). The single most
+decision-relevant experiment available; risk bounded by collateral.
+**P1 — BUILD (2 days, honest, only what P0 justifies):** concentrated mode, N ≤ 12 markets
+(cancel-budget bound); full-target size where funded; three-state est-feed gate
+(fresh-low→exit / stale→freeze-hold+alarm); d4 tickers map-driven with held-positions
+pinned; atomic bucket file with per-market program_end self-expiry; operator-named state
+migration incl. 8 residuals exit-only; empty-book price anchor + w11_replay harness (not
+intent-shadow alone); rate lockfile; fp-scale reconciliation assert; scoreboard
+re-registration checklist (new T0/T7/deadline/cash + legacy-settlement exclusion + flat-at-T0
+alarm).
+**P2 — 7-DAY PROOF (redesigned per process lens):** per-EVENT same-set scoring (cost+credit
+travel together; post-T7 conclusions → CARRY bucket, never in verdict); verdict read at
+T7+72h; NO size change inside the scored window; pre-registered daily trajectory (credits ≈
+$0 through day ~3.5 = ON-PLAN; wind-down before day 5 = VOID-UNPOWERED, not FAIL); power
+rule N ≥ 15 concluded-AND-paid programs else UNPOWERED; eviction numerator = accrual ×
+series historical paid/accrued ratio (never-paid series ratio 0 until first payment) with a
+−3c/ct assumed maker cost prior; daily report leads with cumulative drag INCLUDING evicted
+markets. Funding decision (how many full-target markets) taken from P0 results.
+**Calendar:** P0 results 08-14/15 → build 08-14–16 → canary relight ~08-16 → proof to
+~08-23 → verdict incl. credit envelope ~08-25/26 → decision by 08-27 (holds, barely).
