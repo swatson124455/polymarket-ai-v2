@@ -230,10 +230,15 @@ def build_plan(args):
     else:
         census = json.load(open(args.census))
         cands = [c for c in census.get("candidates") or [] if c.get("usd_day_target")]
+        # anchor-bearing (two-sided, however thin) candidates FIRST: a fully empty
+        # side usually has no price anchor and gets refused anyway (real-run
+        # 2026-08-13: the 12 quietest census rows yielded 0 placeable). Then
+        # quietest rival book, then biggest pool. Scan up to 40 (bounds API reads).
         cands.sort(key=lambda c: (
+            bool(c.get("anchor_needed")),
             (c.get("book") or {}).get("yes_rival_q", 1e9)
             + (c.get("book") or {}).get("no_rival_q", 1e9), -c["pool"]))
-        tickers = [c["ticker"] for c in cands[:12]]
+        tickers = [c["ticker"] for c in cands[:40]]
     # candidates must be FLAT and UNTRADED for us (replay-from-flat + clean science)
     positions = {p.get("ticker") for p in
                  kal.get_paginated(f"{kal.P}/portfolio/positions", "market_positions")
