@@ -187,17 +187,12 @@ def validate_orders(orders):
     return True, f"ok worst=${total:.2f}"
 
 
-def anchor_price(cl, ticker, m):
-    """Hard price anchor. NEVER derived from our own quotes.
-      1. two-sided rival book: mid of touch -> ("book_mid_two_sided")
-      2. bare last_price in [0.03, 0.97] -> ("last_price_no_ts"); caller MUST cap
-         both quote prices at STALE_ANCHOR_PX_CAP (no recency field exists on the
-         market payload — the cap bounds the stale-anchor adverse fill).
-    Returns (anchor$ or None, source_label)."""
+def book_refs(cl, ticker):
+    """(best_yes_bid, best_no_bid) from the rival book, or (None, None, 'why')."""
     try:
         ob = (cl.get_orderbook(ticker) or {}).get("orderbook_fp") or {}
     except Exception:
-        return None, "book_read_failed"
+        return None, None, "book_read_failed"
     def best(key):
         best_p = None
         for r in ob.get(key) or []:
@@ -208,17 +203,40 @@ def anchor_price(cl, ticker, m):
             if c > 0 and (best_p is None or p > best_p):
                 best_p = p
         return best_p
-    yb, nb = best("yes_dollars"), best("no_dollars")
-    if yb is not None and nb is not None:
-        return (yb + (1.0 - nb)) / 2.0, "book_mid_two_sided"
+    return best("yes_dollars"), best("no_dollars"), "ok"
+
+
+def last_price_anchor(m):
+    """Bare last_price in [0.03, 0.97] or None. No recency field exists on the
+    market payload, so callers MUST cap prices at STALE_ANCHOR_PX_CAP."""
     lp = m.get("last_price_dollars")
     if lp is None and m.get("last_price") is not None:
         lp = float(m["last_price"]) / 100.0
     if lp:
         lp = float(lp)
         if 0.03 <= lp <= 0.97:
-            return lp, "last_price_no_ts"
-    return None, "no_anchor"
+            return lp
+    return None
+
+
+def side_price(ref, anchor, stale):
+    """Price for ONE side (its own outcome scale). SCORE DISCIPLINE (real-run
+    2026-08-13): reward score is DF^N x size, N = ticks below the side's
+    reference — a clamped price many ticks under ref scores ~0 and would fake a
+    'floor CONFIRMED'. So:
+      rival ref exists : JOIN AT REF (N=0, we measure size share cleanly) — but
+                         only if ref fits the risk caps; else (None, why).
+      side empty       : WE become ref (N=0 by construction) — price from the
+                         anchor minus MARGIN, capped (stale-anchor cap applies).
+    Returns (price or None, label)."""
+    if ref is not None:
+        if ref > PRICE_MAX + 1e-9:
+            return None, f"ref_{ref:.2f}_above_cap"
+        return max(PRICE_MIN, ref), "join_ref"
+    if anchor is None:
+        return None, "empty_side_no_anchor"
+    cap = STALE_ANCHOR_PX_CAP if stale else PRICE_MAX
+    return max(PRICE_MIN, min(cap, round(anchor - MARGIN, 2))), "set_ref_from_anchor"
 
 
 def build_plan(args):
@@ -262,15 +280,32 @@ def build_plan(args):
         if not (CLOSE_MIN_S <= tt <= CLOSE_MAX_S):
             refused.append({"ticker": t, "why": f"close_window_fail_{tt / 3600:.0f}h"})
             continue
-        anchor, src = anchor_price(cl, t, m)
-        if anchor is None:
-            refused.append({"ticker": t, "why": src})
+        yb, nb, why = book_refs(cl, t)
+        if why != "ok":
+            refused.append({"ticker": t, "why": why})
             continue
-        cap = STALE_ANCHOR_PX_CAP if src == "last_price_no_ts" else PRICE_MAX
-        y = max(PRICE_MIN, min(cap, round(anchor - MARGIN, 2)))
-        n = max(PRICE_MIN, min(cap, round((1.0 - anchor) - MARGIN, 2)))
-        plan.append({"ticker": t, "anchor": round(anchor, 4), "anchor_src": src,
-                     "y_price": y, "n_price": n, "count": PROBE_CT,
+        # anchor for any EMPTY side: two-sided mid if both refs exist (then unused),
+        # else the other side's ref is NOT enough on its own (spread unknown) —
+        # require a last_price anchor for the empty side. Stale cap applies to
+        # last_price-derived prices only.
+        lp = last_price_anchor(m)
+        anchor_yes = ((yb + (1.0 - nb)) / 2.0 if (yb is not None and nb is not None)
+                      else lp)
+        stale = (yb is None or nb is None)          # empty side priced off last_price
+        y, y_lbl = side_price(yb, anchor_yes, stale)
+        n, n_lbl = side_price(
+            nb, (1.0 - anchor_yes) if anchor_yes is not None else None, stale)
+        if y is None or n is None:
+            refused.append({"ticker": t, "why": f"yes:{y_lbl} no:{n_lbl}"})
+            continue
+        if y + n >= 1.0:
+            refused.append({"ticker": t, "why": f"pair_crosses y={y} n={n}"})
+            continue
+        plan.append({"ticker": t,
+                     "anchor": round(anchor_yes, 4) if anchor_yes is not None else None,
+                     "pricing": {"yes": y_lbl, "no": n_lbl},
+                     "y_price": round(y, 2), "n_price": round(n, 2),
+                     "count": PROBE_CT,
                      "worst_case_usd": round((y + n) * PROBE_CT, 2),
                      "close_time": ct})
     ok, why = validate_orders(plan) if plan else (False, "no candidates")

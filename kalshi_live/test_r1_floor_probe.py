@@ -24,7 +24,7 @@ def _iso(dt):
     return dt.isoformat()
 
 
-# ---------------- anchor_price ----------------
+# ---------------- book_refs / last_price_anchor / side_price ----------------
 
 class _BookClient:
     def __init__(self, book):
@@ -34,38 +34,47 @@ class _BookClient:
         return {"orderbook_fp": self._book}
 
 
-def test_anchor_two_sided_book_mid():
-    cl = _BookClient({"yes_dollars": [["0.30", "5"]], "no_dollars": [["0.60", "5"]]})
-    a, src = rp.anchor_price(cl, "T", {})
-    assert src == "book_mid_two_sided"
-    assert abs(a - 0.35) < 1e-9          # (0.30 + (1-0.60))/2
+def test_book_refs_two_sided():
+    cl = _BookClient({"yes_dollars": [["0.30", "5"], ["0.28", "9"]],
+                      "no_dollars": [["0.60", "5"]]})
+    yb, nb, why = rp.book_refs(cl, "T")
+    assert (yb, nb, why) == (0.30, 0.60, "ok")
 
 
-def test_anchor_one_sided_falls_back_to_last_price():
-    cl = _BookClient({"yes_dollars": [["0.30", "5"]], "no_dollars": []})
-    a, src = rp.anchor_price(cl, "T", {"last_price": 42})
-    assert src == "last_price_no_ts"
-    assert abs(a - 0.42) < 1e-9
-
-
-def test_anchor_refuses_extreme_last_price():
-    cl = _BookClient({"yes_dollars": [], "no_dollars": []})
-    a, src = rp.anchor_price(cl, "T", {"last_price": 1})       # 1c — near-settled
-    assert a is None and src == "no_anchor"
-
-
-def test_anchor_refuses_empty_everything():
-    cl = _BookClient({"yes_dollars": [], "no_dollars": []})
-    a, src = rp.anchor_price(cl, "T", {})
-    assert a is None and src == "no_anchor"
-
-
-def test_anchor_book_read_failure_is_refusal():
+def test_book_refs_read_failure():
     class Boom:
         def get_orderbook(self, t):
             raise RuntimeError("down")
-    a, src = rp.anchor_price(Boom(), "T", {"last_price": 42})
-    assert a is None and src == "book_read_failed"
+    yb, nb, why = rp.book_refs(Boom(), "T")
+    assert yb is None and nb is None and why == "book_read_failed"
+
+
+def test_last_price_anchor_units_and_band():
+    assert abs(rp.last_price_anchor({"last_price": 42}) - 0.42) < 1e-9
+    assert rp.last_price_anchor({"last_price": 1}) is None      # 1c near-settled
+    assert rp.last_price_anchor({}) is None
+
+
+def test_side_price_joins_ref_at_n_zero():
+    """Score discipline: with a rival ref inside the cap we JOIN AT REF (N=0),
+    never a clamped price ticks below it."""
+    p, lbl = rp.side_price(0.30, None, False)
+    assert (p, lbl) == (0.30, "join_ref")
+
+
+def test_side_price_refuses_ref_above_cap():
+    p, lbl = rp.side_price(0.94, 0.5, False)
+    assert p is None and "above_cap" in lbl
+
+
+def test_side_price_empty_side_sets_ref_from_anchor():
+    p, lbl = rp.side_price(None, 0.42, False)
+    assert lbl == "set_ref_from_anchor"
+    assert abs(p - 0.37) < 1e-9                    # anchor − MARGIN
+    p2, _ = rp.side_price(None, 0.42, True)        # stale last_price anchor
+    assert p2 <= rp.STALE_ANCHOR_PX_CAP + 1e-9
+    p3, lbl3 = rp.side_price(None, None, False)
+    assert p3 is None and lbl3 == "empty_side_no_anchor"
 
 
 # ---------------- validate_orders (M: mutation-boundary re-validation) ----------------
