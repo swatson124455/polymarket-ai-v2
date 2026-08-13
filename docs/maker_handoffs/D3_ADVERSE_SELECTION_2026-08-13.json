@@ -1,0 +1,1598 @@
+{
+ "generated_utc": "2026-08-13T01:03:16.534670+00:00",
+ "basis": "settlement: edge=(terminal_of_acquired - fill_price)*contracts; fees separate; LIP credits EXCLUDED",
+ "fills_total": 1630,
+ "settlements_total": 203,
+ "fills_on_settled_markets": 1454,
+ "fills_unsettled_skipped": 176,
+ "meta_coverage": {
+  "tickers": 227,
+  "with_meta": 227
+ },
+ "mark_tape": {
+  "samples_rows": 485040,
+  "quotes_rows": 209218,
+  "tickers_with_marks": 9795
+ },
+ "by_role": {
+  "maker": {
+   "n_fills": 908,
+   "contracts": 11356.95,
+   "edge_usd_total": -543.4709,
+   "edge_per_contract_usd": -0.04785,
+   "fees_usd": 0.0
+  },
+  "taker": {
+   "n_fills": 546,
+   "contracts": 5844.18,
+   "edge_usd_total": 61.2571,
+   "edge_per_contract_usd": 0.01048,
+   "fees_usd": 60.0816
+  }
+ },
+ "by_series_maker": {
+  "KXA100WS": {
+   "n_fills": 2,
+   "contracts": 6.34,
+   "edge_usd_total": -0.3618,
+   "edge_per_contract_usd": -0.05707,
+   "fees_usd": 0.0
+  },
+  "KXAAAGASD": {
+   "n_fills": 418,
+   "contracts": 4277.6,
+   "edge_usd_total": -125.848,
+   "edge_per_contract_usd": -0.02942,
+   "fees_usd": 0.0
+  },
+  "KXAAAGASW": {
+   "n_fills": 69,
+   "contracts": 620.77,
+   "edge_usd_total": -21.5555,
+   "edge_per_contract_usd": -0.03472,
+   "fees_usd": 0.0
+  },
+  "KXACTBLUETOP": {
+   "n_fills": 6,
+   "contracts": 110.52,
+   "edge_usd_total": 53.2144,
+   "edge_per_contract_usd": 0.48149,
+   "fees_usd": 0.0
+  },
+  "KXADJOURNRECESS": {
+   "n_fills": 4,
+   "contracts": 50.0,
+   "edge_usd_total": -19.45,
+   "edge_per_contract_usd": -0.389,
+   "fees_usd": 0.0
+  },
+  "KXAMSAVO": {
+   "n_fills": 8,
+   "contracts": 117.3,
+   "edge_usd_total": -9.2603,
+   "edge_per_contract_usd": -0.07895,
+   "fees_usd": 0.0
+  },
+  "KXAPRPOTUS": {
+   "n_fills": 18,
+   "contracts": 225.73,
+   "edge_usd_total": -62.5939,
+   "edge_per_contract_usd": -0.2773,
+   "fees_usd": 0.0
+  },
+  "KXB200WS": {
+   "n_fills": 2,
+   "contracts": 6.99,
+   "edge_usd_total": -0.0888,
+   "edge_per_contract_usd": -0.0127,
+   "fees_usd": 0.0
+  },
+  "KXBLANCHEWITHDRAW": {
+   "n_fills": 2,
+   "contracts": 53.91,
+   "edge_usd_total": -7.1265,
+   "edge_per_contract_usd": -0.13219,
+   "fees_usd": 0.0
+  },
+  "KXCHINAAI": {
+   "n_fills": 4,
+   "contracts": 106.0,
+   "edge_usd_total": -16.0,
+   "edge_per_contract_usd": -0.15094,
+   "fees_usd": 0.0
+  },
+  "KXCLARITYVOTE": {
+   "n_fills": 2,
+   "contracts": 30.0,
+   "edge_usd_total": -0.3,
+   "edge_per_contract_usd": -0.01,
+   "fees_usd": 0.0
+  },
+  "KXCLAYTONDNI": {
+   "n_fills": 3,
+   "contracts": 150.0,
+   "edge_usd_total": -0.5,
+   "edge_per_contract_usd": -0.00333,
+   "fees_usd": 0.0
+  },
+  "KXDIESELW": {
+   "n_fills": 4,
+   "contracts": 19.0,
+   "edge_usd_total": -0.13,
+   "edge_per_contract_usd": -0.00684,
+   "fees_usd": 0.0
+  },
+  "KXDXYDUD": {
+   "n_fills": 29,
+   "contracts": 459.94,
+   "edge_usd_total": -42.5921,
+   "edge_per_contract_usd": -0.0926,
+   "fees_usd": 0.0
+  },
+  "KXEURUSDAW": {
+   "n_fills": 25,
+   "contracts": 293.53,
+   "edge_usd_total": -38.5292,
+   "edge_per_contract_usd": -0.13126,
+   "fees_usd": 0.0
+  },
+  "KXGENERICBALLOTVOTEHUB": {
+   "n_fills": 12,
+   "contracts": 105.0,
+   "edge_usd_total": -12.3866,
+   "edge_per_contract_usd": -0.11797,
+   "fees_usd": 0.0
+  },
+  "KXINXHUD": {
+   "n_fills": 3,
+   "contracts": 29.05,
+   "edge_usd_total": -12.7125,
+   "edge_per_contract_usd": -0.43761,
+   "fees_usd": 0.0
+  },
+  "KXLIUKCOUPLE": {
+   "n_fills": 6,
+   "contracts": 34.95,
+   "edge_usd_total": -0.7655,
+   "edge_per_contract_usd": -0.0219,
+   "fees_usd": 0.0
+  },
+  "KXMAMDANIEO": {
+   "n_fills": 5,
+   "contracts": 177.11,
+   "edge_usd_total": -13.0765,
+   "edge_per_contract_usd": -0.07383,
+   "fees_usd": 0.0
+  },
+  "KXMCMORROWENDORSE": {
+   "n_fills": 5,
+   "contracts": 156.0,
+   "edge_usd_total": -10.4,
+   "edge_per_contract_usd": -0.06667,
+   "fees_usd": 0.0
+  },
+  "KXMLABELSHARE": {
+   "n_fills": 4,
+   "contracts": 173.0,
+   "edge_usd_total": -19.52,
+   "edge_per_contract_usd": -0.11283,
+   "fees_usd": 0.0
+  },
+  "KXMLBTRADE": {
+   "n_fills": 4,
+   "contracts": 22.45,
+   "edge_usd_total": 4.4444,
+   "edge_per_contract_usd": 0.19797,
+   "fees_usd": 0.0
+  },
+  "KXMUSKNW": {
+   "n_fills": 19,
+   "contracts": 564.31,
+   "edge_usd_total": 117.4658,
+   "edge_per_contract_usd": 0.20816,
+   "fees_usd": 0.0
+  },
+  "KXNDQHUD": {
+   "n_fills": 4,
+   "contracts": 82.55,
+   "edge_usd_total": -4.3315,
+   "edge_per_contract_usd": -0.05247,
+   "fees_usd": 0.0
+  },
+  "KXNETFLIXTOPVIEWSMOVIE": {
+   "n_fills": 1,
+   "contracts": 5.0,
+   "edge_usd_total": -1.05,
+   "edge_per_contract_usd": -0.21,
+   "fees_usd": 0.0
+  },
+  "KXNETFLIXTOPVIEWSTV": {
+   "n_fills": 2,
+   "contracts": 30.58,
+   "edge_usd_total": 9.8362,
+   "edge_per_contract_usd": 0.32165,
+   "fees_usd": 0.0
+  },
+  "KXRAIN": {
+   "n_fills": 32,
+   "contracts": 242.09,
+   "edge_usd_total": -26.8775,
+   "edge_per_contract_usd": -0.11102,
+   "fees_usd": 0.0
+  },
+  "KXSENATEADJOURN": {
+   "n_fills": 2,
+   "contracts": 80.0,
+   "edge_usd_total": 14.8,
+   "edge_per_contract_usd": 0.185,
+   "fees_usd": 0.0
+  },
+  "KXTEMPAUSH": {
+   "n_fills": 54,
+   "contracts": 550.73,
+   "edge_usd_total": -22.2332,
+   "edge_per_contract_usd": -0.04037,
+   "fees_usd": 0.0
+  },
+  "KXTEMPCHIH": {
+   "n_fills": 29,
+   "contracts": 291.85,
+   "edge_usd_total": -30.5835,
+   "edge_per_contract_usd": -0.10479,
+   "fees_usd": 0.0
+  },
+  "KXTEMPDCH": {
+   "n_fills": 11,
+   "contracts": 194.0,
+   "edge_usd_total": -18.61,
+   "edge_per_contract_usd": -0.09593,
+   "fees_usd": 0.0
+  },
+  "KXTEMPLAXH": {
+   "n_fills": 15,
+   "contracts": 173.91,
+   "edge_usd_total": -18.2016,
+   "edge_per_contract_usd": -0.10466,
+   "fees_usd": 0.0
+  },
+  "KXTEMPNYCH": {
+   "n_fills": 10,
+   "contracts": 88.86,
+   "edge_usd_total": -7.0179,
+   "edge_per_contract_usd": -0.07898,
+   "fees_usd": 0.0
+  },
+  "KXTOPMODEL": {
+   "n_fills": 23,
+   "contracts": 731.54,
+   "edge_usd_total": -14.9765,
+   "edge_per_contract_usd": -0.02047,
+   "fees_usd": 0.0
+  },
+  "KXTOPMOVIE": {
+   "n_fills": 6,
+   "contracts": 23.26,
+   "edge_usd_total": 13.4366,
+   "edge_per_contract_usd": 0.57767,
+   "fees_usd": 0.0
+  },
+  "KXTRUMPENDORSEMENTS": {
+   "n_fills": 37,
+   "contracts": 523.65,
+   "edge_usd_total": -151.4995,
+   "edge_per_contract_usd": -0.28931,
+   "fees_usd": 0.0
+  },
+  "KXTRUMPTIME": {
+   "n_fills": 16,
+   "contracts": 464.78,
+   "edge_usd_total": -46.5689,
+   "edge_per_contract_usd": -0.1002,
+   "fees_usd": 0.0
+  },
+  "KXTRUMPUAP": {
+   "n_fills": 2,
+   "contracts": 36.0,
+   "edge_usd_total": -1.8,
+   "edge_per_contract_usd": -0.05,
+   "fees_usd": 0.0
+  },
+  "KXUSDJPY": {
+   "n_fills": 4,
+   "contracts": 8.0,
+   "edge_usd_total": 0.02,
+   "edge_per_contract_usd": 0.0025,
+   "fees_usd": 0.0
+  },
+  "KXYTVIEWSW": {
+   "n_fills": 6,
+   "contracts": 40.65,
+   "edge_usd_total": 0.259,
+   "edge_per_contract_usd": 0.00637,
+   "fees_usd": 0.0
+  }
+ },
+ "by_series_taker": {
+  "KXAAAGASD": {
+   "n_fills": 99,
+   "contracts": 1083.31,
+   "edge_usd_total": 45.4707,
+   "edge_per_contract_usd": 0.04197,
+   "fees_usd": 11.2195
+  },
+  "KXAAAGASW": {
+   "n_fills": 22,
+   "contracts": 195.31,
+   "edge_usd_total": -16.9547,
+   "edge_per_contract_usd": -0.08681,
+   "fees_usd": 1.8154
+  },
+  "KXACTBLUETOP": {
+   "n_fills": 3,
+   "contracts": 106.0,
+   "edge_usd_total": -56.96,
+   "edge_per_contract_usd": -0.53736,
+   "fees_usd": 1.3876
+  },
+  "KXADJOURNRECESS": {
+   "n_fills": 5,
+   "contracts": 49.76,
+   "edge_usd_total": 18.3132,
+   "edge_per_contract_usd": 0.36803,
+   "fees_usd": 0.8009
+  },
+  "KXAPRPOTUS": {
+   "n_fills": 20,
+   "contracts": 215.0,
+   "edge_usd_total": 56.95,
+   "edge_per_contract_usd": 0.26488,
+   "fees_usd": 2.473
+  },
+  "KXBLANCHEWITHDRAW": {
+   "n_fills": 6,
+   "contracts": 45.45,
+   "edge_usd_total": 6.8175,
+   "edge_per_contract_usd": 0.15,
+   "fees_usd": 0.406
+  },
+  "KXCHINAAI": {
+   "n_fills": 5,
+   "contracts": 100.0,
+   "edge_usd_total": 10.51,
+   "edge_per_contract_usd": 0.1051,
+   "fees_usd": 0.6194
+  },
+  "KXCLAYTONDNI": {
+   "n_fills": 12,
+   "contracts": 150.28,
+   "edge_usd_total": -15.6044,
+   "edge_per_contract_usd": -0.10384,
+   "fees_usd": 1.3619
+  },
+  "KXDIESELW": {
+   "n_fills": 3,
+   "contracts": 10.67,
+   "edge_usd_total": -0.8165,
+   "edge_per_contract_usd": -0.07652,
+   "fees_usd": 0.0631
+  },
+  "KXDXYDUD": {
+   "n_fills": 32,
+   "contracts": 148.32,
+   "edge_usd_total": 25.1656,
+   "edge_per_contract_usd": 0.16967,
+   "fees_usd": 2.4694
+  },
+  "KXEURUSDAW": {
+   "n_fills": 23,
+   "contracts": 271.08,
+   "edge_usd_total": 25.4496,
+   "edge_per_contract_usd": 0.09388,
+   "fees_usd": 2.4699
+  },
+  "KXGENERICBALLOTVOTEHUB": {
+   "n_fills": 17,
+   "contracts": 89.0,
+   "edge_usd_total": 9.39,
+   "edge_per_contract_usd": 0.10551,
+   "fees_usd": 1.3753
+  },
+  "KXINXHUD": {
+   "n_fills": 1,
+   "contracts": 29.0,
+   "edge_usd_total": 7.54,
+   "edge_per_contract_usd": 0.26,
+   "fees_usd": 0.3906
+  },
+  "KXMAMDANIEO": {
+   "n_fills": 8,
+   "contracts": 177.0,
+   "edge_usd_total": 10.77,
+   "edge_per_contract_usd": 0.06085,
+   "fees_usd": 0.7066
+  },
+  "KXMCMORROWENDORSE": {
+   "n_fills": 5,
+   "contracts": 116.0,
+   "edge_usd_total": 6.44,
+   "edge_per_contract_usd": 0.05552,
+   "fees_usd": 0.4242
+  },
+  "KXMLABELSHARE": {
+   "n_fills": 26,
+   "contracts": 173.0,
+   "edge_usd_total": -11.84,
+   "edge_per_contract_usd": -0.06844,
+   "fees_usd": 1.8938
+  },
+  "KXMLBTRADE": {
+   "n_fills": 4,
+   "contracts": 23.0,
+   "edge_usd_total": -5.69,
+   "edge_per_contract_usd": -0.24739,
+   "fees_usd": 0.2976
+  },
+  "KXMUSKNW": {
+   "n_fills": 30,
+   "contracts": 488.49,
+   "edge_usd_total": -143.1886,
+   "edge_per_contract_usd": -0.29312,
+   "fees_usd": 8.1987
+  },
+  "KXNDQHUD": {
+   "n_fills": 11,
+   "contracts": 82.9,
+   "edge_usd_total": -3.48,
+   "edge_per_contract_usd": -0.04198,
+   "fees_usd": 0.8214
+  },
+  "KXNETFLIXTOPVIEWSMOVIE": {
+   "n_fills": 1,
+   "contracts": 5.0,
+   "edge_usd_total": 0.9,
+   "edge_per_contract_usd": 0.18,
+   "fees_usd": 0.0517
+  },
+  "KXNETFLIXTOPVIEWSTV": {
+   "n_fills": 1,
+   "contracts": 30.0,
+   "edge_usd_total": -15.6,
+   "edge_per_contract_usd": -0.52,
+   "fees_usd": 0.5242
+  },
+  "KXRAIN": {
+   "n_fills": 28,
+   "contracts": 178.18,
+   "edge_usd_total": 4.3202,
+   "edge_per_contract_usd": 0.02425,
+   "fees_usd": 1.5432
+  },
+  "KXSENATEADJOURN": {
+   "n_fills": 7,
+   "contracts": 80.0,
+   "edge_usd_total": -15.1,
+   "edge_per_contract_usd": -0.18875,
+   "fees_usd": 1.0877
+  },
+  "KXTEMPAUSH": {
+   "n_fills": 32,
+   "contracts": 317.92,
+   "edge_usd_total": -10.9454,
+   "edge_per_contract_usd": -0.03443,
+   "fees_usd": 2.4625
+  },
+  "KXTEMPCHIH": {
+   "n_fills": 8,
+   "contracts": 33.0,
+   "edge_usd_total": -0.77,
+   "edge_per_contract_usd": -0.02333,
+   "fees_usd": 0.1197
+  },
+  "KXTEMPDCH": {
+   "n_fills": 17,
+   "contracts": 110.12,
+   "edge_usd_total": 9.9116,
+   "edge_per_contract_usd": 0.09001,
+   "fees_usd": 0.5979
+  },
+  "KXTEMPLAXH": {
+   "n_fills": 5,
+   "contracts": 29.0,
+   "edge_usd_total": 7.5,
+   "edge_per_contract_usd": 0.25862,
+   "fees_usd": 0.3331
+  },
+  "KXTEMPNYCH": {
+   "n_fills": 1,
+   "contracts": 5.0,
+   "edge_usd_total": 2.95,
+   "edge_per_contract_usd": 0.59,
+   "fees_usd": 0.0847
+  },
+  "KXTOPMODEL": {
+   "n_fills": 38,
+   "contracts": 706.91,
+   "edge_usd_total": -4.4808,
+   "edge_per_contract_usd": -0.00634,
+   "fees_usd": 5.6474
+  },
+  "KXTOPMOVIE": {
+   "n_fills": 4,
+   "contracts": 15.0,
+   "edge_usd_total": -13.5,
+   "edge_per_contract_usd": -0.9,
+   "fees_usd": 0.0942
+  },
+  "KXTRUMPENDORSEMENTS": {
+   "n_fills": 19,
+   "contracts": 273.86,
+   "edge_usd_total": 118.2578,
+   "edge_per_contract_usd": 0.43182,
+   "fees_usd": 4.2085
+  },
+  "KXTRUMPTIME": {
+   "n_fills": 41,
+   "contracts": 437.41,
+   "edge_usd_total": 13.9008,
+   "edge_per_contract_usd": 0.03178,
+   "fees_usd": 3.5873
+  },
+  "KXTRUMPUAP": {
+   "n_fills": 2,
+   "contracts": 36.0,
+   "edge_usd_total": 1.64,
+   "edge_per_contract_usd": 0.04556,
+   "fees_usd": 0.1096
+  },
+  "KXYTVIEWSW": {
+   "n_fills": 10,
+   "contracts": 33.21,
+   "edge_usd_total": -6.0095,
+   "edge_per_contract_usd": -0.18095,
+   "fees_usd": 0.4356
+  }
+ },
+ "by_hour_utc_maker": {
+  "00Z": {
+   "n_fills": 74,
+   "contracts": 1169.88,
+   "edge_usd_total": 60.2189,
+   "edge_per_contract_usd": 0.05147,
+   "fees_usd": 0.0
+  },
+  "01Z": {
+   "n_fills": 91,
+   "contracts": 1183.17,
+   "edge_usd_total": -84.2823,
+   "edge_per_contract_usd": -0.07123,
+   "fees_usd": 0.0
+  },
+  "02Z": {
+   "n_fills": 44,
+   "contracts": 414.14,
+   "edge_usd_total": -9.6935,
+   "edge_per_contract_usd": -0.02341,
+   "fees_usd": 0.0
+  },
+  "03Z": {
+   "n_fills": 16,
+   "contracts": 251.81,
+   "edge_usd_total": -38.7501,
+   "edge_per_contract_usd": -0.15389,
+   "fees_usd": 0.0
+  },
+  "04Z": {
+   "n_fills": 24,
+   "contracts": 243.87,
+   "edge_usd_total": -32.3839,
+   "edge_per_contract_usd": -0.13279,
+   "fees_usd": 0.0
+  },
+  "05Z": {
+   "n_fills": 13,
+   "contracts": 145.32,
+   "edge_usd_total": 18.7184,
+   "edge_per_contract_usd": 0.12881,
+   "fees_usd": 0.0
+  },
+  "06Z": {
+   "n_fills": 17,
+   "contracts": 254.17,
+   "edge_usd_total": -20.0276,
+   "edge_per_contract_usd": -0.0788,
+   "fees_usd": 0.0
+  },
+  "07Z": {
+   "n_fills": 10,
+   "contracts": 34.0,
+   "edge_usd_total": -0.54,
+   "edge_per_contract_usd": -0.01588,
+   "fees_usd": 0.0
+  },
+  "08Z": {
+   "n_fills": 7,
+   "contracts": 85.0,
+   "edge_usd_total": -17.38,
+   "edge_per_contract_usd": -0.20447,
+   "fees_usd": 0.0
+  },
+  "09Z": {
+   "n_fills": 21,
+   "contracts": 195.54,
+   "edge_usd_total": -8.8857,
+   "edge_per_contract_usd": -0.04544,
+   "fees_usd": 0.0
+  },
+  "10Z": {
+   "n_fills": 10,
+   "contracts": 163.57,
+   "edge_usd_total": 16.8505,
+   "edge_per_contract_usd": 0.10302,
+   "fees_usd": 0.0
+  },
+  "11Z": {
+   "n_fills": 20,
+   "contracts": 179.19,
+   "edge_usd_total": -23.483,
+   "edge_per_contract_usd": -0.13105,
+   "fees_usd": 0.0
+  },
+  "12Z": {
+   "n_fills": 33,
+   "contracts": 269.67,
+   "edge_usd_total": -8.2091,
+   "edge_per_contract_usd": -0.03044,
+   "fees_usd": 0.0
+  },
+  "13Z": {
+   "n_fills": 68,
+   "contracts": 702.09,
+   "edge_usd_total": -35.7992,
+   "edge_per_contract_usd": -0.05099,
+   "fees_usd": 0.0
+  },
+  "14Z": {
+   "n_fills": 70,
+   "contracts": 968.2,
+   "edge_usd_total": -104.9143,
+   "edge_per_contract_usd": -0.10836,
+   "fees_usd": 0.0
+  },
+  "15Z": {
+   "n_fills": 35,
+   "contracts": 509.18,
+   "edge_usd_total": -66.0154,
+   "edge_per_contract_usd": -0.12965,
+   "fees_usd": 0.0
+  },
+  "16Z": {
+   "n_fills": 40,
+   "contracts": 755.6,
+   "edge_usd_total": 52.7632,
+   "edge_per_contract_usd": 0.06983,
+   "fees_usd": 0.0
+  },
+  "17Z": {
+   "n_fills": 36,
+   "contracts": 463.11,
+   "edge_usd_total": -112.3896,
+   "edge_per_contract_usd": -0.24268,
+   "fees_usd": 0.0
+  },
+  "18Z": {
+   "n_fills": 60,
+   "contracts": 985.04,
+   "edge_usd_total": -54.9514,
+   "edge_per_contract_usd": -0.05579,
+   "fees_usd": 0.0
+  },
+  "19Z": {
+   "n_fills": 74,
+   "contracts": 954.34,
+   "edge_usd_total": -54.6542,
+   "edge_per_contract_usd": -0.05727,
+   "fees_usd": 0.0
+  },
+  "20Z": {
+   "n_fills": 50,
+   "contracts": 395.97,
+   "edge_usd_total": -48.8327,
+   "edge_per_contract_usd": -0.12332,
+   "fees_usd": 0.0
+  },
+  "21Z": {
+   "n_fills": 43,
+   "contracts": 496.94,
+   "edge_usd_total": 4.2765,
+   "edge_per_contract_usd": 0.00861,
+   "fees_usd": 0.0
+  },
+  "22Z": {
+   "n_fills": 32,
+   "contracts": 293.44,
+   "edge_usd_total": 73.7576,
+   "edge_per_contract_usd": 0.25135,
+   "fees_usd": 0.0
+  },
+  "23Z": {
+   "n_fills": 20,
+   "contracts": 243.71,
+   "edge_usd_total": -48.864,
+   "edge_per_contract_usd": -0.2005,
+   "fees_usd": 0.0
+  }
+ },
+ "by_time_to_close_maker": {
+  "1-3d": {
+   "n_fills": 141,
+   "contracts": 2446.33,
+   "edge_usd_total": -213.2626,
+   "edge_per_contract_usd": -0.08718,
+   "fees_usd": 0.0
+  },
+  "1-6h": {
+   "n_fills": 138,
+   "contracts": 1435.32,
+   "edge_usd_total": -46.6715,
+   "edge_per_contract_usd": -0.03252,
+   "fees_usd": 0.0
+  },
+  "6-24h": {
+   "n_fills": 372,
+   "contracts": 4005.1,
+   "edge_usd_total": -142.2061,
+   "edge_per_contract_usd": -0.03551,
+   "fees_usd": 0.0
+  },
+  "<1h": {
+   "n_fills": 129,
+   "contracts": 1448.05,
+   "edge_usd_total": -110.2112,
+   "edge_per_contract_usd": -0.07611,
+   "fees_usd": 0.0
+  },
+  ">3d": {
+   "n_fills": 128,
+   "contracts": 2022.15,
+   "edge_usd_total": -31.1195,
+   "edge_per_contract_usd": -0.01539,
+   "fees_usd": 0.0
+  }
+ },
+ "mark_basis": {
+  "coverage": {
+   "maker_settled_fills": 908,
+   "at5m": 308,
+   "at30m": 311,
+   "atfill": 381
+  },
+  "at5m": {
+   "ALL": {
+    "n_fills": 308,
+    "contracts": 4504.69,
+    "edge_usd_total": -124.3289,
+    "edge_per_contract_usd": -0.0276,
+    "fees_usd": 0.0
+   },
+   "KXA100WS": {
+    "n_fills": 1,
+    "contracts": 3.34,
+    "edge_usd_total": -0.1002,
+    "edge_per_contract_usd": -0.03,
+    "fees_usd": 0.0
+   },
+   "KXAAAGASD": {
+    "n_fills": 101,
+    "contracts": 1297.25,
+    "edge_usd_total": -15.4765,
+    "edge_per_contract_usd": -0.01193,
+    "fees_usd": 0.0
+   },
+   "KXAAAGASW": {
+    "n_fills": 13,
+    "contracts": 83.64,
+    "edge_usd_total": -1.1966,
+    "edge_per_contract_usd": -0.01431,
+    "fees_usd": 0.0
+   },
+   "KXACTBLUETOP": {
+    "n_fills": 4,
+    "contracts": 68.52,
+    "edge_usd_total": -3.2252,
+    "edge_per_contract_usd": -0.04707,
+    "fees_usd": 0.0
+   },
+   "KXADJOURNRECESS": {
+    "n_fills": 4,
+    "contracts": 50.0,
+    "edge_usd_total": -1.36,
+    "edge_per_contract_usd": -0.0272,
+    "fees_usd": 0.0
+   },
+   "KXAPRPOTUS": {
+    "n_fills": 5,
+    "contracts": 51.42,
+    "edge_usd_total": 0.5344,
+    "edge_per_contract_usd": 0.01039,
+    "fees_usd": 0.0
+   },
+   "KXB200WS": {
+    "n_fills": 1,
+    "contracts": 3.99,
+    "edge_usd_total": 0.0399,
+    "edge_per_contract_usd": 0.01,
+    "fees_usd": 0.0
+   },
+   "KXBLANCHEWITHDRAW": {
+    "n_fills": 1,
+    "contracts": 49.91,
+    "edge_usd_total": 0.0,
+    "edge_per_contract_usd": 0.0,
+    "fees_usd": 0.0
+   },
+   "KXCHINAAI": {
+    "n_fills": 1,
+    "contracts": 50.0,
+    "edge_usd_total": 0.5,
+    "edge_per_contract_usd": 0.01,
+    "fees_usd": 0.0
+   },
+   "KXCLAYTONDNI": {
+    "n_fills": 1,
+    "contracts": 50.0,
+    "edge_usd_total": -1.0,
+    "edge_per_contract_usd": -0.02,
+    "fees_usd": 0.0
+   },
+   "KXDIESELW": {
+    "n_fills": 1,
+    "contracts": 5.0,
+    "edge_usd_total": -0.1,
+    "edge_per_contract_usd": -0.02,
+    "fees_usd": 0.0
+   },
+   "KXDXYDUD": {
+    "n_fills": 23,
+    "contracts": 376.94,
+    "edge_usd_total": -10.8095,
+    "edge_per_contract_usd": -0.02868,
+    "fees_usd": 0.0
+   },
+   "KXEURUSDAW": {
+    "n_fills": 5,
+    "contracts": 85.47,
+    "edge_usd_total": 0.95,
+    "edge_per_contract_usd": 0.01112,
+    "fees_usd": 0.0
+   },
+   "KXGENERICBALLOTVOTEHUB": {
+    "n_fills": 12,
+    "contracts": 105.0,
+    "edge_usd_total": -1.2601,
+    "edge_per_contract_usd": -0.012,
+    "fees_usd": 0.0
+   },
+   "KXMAMDANIEO": {
+    "n_fills": 5,
+    "contracts": 177.11,
+    "edge_usd_total": -2.3711,
+    "edge_per_contract_usd": -0.01339,
+    "fees_usd": 0.0
+   },
+   "KXMCMORROWENDORSE": {
+    "n_fills": 5,
+    "contracts": 156.0,
+    "edge_usd_total": -3.56,
+    "edge_per_contract_usd": -0.02282,
+    "fees_usd": 0.0
+   },
+   "KXMLABELSHARE": {
+    "n_fills": 4,
+    "contracts": 173.0,
+    "edge_usd_total": -17.915,
+    "edge_per_contract_usd": -0.10355,
+    "fees_usd": 0.0
+   },
+   "KXMLBTRADE": {
+    "n_fills": 4,
+    "contracts": 22.45,
+    "edge_usd_total": 0.5108,
+    "edge_per_contract_usd": 0.02275,
+    "fees_usd": 0.0
+   },
+   "KXMUSKNW": {
+    "n_fills": 6,
+    "contracts": 142.26,
+    "edge_usd_total": -2.7904,
+    "edge_per_contract_usd": -0.01961,
+    "fees_usd": 0.0
+   },
+   "KXNETFLIXTOPVIEWSMOVIE": {
+    "n_fills": 1,
+    "contracts": 5.0,
+    "edge_usd_total": -0.05,
+    "edge_per_contract_usd": -0.01,
+    "fees_usd": 0.0
+   },
+   "KXRAIN": {
+    "n_fills": 32,
+    "contracts": 242.09,
+    "edge_usd_total": -23.8088,
+    "edge_per_contract_usd": -0.09835,
+    "fees_usd": 0.0
+   },
+   "KXSENATEADJOURN": {
+    "n_fills": 2,
+    "contracts": 80.0,
+    "edge_usd_total": -0.3,
+    "edge_per_contract_usd": -0.00375,
+    "fees_usd": 0.0
+   },
+   "KXTEMPAUSH": {
+    "n_fills": 15,
+    "contracts": 94.0,
+    "edge_usd_total": -17.29,
+    "edge_per_contract_usd": -0.18394,
+    "fees_usd": 0.0
+   },
+   "KXTEMPCHIH": {
+    "n_fills": 1,
+    "contracts": 5.0,
+    "edge_usd_total": -0.25,
+    "edge_per_contract_usd": -0.05,
+    "fees_usd": 0.0
+   },
+   "KXTEMPDCH": {
+    "n_fills": 1,
+    "contracts": 50.0,
+    "edge_usd_total": 0.0,
+    "edge_per_contract_usd": 0.0,
+    "fees_usd": 0.0
+   },
+   "KXTEMPLAXH": {
+    "n_fills": 2,
+    "contracts": 7.0,
+    "edge_usd_total": 0.07,
+    "edge_per_contract_usd": 0.01,
+    "fees_usd": 0.0
+   },
+   "KXTEMPNYCH": {
+    "n_fills": 2,
+    "contracts": 6.31,
+    "edge_usd_total": -0.1924,
+    "edge_per_contract_usd": -0.03049,
+    "fees_usd": 0.0
+   },
+   "KXTOPMODEL": {
+    "n_fills": 21,
+    "contracts": 636.54,
+    "edge_usd_total": -8.58,
+    "edge_per_contract_usd": -0.01348,
+    "fees_usd": 0.0
+   },
+   "KXTOPMOVIE": {
+    "n_fills": 6,
+    "contracts": 23.26,
+    "edge_usd_total": 0.1452,
+    "edge_per_contract_usd": 0.00624,
+    "fees_usd": 0.0
+   },
+   "KXTRUMPENDORSEMENTS": {
+    "n_fills": 9,
+    "contracts": 84.65,
+    "edge_usd_total": -4.023,
+    "edge_per_contract_usd": -0.04753,
+    "fees_usd": 0.0
+   },
+   "KXTRUMPTIME": {
+    "n_fills": 9,
+    "contracts": 237.89,
+    "edge_usd_total": -4.85,
+    "edge_per_contract_usd": -0.02039,
+    "fees_usd": 0.0
+   },
+   "KXTRUMPUAP": {
+    "n_fills": 2,
+    "contracts": 36.0,
+    "edge_usd_total": -0.16,
+    "edge_per_contract_usd": -0.00444,
+    "fees_usd": 0.0
+   },
+   "KXUSDJPY": {
+    "n_fills": 3,
+    "contracts": 6.0,
+    "edge_usd_total": -0.02,
+    "edge_per_contract_usd": -0.00333,
+    "fees_usd": 0.0
+   },
+   "KXYTVIEWSW": {
+    "n_fills": 5,
+    "contracts": 39.65,
+    "edge_usd_total": -6.3905,
+    "edge_per_contract_usd": -0.16117,
+    "fees_usd": 0.0
+   }
+  },
+  "at30m": {
+   "ALL": {
+    "n_fills": 311,
+    "contracts": 4829.89,
+    "edge_usd_total": -119.0303,
+    "edge_per_contract_usd": -0.02464,
+    "fees_usd": 0.0
+   },
+   "KXA100WS": {
+    "n_fills": 1,
+    "contracts": 3.34,
+    "edge_usd_total": -0.2338,
+    "edge_per_contract_usd": -0.07,
+    "fees_usd": 0.0
+   },
+   "KXAAAGASD": {
+    "n_fills": 101,
+    "contracts": 1297.25,
+    "edge_usd_total": -3.017,
+    "edge_per_contract_usd": -0.00233,
+    "fees_usd": 0.0
+   },
+   "KXAAAGASW": {
+    "n_fills": 19,
+    "contracts": 191.77,
+    "edge_usd_total": -3.3026,
+    "edge_per_contract_usd": -0.01722,
+    "fees_usd": 0.0
+   },
+   "KXACTBLUETOP": {
+    "n_fills": 6,
+    "contracts": 110.52,
+    "edge_usd_total": -0.8452,
+    "edge_per_contract_usd": -0.00765,
+    "fees_usd": 0.0
+   },
+   "KXADJOURNRECESS": {
+    "n_fills": 4,
+    "contracts": 50.0,
+    "edge_usd_total": -1.63,
+    "edge_per_contract_usd": -0.0326,
+    "fees_usd": 0.0
+   },
+   "KXAPRPOTUS": {
+    "n_fills": 7,
+    "contracts": 88.42,
+    "edge_usd_total": -5.0111,
+    "edge_per_contract_usd": -0.05667,
+    "fees_usd": 0.0
+   },
+   "KXB200WS": {
+    "n_fills": 1,
+    "contracts": 3.99,
+    "edge_usd_total": 0.0399,
+    "edge_per_contract_usd": 0.01,
+    "fees_usd": 0.0
+   },
+   "KXBLANCHEWITHDRAW": {
+    "n_fills": 1,
+    "contracts": 49.91,
+    "edge_usd_total": 0.0,
+    "edge_per_contract_usd": 0.0,
+    "fees_usd": 0.0
+   },
+   "KXCHINAAI": {
+    "n_fills": 1,
+    "contracts": 50.0,
+    "edge_usd_total": -0.5,
+    "edge_per_contract_usd": -0.01,
+    "fees_usd": 0.0
+   },
+   "KXCLAYTONDNI": {
+    "n_fills": 3,
+    "contracts": 150.0,
+    "edge_usd_total": -8.0,
+    "edge_per_contract_usd": -0.05333,
+    "fees_usd": 0.0
+   },
+   "KXDIESELW": {
+    "n_fills": 1,
+    "contracts": 5.0,
+    "edge_usd_total": -0.4,
+    "edge_per_contract_usd": -0.08,
+    "fees_usd": 0.0
+   },
+   "KXDXYDUD": {
+    "n_fills": 17,
+    "contracts": 286.94,
+    "edge_usd_total": -6.9371,
+    "edge_per_contract_usd": -0.02418,
+    "fees_usd": 0.0
+   },
+   "KXEURUSDAW": {
+    "n_fills": 10,
+    "contracts": 39.8,
+    "edge_usd_total": -2.1433,
+    "edge_per_contract_usd": -0.05385,
+    "fees_usd": 0.0
+   },
+   "KXGENERICBALLOTVOTEHUB": {
+    "n_fills": 12,
+    "contracts": 105.0,
+    "edge_usd_total": -5.3004,
+    "edge_per_contract_usd": -0.05048,
+    "fees_usd": 0.0
+   },
+   "KXMAMDANIEO": {
+    "n_fills": 4,
+    "contracts": 117.11,
+    "edge_usd_total": -1.6316,
+    "edge_per_contract_usd": -0.01393,
+    "fees_usd": 0.0
+   },
+   "KXMCMORROWENDORSE": {
+    "n_fills": 5,
+    "contracts": 156.0,
+    "edge_usd_total": -2.76,
+    "edge_per_contract_usd": -0.01769,
+    "fees_usd": 0.0
+   },
+   "KXMLABELSHARE": {
+    "n_fills": 4,
+    "contracts": 173.0,
+    "edge_usd_total": -25.89,
+    "edge_per_contract_usd": -0.14965,
+    "fees_usd": 0.0
+   },
+   "KXMLBTRADE": {
+    "n_fills": 4,
+    "contracts": 22.45,
+    "edge_usd_total": 0.0512,
+    "edge_per_contract_usd": 0.00228,
+    "fees_usd": 0.0
+   },
+   "KXMUSKNW": {
+    "n_fills": 11,
+    "contracts": 423.31,
+    "edge_usd_total": -7.6584,
+    "edge_per_contract_usd": -0.01809,
+    "fees_usd": 0.0
+   },
+   "KXNETFLIXTOPVIEWSMOVIE": {
+    "n_fills": 1,
+    "contracts": 5.0,
+    "edge_usd_total": -0.1,
+    "edge_per_contract_usd": -0.02,
+    "fees_usd": 0.0
+   },
+   "KXRAIN": {
+    "n_fills": 31,
+    "contracts": 237.09,
+    "edge_usd_total": -25.1803,
+    "edge_per_contract_usd": -0.10621,
+    "fees_usd": 0.0
+   },
+   "KXSENATEADJOURN": {
+    "n_fills": 2,
+    "contracts": 80.0,
+    "edge_usd_total": -0.3,
+    "edge_per_contract_usd": -0.00375,
+    "fees_usd": 0.0
+   },
+   "KXTEMPAUSH": {
+    "n_fills": 3,
+    "contracts": 15.0,
+    "edge_usd_total": -2.975,
+    "edge_per_contract_usd": -0.19833,
+    "fees_usd": 0.0
+   },
+   "KXTOPMODEL": {
+    "n_fills": 23,
+    "contracts": 731.54,
+    "edge_usd_total": -3.57,
+    "edge_per_contract_usd": -0.00488,
+    "fees_usd": 0.0
+   },
+   "KXTOPMOVIE": {
+    "n_fills": 6,
+    "contracts": 23.26,
+    "edge_usd_total": 0.2,
+    "edge_per_contract_usd": 0.0086,
+    "fees_usd": 0.0
+   },
+   "KXTRUMPENDORSEMENTS": {
+    "n_fills": 13,
+    "contracts": 47.65,
+    "edge_usd_total": -0.483,
+    "edge_per_contract_usd": -0.01014,
+    "fees_usd": 0.0
+   },
+   "KXTRUMPTIME": {
+    "n_fills": 11,
+    "contracts": 285.89,
+    "edge_usd_total": -8.6622,
+    "edge_per_contract_usd": -0.0303,
+    "fees_usd": 0.0
+   },
+   "KXTRUMPUAP": {
+    "n_fills": 2,
+    "contracts": 36.0,
+    "edge_usd_total": -0.16,
+    "edge_per_contract_usd": -0.00444,
+    "fees_usd": 0.0
+   },
+   "KXUSDJPY": {
+    "n_fills": 3,
+    "contracts": 6.0,
+    "edge_usd_total": 0.02,
+    "edge_per_contract_usd": 0.00333,
+    "fees_usd": 0.0
+   },
+   "KXYTVIEWSW": {
+    "n_fills": 4,
+    "contracts": 38.65,
+    "edge_usd_total": -2.6505,
+    "edge_per_contract_usd": -0.06858,
+    "fees_usd": 0.0
+   }
+  }
+ },
+ "by_series_combined_settlement": {
+  "KXAAAGASD": {
+   "n_fills": 517,
+   "contracts": 5360.91,
+   "edge_usd_total": -80.3773,
+   "fees_usd": 11.2195,
+   "net_after_fees_usd": -91.5968,
+   "edge_per_contract_usd": -0.01499
+  },
+  "KXAAAGASW": {
+   "n_fills": 91,
+   "contracts": 816.08,
+   "edge_usd_total": -38.5102,
+   "fees_usd": 1.8154,
+   "net_after_fees_usd": -40.3256,
+   "edge_per_contract_usd": -0.04719
+  },
+  "KXTRUMPENDORSEMENTS": {
+   "n_fills": 56,
+   "contracts": 797.51,
+   "edge_usd_total": -33.2417,
+   "fees_usd": 4.2085,
+   "net_after_fees_usd": -37.4502,
+   "edge_per_contract_usd": -0.04168
+  },
+  "KXTRUMPTIME": {
+   "n_fills": 57,
+   "contracts": 902.19,
+   "edge_usd_total": -32.6681,
+   "fees_usd": 3.5873,
+   "net_after_fees_usd": -36.2554,
+   "edge_per_contract_usd": -0.03621
+  },
+  "KXTEMPAUSH": {
+   "n_fills": 86,
+   "contracts": 868.65,
+   "edge_usd_total": -33.1786,
+   "fees_usd": 2.4625,
+   "net_after_fees_usd": -35.6411,
+   "edge_per_contract_usd": -0.0382
+  },
+  "KXMUSKNW": {
+   "n_fills": 49,
+   "contracts": 1052.8,
+   "edge_usd_total": -25.7228,
+   "fees_usd": 8.1987,
+   "net_after_fees_usd": -33.9215,
+   "edge_per_contract_usd": -0.02443
+  },
+  "KXMLABELSHARE": {
+   "n_fills": 30,
+   "contracts": 346.0,
+   "edge_usd_total": -31.36,
+   "fees_usd": 1.8938,
+   "net_after_fees_usd": -33.2538,
+   "edge_per_contract_usd": -0.09064
+  },
+  "KXTEMPCHIH": {
+   "n_fills": 37,
+   "contracts": 324.85,
+   "edge_usd_total": -31.3535,
+   "fees_usd": 0.1197,
+   "net_after_fees_usd": -31.4732,
+   "edge_per_contract_usd": -0.09652
+  },
+  "KXTOPMODEL": {
+   "n_fills": 61,
+   "contracts": 1438.45,
+   "edge_usd_total": -19.4573,
+   "fees_usd": 5.6474,
+   "net_after_fees_usd": -25.1047,
+   "edge_per_contract_usd": -0.01353
+  },
+  "KXRAIN": {
+   "n_fills": 60,
+   "contracts": 420.27,
+   "edge_usd_total": -22.5573,
+   "fees_usd": 1.5432,
+   "net_after_fees_usd": -24.1005,
+   "edge_per_contract_usd": -0.05367
+  },
+  "KXDXYDUD": {
+   "n_fills": 61,
+   "contracts": 608.26,
+   "edge_usd_total": -17.4265,
+   "fees_usd": 2.4694,
+   "net_after_fees_usd": -19.8959,
+   "edge_per_contract_usd": -0.02865
+  },
+  "KXCLAYTONDNI": {
+   "n_fills": 15,
+   "contracts": 300.28,
+   "edge_usd_total": -16.1044,
+   "fees_usd": 1.3619,
+   "net_after_fees_usd": -17.4663,
+   "edge_per_contract_usd": -0.05363
+  },
+  "KXEURUSDAW": {
+   "n_fills": 48,
+   "contracts": 564.61,
+   "edge_usd_total": -13.0796,
+   "fees_usd": 2.4699,
+   "net_after_fees_usd": -15.5495,
+   "edge_per_contract_usd": -0.02317
+  },
+  "KXTEMPLAXH": {
+   "n_fills": 20,
+   "contracts": 202.91,
+   "edge_usd_total": -10.7016,
+   "fees_usd": 0.3331,
+   "net_after_fees_usd": -11.0347,
+   "edge_per_contract_usd": -0.05274
+  },
+  "KXTEMPDCH": {
+   "n_fills": 28,
+   "contracts": 304.12,
+   "edge_usd_total": -8.6984,
+   "fees_usd": 0.5979,
+   "net_after_fees_usd": -9.2963,
+   "edge_per_contract_usd": -0.0286
+  },
+  "KXAMSAVO": {
+   "n_fills": 8,
+   "contracts": 117.3,
+   "edge_usd_total": -9.2603,
+   "fees_usd": 0.0,
+   "net_after_fees_usd": -9.2603,
+   "edge_per_contract_usd": -0.07895
+  },
+  "KXNDQHUD": {
+   "n_fills": 15,
+   "contracts": 165.45,
+   "edge_usd_total": -7.8115,
+   "fees_usd": 0.8214,
+   "net_after_fees_usd": -8.6329,
+   "edge_per_contract_usd": -0.04721
+  },
+  "KXAPRPOTUS": {
+   "n_fills": 38,
+   "contracts": 440.73,
+   "edge_usd_total": -5.6439,
+   "fees_usd": 2.473,
+   "net_after_fees_usd": -8.1169,
+   "edge_per_contract_usd": -0.01281
+  },
+  "KXNETFLIXTOPVIEWSTV": {
+   "n_fills": 3,
+   "contracts": 60.58,
+   "edge_usd_total": -5.7638,
+   "fees_usd": 0.5242,
+   "net_after_fees_usd": -6.288,
+   "edge_per_contract_usd": -0.09514
+  },
+  "KXYTVIEWSW": {
+   "n_fills": 16,
+   "contracts": 73.86,
+   "edge_usd_total": -5.7505,
+   "fees_usd": 0.4356,
+   "net_after_fees_usd": -6.1861,
+   "edge_per_contract_usd": -0.07786
+  },
+  "KXCHINAAI": {
+   "n_fills": 9,
+   "contracts": 206.0,
+   "edge_usd_total": -5.49,
+   "fees_usd": 0.6194,
+   "net_after_fees_usd": -6.1094,
+   "edge_per_contract_usd": -0.02665
+  },
+  "KXINXHUD": {
+   "n_fills": 4,
+   "contracts": 58.05,
+   "edge_usd_total": -5.1725,
+   "fees_usd": 0.3906,
+   "net_after_fees_usd": -5.5631,
+   "edge_per_contract_usd": -0.0891
+  },
+  "KXACTBLUETOP": {
+   "n_fills": 9,
+   "contracts": 216.52,
+   "edge_usd_total": -3.7456,
+   "fees_usd": 1.3876,
+   "net_after_fees_usd": -5.1332,
+   "edge_per_contract_usd": -0.0173
+  },
+  "KXMCMORROWENDORSE": {
+   "n_fills": 10,
+   "contracts": 272.0,
+   "edge_usd_total": -3.96,
+   "fees_usd": 0.4242,
+   "net_after_fees_usd": -4.3842,
+   "edge_per_contract_usd": -0.01456
+  },
+  "KXGENERICBALLOTVOTEHUB": {
+   "n_fills": 29,
+   "contracts": 194.0,
+   "edge_usd_total": -2.9966,
+   "fees_usd": 1.3753,
+   "net_after_fees_usd": -4.3719,
+   "edge_per_contract_usd": -0.01545
+  },
+  "KXTEMPNYCH": {
+   "n_fills": 11,
+   "contracts": 93.86,
+   "edge_usd_total": -4.0679,
+   "fees_usd": 0.0847,
+   "net_after_fees_usd": -4.1526,
+   "edge_per_contract_usd": -0.04334
+  },
+  "KXMAMDANIEO": {
+   "n_fills": 13,
+   "contracts": 354.11,
+   "edge_usd_total": -2.3065,
+   "fees_usd": 0.7066,
+   "net_after_fees_usd": -3.0131,
+   "edge_per_contract_usd": -0.00651
+  },
+  "KXADJOURNRECESS": {
+   "n_fills": 9,
+   "contracts": 99.76,
+   "edge_usd_total": -1.1368,
+   "fees_usd": 0.8009,
+   "net_after_fees_usd": -1.9377,
+   "edge_per_contract_usd": -0.0114
+  },
+  "KXMLBTRADE": {
+   "n_fills": 8,
+   "contracts": 45.45,
+   "edge_usd_total": -1.2456,
+   "fees_usd": 0.2976,
+   "net_after_fees_usd": -1.5432,
+   "edge_per_contract_usd": -0.02741
+  },
+  "KXSENATEADJOURN": {
+   "n_fills": 9,
+   "contracts": 160.0,
+   "edge_usd_total": -0.3,
+   "fees_usd": 1.0877,
+   "net_after_fees_usd": -1.3877,
+   "edge_per_contract_usd": -0.00187
+  },
+  "KXDIESELW": {
+   "n_fills": 7,
+   "contracts": 29.67,
+   "edge_usd_total": -0.9465,
+   "fees_usd": 0.0631,
+   "net_after_fees_usd": -1.0096,
+   "edge_per_contract_usd": -0.0319
+  },
+  "KXLIUKCOUPLE": {
+   "n_fills": 6,
+   "contracts": 34.95,
+   "edge_usd_total": -0.7655,
+   "fees_usd": 0.0,
+   "net_after_fees_usd": -0.7655,
+   "edge_per_contract_usd": -0.0219
+  },
+  "KXBLANCHEWITHDRAW": {
+   "n_fills": 8,
+   "contracts": 99.36,
+   "edge_usd_total": -0.309,
+   "fees_usd": 0.406,
+   "net_after_fees_usd": -0.715,
+   "edge_per_contract_usd": -0.00311
+  },
+  "KXA100WS": {
+   "n_fills": 2,
+   "contracts": 6.34,
+   "edge_usd_total": -0.3618,
+   "fees_usd": 0.0,
+   "net_after_fees_usd": -0.3618,
+   "edge_per_contract_usd": -0.05707
+  },
+  "KXCLARITYVOTE": {
+   "n_fills": 2,
+   "contracts": 30.0,
+   "edge_usd_total": -0.3,
+   "fees_usd": 0.0,
+   "net_after_fees_usd": -0.3,
+   "edge_per_contract_usd": -0.01
+  },
+  "KXTRUMPUAP": {
+   "n_fills": 4,
+   "contracts": 72.0,
+   "edge_usd_total": -0.16,
+   "fees_usd": 0.1096,
+   "net_after_fees_usd": -0.2696,
+   "edge_per_contract_usd": -0.00222
+  },
+  "KXNETFLIXTOPVIEWSMOVIE": {
+   "n_fills": 2,
+   "contracts": 10.0,
+   "edge_usd_total": -0.15,
+   "fees_usd": 0.0517,
+   "net_after_fees_usd": -0.2017,
+   "edge_per_contract_usd": -0.015
+  },
+  "KXTOPMOVIE": {
+   "n_fills": 10,
+   "contracts": 38.26,
+   "edge_usd_total": -0.0634,
+   "fees_usd": 0.0942,
+   "net_after_fees_usd": -0.1576,
+   "edge_per_contract_usd": -0.00166
+  },
+  "KXB200WS": {
+   "n_fills": 2,
+   "contracts": 6.99,
+   "edge_usd_total": -0.0888,
+   "fees_usd": 0.0,
+   "net_after_fees_usd": -0.0888,
+   "edge_per_contract_usd": -0.0127
+  },
+  "KXUSDJPY": {
+   "n_fills": 4,
+   "contracts": 8.0,
+   "edge_usd_total": 0.02,
+   "fees_usd": 0.0,
+   "net_after_fees_usd": 0.02,
+   "edge_per_contract_usd": 0.0025
+  }
+ },
+ "data_inventory": {
+  "as_of_utc": "2026-08-13T01:0xZ (reads 00:56-01:10Z)",
+  "sources": {
+   "/opt/pa2-maker-kalshi-live/quotes-YYYYMMDD.jsonl(.gz)": {
+    "content": "per-cycle per-selected-market quoter rows: ts, ticker, series, y_ref/n_ref (yes/no reference price from the qualifying-walk book read), y_lowq/n_lowq, book depth-in-$ (y_book_df), our px/ct/score/share, gates",
+    "price_field": "y_ref (yes-basis reference price)",
+    "cadence": "~41s cycles; only markets in the active selection (~34/cycle, 265 tickers on 08-12; 53,842 rows)",
+    "coverage": "2026-07-29..08-02 (gz), 08-04..08-09, 08-12. GAPS: 08-03, 08-10, 08-11, and all halt windows (tape stops when quoter stops; last row 08-12T19:50Z = wind-down)"
+   },
+   "/opt/pa2-maker-kalshi/samples-YYYYMMDD.jsonl.gz": {
+    "content": "recorder arm (unauthenticated, independent of quoter): ts, t(ticker), yb/ya (yes bid/ask touch), tick, vol24, LIP program fields",
+    "price_field": "mid=(yb+ya)/2",
+    "cadence": "~5min per tracked market; footprint = top-100 markets by LIP pool $/day + 20 random tail (~120/day; 34,560 rows on 08-12)",
+    "coverage": "2026-07-30..08-13 GAPLESS (runs during quoter halts); KEEP_DAYS=14 prune; older days only inside /opt/pa2-maker-backups/maker-data-*.tar.gz (census back to 07-16)"
+   },
+   "/opt/pa2-maker-kalshi-live/caprank-YYYYMMDD.jsonl": {
+    "content": "selection/ranking snapshots (actual selected list + variants) \u2014 NOT a price tape",
+    "coverage": "same dates as quotes"
+   },
+   "/opt/pa2-maker-kalshi-live/plans-YYYYMMDD.jsonl": {
+    "content": "per-cycle counters (conditional keys 106-183) \u2014 no per-market prices"
+   },
+   "/opt/pa2-maker-kalshi-live/ws_daemon_log.jsonl": {
+    "content": "ops events (cold_cycle, book_ws counts) \u2014 books held in memory, NOT persisted"
+   },
+   "/opt/pa2-maker-kalshi-live/cash-202608.jsonl": {
+    "content": "~15min account snapshot; resting_raw = OUR order prices only; positions_raw"
+   },
+   "/opt/pa2-maker-kalshi-live/ledger-202608.jsonl": {
+    "content": "hourly attribution ledger (balance/fills_cash/settle_revenue per series)"
+   },
+   "/opt/pa2-maker-kalshi-live/estimates-202608.jsonl": {
+    "content": "hourly per-program reward_centicents estimates \u2014 no prices"
+   },
+   "venue API (always available)": {
+    "content": "/portfolio/fills (1630), /portfolio/settlements (203, market_result = terminal price), /markets?tickers= (open/close times; 227/227 resolved)"
+   }
+  },
+  "verdict": "NO gapless per-quoted-market price tape exists. Best marks: samples (gapless but wrong universe), quotes y_ref (right universe but only while quoter runs). Mark coverage of our 908 maker settled fills: at-fill 381 (42.0%), +5m 308 (33.9%), +30m 311 (34.3%)."
+ }
+}
