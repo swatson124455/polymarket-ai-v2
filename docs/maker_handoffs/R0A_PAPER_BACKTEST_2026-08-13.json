@@ -1,0 +1,1581 @@
+{
+ "generated": "2026-08-13T15:00:05.048998+00:00",
+ "t_start": "2026-08-13T14:59:54.921829+00:00",
+ "n_fills": 1630,
+ "n_settlements": 208,
+ "n_credit_rows": 62,
+ "referral_excluded": 15.0,
+ "n_events": 115,
+ "n_meta_missing_tickers": 0,
+ "full_tape": {
+  "events": 115,
+  "net": -390.73,
+  "paid": 189.06,
+  "realized": -579.79,
+  "fills": 1630
+ },
+ "kept": {
+  "events": 19,
+  "net": -79.59,
+  "paid": 29.58,
+  "realized": -109.17,
+  "fills": 231
+ },
+ "dropped": {
+  "events": 96,
+  "net": -311.14,
+  "paid": 159.48,
+  "realized": -470.62,
+  "fills": 1399
+ },
+ "dropped_by": {
+  "close8d_fail": {
+   "events": 3,
+   "net": -1.66,
+   "paid": 2.46,
+   "realized": -4.12,
+   "fills": 9
+  },
+  "announcement": {
+   "events": 7,
+   "net": -29.74,
+   "paid": 16.12,
+   "realized": -45.86,
+   "fills": 90
+  },
+  "ladder_near_strike": {
+   "events": 86,
+   "net": -329.14,
+   "paid": 113.68,
+   "realized": -442.82,
+   "fills": 1342
+  },
+  "resolution_proximity": {
+   "events": 35,
+   "net": -24.63,
+   "paid": 81.16,
+   "realized": -105.79,
+   "fills": 201
+  },
+  "close8d_unknown": {
+   "events": 5,
+   "net": 7.51,
+   "paid": 7.51,
+   "realized": 0.0,
+   "fills": 0
+  }
+ },
+ "per_event": {
+  "KXA100WS-26AUG07": {
+   "net": -0.3618,
+   "paid": 0.0,
+   "realized": -0.3618,
+   "fees": 0.0,
+   "fills": 2,
+   "contracts": 6.34,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26AUG01": {
+   "net": -12.6921,
+   "paid": 0.0,
+   "realized": -12.6921,
+   "fees": 3.7413,
+   "fills": 36,
+   "contracts": 697.14,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26AUG02": {
+   "net": -7.7395,
+   "paid": 0.0,
+   "realized": -7.7395,
+   "fees": 1.6897,
+   "fills": 22,
+   "contracts": 390.65,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26AUG06": {
+   "net": -2.3077,
+   "paid": 0.0,
+   "realized": -2.3077,
+   "fees": 0.8357,
+   "fills": 39,
+   "contracts": 189.96,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26AUG07": {
+   "net": -7.2365,
+   "paid": 0.0,
+   "realized": -7.2365,
+   "fees": 1.6652,
+   "fills": 46,
+   "contracts": 427.2,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26AUG08": {
+   "net": -4.4128,
+   "paid": 0.0,
+   "realized": -4.4128,
+   "fees": 1.5064,
+   "fills": 38,
+   "contracts": 493.56,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26AUG13": {
+   "net": -6.714,
+   "paid": 0.0,
+   "realized": -6.714,
+   "fees": 0.6731,
+   "fills": 76,
+   "contracts": 299.83,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26JUL21": {
+   "net": -3.1176,
+   "paid": 2.15,
+   "realized": -5.2676,
+   "fees": 0.8547,
+   "fills": 36,
+   "contracts": 277.5,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26JUL22": {
+   "net": -0.1504,
+   "paid": 0.0,
+   "realized": -0.1504,
+   "fees": 0.0,
+   "fills": 2,
+   "contracts": 14.08,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26JUL23": {
+   "net": 2.6244,
+   "paid": 10.09,
+   "realized": -7.4656,
+   "fees": 0.0,
+   "fills": 96,
+   "contracts": 919.52,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26JUL24": {
+   "net": -26.1669,
+   "paid": 8.81,
+   "realized": -34.9769,
+   "fees": 0.0,
+   "fills": 146,
+   "contracts": 1404.32,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26JUL25": {
+   "net": 5.244,
+   "paid": 11.99,
+   "realized": -6.746,
+   "fees": 0.0,
+   "fills": 44,
+   "contracts": 399.04,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26JUL27": {
+   "net": 0.1528,
+   "paid": 0.0,
+   "realized": 0.1528,
+   "fees": 0.0,
+   "fills": 7,
+   "contracts": 39.56,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASD-26JUL31": {
+   "net": -2.7545,
+   "paid": 0.0,
+   "realized": -2.7545,
+   "fees": 0.9265,
+   "fills": 5,
+   "contracts": 108.38,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASW-26AUG03": {
+   "net": -6.9114,
+   "paid": 0.0,
+   "realized": -6.9114,
+   "fees": 1.5412,
+   "fills": 22,
+   "contracts": 277.08,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASW-26AUG10": {
+   "net": -0.7577,
+   "paid": 0.0,
+   "realized": -0.7577,
+   "fees": 0.2077,
+   "fills": 18,
+   "contracts": 90.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAAAGASW-26JUL27": {
+   "net": -32.6565,
+   "paid": 0.0,
+   "realized": -32.6565,
+   "fees": 0.0665,
+   "fills": 51,
+   "contracts": 449.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXACTBLUETOP-26AUG07": {
+   "net": -5.1332,
+   "paid": 0.0,
+   "realized": -5.1332,
+   "fees": 1.3876,
+   "fills": 9,
+   "contracts": 216.52,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXADJOURNRECESS-26AUG": {
+   "net": -0.9177,
+   "paid": 1.02,
+   "realized": -1.9377,
+   "fees": 0.8009,
+   "fills": 9,
+   "contracts": 99.76,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXAMSAVO-26JUL24": {
+   "net": -9.2603,
+   "paid": 0.0,
+   "realized": -9.2603,
+   "fees": 0.0,
+   "fills": 8,
+   "contracts": 117.3,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAPRPOTUS-26AUG07": {
+   "net": -1.6309,
+   "paid": 1.63,
+   "realized": -3.2609,
+   "fees": 1.5779,
+   "fills": 31,
+   "contracts": 292.04,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAPRPOTUS-26AUG14": {
+   "net": -0.1206,
+   "paid": 0.0,
+   "realized": -0.1206,
+   "fees": 0.0706,
+   "fills": 2,
+   "contracts": 10.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXAPRPOTUS-26JUL31": {
+   "net": -4.856,
+   "paid": 0.0,
+   "realized": -4.856,
+   "fees": 0.8951,
+   "fills": 7,
+   "contracts": 148.69,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXB200WS-26AUG07": {
+   "net": -0.0888,
+   "paid": 0.0,
+   "realized": -0.0888,
+   "fees": 0.0,
+   "fills": 2,
+   "contracts": 6.99,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXBABELMANDEBWEEKLY-26AUG02": {
+   "net": 1.27,
+   "paid": 1.27,
+   "realized": 0.0,
+   "fees": 0.0,
+   "fills": 0,
+   "contracts": 0,
+   "close8d": null,
+   "toxic": [],
+   "keep": true
+  },
+  "KXBLANCHEWITHDRAW-28JAN01": {
+   "net": -0.715,
+   "paid": 0.0,
+   "realized": -0.715,
+   "fees": 0.406,
+   "fills": 8,
+   "contracts": 99.36,
+   "close8d": true,
+   "toxic": [
+    "announcement"
+   ],
+   "keep": false
+  },
+  "KXCHINAAI-26AUG03": {
+   "net": -6.1094,
+   "paid": 0.0,
+   "realized": -6.1094,
+   "fees": 0.6194,
+   "fills": 9,
+   "contracts": 206.0,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXCHIPBURRITO-26AUG02": {
+   "net": 1.14,
+   "paid": 1.14,
+   "realized": 0.0,
+   "fees": 0.0,
+   "fills": 0,
+   "contracts": 0,
+   "close8d": null,
+   "toxic": [],
+   "keep": true
+  },
+  "KXCLARITYVOTE-26JUL": {
+   "net": -0.3,
+   "paid": 0.0,
+   "realized": -0.3,
+   "fees": 0.0,
+   "fills": 2,
+   "contracts": 30.0,
+   "close8d": false,
+   "toxic": [],
+   "keep": false
+  },
+  "KXCLAYTONDNI-27JAN01": {
+   "net": -14.8263,
+   "paid": 2.64,
+   "realized": -17.4663,
+   "fees": 1.3619,
+   "fills": 15,
+   "contracts": 300.28,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXCLUBFBTTS-26JUL26ERKHIL": {
+   "net": 7.1384,
+   "paid": 8.36,
+   "realized": -1.2216,
+   "fees": 0.0,
+   "fills": 4,
+   "contracts": 37.86,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXCLUBFSPREAD-26JUL26ERKHIL": {
+   "net": 3.0366,
+   "paid": 4.7,
+   "realized": -1.6634,
+   "fees": 0.0634,
+   "fills": 2,
+   "contracts": 16.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXCLUBFTOTAL-26JUL26ERKHIL": {
+   "net": 1.18,
+   "paid": 1.18,
+   "realized": 0.0,
+   "fees": 0.0,
+   "fills": 0,
+   "contracts": 0,
+   "close8d": null,
+   "toxic": [],
+   "keep": true
+  },
+  "KXDIESELW-26AUG09": {
+   "net": -1.0096,
+   "paid": 0.0,
+   "realized": -1.0096,
+   "fees": 0.0631,
+   "fills": 7,
+   "contracts": 29.67,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXDXYDUD-26AUG11": {
+   "net": -0.0167,
+   "paid": 0.0,
+   "realized": -0.0167,
+   "fees": 0.0167,
+   "fills": 2,
+   "contracts": 10.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXDXYDUD-26AUG12": {
+   "net": -1.3555,
+   "paid": 0.0,
+   "realized": -1.3555,
+   "fees": 0.2255,
+   "fills": 7,
+   "contracts": 30.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXDXYDUD-26JUL27": {
+   "net": -7.8665,
+   "paid": 1.89,
+   "realized": -9.7565,
+   "fees": 0.4645,
+   "fills": 12,
+   "contracts": 113.3,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXDXYDUD-26JUL28": {
+   "net": -10.1394,
+   "paid": 0.0,
+   "realized": -10.1394,
+   "fees": 2.0049,
+   "fills": 49,
+   "contracts": 494.96,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXEURUSDAW-26AUG07": {
+   "net": -1.3186,
+   "paid": 0.0,
+   "realized": -1.3186,
+   "fees": 0.2186,
+   "fills": 8,
+   "contracts": 40.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXEURUSDAW-26AUG14": {
+   "net": -0.7155,
+   "paid": 0.0,
+   "realized": -0.7155,
+   "fees": 0.1655,
+   "fills": 5,
+   "contracts": 20.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXEURUSDAW-26JUL31": {
+   "net": -14.2309,
+   "paid": 0.0,
+   "realized": -14.2309,
+   "fees": 2.2513,
+   "fills": 40,
+   "contracts": 524.61,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXGENERICBALLOTVOTEHUB-26AUG14": {
+   "net": -6.3351,
+   "paid": 0.0,
+   "realized": -6.3351,
+   "fees": 1.3351,
+   "fills": 10,
+   "contracts": 170.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXGENERICBALLOTVOTEHUB-26JUL31": {
+   "net": -2.0419,
+   "paid": 2.33,
+   "realized": -4.3719,
+   "fees": 1.3753,
+   "fills": 29,
+   "contracts": 194.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXGOOGSHARE-GOOG": {
+   "net": -0.2721,
+   "paid": 0.0,
+   "realized": -0.2721,
+   "fees": 0.0721,
+   "fills": 2,
+   "contracts": 10.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXINXHUD-26JUL271600": {
+   "net": 7.5569,
+   "paid": 13.12,
+   "realized": -5.5631,
+   "fees": 0.3906,
+   "fills": 4,
+   "contracts": 58.05,
+   "close8d": true,
+   "toxic": [
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXLIUKCOUPLE-26AUG31": {
+   "net": -0.7655,
+   "paid": 0.0,
+   "realized": -0.7655,
+   "fees": 0.0,
+   "fills": 6,
+   "contracts": 34.95,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXMAMDANIEO-26AUG01": {
+   "net": -2.9287,
+   "paid": 0.0,
+   "realized": -2.9287,
+   "fees": 0.6722,
+   "fills": 10,
+   "contracts": 344.11,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXMAMDANIEO-26AUG08": {
+   "net": -0.0844,
+   "paid": 0.0,
+   "realized": -0.0844,
+   "fees": 0.0344,
+   "fills": 3,
+   "contracts": 10.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXMCMORROWENDORSE-26AUG04": {
+   "net": -4.3842,
+   "paid": 0.0,
+   "realized": -4.3842,
+   "fees": 0.4242,
+   "fills": 10,
+   "contracts": 272.0,
+   "close8d": true,
+   "toxic": [
+    "announcement"
+   ],
+   "keep": false
+  },
+  "KXMLABELSHARE-W3026JUL30": {
+   "net": -17.1038,
+   "paid": 16.15,
+   "realized": -33.2538,
+   "fees": 1.8938,
+   "fills": 30,
+   "contracts": 346.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXMLBTRADE-26AUG05": {
+   "net": -1.5432,
+   "paid": 0.0,
+   "realized": -1.5432,
+   "fees": 0.2976,
+   "fills": 8,
+   "contracts": 45.45,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXMUSKNW-26JUL31": {
+   "net": -33.9215,
+   "paid": 0.0,
+   "realized": -33.9215,
+   "fees": 8.1987,
+   "fills": 49,
+   "contracts": 1052.8,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXNDQHUD-26JUL271600": {
+   "net": 0.6971,
+   "paid": 9.33,
+   "realized": -8.6329,
+   "fees": 0.8214,
+   "fills": 15,
+   "contracts": 165.45,
+   "close8d": true,
+   "toxic": [
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXNETFLIXTOPVIEWSMOVIE-26AUG10": {
+   "net": -0.2017,
+   "paid": 0.0,
+   "realized": -0.2017,
+   "fees": 0.0517,
+   "fills": 2,
+   "contracts": 10.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXNETFLIXTOPVIEWSTV-26AUG10": {
+   "net": -6.288,
+   "paid": 0.0,
+   "realized": -6.288,
+   "fees": 0.5242,
+   "fills": 3,
+   "contracts": 60.58,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXNHPRIMARY28": {
+   "net": -1.7143,
+   "paid": 0.0,
+   "realized": -1.7143,
+   "fees": 0.3143,
+   "fills": 3,
+   "contracts": 40.0,
+   "close8d": false,
+   "toxic": [
+    "announcement"
+   ],
+   "keep": false
+  },
+  "KXPANAMAWEEKLY-26AUG02": {
+   "net": 2.41,
+   "paid": 2.41,
+   "realized": 0.0,
+   "fees": 0.0,
+   "fills": 0,
+   "contracts": 0,
+   "close8d": null,
+   "toxic": [],
+   "keep": true
+  },
+  "KXRAIN-26AUG02": {
+   "net": -11.8324,
+   "paid": 0.0,
+   "realized": -11.8324,
+   "fees": 0.5602,
+   "fills": 16,
+   "contracts": 151.23,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXRAIN-26AUG03": {
+   "net": -9.9659,
+   "paid": 0.0,
+   "realized": -9.9659,
+   "fees": 0.2459,
+   "fills": 7,
+   "contracts": 110.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXRAIN-26AUG05": {
+   "net": -1.0347,
+   "paid": 0.0,
+   "realized": -1.0347,
+   "fees": 0.0847,
+   "fills": 2,
+   "contracts": 10.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXRAIN-26AUG06": {
+   "net": -1.0447,
+   "paid": 0.0,
+   "realized": -1.0447,
+   "fees": 0.267,
+   "fills": 21,
+   "contracts": 85.38,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXRAIN-26AUG07": {
+   "net": -0.2228,
+   "paid": 0.0,
+   "realized": -0.2228,
+   "fees": 0.3854,
+   "fills": 14,
+   "contracts": 63.66,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXRAIN-26AUG12": {
+   "net": -0.4291,
+   "paid": 0.0,
+   "realized": -0.4291,
+   "fees": 0.1291,
+   "fills": 10,
+   "contracts": 40.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXRAIN-26AUG13": {
+   "net": -1.421,
+   "paid": 0.0,
+   "realized": -1.421,
+   "fees": 0.111,
+   "fills": 6,
+   "contracts": 19.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXSENATEADJOURN-27": {
+   "net": 5.0523,
+   "paid": 6.44,
+   "realized": -1.3877,
+   "fees": 1.0877,
+   "fills": 9,
+   "contracts": 160.0,
+   "close8d": true,
+   "toxic": [
+    "announcement"
+   ],
+   "keep": false
+  },
+  "KXSUEZWEEKLY-26AUG02": {
+   "net": 1.51,
+   "paid": 1.51,
+   "realized": 0.0,
+   "fees": 0.0,
+   "fills": 0,
+   "contracts": 0,
+   "close8d": null,
+   "toxic": [],
+   "keep": true
+  },
+  "KXTEMPAUSH-26AUG0202": {
+   "net": 2.2668,
+   "paid": 3.68,
+   "realized": -1.4132,
+   "fees": 0.4932,
+   "fills": 8,
+   "contracts": 106.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26AUG0203": {
+   "net": -9.8236,
+   "paid": 0.0,
+   "realized": -9.8236,
+   "fees": 0.5736,
+   "fills": 4,
+   "contracts": 110.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26AUG0204": {
+   "net": -0.01,
+   "paid": 0.0,
+   "realized": -0.01,
+   "fees": 0.0,
+   "fills": 5,
+   "contracts": 12.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26AUG0205": {
+   "net": -0.7033,
+   "paid": 0.0,
+   "realized": -0.7033,
+   "fees": 0.1033,
+   "fills": 4,
+   "contracts": 20.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26AUG0206": {
+   "net": -0.6153,
+   "paid": 0.0,
+   "realized": -0.6153,
+   "fees": 0.0739,
+   "fills": 5,
+   "contracts": 13.97,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26AUG0207": {
+   "net": -0.3375,
+   "paid": 0.0,
+   "realized": -0.3375,
+   "fees": 0.0875,
+   "fills": 2,
+   "contracts": 10.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26JUL2015": {
+   "net": -3.4632,
+   "paid": 0.0,
+   "realized": -3.4632,
+   "fees": 0.054,
+   "fills": 6,
+   "contracts": 79.77,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26JUL2021": {
+   "net": 1.0082,
+   "paid": 16.48,
+   "realized": -15.4718,
+   "fees": 1.077,
+   "fills": 33,
+   "contracts": 369.18,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26JUL2123": {
+   "net": -2.461,
+   "paid": 0.0,
+   "realized": -2.461,
+   "fees": 0.0,
+   "fills": 10,
+   "contracts": 89.93,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26JUL2207": {
+   "net": -0.903,
+   "paid": 0.0,
+   "realized": -0.903,
+   "fees": 0.0,
+   "fills": 3,
+   "contracts": 15.02,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26JUL2208": {
+   "net": 2.42,
+   "paid": 2.69,
+   "realized": -0.27,
+   "fees": 0.0,
+   "fills": 4,
+   "contracts": 36.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPAUSH-26JUL2212": {
+   "net": 1.7808,
+   "paid": 1.95,
+   "realized": -0.1692,
+   "fees": 0.0,
+   "fills": 2,
+   "contracts": 6.78,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPCHIH-26AUG0203": {
+   "net": -0.3069,
+   "paid": 0.0,
+   "realized": -0.3069,
+   "fees": 0.0069,
+   "fills": 2,
+   "contracts": 10.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPCHIH-26JUL2021": {
+   "net": -2.3428,
+   "paid": 0.0,
+   "realized": -2.3428,
+   "fees": 0.1128,
+   "fills": 9,
+   "contracts": 56.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPCHIH-26JUL2123": {
+   "net": -10.46,
+   "paid": 2.23,
+   "realized": -12.69,
+   "fees": 0.0,
+   "fills": 8,
+   "contracts": 55.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPCHIH-26JUL2206": {
+   "net": -1.65,
+   "paid": 0.0,
+   "realized": -1.65,
+   "fees": 0.0,
+   "fills": 7,
+   "contracts": 52.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPCHIH-26JUL2207": {
+   "net": -2.8,
+   "paid": 0.0,
+   "realized": -2.8,
+   "fees": 0.0,
+   "fills": 1,
+   "contracts": 20.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPCHIH-26JUL2208": {
+   "net": -2.2,
+   "paid": 0.0,
+   "realized": -2.2,
+   "fees": 0.0,
+   "fills": 1,
+   "contracts": 20.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPCHIH-26JUL2211": {
+   "net": 2.09,
+   "paid": 4.56,
+   "realized": -2.47,
+   "fees": 0.0,
+   "fills": 4,
+   "contracts": 60.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPCHIH-26JUL2212": {
+   "net": -5.5935,
+   "paid": 1.42,
+   "realized": -7.0135,
+   "fees": 0.0,
+   "fills": 5,
+   "contracts": 51.85,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPDCH-26AUG0206": {
+   "net": -3.0083,
+   "paid": 0.0,
+   "realized": -3.0083,
+   "fees": 0.468,
+   "fills": 7,
+   "contracts": 99.81,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPDCH-26JUL2021": {
+   "net": -14.778,
+   "paid": 0.0,
+   "realized": -14.778,
+   "fees": 0.1299,
+   "fills": 15,
+   "contracts": 120.31,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPDCH-26JUL2123": {
+   "net": 13.84,
+   "paid": 4.35,
+   "realized": 9.49,
+   "fees": 0.0,
+   "fills": 5,
+   "contracts": 64.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPDCH-26JUL2206": {
+   "net": 0.51,
+   "paid": 1.51,
+   "realized": -1.0,
+   "fees": 0.0,
+   "fills": 1,
+   "contracts": 20.0,
+   "close8d": true,
+   "toxic": [
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPLAXH-26AUG0203": {
+   "net": -0.1457,
+   "paid": 0.0,
+   "realized": -0.1457,
+   "fees": 0.0457,
+   "fills": 3,
+   "contracts": 10.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPLAXH-26JUL2021": {
+   "net": -2.5374,
+   "paid": 0.0,
+   "realized": -2.5374,
+   "fees": 0.2874,
+   "fills": 6,
+   "contracts": 53.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPLAXH-26JUL2211": {
+   "net": 1.37,
+   "paid": 1.85,
+   "realized": -0.48,
+   "fees": 0.0,
+   "fills": 8,
+   "contracts": 120.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPLAXH-26JUL2212": {
+   "net": -7.8716,
+   "paid": 0.0,
+   "realized": -7.8716,
+   "fees": 0.0,
+   "fills": 3,
+   "contracts": 19.91,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPNYCH-26AUG0202": {
+   "net": 0.01,
+   "paid": 0.0,
+   "realized": 0.01,
+   "fees": 0.0,
+   "fills": 2,
+   "contracts": 2.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPNYCH-26AUG0203": {
+   "net": -0.5331,
+   "paid": 0.0,
+   "realized": -0.5331,
+   "fees": 0.0847,
+   "fills": 2,
+   "contracts": 10.31,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPNYCH-26JUL2206": {
+   "net": 10.94,
+   "paid": 12.94,
+   "realized": -2.0,
+   "fees": 0.0,
+   "fills": 1,
+   "contracts": 20.0,
+   "close8d": true,
+   "toxic": [
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPNYCH-26JUL2211": {
+   "net": 1.89,
+   "paid": 1.91,
+   "realized": -0.02,
+   "fees": 0.0,
+   "fills": 4,
+   "contracts": 38.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTEMPNYCH-26JUL2212": {
+   "net": 1.5305,
+   "paid": 3.14,
+   "realized": -1.6095,
+   "fees": 0.0,
+   "fills": 2,
+   "contracts": 23.55,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike",
+    "resolution_proximity"
+   ],
+   "keep": false
+  },
+  "KXTOPMODEL-26AUG03": {
+   "net": -22.8732,
+   "paid": 2.15,
+   "realized": -25.0232,
+   "fees": 5.6159,
+   "fills": 59,
+   "contracts": 1428.45,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXTOPMODEL-26AUG10": {
+   "net": -0.0815,
+   "paid": 0.0,
+   "realized": -0.0815,
+   "fees": 0.0315,
+   "fills": 2,
+   "contracts": 10.0,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXTOPMODEL-26AUG17": {
+   "net": -1.6562,
+   "paid": 0.0,
+   "realized": -1.6562,
+   "fees": 0.3027,
+   "fills": 18,
+   "contracts": 171.81,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXTOPMODEL-26AUG31": {
+   "net": 0.3592,
+   "paid": 2.46,
+   "realized": -2.1008,
+   "fees": 0.6008,
+   "fills": 4,
+   "contracts": 100.0,
+   "close8d": false,
+   "toxic": [],
+   "keep": false
+  },
+  "KXTOPMOVIE-26AUG06": {
+   "net": -0.1576,
+   "paid": 0.0,
+   "realized": -0.1576,
+   "fees": 0.0942,
+   "fills": 10,
+   "contracts": 38.26,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXTRUMPENDORSEMENTS-26AUG01": {
+   "net": -25.1802,
+   "paid": 3.6,
+   "realized": -28.7802,
+   "fees": 4.2085,
+   "fills": 38,
+   "contracts": 586.51,
+   "close8d": true,
+   "toxic": [
+    "announcement",
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXTRUMPENDORSEMENTS-26AUG14": {
+   "net": -0.2085,
+   "paid": 0.0,
+   "realized": -0.2085,
+   "fees": 0.045,
+   "fills": 4,
+   "contracts": 12.15,
+   "close8d": true,
+   "toxic": [
+    "announcement",
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXTRUMPENDORSEMENTS-26JUL25": {
+   "net": -2.59,
+   "paid": 6.08,
+   "realized": -8.67,
+   "fees": 0.0,
+   "fills": 18,
+   "contracts": 211.0,
+   "close8d": true,
+   "toxic": [
+    "announcement",
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXTRUMPTIME-26AUG01": {
+   "net": -28.3554,
+   "paid": 7.9,
+   "realized": -36.2554,
+   "fees": 3.5873,
+   "fills": 57,
+   "contracts": 902.19,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXTRUMPTIME-26AUG15": {
+   "net": -11.5538,
+   "paid": 0.0,
+   "realized": -11.5538,
+   "fees": 0.7768,
+   "fills": 21,
+   "contracts": 179.7,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXTRUMPUAP-26MAY": {
+   "net": -0.2696,
+   "paid": 0.0,
+   "realized": -0.2696,
+   "fees": 0.1096,
+   "fills": 4,
+   "contracts": 72.0,
+   "close8d": true,
+   "toxic": [],
+   "keep": true
+  },
+  "KXUSDJPY-26AUG0310": {
+   "net": 0.02,
+   "paid": 0.0,
+   "realized": 0.02,
+   "fees": 0.0,
+   "fills": 4,
+   "contracts": 8.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXYTVIEWSW-DRA26AUG09": {
+   "net": -0.441,
+   "paid": 0.0,
+   "realized": -0.441,
+   "fees": 0.0,
+   "fills": 2,
+   "contracts": 4.65,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXYTVIEWSW-JUS26AUG02": {
+   "net": -4.2221,
+   "paid": 0.0,
+   "realized": -4.2221,
+   "fees": 0.3426,
+   "fills": 10,
+   "contracts": 49.21,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXYTVIEWSW-JUS26AUG09": {
+   "net": 0.01,
+   "paid": 0.0,
+   "realized": 0.01,
+   "fees": 0.0,
+   "fills": 2,
+   "contracts": 2.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  },
+  "KXYTVIEWSW-MOR26AUG02": {
+   "net": -1.533,
+   "paid": 0.0,
+   "realized": -1.533,
+   "fees": 0.093,
+   "fills": 2,
+   "contracts": 18.0,
+   "close8d": true,
+   "toxic": [
+    "ladder_near_strike"
+   ],
+   "keep": false
+  }
+ },
+ "sizing_note": "min/target sizing NOT retroactively simulable \u2014 fills are historical at historical sizes; reported as-is.",
+ "eviction_sim": {
+  "note": "2x-with-paid-ratio eviction, INFERRED; denominator = events with estimates-tape coverage (2026-08-06+) AND >=2 fills after coverage start; savings proxy = |fill cash| after eviction trigger day",
+  "events_covered": 22,
+  "events_evicted": 2,
+  "cash_avoided": 5.97,
+  "paid_forgone": 0.0,
+  "detail": [
+   {
+    "ev": "KXRAIN-26AUG07",
+    "trigger": "2026-08-08T11:07:10.287198+00:00",
+    "gross_avoided": 0,
+    "inflows_forgone": 0,
+    "ratio_used": 0.0
+   },
+   {
+    "ev": "KXTRUMPTIME-26AUG15",
+    "trigger": "2026-08-12T03:06:04.615173+00:00",
+    "gross_avoided": 11.9,
+    "inflows_forgone": 5.93,
+    "ratio_used": 1.0
+   }
+  ]
+ }
+}
