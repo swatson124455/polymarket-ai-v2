@@ -192,6 +192,13 @@ def main():
     hi = min(now, t7)
 
     credits = KalshiOrderClient(mode="live").get_credit_history(limit=1000)["credits"]
+    credit_alarms = []
+    if len(credits) >= 1000:
+        # F4: single un-cursored GET; at the limit the feed is TRUNCATING silently
+        # (venue precedent: incentive_programs?limit=1000). Which end vanishes is
+        # server-order-dependent — nothing derived from `credits` is trustworthy.
+        credit_alarms.append("credit_history returned >= limit rows — feed TRUNCATED, "
+                             "credits gauges NOT trustworthy")
     obs_deadline = parse_iso(OBS_DEADLINE)
     state = window_state(now, t7, obs_deadline)
     # F1/F8: only credits PAID inside [T0, obs_deadline] enter the gauge — an event's
@@ -206,7 +213,7 @@ def main():
     # 0 positions, recorder 2026-08-12T01:39:03Z), so the since-T0 tape IS the complete
     # position history for this window. Bounds the daily pull; the cap guard and the recon
     # check below catch the silent-truncation cliff the ledger documents.
-    alarms = []
+    alarms = credit_alarms
     min_ts = f"&min_ts={int(t0.timestamp())}"
     all_fills = get_paginated(f"{P}/portfolio/fills", "fills", extra=min_ts)
     all_settles = get_paginated(f"{P}/portfolio/settlements", "settlements", extra=min_ts)
