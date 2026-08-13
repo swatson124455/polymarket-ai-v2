@@ -96,3 +96,19 @@ true one-sided worst (conservative, kept).
 4. STOP file: `place` refuses while it exists — clearing it is an operator-named act.
 5. `place --operator-go GO` within 30 min of the plan.
 6. `status` at +1h, then +24h/+48h (the probe's read points); halt on exit 3.
+
+## Post-review addendum (same session, after two real box runs of `plan`)
+Two functional changes landed AFTER the 4-reviewer pass, each forced by a real
+read-only run, each with tests (suite re-run green after each):
+1. Selection: anchor-bearing candidates first, scan depth 12→40 (quietest-12 gave 0
+   placeable — a dead series + anchor-less one-siders, all refused fail-closed).
+2. Score discipline: JOIN AT the rival reference (N=0) or refuse when the ref exceeds
+   the price cap; margin-pricing only where WE set the reference. (A clamped price 49
+   ticks under ref scores DF^49≈0 — the probe would have read "floor CONFIRMED" out
+   of tick discounting, not the floor.)
+3. Constants: census-measured fact — 0 of 232 survivors have both refs ≤ $0.45 (quiet
+   sub-target books are skewed); PRICE_MAX 0.45→0.60 with PROBE_CT 10→8 keeps the
+   at-caps worst case $19.20 ≤ the $20 collateral cap. Self-cross safety rests on the
+   y+n<1 invariant (unchanged, enforced at the mutation boundary).
+Final real plan run (box, 15:2xZ): 2 placeable candidates, both KXTOPUSAGEAI-26AUG10
+sibling strikes (sub-target BOTH sides = true zero-payer pools) — see the GO ask.

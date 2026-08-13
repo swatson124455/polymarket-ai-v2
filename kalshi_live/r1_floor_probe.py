@@ -17,8 +17,9 @@ SAFETY MODEL (all binding, roadmap §4; hardened by the 4-reviewer 8-angle pass
   - `place` RE-VALIDATES every plan row against the constants at the mutation boundary
     (prices in [PRICE_MIN, PRICE_MAX], y+n < 1, count == PROBE_CT, recomputed total
     <= COLLATERAL_CAP_USD). The plan file's own flags are never trusted.
-  - post_only=True everywhere: this script can never take liquidity. Our NO bid rests
-    at yes-scale 1-n >= 0.55 > y <= 0.45: self-cross impossible under the clamps.
+  - post_only=True everywhere: this script can never take liquidity. Self-cross is
+    impossible via the y+n < 1 invariant (our NO rests at yes-scale 1-n, strictly
+    above our YES bid y), enforced in validate_orders at the mutation boundary.
   - State is written ATOMICALLY (tmp+fsync+replace) BEFORE the first order (plan
     tickers included), so a crash mid-place can never orphan an order out of sight of
     `halt`/`status` (probe tickers = placed ∪ planned).
@@ -58,10 +59,13 @@ sys.path.insert(0, DATA)
 
 COLLATERAL_CAP_USD = 20.00
 HALT_DAY_LOSS_USD = 10.00
-PROBE_CT = 10                    # contracts per side (min-size presence)
+PROBE_CT = 8                     # contracts per side (min-size presence)
 MAX_MARKETS = 2
 MARGIN = 0.05                    # y+n <= 1 - 2*MARGIN pair edge before clamps
-PRICE_MIN, PRICE_MAX = 0.01, 0.45
+PRICE_MIN, PRICE_MAX = 0.01, 0.60   # 0.45->0.60 2026-08-13: ALL quiet sub-target
+                                     # books are skewed (0 candidates fit 0.45,
+                                     # census-measured); PROBE_CT 10->8 keeps the
+                                     # at-caps worst case $19.20 <= the $20 cap
 STALE_ANCHOR_PX_CAP = 0.20       # both sides, when the anchor is a ts-less last_price
 CLOSE_MIN_S = 36 * 3600          # probe needs 48h of accrual before close
 CLOSE_MAX_S = 8 * 86400          # LOCKED entry rule
