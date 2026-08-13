@@ -154,3 +154,32 @@ class TestReconMismatches:
     def test_all_flat_clean(self):
         from kalshi_window_scoreboard import recon_mismatches
         assert recon_mismatches({"KXA-1-T1": 0.001}, {}, set()) == {}
+
+
+class TestLatestRecorderCashBasis:
+    """Review F9: funded_cash preferred so resting reservations don't read as a gap."""
+
+    def test_funded_cash_preferred(self, tmp_path, monkeypatch):
+        import kalshi_window_scoreboard as ws
+        monkeypatch.setattr(ws, "DATA", str(tmp_path))
+        (tmp_path / "cash-202608.jsonl").write_text(
+            '{"ts": "2026-08-13T00:00:00Z", "cash": 250.0, '
+            '"resting_reservation": 5.0, "funded_cash": 255.0}\n')
+        val, ts, basis = ws.latest_recorder_cash()
+        assert (val, basis) == (255.0, "funded_cash")
+
+    def test_fallback_sum_then_cash(self, tmp_path, monkeypatch):
+        import kalshi_window_scoreboard as ws
+        monkeypatch.setattr(ws, "DATA", str(tmp_path))
+        (tmp_path / "cash-202608.jsonl").write_text(
+            '{"ts": "2026-08-13T00:00:00Z", "cash": 250.0, "resting_reservation": 5.0}\n')
+        val, ts, basis = ws.latest_recorder_cash()
+        assert (val, basis) == (255.0, "cash+reservation")
+        (tmp_path / "cash-202608.jsonl").write_text(
+            '{"ts": "2026-08-13T00:00:00Z", "cash": 250.0}\n')
+        assert ws.latest_recorder_cash()[2] == "cash"
+
+    def test_missing_files_none_triple(self, tmp_path, monkeypatch):
+        import kalshi_window_scoreboard as ws
+        monkeypatch.setattr(ws, "DATA", str(tmp_path))
+        assert ws.latest_recorder_cash() == (None, None, None)

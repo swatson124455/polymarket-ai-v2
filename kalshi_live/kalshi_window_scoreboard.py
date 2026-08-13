@@ -166,18 +166,27 @@ def window_drag(all_events, all_settles, t0, hi):
 
 
 def latest_recorder_cash():
+    """(value, ts, basis) from the newest recorder row. Basis prefers funded_cash
+    (= cash + resting_reservation, recorder-written) so live resting reservations do not
+    read as an identity gap (review F9); the T0 baseline $274.4691 was taken FLAT with 0
+    resting (recorder 2026-08-12T01:39:03Z), so cash == funded_cash there and the baseline
+    is valid under either basis."""
     files = sorted(glob.glob(os.path.join(DATA, "cash-*.jsonl")))
     if not files:
-        return None, None
+        return None, None, None
     last = None
     with open(files[-1]) as fh:
         for ln in fh:
             if ln.strip():
                 last = ln
     if not last:
-        return None, None
+        return None, None, None
     row = json.loads(last)
-    return row.get("cash"), row.get("ts")
+    if row.get("funded_cash") is not None:
+        return row["funded_cash"], row.get("ts"), "funded_cash"
+    if row.get("cash") is not None and row.get("resting_reservation") is not None:
+        return row["cash"] + row["resting_reservation"], row.get("ts"), "cash+reservation"
+    return row.get("cash"), row.get("ts"), "cash"
 
 
 def main():
@@ -245,7 +254,13 @@ def main():
     # identity leg: ALL credits since T0 regardless of bucket or deadline (cash moved).
     cr_since_t0, _ = filter_credits(credits, t0, None)
     paid_since_t0 = sum((c.get("amount_cents") or 0) / 100.0 for c in cr_since_t0)
-    cash_now, cash_ts = latest_recorder_cash()
+    cash_now, cash_ts, cash_basis = latest_recorder_cash()
+    cash_age_s = None
+    if cash_ts is not None:
+        try:
+            cash_age_s = round((now - parse_iso(cash_ts)).total_seconds(), 1)
+        except (ValueError, TypeError):
+            pass
     identity_gap = (round(cash_now - T0_CASH - paid_since_t0 - drag_total, 4)
                     if cash_now is not None else None)
 
@@ -259,6 +274,7 @@ def main():
            "n_setts_window": n_setts, "n_rows_no_ts": no_ts,
            "pass_now": pass_gauge(counted, drag_total),
            "recorder_cash": cash_now, "recorder_cash_ts": cash_ts,
+           "cash_basis": cash_basis, "cash_age_s": cash_age_s,
            "paid_since_t0": round(paid_since_t0, 2), "identity_gap": identity_gap,
            "alarms": alarms}
     for a in alarms:
