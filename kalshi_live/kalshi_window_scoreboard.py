@@ -208,6 +208,13 @@ def main():
     by_ev = credits_by_event(cr_obs)
     ev_end = event_end_map(json.load(open(os.path.join(DATA, "kalshi_program_map.json"))))
     counted, buckets = score_credits(by_ev, ev_end, t0, t7)
+    if buckets["unmapped"]["usd"] > 0:
+        # F6: post-F1 every bucketed dollar was PAID inside the observation window, so
+        # unmapped money is in-window reward the gauge cannot attribute to a program end —
+        # a map gap or an event-derivation mismatch (A-2 class). Never benign.
+        credit_alarms.append("in-observation credits UNMAPPED (never counted): "
+                             f"${buckets['unmapped']['usd']} on "
+                             f"{buckets['unmapped']['events']}")
 
     # F3: T0-anchored fetch — valid because the account was FLAT at T0 (§10-C baseline:
     # 0 positions, recorder 2026-08-12T01:39:03Z), so the since-T0 tape IS the complete
