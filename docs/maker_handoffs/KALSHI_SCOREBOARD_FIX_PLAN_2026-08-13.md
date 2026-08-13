@@ -1,5 +1,5 @@
 # SCOREBOARD FIX PLAN — resolve all 10 review findings + 2 session observation defects
-Status: PLAN ONLY (awaiting operator naming). Authored 2026-08-13 ~00:2xZ, HEAD `fc266db`.
+Status: EXECUTED IN FULL (operator "proceed", 2026-08-13 ~00:3xZ). All 10 findings fixed in commits `262b6db`..`4834832` (one per finding, suite 1320/2 exit 0 after each); deployed 00:30:53Z md5 scoreboard `660fc479` / reward_pnl `55545585` = git blobs; real runs both exit 0, scoreboard row 00:31:02Z identity_gap 0.0 funded-basis, drag −$21.9397 (final through the 19:50Z stop), credit buckets all-zero (F1 semantics correct); negative test dead-recorder → exit 3 with row written. S1 tape-compress fixed on box: `-exec gzip -9 {} +` (backup .bak-GZEXIT-*), real run exit 0, negative test + → 1 vs ; → 0. S2 resolved by F3's min_ts. Authored 2026-08-13 ~00:2xZ, HEAD `fc266db`.
 Scope: `kalshi_live/kalshi_window_scoreboard.py` (+tests), one small exported helper in
 `kalshi_live/reward_pnl_report.py`, one systemd wrapper. Bot is WOUND DOWN (§0-A) — every fix
 is observation-layer only; nothing touches trading code or the frozen state.
