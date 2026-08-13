@@ -28,6 +28,8 @@ import json
 import os
 import sys
 
+from reward_pnl_report import parse_iso, ticker_to_event
+
 DATA = os.environ.get("KALSHI_DATA_DIR", "/opt/pa2-maker-kalshi-live")
 
 T0 = "2026-08-12T01:40:43+00:00"          # §10-C, operator-named restart
@@ -37,20 +39,17 @@ T0_CASH = 274.4691                        # recorder 2026-08-12T01:39:03Z (§10-
 IDENTITY_WARN_USD = 2.0
 
 
-def parse_iso(s):
-    return datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
-
-
 def event_end_map(program_map):
     """{event: latest end_date iso} from the merge-only program map (survives program
-    disappearance from the active list — the §5 requirement)."""
+    disappearance from the active list — the §5 requirement). Event rule imported from
+    reward_pnl_report so the two daily artifacts can never disagree on it (review F10)."""
     out = {}
     for pr in (program_map or {}).values():
         t = (pr or {}).get("market_ticker")
         end = (pr or {}).get("end_date")
         if not t or not end:
             continue
-        ev = t.rsplit("-", 1)[0]
+        ev = ticker_to_event(t)
         if ev not in out or end > out[ev]:
             out[ev] = end
     return out
