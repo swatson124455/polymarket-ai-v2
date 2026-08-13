@@ -85,11 +85,15 @@ credits vs position-aware drag (unchanged, the honest basis); rung-up (>$350→$
 BOTH accrued-pace ≥ 2× drag over trailing 3 days AND zero non-shrug losses; verdict reported
 with per-market medians alongside totals so one outlier is visible.
 
-## OPERATOR QUESTIONS (all of them, now)
-- **Q-A:** canary halt budget — default $5/day realized. Confirm or set a number.
-- **Q-B:** venue cash $252.53 — fund ~$100 to $350, or canary at $252?
-- **Q-C:** if review/shadow finds majors, relight slips one day (default). Veto?
-- **Q-D:** max capital-lockup horizon per market — default: exclude close_time > 30 days.
+## OPERATOR ANSWERS (2026-08-13, locked)
+- **Q-A: halt budget $10/day realized.**
+- **Q-B: canary at $252.53 (current venue cash); operator can fund more if the yield
+  measurement justifies it.**
+- **Q-C: CONFIRMED "yes"** — if the final safety review finds serious bugs, fix first and
+  slip the relight one day (08-14 → 08-15) rather than start on unreviewed code.
+- **Q-D: entry only if close_time ≤ 8 days out; hard exit any position held > 10 days.**
+  (Consequence: every canary position self-liquidates inside the proof horizon; the
+  MAMDANIOUT-class lockup trap is excluded by rule.)
 
 ## Build order (today): money-map job → scorecard → quoter mode → 8-angle review → shadow →
 relight ask. Timeline: relight target 08-14 (slips to 08-15 only under T7's honesty clause);
