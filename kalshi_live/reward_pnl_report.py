@@ -33,7 +33,20 @@ _EVENT_RE = re.compile(r"for event (\S+)")
 
 
 def parse_iso(s):
-    return datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    """Venue timestamps are UTC; a naive value (no offset) is attached UTC rather than
+    poisoning aware-vs-naive comparisons with TypeError downstream (review F5, 2026-08-13)."""
+    dt = datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
+
+
+def ticker_to_event(t):
+    """THE event-derivation rule for market tickers (single exported home, review F6/F10):
+    strip the strike segment. Known limit (A-2, kalshi_credit_feedback): 4-field legacy
+    tickers and strikeless market tickers fragment — callers that can must prefer venue
+    metadata; string-rule consumers must at least share THIS one copy."""
+    return t.rsplit("-", 1)[0]
 
 
 def credits_by_event(credits):
@@ -60,7 +73,7 @@ def accrued_by_event(snapshot, program_map):
     for e in (snapshot or {}).get("estimates") or []:
         pr = (program_map or {}).get(str(e.get("program_id"))) or {}
         t = pr.get("market_ticker")
-        ev = t.rsplit("-", 1)[0] if t else "?"
+        ev = ticker_to_event(t) if t else "?"
         r = out.setdefault(ev, {"accrued": 0.0, "end": None})
         r["accrued"] += float(e.get("reward_centicents") or 0) / 10000.0
         end = pr.get("end_date")

@@ -82,3 +82,26 @@ def test_build_report_totals():
     assert rep["totals"]["accrued_open"] == 3.0          # PENDING 2.0 + EARNING 1.0
     assert rep["totals"]["paid_lifetime"] == 2.46
     assert rep["totals"]["n_leakage"] == 0
+
+
+class TestParseIsoAndTickerToEvent:
+    """Review F5/F6/F10 (2026-08-13): naive timestamps attach UTC; one exported event rule."""
+
+    def test_naive_timestamp_gets_utc(self):
+        from reward_pnl_report import parse_iso
+        import datetime
+        d = parse_iso("2026-08-13T00:00:00")
+        assert d.tzinfo is not None
+        assert d == datetime.datetime(2026, 8, 13, tzinfo=datetime.timezone.utc)
+
+    def test_bare_date_gets_utc(self):
+        from reward_pnl_report import parse_iso
+        assert parse_iso("2026-08-13").tzinfo is not None
+
+    def test_aware_forms_unchanged(self):
+        from reward_pnl_report import parse_iso
+        assert parse_iso("2026-08-13T01:00:00Z") == parse_iso("2026-08-13T01:00:00+00:00")
+
+    def test_ticker_to_event(self):
+        from reward_pnl_report import ticker_to_event
+        assert ticker_to_event("KXTOPMODEL-26AUG17-CLAUM") == "KXTOPMODEL-26AUG17"
