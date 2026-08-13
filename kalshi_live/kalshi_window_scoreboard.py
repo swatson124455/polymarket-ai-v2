@@ -264,6 +264,35 @@ def main():
     identity_gap = (round(cash_now - T0_CASH - paid_since_t0 - drag_total, 4)
                     if cash_now is not None else None)
 
+    # ---- F7: alarm discipline (lane convention §13: alarms → NONZERO EXIT; a failed unit
+    # means READ THE REPORT). The row is always written before exiting. The identity gap
+    # gets its own exit code (2) and a one-shot ack file for a named deposit/withdrawal so
+    # known money movement does not flap the unit; nothing else has a benign cause.
+    notes = []
+    if no_ts:
+        alarms.append(f"{no_ts} fills/settlement rows have NO timestamp — venue rename? "
+                      "those rows are excluded from the drag window")
+    if cr_dropped:
+        alarms.append(f"{cr_dropped} credit rows dropped (missing/unparseable created_at) — "
+                      "counted + identity gauges may be blind to real credits")
+    if cash_now is None:
+        alarms.append("recorder cash unreadable — the identity self-check is DEAD this run")
+    elif cash_age_s is None or cash_age_s > 600:
+        alarms.append(f"recorder cash snapshot stale (age_s={cash_age_s}) — recorder dead?")
+    gap_alarmed = False
+    if identity_gap is not None and abs(identity_gap) > IDENTITY_WARN_USD:
+        ack = os.path.join(DATA, "SCOREBOARD_GAP_ACK")
+        if os.path.exists(ack):
+            os.remove(ack)
+            notes.append(f"identity gap {identity_gap:+.4f} acknowledged via "
+                         "SCOREBOARD_GAP_ACK (consumed)")
+        else:
+            gap_alarmed = True
+            alarms.append(f"identity gap {identity_gap:+.4f} > ${IDENTITY_WARN_USD:.0f} — a "
+                          "number is wrong OR external money moved (for a named deposit: "
+                          "touch SCOREBOARD_GAP_ACK to acknowledge once)")
+    hard_alarms = len(alarms) - (1 if gap_alarmed else 0)
+
     row = {"ts": now.isoformat(), "t0": T0, "t7": T7, "obs_deadline": OBS_DEADLINE,
            "window_state": state, "credits_dropped_no_ts": cr_dropped,
            "credits_counted": round(counted, 2),
@@ -276,23 +305,23 @@ def main():
            "recorder_cash": cash_now, "recorder_cash_ts": cash_ts,
            "cash_basis": cash_basis, "cash_age_s": cash_age_s,
            "paid_since_t0": round(paid_since_t0, 2), "identity_gap": identity_gap,
-           "alarms": alarms}
+           "alarms": alarms, "notes": notes}
     for a in alarms:
         print(f"WARNING {a}")
+    for a in notes:
+        print(f"NOTE {a}")
+    if state == "concluded":
+        print("window CONCLUDED (past obs_deadline) — this row is historical, not a live gauge")
     print(json.dumps({k: row[k] for k in ("ts", "credits_counted", "drag_total",
                                           "pass_now", "identity_gap")}))
     print("counted %s | pre_t0 %s | post_t7 %s | unmapped %s (never counted)"
           % tuple((buckets[k]["usd"], len(buckets[k]["events"]))
                   for k in ("counted", "pre_t0", "post_t7", "unmapped")))
-    if no_ts:
-        print(f"WARNING {no_ts} fills/settlement rows have NO timestamp — venue rename? "
-              f"Those rows are OUTSIDE the drag window right now.")
-    if identity_gap is not None and abs(identity_gap) > IDENTITY_WARN_USD:
-        print(f"WARNING cash identity gap {identity_gap:+.4f} > ${IDENTITY_WARN_USD:.0f} — "
-              f"either a number here is wrong or external money moved (deposit/withdrawal).")
     out = os.path.join(DATA, "window_scoreboard-%s.jsonl" % now.strftime("%Y%m"))
     with open(out, "a") as fh:
         fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    if alarms:
+        sys.exit(3 if hard_alarms else 2)
 
 
 if __name__ == "__main__":
