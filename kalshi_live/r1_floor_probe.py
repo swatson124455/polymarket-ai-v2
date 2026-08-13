@@ -25,12 +25,14 @@ SAFETY MODEL (all binding, roadmap §4; hardened by the 4-reviewer 8-angle pass
     `halt`/`status` (probe tickers = placed ∪ planned).
   - `halt` cancels ONLY known probe tickers; with no/corrupt state it REFUSES rather
     than blanket-cancel (the account-wide kill switch is flatten_kalshi.py, by name).
-  - Halt gauge: day EQUITY loss (windowed position-aware cash + inventory marked at
-    book mid), never bare fill cash (Defect-13 class: cash-deployed != loss). When no
-    mark exists the HEADLINE is "mark UNKNOWN" (Rule 12), never a number.
-  - Entry: close_time in [36h, 8d] (LOCKED close<=8d rule); candidates with ANY
-    existing position, resting order, or historical fill are refused (replay-from-flat
-    contract + clean science).
+  - Halt gauge: whole-WINDOW equity loss (probe-window position-aware cash +
+    inventory marked at book mid), never bare fill cash (Defect-13 class) and never
+    the day-blind day_cash+abs(inventory) shape (EV-review finding 5). When no mark
+    exists the HEADLINE is "mark UNKNOWN" (Rule 12), never a number.
+  - Entry: market close_time <= 8d (LOCKED) AND min(close_time, PROGRAM end_date)
+    >= 49h out (the program can end before the market closes — measured on
+    KXTOPUSAGEAI-26AUG10); candidates with ANY existing position, resting order, or
+    historical fill are refused (replay-from-flat contract + clean science).
   - Anchor rule: two-sided book mid preferred; a bare last_price (no timestamp) anchor
     caps BOTH quote prices at STALE_ANCHOR_PX_CAP. Never self-referential.
   - Quoter mutual exclusion FAILS CLOSED: only an explicit `inactive`/`failed` unit
@@ -67,8 +69,12 @@ PRICE_MIN, PRICE_MAX = 0.01, 0.60   # 0.45->0.60 2026-08-13: ALL quiet sub-targe
                                      # census-measured); PROBE_CT 10->8 keeps the
                                      # at-caps worst case $19.20 <= the $20 cap
 STALE_ANCHOR_PX_CAP = 0.20       # both sides, when the anchor is a ts-less last_price
-CLOSE_MIN_S = 36 * 3600          # probe needs 48h of accrual before close
-CLOSE_MAX_S = 8 * 86400          # LOCKED entry rule
+# EV-review 2026-08-13: the PROGRAM can end before the market closes (measured:
+# KXTOPUSAGEAI-26AUG10 end_date 08-16T03:59:59Z vs market close 08-17T03:59Z).
+# The probe needs its full 48h of accrual INSIDE the program window, so entry
+# requires min(close_time, program_end) - now >= 48h + 1h margin.
+PROBE_HORIZON_S = 48 * 3600 + 3600
+CLOSE_MAX_S = 8 * 86400          # LOCKED entry rule (on market close_time)
 PLAN_MAX_AGE_S = 1800
 PLAN_F = os.path.join(DATA, "r1_probe_plan.json")
 STATE_F = os.path.join(DATA, "r1_probe_state.json")
@@ -152,15 +158,17 @@ def estimates_for_programs(snapshot, program_ids):
     return out
 
 
-def probe_program_ids(kal, tickers):
-    """{ticker: program_id} read DIRECTLY from the venue at call time (no dependence
-    on the recorder's map file — review MAJOR: a map gap must be VOID, not zero)."""
+def probe_programs(kal, tickers):
+    """{ticker: {"id", "end_date"}} read DIRECTLY from the venue at call time (no
+    dependence on the recorder's map file — review MAJOR: a map gap must be VOID,
+    not zero). end_date carried because the program can end BEFORE market close."""
     d = kal.get(f"{kal.P}/incentive_programs?status=active&limit=10000")
     out = {}
     for p in d.get("incentive_programs") or []:
         t = p.get("market_ticker")
         if t in tickers:
-            out[t] = str(p.get("id") or p.get("program_id"))
+            out[t] = {"id": str(p.get("id") or p.get("program_id")),
+                      "end_date": p.get("end_date")}
     return out
 
 
@@ -261,18 +269,28 @@ def build_plan(args):
             (c.get("book") or {}).get("yes_rival_q", 1e9)
             + (c.get("book") or {}).get("no_rival_q", 1e9), -c["pool"]))
         tickers = [c["ticker"] for c in cands[:40]]
-    # candidates must be FLAT and UNTRADED for us (replay-from-flat + clean science)
+    # candidates must be FLAT and UNTRADED and UNQUOTED for us (replay-from-flat +
+    # clean science; the resting check was spec'd in review M2 but unimplemented —
+    # EV-review finding 7)
     positions = {p.get("ticker") for p in
                  kal.get_paginated(f"{kal.P}/portfolio/positions", "market_positions")
                  if float(p.get("position_fp") or p.get("position") or 0) != 0}
     our_fill_tickers = {(f.get("ticker") or f.get("market_ticker")) for f in
                         kal.get_paginated(f"{kal.P}/portfolio/fills", "fills")}
+    our_resting = {o.get("ticker") for o in
+                   kal.get_paginated(f"{kal.P}/portfolio/orders", "orders",
+                                     extra="&status=resting")}
+    programs = probe_programs(kal, set(tickers))
     plan, refused = [], []
     for t in tickers:
         if len(plan) >= MAX_MARKETS:
             break
-        if t in positions or t in our_fill_tickers:
-            refused.append({"ticker": t, "why": "existing_position_or_fill_history"})
+        if t in positions or t in our_fill_tickers or t in our_resting:
+            refused.append({"ticker": t, "why": "existing_position_fill_or_resting"})
+            continue
+        pr = programs.get(t)
+        if not pr or not pr.get("end_date"):
+            refused.append({"ticker": t, "why": "no_active_program"})
             continue
         d = kal.get(f"{kal.P}/markets?tickers={t}")
         m = (d.get("markets") or [{}])[0]
@@ -281,8 +299,11 @@ def build_plan(args):
             continue
         ct = m.get("close_time")
         tt = (parse_iso(ct) - now).total_seconds() if ct else -1
-        if not (CLOSE_MIN_S <= tt <= CLOSE_MAX_S):
-            refused.append({"ticker": t, "why": f"close_window_fail_{tt / 3600:.0f}h"})
+        prog_left = (parse_iso(pr["end_date"]) - now).total_seconds()
+        horizon = min(tt, prog_left)
+        if not (PROBE_HORIZON_S <= horizon and tt <= CLOSE_MAX_S):
+            refused.append({"ticker": t, "why": f"window_fail_close_{tt / 3600:.0f}h"
+                                                f"_prog_{prog_left / 3600:.0f}h"})
             continue
         yb, nb, why = book_refs(cl, t)
         if why != "ok":
@@ -311,7 +332,8 @@ def build_plan(args):
                      "y_price": round(y, 2), "n_price": round(n, 2),
                      "count": PROBE_CT,
                      "worst_case_usd": round((y + n) * PROBE_CT, 2),
-                     "close_time": ct})
+                     "close_time": ct,
+                     "program_id": pr["id"], "program_end": pr["end_date"]})
     ok, why = validate_orders(plan) if plan else (False, "no candidates")
     out = {"generated": now.isoformat(), "orders": plan, "refused": refused,
            "validation": why, "valid": ok}
@@ -354,7 +376,7 @@ def place(args):
     print(f"armed with client module: {sys.modules['maker_kalshi_client'].__file__}")
     print(f"STOP checked at: {STOP_F}")
     tickers = {o["ticker"] for o in plan["orders"]}
-    prog_ids = probe_program_ids(kal, tickers)
+    prog_ids = {t: pr["id"] for t, pr in probe_programs(kal, tickers).items()}
     baseline = estimates_for_programs(latest_estimates_snapshot(),
                                       set(prog_ids.values()))
     t0 = utcnow().isoformat()      # BEFORE the loop: a snipe fill 1s in is in-window
@@ -481,8 +503,12 @@ def status(args):
             inv_val += v
     day_cash = sum(e["cash"] for e in day)
     win_cash = sum(e["cash"] for e in win)
-    # equity-basis day loss: cash deployed today + what today's inventory is worth.
-    day_equity = (day_cash + inv_val) if not mark_unknown else None
+    # WINDOW-basis equity (EV-review finding 5): day_cash + absolute inventory value
+    # was blind to day-2 mark-only losses (fill day 1, mark collapses day 2 →
+    # day_cash 0 + inv_val 0 = "no loss"). For a 48h probe the whole-window equity
+    # (all probe cash + current inventory value) is the honest gauge and is
+    # STRICTER than a per-day budget; day_cash stays reported for context.
+    win_equity = (win_cash + inv_val) if not mark_unknown else None
     prog_ids = st.get("program_ids") or {}
     accr_now = estimates_for_programs(snap, set(prog_ids.values()))
     base = st.get("estimates_baseline") or {}
@@ -499,7 +525,7 @@ def status(args):
            "window_cash_deployed": round(win_cash, 4),
            "inventory": inv_labels,
            "inventory_value": None if mark_unknown else round(inv_val, 4),
-           "day_equity_pnl": None if day_equity is None else round(day_equity, 4),
+           "window_equity_pnl": None if win_equity is None else round(win_equity, 4),
            "valuation": "mark UNKNOWN" if mark_unknown else "book-mid",
            "accrual_basis": accrual_basis,
            "accrual_delta_by_program": accr_delta,
@@ -522,12 +548,12 @@ def status(args):
     if row["stop_present"]:
         print("HALT: STOP present — run `r1_floor_probe.py halt` now.", file=sys.stderr)
         return 3
-    if day_equity is not None and day_equity <= -HALT_DAY_LOSS_USD:
-        print("HALT BREACH (day equity): run `r1_floor_probe.py halt` now.",
+    if win_equity is not None and win_equity <= -HALT_DAY_LOSS_USD:
+        print("HALT BREACH (window equity): run `r1_floor_probe.py halt` now.",
               file=sys.stderr)
         return 3
-    if day_equity is None and day_cash <= -HALT_DAY_LOSS_USD:
-        # mark UNKNOWN: cash alone cannot prove a loss, but this much deployment
+    if win_equity is None and win_cash <= -HALT_DAY_LOSS_USD:
+        # mark UNKNOWN: window cash alone cannot prove a loss, but this much deployment
         # with no valuation is itself a freeze condition (Rule 12: headline the
         # blindness). Cancel-and-assess beats flying blind.
         print("HALT (mark UNKNOWN + day cash beyond halt budget): run halt, then "

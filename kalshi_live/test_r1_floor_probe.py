@@ -145,7 +145,7 @@ def _fresh_plan(tmp_path, monkeypatch, orders=None, age_s=0):
     monkeypatch.setattr(rp, "STATE_F", str(tmp_path / "state.json"))
     monkeypatch.setattr(rp, "STOP_F", str(tmp_path / "STOP"))
     monkeypatch.setattr(rp, "quoter_inactive", lambda: True)
-    monkeypatch.setattr(rp, "probe_program_ids", lambda kal, t: {k: "pid-1" for k in t})
+    monkeypatch.setattr(rp, "probe_programs", lambda kal, t: {k: {"id": "pid-1", "end_date": "2026-08-16T03:59:59Z"} for k in t})
     monkeypatch.setattr(rp, "latest_estimates_snapshot", lambda: {
         "ts": _iso(NOW), "estimates": [{"program_id": "pid-1", "reward_centicents": 100}]})
     return plan
