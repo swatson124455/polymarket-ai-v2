@@ -134,3 +134,23 @@ class TestPassGauge:
     def test_zero_zero_is_not_pass(self):
         from kalshi_window_scoreboard import pass_gauge
         assert pass_gauge(0.0, 0.0) is False
+
+
+class TestReconMismatches:
+    """Review F3: ledger self-check reused — settled tickers exempt, live ones must match."""
+
+    def test_match_and_mismatch(self):
+        from kalshi_window_scoreboard import recon_mismatches
+        replay = {"KXA-1-T1": 3.0, "KXB-1-T1": -1.5, "KXSETTLED-1-T1": 2.0}
+        venue = {"KXA-1-T1": 3.0, "KXB-1-T1": -1.0}
+        out = recon_mismatches(replay, venue, {"KXSETTLED-1-T1"})
+        assert out == {"KXB-1-T1": [-1.0, -1.5]}
+
+    def test_venue_only_position_flagged(self):
+        from kalshi_window_scoreboard import recon_mismatches
+        out = recon_mismatches({}, {"KXC-1-T1": 2.0}, set())
+        assert out == {"KXC-1-T1": [2.0, 0.0]}
+
+    def test_all_flat_clean(self):
+        from kalshi_window_scoreboard import recon_mismatches
+        assert recon_mismatches({"KXA-1-T1": 0.001}, {}, set()) == {}

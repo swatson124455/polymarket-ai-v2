@@ -77,6 +77,18 @@ def filter_credits(credits, lo, hi):
     return rows, dropped
 
 
+def recon_mismatches(replay_pos, venue_pos, settled_tickers, tol=0.005):
+    """The ledger's per-run self-check (kalshi_attribution_ledger.collect) reused: replayed
+    end positions must equal the venue's position_fp on every unsettled ticker. Disagreement
+    means the cash model drifted or the tape was truncated — the drag number in that run is
+    NOT trustworthy (review F3; the original scoreboard discarded this check)."""
+    checkable = set(venue_pos) | {t for t, v in replay_pos.items()
+                                  if abs(v) > tol and t not in settled_tickers}
+    return {t: [round(venue_pos.get(t, 0.0), 4), round(replay_pos.get(t, 0.0), 4)]
+            for t in sorted(checkable)
+            if abs(venue_pos.get(t, 0.0) - replay_pos.get(t, 0.0)) > tol}
+
+
 def pass_gauge(counted, drag_total):
     """Pre-reg 1 rule 'PASS iff credits > |drag|' stated for a drag that is a LOSS.
     Net form counted + drag_total > 0 is identical there and stays correct when the
@@ -190,12 +202,30 @@ def main():
     ev_end = event_end_map(json.load(open(os.path.join(DATA, "kalshi_program_map.json"))))
     counted, buckets = score_credits(by_ev, ev_end, t0, t7)
 
-    all_fills = get_paginated(f"{P}/portfolio/fills", "fills")
-    all_settles = get_paginated(f"{P}/portfolio/settlements", "settlements")
-    all_events, _ = replay_fills(all_fills)
+    # F3: T0-anchored fetch — valid because the account was FLAT at T0 (§10-C baseline:
+    # 0 positions, recorder 2026-08-12T01:39:03Z), so the since-T0 tape IS the complete
+    # position history for this window. Bounds the daily pull; the cap guard and the recon
+    # check below catch the silent-truncation cliff the ledger documents.
+    alarms = []
+    min_ts = f"&min_ts={int(t0.timestamp())}"
+    all_fills = get_paginated(f"{P}/portfolio/fills", "fills", extra=min_ts)
+    all_settles = get_paginated(f"{P}/portfolio/settlements", "settlements", extra=min_ts)
+    if len(all_fills) >= 10000 or len(all_settles) >= 10000:
+        alarms.append("pagination hit the 50x200 cap — tape may be TRUNCATED, drag NOT trustworthy")
+    all_events, replay_pos = replay_fills(all_fills)
     fills_cash, settle_rev, n_fills, n_setts, no_ts = window_drag(
         all_events, all_settles, t0, hi)
     drag_total = fills_cash + settle_rev
+    venue_rows = get_paginated(f"{P}/portfolio/positions", "market_positions",
+                               extra="&count_filter=position")
+    mism = recon_mismatches(
+        replay_pos,
+        {p.get("ticker"): float(p.get("position_fp") or p.get("position") or 0)
+         for p in venue_rows},
+        {s.get("ticker") for s in all_settles})
+    if mism:
+        alarms.append(f"position recon mismatch [venue, replayed] on {len(mism)} ticker(s): "
+                      f"{mism} — drag NOT trustworthy")
 
     # credits paid since T0 regardless of program-conclusion bucket (for the cash identity)
     # identity leg: ALL credits since T0 regardless of bucket or deadline (cash moved).
@@ -215,7 +245,10 @@ def main():
            "n_setts_window": n_setts, "n_rows_no_ts": no_ts,
            "pass_now": pass_gauge(counted, drag_total),
            "recorder_cash": cash_now, "recorder_cash_ts": cash_ts,
-           "paid_since_t0": round(paid_since_t0, 2), "identity_gap": identity_gap}
+           "paid_since_t0": round(paid_since_t0, 2), "identity_gap": identity_gap,
+           "alarms": alarms}
+    for a in alarms:
+        print(f"WARNING {a}")
     print(json.dumps({k: row[k] for k in ("ts", "credits_counted", "drag_total",
                                           "pass_now", "identity_gap")}))
     print("counted %s | pre_t0 %s | post_t7 %s | unmapped %s (never counted)"
