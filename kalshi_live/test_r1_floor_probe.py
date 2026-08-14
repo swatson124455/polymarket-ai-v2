@@ -106,7 +106,8 @@ def test_validate_rejects_pair_at_or_above_one():
 
 
 def test_validate_rejects_too_many_markets():
-    ok, _ = rp.validate_orders([_order(ticker=f"KX-{i}") for i in range(3)])
+    ok, _ = rp.validate_orders([_order(ticker=f"KX-{i}")
+                                for i in range(rp.MAX_MARKETS + 1)])
     assert not ok
 
 
@@ -129,7 +130,7 @@ def test_validate_recomputes_collateral_from_prices_not_flags():
 # ---------------- place() refusals ----------------
 
 def _args(**kw):
-    ns = types.SimpleNamespace(operator_go="", census="", tickers="")
+    ns = types.SimpleNamespace(operator_go="", census="", tickers="", expand=False)
     for k, v in kw.items():
         setattr(ns, k, v)
     return ns
@@ -191,7 +192,7 @@ def test_place_refuses_adversarial_plan(tmp_path, monkeypatch):
             calls.append(a)
     monkeypatch.setattr(rp, "client", lambda mode: Rec())
     for bad in ([_order(count=1000)], [_order(y_price=0.99, n_price=0.99)],
-                [_order(ticker=f"KX-{i}") for i in range(3)]):
+                [_order(ticker=f"KX-{i}") for i in range(rp.MAX_MARKETS + 1)]):
         _fresh_plan(tmp_path, monkeypatch, orders=bad)
         assert rp.place(_args(operator_go="GO")) == 2
         assert calls == []
@@ -404,9 +405,66 @@ def test_plan_prices_pair_below_one_and_stale_cap():
             assert y + n < 1.0
 
 
-def test_collateral_cap_arithmetic():
-    worst = (rp.PRICE_MAX * 2) * rp.PROBE_CT * rp.MAX_MARKETS
-    assert worst <= rp.COLLATERAL_CAP_USD + 1e-9
+def test_collateral_cap_binds_via_validator_not_constants():
+    """Option D: MAX_MARKETS x price caps exceeds the collateral cap by design;
+    the CAP must bind through validate_orders' recompute."""
+    at_caps = [_order(ticker=f"KX-{i}", y_price=0.90, n_price=0.05)
+               for i in range(rp.MAX_MARKETS)]
+    assert (0.95 * rp.PROBE_CT * rp.MAX_MARKETS) > rp.COLLATERAL_CAP_USD
+    ok, why = rp.validate_orders(at_caps)
+    assert not ok and "cap" in why
+
+
+# ---------------- place --expand (operator option D) ----------------
+
+def test_expand_refuses_without_state(tmp_path, monkeypatch):
+    _fresh_plan(tmp_path, monkeypatch)
+    monkeypatch.setattr(rp, "client", lambda mode: _RecClient())
+    assert rp.place(_args(operator_go="GO", expand=True)) == 2
+
+
+def test_place_still_refuses_over_live_state_without_expand(tmp_path, monkeypatch):
+    _fresh_plan(tmp_path, monkeypatch)
+    (tmp_path / "state.json").write_text(json.dumps(
+        {"t0": "T", "orders": [], "plan": {"orders": []}}))
+    assert rp.place(_args(operator_go="GO")) == 2
+
+
+def test_expand_refuses_duplicate_ticker(tmp_path, monkeypatch):
+    _fresh_plan(tmp_path, monkeypatch, orders=[_order(ticker="LIVE-1")])
+    (tmp_path / "state.json").write_text(json.dumps(
+        {"t0": "2026-08-13T23:45:05+00:00", "orders": [],
+         "plan": {"orders": [_order(ticker="LIVE-1")]}}))
+    monkeypatch.setattr(rp, "client", lambda mode: _RecClient())
+    assert rp.place(_args(operator_go="GO", expand=True)) == 2
+
+
+def test_expand_merges_keeping_t0_and_old_baselines(tmp_path, monkeypatch):
+    _fresh_plan(tmp_path, monkeypatch, orders=[_order(ticker="NEW-1")])
+    old = {"t0": "2026-08-13T23:45:05+00:00",
+           "orders": [{"ticker": "LIVE-1", "outcome": "yes", "price": 0.2,
+                       "count": rp.PROBE_CT, "order_id": "old-1", "ts": "T"}],
+           "plan": {"orders": [_order(ticker="LIVE-1")]},
+           "program_ids": {"LIVE-1": "pid-old"},
+           "estimates_baseline": {"pid-old": 1.23}}
+    (tmp_path / "state.json").write_text(json.dumps(old))
+    rec = _RecClient()
+    monkeypatch.setattr(rp, "client", lambda mode: rec)
+    # probe_programs / snapshot fixtures give the NEW ticker pid-1 baseline 0.01;
+    # make the snapshot ALSO carry pid-old at a different value to prove the old
+    # baseline is preserved, not refreshed
+    monkeypatch.setattr(rp, "latest_estimates_snapshot", lambda: {
+        "ts": _iso(NOW), "estimates": [{"program_id": "pid-1", "reward_centicents": 100},
+                                       {"program_id": "pid-old", "reward_centicents": 999}]})
+    assert rp.place(_args(operator_go="GO", expand=True)) == 0
+    st = json.loads((tmp_path / "state.json").read_text())
+    assert st["t0"] == "2026-08-13T23:45:05+00:00"          # original t0 kept
+    assert st["estimates_baseline"]["pid-old"] == 1.23      # old baseline preserved
+    assert st["estimates_baseline"]["pid-1"] == 0.01        # new baseline added
+    assert {o["ticker"] for o in st["plan"]["orders"]} == {"LIVE-1", "NEW-1"}
+    assert len(st["orders"]) == 1 + 2                        # old order + new pair
+    assert [c[0] for c in rec.calls] == ["NEW-1", "NEW-1"]   # only NEW placed
+    assert st["expansions"][0]["tickers"] == ["NEW-1"]
 
 
 # ---------------- status ----------------

@@ -59,15 +59,17 @@ import sys
 DATA = os.environ.get("KALSHI_DATA_DIR", "/opt/pa2-maker-kalshi-live")
 sys.path.insert(0, DATA)
 
-COLLATERAL_CAP_USD = 20.00
-HALT_DAY_LOSS_USD = 10.00
+COLLATERAL_CAP_USD = 45.00       # operator option D 2026-08-14: 7 mkts curated
+HALT_DAY_LOSS_USD = 10.00        # LOCKED operator halt budget — unchanged
 PROBE_CT = 8                     # contracts per side (min-size presence)
-MAX_MARKETS = 2
+MAX_MARKETS = 7                  # operator option D (was 2; <=12 cancel-physics cap)
 MARGIN = 0.05                    # y+n <= 1 - 2*MARGIN pair edge before clamps
-PRICE_MIN, PRICE_MAX = 0.01, 0.60   # 0.45->0.60 2026-08-13: ALL quiet sub-target
-                                     # books are skewed (0 candidates fit 0.45,
-                                     # census-measured); PROBE_CT 10->8 keeps the
-                                     # at-caps worst case $19.20 <= the $20 cap
+PRICE_MIN, PRICE_MAX = 0.01, 0.90   # 0.60->0.90 operator option D 2026-08-14
+                                     # (census-measured: quiet books are skewed; the
+                                     # curated 5-mkt expansion needs high-side joins).
+                                     # The COLLATERAL cap binds via validate_orders'
+                                     # recompute, NOT via constants arithmetic: a
+                                     # 7-market plan at full price caps is REFUSED.
 STALE_ANCHOR_PX_CAP = 0.20       # both sides, when the anchor is a ts-less last_price
 # EV-review 2026-08-13: the PROGRAM can end before the market closes (measured:
 # KXTOPUSAGEAI-26AUG10 end_date 08-16T03:59:59Z vs market close 08-17T03:59Z).
@@ -356,9 +358,21 @@ def place(args):
         return 2
     if not quoter_inactive():
         return 2
+    old_state = None
     if os.path.exists(STATE_F):
-        print(f"REFUSED: {STATE_F} exists — a probe is (or was) live. "
-              "Run halt + archive the state file first.", file=sys.stderr)
+        if not args.expand:
+            print(f"REFUSED: {STATE_F} exists — a probe is (or was) live. "
+                  "Run halt + archive the state file first, or use --expand to ADD "
+                  "markets to the live probe (operator-authorized).", file=sys.stderr)
+            return 2
+        try:
+            old_state = json.load(open(STATE_F))
+        except Exception as e:
+            print(f"REFUSED: existing state unreadable ({e}) — cannot expand blind.",
+                  file=sys.stderr)
+            return 2
+    elif args.expand:
+        print("REFUSED: --expand needs a live probe state; none found.", file=sys.stderr)
         return 2
     plan = json.load(open(PLAN_F))
     age_s = (utcnow() - parse_iso(plan["generated"])).total_seconds()
@@ -366,7 +380,20 @@ def place(args):
         print(f"REFUSED: plan is {age_s / 60:.0f} min old "
               f"(>{PLAN_MAX_AGE_S // 60}) — books move; re-run plan.", file=sys.stderr)
         return 2
-    ok, why = validate_orders(plan.get("orders") or [])
+    new_orders = plan.get("orders") or []
+    if old_state is not None:
+        old_orders = (old_state.get("plan") or {}).get("orders") or []
+        old_tickers = {o["ticker"] for o in old_orders}
+        dup = [o["ticker"] for o in new_orders if o["ticker"] in old_tickers]
+        if dup:
+            print(f"REFUSED: expansion re-plans live probe tickers {dup}.",
+                  file=sys.stderr)
+            return 2
+        combined = old_orders + new_orders
+    else:
+        combined = new_orders
+    # the COMBINED book must satisfy every constant (cap/count/price/pair)
+    ok, why = validate_orders(combined)
     if not ok:
         print(f"REFUSED: plan re-validation failed at the mutation boundary: {why}",
               file=sys.stderr)
@@ -375,19 +402,32 @@ def place(args):
     from maker_kalshi_client import KalshiOrderClient as _KOC
     print(f"armed with client module: {sys.modules['maker_kalshi_client'].__file__}")
     print(f"STOP checked at: {STOP_F}")
-    tickers = {o["ticker"] for o in plan["orders"]}
+    tickers = {o["ticker"] for o in new_orders}
     prog_ids = {t: pr["id"] for t, pr in probe_programs(kal, tickers).items()}
     baseline = estimates_for_programs(latest_estimates_snapshot(),
                                       set(prog_ids.values()))
     t0 = utcnow().isoformat()      # BEFORE the loop: a snipe fill 1s in is in-window
-    state = {"t0": t0, "orders": [], "plan": plan,
-             "program_ids": prog_ids, "estimates_baseline": baseline,
-             "read_at": ["+24h", "+48h"]}
+    if old_state is not None:
+        # EXPANSION: merge — keep the original t0 and the original programs'
+        # baselines (a fresh baseline for an already-earning program would erase
+        # its accrued delta); new programs get their at-expansion baseline.
+        state = old_state
+        state["plan"] = {"generated": plan["generated"],
+                         "orders": ((old_state.get("plan") or {}).get("orders") or [])
+                         + new_orders}
+        state["program_ids"] = {**prog_ids, **(state.get("program_ids") or {})}
+        state["estimates_baseline"] = {**baseline,
+                                       **(state.get("estimates_baseline") or {})}
+        state.setdefault("expansions", []).append({"t": t0, "tickers": sorted(tickers)})
+    else:
+        state = {"t0": t0, "orders": [], "plan": plan,
+                 "program_ids": prog_ids, "estimates_baseline": baseline,
+                 "read_at": ["+24h", "+48h"]}
     atomic_write_json(STATE_F, state)     # BEFORE first order: no orphan window
     cl = client("live")            # raises unless KALSHI_LIVE_ARMED phrase is set
     partial = False
     try:
-        for o in plan["orders"]:
+        for o in new_orders:
             if os.path.exists(STOP_F):
                 print("STOP appeared mid-place — stopping placement.", file=sys.stderr)
                 partial = True
@@ -607,6 +647,9 @@ def main():
     p_place = sub.add_parser("place")
     p_place.add_argument("--operator-go", default="",
                          help="the operator's one-word GO (relight-class gate)")
+    p_place.add_argument("--expand", action="store_true",
+                         help="ADD the planned markets to a LIVE probe (operator-"
+                              "authorized expansion; keeps t0 + existing baselines)")
     sub.add_parser("status")
     sub.add_parser("halt")
     args = ap.parse_args()
