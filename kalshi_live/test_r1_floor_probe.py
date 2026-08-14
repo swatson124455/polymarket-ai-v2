@@ -430,13 +430,36 @@ def test_place_still_refuses_over_live_state_without_expand(tmp_path, monkeypatc
     assert rp.place(_args(operator_go="GO")) == 2
 
 
-def test_expand_refuses_duplicate_ticker(tmp_path, monkeypatch):
+def test_expand_refuses_fully_placed_duplicate_ticker(tmp_path, monkeypatch):
     _fresh_plan(tmp_path, monkeypatch, orders=[_order(ticker="LIVE-1")])
     (tmp_path / "state.json").write_text(json.dumps(
-        {"t0": "2026-08-13T23:45:05+00:00", "orders": [],
+        {"t0": "2026-08-13T23:45:05+00:00",
+         "orders": [{"ticker": "LIVE-1", "outcome": "yes", "order_id": "a"},
+                    {"ticker": "LIVE-1", "outcome": "no", "order_id": "b"}],
          "plan": {"orders": [_order(ticker="LIVE-1")]}}))
     monkeypatch.setattr(rp, "client", lambda mode: _RecClient())
     assert rp.place(_args(operator_go="GO", expand=True)) == 2
+
+
+def test_expand_resumes_missing_legs_only(tmp_path, monkeypatch):
+    """400-mid-expansion class (2026-08-14): a ticker with one placed leg is
+    RESUMED — only the missing leg is sent, and the plan is not double-counted."""
+    _fresh_plan(tmp_path, monkeypatch, orders=[_order(ticker="HALF-1")])
+    (tmp_path / "state.json").write_text(json.dumps(
+        {"t0": "2026-08-13T23:45:05+00:00",
+         "orders": [{"ticker": "HALF-1", "outcome": "yes", "price": 0.2,
+                     "count": rp.PROBE_CT, "order_id": "half-a", "ts": "T"}],
+         "plan": {"orders": [_order(ticker="HALF-1")]},
+         "program_ids": {"HALF-1": "pid-1"},
+         "estimates_baseline": {"pid-1": 0.5}}))
+    rec = _RecClient()
+    monkeypatch.setattr(rp, "client", lambda mode: rec)
+    assert rp.place(_args(operator_go="GO", expand=True)) == 0
+    assert [(c[0], c[1]) for c in rec.calls] == [("HALF-1", "no")]
+    st = json.loads((tmp_path / "state.json").read_text())
+    assert len(st["orders"]) == 2
+    assert len(st["plan"]["orders"]) == 1                  # not duplicated
+    assert st["estimates_baseline"]["pid-1"] == 0.5        # baseline preserved
 
 
 def test_expand_merges_keeping_t0_and_old_baselines(tmp_path, monkeypatch):

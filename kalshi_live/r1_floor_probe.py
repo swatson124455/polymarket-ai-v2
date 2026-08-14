@@ -49,6 +49,7 @@ Subcommands:
          reports inventory LOUDLY (never auto-sells).
 """
 import argparse
+import re
 import datetime
 import glob
 import json
@@ -381,15 +382,23 @@ def place(args):
               f"(>{PLAN_MAX_AGE_S // 60}) — books move; re-run plan.", file=sys.stderr)
         return 2
     new_orders = plan.get("orders") or []
+    placed_legs = set()
     if old_state is not None:
+        placed_legs = {(o["ticker"], o["outcome"])
+                       for o in old_state.get("orders") or []}
         old_orders = (old_state.get("plan") or {}).get("orders") or []
-        old_tickers = {o["ticker"] for o in old_orders}
-        dup = [o["ticker"] for o in new_orders if o["ticker"] in old_tickers]
+        # a ticker with BOTH legs already resting may not be re-planned; a ticker
+        # with 0-1 legs is a RESUME (400-mid-expansion class, 2026-08-14) — the
+        # missing legs are placed, the placed ones skipped in the loop below.
+        fully = {t for t in {o["ticker"] for o in old_orders}
+                 if (t, "yes") in placed_legs and (t, "no") in placed_legs}
+        dup = [o["ticker"] for o in new_orders if o["ticker"] in fully]
         if dup:
-            print(f"REFUSED: expansion re-plans live probe tickers {dup}.",
+            print(f"REFUSED: expansion re-plans fully-placed probe tickers {dup}.",
                   file=sys.stderr)
             return 2
-        combined = old_orders + new_orders
+        new_t = {o["ticker"] for o in new_orders}
+        combined = [o for o in old_orders if o["ticker"] not in new_t] + new_orders
     else:
         combined = new_orders
     # the COMBINED book must satisfy every constant (cap/count/price/pair)
@@ -412,9 +421,7 @@ def place(args):
         # baselines (a fresh baseline for an already-earning program would erase
         # its accrued delta); new programs get their at-expansion baseline.
         state = old_state
-        state["plan"] = {"generated": plan["generated"],
-                         "orders": ((old_state.get("plan") or {}).get("orders") or [])
-                         + new_orders}
+        state["plan"] = {"generated": plan["generated"], "orders": combined}
         state["program_ids"] = {**prog_ids, **(state.get("program_ids") or {})}
         state["estimates_baseline"] = {**baseline,
                                        **(state.get("estimates_baseline") or {})}
@@ -433,10 +440,16 @@ def place(args):
                 partial = True
                 break
             for outcome, px in (("yes", o["y_price"]), ("no", o["n_price"])):
+                if (o["ticker"], outcome) in placed_legs:
+                    print(f"skip {o['ticker']} {outcome}: already placed")
+                    continue
+                # venue rejects client_order_id containing '.' (measured 2026-08-14:
+                # 400 invalid_parameters on ...-16.75M-...); keep [A-Za-z0-9-] only
+                coid = "r1probe-" + re.sub(r"[^A-Za-z0-9-]", "",
+                                           f"{o['ticker']}-{outcome}")
                 try:
                     r = cl.create_quote(o["ticker"], outcome, px, o["count"],
-                                        post_only=True,
-                                        client_order_id=f"r1probe-{o['ticker']}-{outcome}")
+                                        post_only=True, client_order_id=coid)
                 except Exception as e:
                     print(f"PARTIAL PLACEMENT: {o['ticker']} {outcome}@{px} failed "
                           f"({e}) — already-placed orders REST. Run "
