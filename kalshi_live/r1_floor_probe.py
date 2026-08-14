@@ -60,7 +60,7 @@ import sys
 DATA = os.environ.get("KALSHI_DATA_DIR", "/opt/pa2-maker-kalshi-live")
 sys.path.insert(0, DATA)
 
-COLLATERAL_CAP_USD = 45.00       # operator option D 2026-08-14: 7 mkts curated
+COLLATERAL_CAP_USD = 60.00       # operator option B sizeup 2026-08-14 ($45 was option D)
 HALT_DAY_LOSS_USD = 10.00        # LOCKED operator halt budget — unchanged
 PROBE_CT = 8                     # contracts per side (min-size presence)
 MAX_MARKETS = 7                  # operator option D (was 2; <=12 cancel-physics cap)

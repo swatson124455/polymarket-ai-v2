@@ -405,13 +405,16 @@ def test_plan_prices_pair_below_one_and_stale_cap():
             assert y + n < 1.0
 
 
-def test_collateral_cap_binds_via_validator_not_constants():
-    """Option D: MAX_MARKETS x price caps exceeds the collateral cap by design;
-    the CAP must bind through validate_orders' recompute."""
-    at_caps = [_order(ticker=f"KX-{i}", y_price=0.90, n_price=0.05)
-               for i in range(rp.MAX_MARKETS)]
-    assert (0.95 * rp.PROBE_CT * rp.MAX_MARKETS) > rp.COLLATERAL_CAP_USD
-    ok, why = rp.validate_orders(at_caps)
+def test_collateral_cap_binds_via_validator(monkeypatch):
+    """The CAP binds through validate_orders' recompute of (y+n)*ct, never via a
+    stored flag. (At the option-B $60 cap, a max 7x8ct y+n<1 book is $55.44 and
+    fits; the enforcement itself is pinned with a lowered cap.)"""
+    max_book = [_order(ticker=f"KX-{i}", y_price=0.90, n_price=0.09)
+                for i in range(rp.MAX_MARKETS)]
+    ok, why = rp.validate_orders(max_book)
+    assert ok, why
+    monkeypatch.setattr(rp, "COLLATERAL_CAP_USD", 5.0)
+    ok, why = rp.validate_orders([_order(y_price=0.56, n_price=0.43)])  # $7.92
     assert not ok and "cap" in why
 
 
