@@ -74,3 +74,45 @@ $1 from 2–3 ticks off the touch at target-scale size, where fill probability i
 lower — the sweep must chew through the touch AND the intervening ticks first).
 That shape is exactly what the next-rung decision is about; design + sizing math in
 the R2 proposal (separate doc / operator decision).
+
+# ============ ADVERSARIAL REVIEW DISPOSITIONS + HARDENED RERUN (2026-08-18 ~15:5xZ) ============
+Per the standing per-section review rule. Reviewer findings F1-F15; dispositions:
+
+**Hardened rerun (script `workflow_scripts/r1_cliff_hypothesis_test.py` — the REAL
+per-program script, archived; the earlier r1_ratio_study.py was event-level and
+could not reproduce the table = review F5, provenance gap CLOSED):**
+- **38/38 events match** over the FULL tape denominator (120 tape programs, 12
+  dropped unmapped/one-field — disclosed per F7; read 2026-08-18T15:54:48Z).
+  Total predicted $6.13 vs paid $6.11.
+- **NEW 4th above-cliff case: KXTRUMPTIME-26AUG15-H3 accrued $1.0034 -> paid $1.00**
+  -> threshold bracket TIGHTENED to ($0.9719, $1.0034] (F1: stated as "$1.00
+  within that bracket", not an exact constant; R2 sizing must dominate bracket +
+  feed staleness -> design to >= $1.50/program).
+- **F3 ANSWERED: credit rows are PER-PROGRAM** — KXTOPMODEL-26AUG31 paid as TWO
+  rows ($1.05 + $1.41, both 08-10T18:25Z). Payment granularity is per-program;
+  the event-aggregation alternative is excluded mechanically, not just by the
+  ACTBLUETOP instance.
+- F6/F8 hardening in the archived script: per-program staleness flagging (none
+  tripped), max-ts ordering, malformed-ts tolerance.
+
+**Label corrections adopted (F2/F11/F13/F14/F15):**
+- Sub-$1-pays-$0: ESTABLISHED (30+ program observations + W10 lifetime zero
+  sub-$1 rows... now zero sub-$1.00 rows with min-ever $1.00).
+- Above-cliff-pays-accrued: ESTABLISHED for this class (n=4 programs, politics/
+  model series); INFERRED as venue-universal until another series family confirms.
+- Mechanism wording: the TRADING RULE is law; whether the venue pays *nobody*
+  sub-$1 vs drops *our* row vs redistributes is INFERRED (per-user-indistinguishable
+  in this sample) — do not reason about competitor behavior from it.
+- "Touch-quoting refuted" is SCOPED: refuted at min size in thin data-release
+  books (the probe's class). The lifetime record includes near-touch temp/gas
+  presence that earned (W10); the unqualified sentence in the section above is
+  superseded by this scoping.
+- "Deep-but-qualifying at size" is NOT a residual winner: it is the one untested
+  shape, with an UNMEASURED walk-through cost tail (R1's finding (c) is mild
+  evidence AGAINST it in data-release books — informed repricing jumps depth).
+  Any R2 must bound that tail by design (no-catalyst windows, per-event size caps)
+  and is a fresh hypothesis test, not a narrowed-down winner.
+- The 0.11 revenue/cost figure is a whole-probe blunt verdict (mixed size regimes,
+  F15) — never a per-shape unit economic; use D3's -4.8c/ct for per-unit cost.
+**Queued (F9):** re-read credit_history for the sub-$1 events >= 7 days past their
+ends (~08-21+) to close the late-payment censoring hole.
