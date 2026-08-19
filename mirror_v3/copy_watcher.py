@@ -685,7 +685,14 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
 #     reconnect. A silently-dead subscription is this lane's worst failure mode.
 #   * Separate FirstBuyDedup + TrailingMedians instances - the A/B stream must
 #     not mutate the primary stream's estimand or conviction state.
-RTDS_SILENT_ALARM_S = 60.0
+# 60s -> 15s (2026-08-19 over-correction audit): the app-PING keepalive did
+# NOT reduce outage frequency (18 alarms/2.9h post-fix vs ~6/h before;
+# coverage gap 13.8% vs 11.8% - the PING root-cause theory is REFUTED by
+# live A/B). The venue cycles these connections regardless (the reference
+# recorder also reconnects ~4/h). The real lever is DETECTION TIME: at the
+# measured ~40-60 frames/s, 15 silent seconds is unambiguous death
+# (P(no frame | alive) ~ 0), and each outage shrinks from ~61s to ~16s.
+RTDS_SILENT_ALARM_S = 15.0
 RTDS_BACKOFF_S = (1.0, 5.0, 15.0, 60.0)  # reconnect schedule, capped at tail
 # Keepalive fix (2026-08-19, operator-approved): RTDS requires an APPLICATION-
 # level "PING" text frame - protocol-level websocket pings keep the transport
@@ -796,7 +803,11 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
                             try:
                                 await asyncio.wait_for(ws.send("PING"),
                                                        timeout=10)
-                            except Exception:
+                            except Exception as e:
+                                # audit 2026-08-19: a silent death here hid
+                                # whether PINGs were even being sent
+                                log(f"[rtds_watch] app-ping stopped: "
+                                    f"{type(e).__name__} (reconnect handles it)")
                                 return
                     ping_task = asyncio.create_task(_app_ping())
                     attempt = 0
