@@ -1507,6 +1507,35 @@ MIN_PRICE_DOLLARS = _envf("KALSHI_MIN_PRICE_DOLLARS", 0.01)  # never OPEN a bid 
 # unacceptable to Kalshi (valid range 0.01-0.99 inclusive).
 EXIT_MAX_PRICE_DOLLARS = _envf("KALSHI_EXIT_MAX_PRICE_DOLLARS", 0.99)
 EXIT_MIN_PRICE_DOLLARS = _envf("KALSHI_EXIT_MIN_PRICE_DOLLARS", 0.01)
+
+
+def _parse_mid_band(raw):
+    """MID-BAND EXCLUSION band "lo,hi" -> (lo, hi) or None (= gate off). Malformed input is
+    REFUSED OUT LOUD and leaves the gate OFF — the D3_RUNGS silent-fallback trap (memory
+    08-12) must not recur on a knob that gates the trade universe."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        lo, hi = (float(x) for x in raw.split(","))
+        if not (0.0 <= lo < hi <= 1.0):
+            raise ValueError(f"band out of order/range: {lo},{hi}")
+        return lo, hi
+    except (TypeError, ValueError) as e:
+        print(f"WARNING KALSHI_MID_BAND_OUT malformed ({raw!r}: {e}); gate stays OFF")
+        return None
+
+
+_ENV_DECLARED["KALSHI_MID_BAND_OUT"] = ""
+# NEAR-STRIKE / MID-BAND EXCLUSION (concentrated-cliff build 2026-08-19). D3 measured the
+# ladder-near-strike mechanism toxic (adverse fills when price discovery is live in the
+# actionable range); the F9 recount applies it as "mid in (0.10,0.90) -> out" and this knob
+# is that overlay made LIVE (entry + every re-quote cycle — mids drift, a one-shot list
+# goes stale). Book-mid proxy, no strike metadata needed: the survivable-class earning
+# record (W10 temp/gas, TOPMODEL-26AUG31 existence proof) is all extreme-price. NOTE the
+# proxy excludes mid-range members of NON-ladder allowlisted series too — reviewed and
+# accepted for this mode (documented in the build doc). Default "" = gate off entirely.
+MID_BAND_OUT = _parse_mid_band(os.environ.get("KALSHI_MID_BAND_OUT", ""))
 WIND_DOWN_MIN = _envi("KALSHI_WIND_DOWN_MIN", 45)   # pull quotes N min before end
 # F17 / D-G (reward audit 2026-08-06, operator-ruled): the ABSOLUTE 45-min wind-down forfeited
 # ~78% of a sub-hour program window (58-min hourly temp: enterable ~13 min, quoted-down 45) —
@@ -2950,6 +2979,18 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if stats is not None:
             stats["gate_entry_band"] = stats.get("gate_entry_band", 0) + 1
         return []
+    # MID-BAND EXCLUSION (KALSHI_MID_BAND_OUT, default off — see the knob's comment): book
+    # mid inside the toxic band -> no ENTRY; held inventory still gets its reducing exit
+    # (de-risk is never gated), same contract as the two entry gates directly above. Runs
+    # every cycle so a market that DRIFTS into the band is evicted at its next re-quote.
+    if MID_BAND_OUT is not None:
+        _mid = (best_y + (1.0 - best_n)) / 2.0
+        if MID_BAND_OUT[0] < _mid < MID_BAND_OUT[1]:
+            if abs(inv) >= INV_TOLERANCE:
+                return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
+            if stats is not None:
+                stats["gate_mid_band"] = stats.get("gate_mid_band", 0) + 1
+            return []
     # external depth = public depth minus our own resting order on that side
     ext_y = max(0.0, sum(s for _, s in yl) - float(own.get("yes", 0)))
     ext_n = max(0.0, sum(s for _, s in nl) - float(own.get("no", 0)))
