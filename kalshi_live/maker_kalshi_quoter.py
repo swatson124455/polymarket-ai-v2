@@ -1658,6 +1658,13 @@ MAX_ENTRY_CUTOFF_MIN = _envf("KALSHI_MAX_ENTRY_CUTOFF_MIN", 120.0)
 # falls through to the STRAND UNWIND path, which rests the reducing side at reference so the
 # position still flattens passively. 0 disables the cap.
 MAX_DAYS_TO_CLOSE = _envf("KALSHI_MAX_DAYS_TO_CLOSE", 3.0)
+# MIN-RUNWAY ENTRY GATE (concentrated-cliff build 2026-08-19; the 08-13 roadmap's LOCKED
+# "window >= 49h" entry rule, learned live in R1: a program placeable at read time can be
+# un-placeable by GO time). Hours of PROGRAM runway (end_date - now) a candidate must have
+# left to be ENTERED; 0 = gate off (today's exact behavior). Program end is the accrual
+# clock, which is what the $1-cliff needs runway against; a market whose CLOSE lands before
+# its program end is still bounded by the late-life / wind-down gates downstream.
+MIN_RUNWAY_H = _envf("KALSHI_MIN_RUNWAY_H", 0.0)
 # --- THE INVENTORY RISK RULE IS UNCONDITIONAL (operator Q1 decision, 2026-07-28) --------------
 # Operator's rule, on record 2026-07-27 19:48:56Z: "we can sell at a loss"; "we shouldnt be one
 # sided unles we are exiting". Flat => both sides or nothing. Holding => the reducing side and
@@ -2096,6 +2103,13 @@ def select_footprint(progs, now):
         if (MAX_DAYS_TO_CLOSE > 0 and end > now + timedelta(days=MAX_DAYS_TO_CLOSE)
                 and not _is_macro):
             drops["drop_far_close"] = drops.get("drop_far_close", 0) + 1
+            continue
+        # MIN-RUNWAY GATE (KALSHI_MIN_RUNWAY_H, 0 = off): the cliff needs runway — a program
+        # whose remaining window cannot carry a $1.50 projection is dead weight at entry time.
+        # Macro designations exempt, same as the two horizon gates above.
+        if (MIN_RUNWAY_H > 0 and end < now + timedelta(hours=MIN_RUNWAY_H)
+                and not _is_macro):
+            drops["drop_min_runway"] = drops.get("drop_min_runway", 0) + 1
             continue
         # window length in days — still needed for the per-market ramp below (NOT for usd_day).
         days = max((end - start).total_seconds() / 86400, 1 / 24)
