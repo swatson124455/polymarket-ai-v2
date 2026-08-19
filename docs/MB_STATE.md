@@ -417,6 +417,32 @@
 > EXECUTION STUDY launched** (background agent: fill-rate proxy, adverse
 > selection, taker-vs-maker net economics incl. the band).
 >
+> **2026-08-19 (~18:15Z) — MAKER-SIDE EXECUTION STUDY COMPLETE** (background
+> agent, read-only; scripts `/tmp/maker_study.py` + scratchpad copies; data
+> 60,011 records, 0 parse failures; fee rates known 217/1,459 comparison
+> records, rest assumed 0.07 = maker-flattering per design, 0.04 sensitivity
+> shown). Findings:
+> * **Fill-rate floor (INFERRED, conservative snapshot proxy): 47.6%**
+>   (1,090/2,290 covered OK first-buys; coverage 2,290/3,396 = 67.4%; median
+>   time-to-fill 136 min). Proxy UNDERSTATES (invisible between-snapshot
+>   taker hits; 4.2h median horizon right-censors).
+> * **Adverse selection real overall (−8.3pts filled-vs-not win rate) but
+>   ABSENT in the 0.65–0.85 band** (filled 55/66 = 83.3% vs unfilled 81.5%).
+>   Severe at extremes (≥0.85: cond edge −0.0455).
+> * **Band economics (n=131 labeled+covered):** taker **+0.0756** vs maker
+>   unconditional **+0.0515** (0.504 fill × +0.1022 cond). Paired gap
+>   **+0.0241 ± 0.0240 SE — statistically unresolved.** Maker break-even
+>   needs true fill ≥ ~74% vs the 49% proxy FLOOR; rebates uncounted
+>   (pro-maker).
+> * **Study verdict:** the snapshot proxy cannot resolve it; a live-style
+>   shadow-BID simulator (post at whale price, watch the real tape), BAND
+>   ONLY, is the instrument. Registered hypothesis for it: true band fill
+>   rate ≥74% ⇒ maker beats taker in 0.65–0.85. Outside the band maker-
+>   unconditional measured negative everywhere. **PROPOSED (new build,
+>   operator gate): band-only shadow-bid simulator.**
+> * Independent corroboration: the band's taker edge shows +0.0756 on this
+>   cut too (different denominator than the 143-mkt +0.0837; consistent).
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
