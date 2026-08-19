@@ -207,6 +207,92 @@
 > "all copy-trader data is in /tmp — one reboot erases it" just came true for
 > the scripts).
 >
+> ## 2026-08-19 — TWO RESULTS THAT REFRAME THE LANE (sequential-design analysis
+> + a verified gate defect). Nothing changed on the box; findings only.
+>
+> **⛔ DEFECT FOUND — WE SHADOW-BUY AT $1.00.** Verified by direct count over
+> the whole sink (`/tmp/_fillchk.py`, 2026-08-19): of **3,257 OK first-buys**,
+> **281 (8.6%) have `shadow_fill` >= 0.999** and **365 (11.2%) >= 0.99**.
+> A fill at 1.000 has ZERO upside and ~full downside: edge = -fee
+> deterministically. Concentration: `0x4ad6cade` **190/199 = 95.5%** of his OK
+> first-buys are >=0.99 (**178 at exactly 1.000**, whale_price p50 0.9990) —
+> and he is **51% of cohort2's first-buys** (readout 2026-08-18T12:30Z), so
+> this defect has been dragging that cohort's number. Also `0x0e5bd767` 62.5%
+> (5/8), `0x7c3db723` 15.5% (53/343), `0xf705fa04` 13.4% (36/269),
+> `0xecb14ac6` 11.8%, `0xab197165` 10.7%.
+> **ROOT CAUSE — a hole in our own gates, not a market fact.** `evaluate_gates`
+> checks spread <= max_spread and chase (ask - whale_price) <= max_chase; at
+> whale 0.999 / ask 1.000 the chase is 0.001 so the gate says OK. **There is no
+> maximum-fill-price gate.** PROPOSED (operator gate, NOT applied): add a max
+> fill price; re-measure after. Locked verdicts stay locked — a fix applies
+> FORWARD only, under a fresh pre-registration.
+>
+> **⛔ THE +0.02 FLOOR IS DECORATIVE — IT NEVER BINDS.** Sequential-design
+> analysis (agent, 2026-08-19; ESTABLISHED where computed on real data):
+> **P>=0.95 at n=30 requires edge >= +0.127** (6.4x the stated +0.02 floor);
+> +0.105 at n=44; +0.024 at n=855. Whenever the P bar fires at n=30 the edge
+> bar is automatically satisfied — measured: the P-only and full-bar
+> false-positive rates are IDENTICAL (5.40%). **Power of the one-shot test at
+> realistic edges is 7-8%** against a 5.4% FPR. The seven consumed tests could
+> not have passed.
+>
+> **THE ONE-SHOT RULE WAS CORRECTLY BUILT AND COST NOTHING.** Measured FPR on
+> nulls built from our own per-market edge pool (N=3,467 market-instances,
+> sd 0.4219; 4,000 simulated subjects): **one-shot at n=30 = 5.40%**
+> (correctly calibrated); **naive daily retest = 17.78% at 13 looks, 22.28%
+> checked every market** (3.2-4.6x inflation — this is the number that
+> justifies the design). And it cost zero: across ~134 powered looks in the
+> durable log, **0 of 7 subjects ever reached P>=0.95 at any point**, and 0 do
+> now. ⚠ The hazard is real though: cohort2 re-ordered by detect-time instead
+> of resolution-time touches **P=0.962 at n=48** — a look-schedule change flips
+> "never significant" into "significant once".
+>
+> **WHAT PROOF COSTS (fixed-n, 80% power; INFERRED, and a LOWER BOUND — the
+> iid assumption is violated by same-event correlation):** +0.05 -> 440 mkts;
+> +0.02 -> 2,751; +0.01 -> 11,005; +0.005 -> 44,020. At measured accrual
+> (cohort1 6.7/d, cohort3 15.0/d, cohort4 46.4/d, single trader ~7/d):
+> +0.02 = **59 days at cohort4's rate, 1.1 years at cohort1's**; +0.01 =
+> 237 days to 4.5 years; +0.005 = 2.6 to 18 years.
+>
+> **ANYTIME-VALID DESIGN: valid, but it fixes the wrong problem alone.**
+> Betting e-process (mixture over lambda) measured FPR **1.55%** (and 3.48-4.73%
+> checked after every one of 20,000 markets) — error controlled under
+> continuous monitoring, as theory guarantees. Cost: **~1.8-1.9x** the fixed-n
+> sample for equal power. **Backtested on all 7 consumed tests under both
+> chronologies: NO subject rejects** (peak e-value 6.44 vs threshold 20). The
+> binding constraint is n, not the stopping rule.
+>
+> **ONE LIVE CANDIDATE:** `0x7c3db723` — edge **+0.0481** with **sd 0.294**
+> (vs 0.4219 pooled — unusually low variance is why he is tractable); needs
+> ~231 markets fixed-n / ~411 under the mixture e-process; **has 100**,
+> accrues ~7/day => **~6 weeks**. His single look is consumed and cannot be
+> re-opened; continuing him requires a FRESH forward pre-registration
+> (operator gate). NOTE: 15.5% of his OK first-buys are >=0.99 fills, so the
+> $1.00 defect touches his number too.
+>
+> **PROPOSED PRE-REGISTRATION (drafted, NOT adopted — operator gate):**
+> statistic = per-market mean edge (canonical unit); procedure = uniform
+> mixture betting e-process over lambda in {0.05,0.1,0.2,0.4,0.6,0.8};
+> **null H0: edge <= 0** (the +0.02 floor becomes an ECONOMIC gate applied
+> AFTER significance — folding it into the null roughly doubles n again);
+> alpha 0.05, reject at e-value >= 20; check every readout; pre-registered
+> futility N_fut per subject; **forward-only from a new epoch** (retro-fitting
+> inherits the selection it exists to prevent). Locks stay locked.
+>
+> ⚠ CAVEATS ON RECORD: all n* are LOWER BOUNDS (iid violated). Chronology is
+> imperfect — gamma `resolved_at` is a nominal end date, precedes the shadow
+> fill in 180/184 cases for one trader, and 38 market-instances carry dates
+> through 2027-06-30; both orderings were tested and only cohort2's
+> counterfactual moves. Reconstructions use TODAY's labels while the durable
+> log used the labels of the day — where they differ the durable log is the
+> record (it reproduces all 4 locks exactly). No changepoint analysis was run,
+> and an anytime-valid test of a constant mean is invalid under a changepoint.
+>
+> **STILL RUNNING (not yet reported):** the 4-part edge-proof workflow —
+> power/variance, winner's-curse split-half persistence, best-estimator
+> (pooled / random-effects / price-band stratification), and alternative
+> estimands (conviction, latency, chase, taker-vs-maker).
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
