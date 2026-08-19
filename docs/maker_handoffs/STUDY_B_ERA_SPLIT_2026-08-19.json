@@ -1,0 +1,42 @@
+{
+ "('KXAAAGASD', 'defect_era')": {
+  "fill_cash": -95.22680000000003,
+  "n_fills": 517,
+  "sett_rev": 3.63,
+  "n_setts": 49,
+  "credits": 33.04,
+  "n_credits": 13
+ },
+ "('KXAAAGASW', 'defect_era')": {
+  "fill_cash": -74.78559999999999,
+  "n_fills": 91,
+  "sett_rev": 34.46,
+  "n_setts": 8,
+  "credits": 0.0,
+  "n_credits": 0
+ },
+ "('KXDIESELW', 'defect_era')": {
+  "fill_cash": -1.0095999999999994,
+  "n_fills": 7,
+  "sett_rev": 0.0,
+  "n_setts": 3,
+  "credits": 0.0,
+  "n_credits": 0
+ },
+ "('KXAAAGASD', 'clean')": {
+  "fill_cash": -7.654000000000003,
+  "n_fills": 76,
+  "sett_rev": 0.94,
+  "n_setts": 5,
+  "credits": 0.0,
+  "n_credits": 0
+ },
+ "('KXAAAGASW', 'clean')": {
+  "fill_cash": 0.0,
+  "n_fills": 0,
+  "sett_rev": 0.0,
+  "n_setts": 1,
+  "credits": 0.0,
+  "n_credits": 0
+ }
+}

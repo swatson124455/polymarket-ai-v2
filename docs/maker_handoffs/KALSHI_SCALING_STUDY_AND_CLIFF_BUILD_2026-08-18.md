@@ -160,6 +160,61 @@ switches, KALSHI_LIVE_ARMED three-lock, deploy md5-vs-blob, suite exit codes.
   SUBCLIFF read with operator-NAMED eviction (pacing; automating mid-window
   eviction would violate the no-mid-window-size-change rule).
 
+## SHADOW READOUT + $0 COUNTER-STUDIES (2026-08-19 ~14:3x-14:5xZ; operator "all now")
+
+**Shadow 03:15-14:20Z (70 cycles, 697 rows): 0 quotes.** Gate totals: one_sided 479
+(69%), mid_band 140 (20%), netev_skipped 68 (10% — the ONLY otherwise-quotable
+rows), min_runway 8. All gates verified firing on their target classes.
+
+**Study A2 — availability (candles, lifetime denominators; read 14:41:07Z, 49
+markets / 2,384 lifetime-hours, 7d cap; JSON `STUDY_A2_AVAILABILITY_2026-08-19.json`
+md5 0ad8679f):** two-sided 60.1% of lifetime; 66.3% of two-sided time sits at mid
+0.15-0.85 (toxic regime). Investable under the (0.10,0.90) band = 13.2% of lifetime
+(315h); under (0.15,0.85) = 20.3%. v1 of this study (candle-hours denominator) was
+SELF-CAUGHT biased — candles only exist for emitted hours. **Selection-order
+finding: investable hours concentrate in specific equal-pool tails (AAAGASW-4.200/
+.220/.240, DIESELW-T5.26/.28) that the 10-candidate pivot pool (PIVOT_POOL_MULT=2 ×
+FOOTPRINT_TOP=5) never reached — the shadow retried the same uninvestable ten.**
+KALSHI_PIVOT_POOL_MULT=10 appended to the SHADOW env (~14:44Z) to test traversal;
+ratification = operator, at relight.
+
+**Study B — NETEV era-split (read 14:45:39Z; canonical replay_fills + settlement_
+revenue + credit_history; era boundary 2026-08-10 = R0a fixed-build; JSON
+`STUDY_B_ERA_SPLIT_2026-08-19.json` md5 1dde82b6):** the families' net-negative
+basis is ~94% defect-era (−$99.89 of −$106.61 pre-08-10; attribution per Rule
+Seven). Clean era: DIESELW 0 fills, AAAGASW 0 fills (UNPOWERED), AAAGASD 76 fills
+net −$6.71 with $0 credits — breadth-era sizing, sub-cliff by construction.
+**Verdict: NETEV-off for this mode = "untested in clean era", not "contradicted".**
+Operator decision still pending.
+
+**Study C — extreme-shell cliff payment (read 14:47:32Z; 73 concluded tape
+programs with accrual + closed envelopes; JSON `STUDY_C_SHELLS_2026-08-19.json`
+md5 404c22b8):** extreme shells (mid≤0.10/≥0.90 at conclusion) held 58 programs:
+**3 cleared the $1 cliff and ALL 3 PAID in full** (APRPOTUS-39.9 $1.63,
+ADJOURNRECESS $1.02, TRUMPTIME-H3 $1.00 — all mid 0.005); 55 sub-$1 → $0 per
+canon. Existence proof grows n=1 event → 3/3 extreme-shell programs (+ TOPMODEL's
+2 in the mid-ish shell). ESTABLISHED for this sample: payment does not
+discriminate against extreme books.
+
+**Operational lesson (14:36-14:47Z, self-inflicted + reverted):** removing
+KALSHI_LIVE_ARMED from live.env broke the READ stack — 9 observation scripts
+construct `KalshiOrderClient(mode="live")`, which raises at construction without
+the phrase; estimates+cash recorders each failed once (14:42:50Z exit 1) before
+the revert; both re-run exit 0, one 5-min estimates sample lost. **live.env stays
+ARMED (services down+disabled = the actual safety); named candidate code change:
+arm-gate WRITES only in the client (needs review + operator signoff).**
+
+## §F14 PRE-REGISTRATION (binding; written BEFORE any relight ask)
+1. Per market: BUDGET-FAIL flag when realized fill cost (position-aware
+   replay_fills basis) reaches 50% of that market's projected program accrual
+   before 50% of its window has elapsed → reported at the daily read for
+   operator-NAMED eviction (never automated mid-window).
+2. Portfolio verdict at window end+72h: PASS iff counted in-window-concluded
+   credits > |position-aware drag| (identical semantics to the §5 scoreboard —
+   one gauge, one rule).
+3. These thresholds are FROZEN now; moving them after fills exist is
+   goalpost-moving and forbidden.
+
 Calendar (operator picked (a) 2026-08-19 ~02:1xZ): build+review → shadow →
 relight ask (operator GO) → run to ~08-25 → payment reads 08-26/27 → mandate
 decision 2026-08-27.
