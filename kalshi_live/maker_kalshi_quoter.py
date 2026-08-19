@@ -195,6 +195,14 @@ PIVOT_SELECT = _envi("KALSHI_PIVOT_SELECT", 0)      # 0 = legacy select+quote (p
 PIVOT_POOL_MULT = _envi("KALSHI_PIVOT_POOL_MULT", 2)   # candidate pool = MULT * FOOTPRINT_TOP
 PIVOT_COVERAGE = _envi("KALSHI_PIVOT_COVERAGE", 1)     # min slots/series before density fill
 PIVOT_READ_RESERVE = _envi("KALSHI_PIVOT_READ_RESERVE", 30)  # reads held back (strand/ladder/settle)
+# CONCENTRATED-CLIFF ordering (operator-ratified 2026-08-19, decision 3A intent): the pivot's
+# near-money-first within-series sort is exactly backwards for a mode whose mid-band gate
+# excludes near-money — every near-money candidate burns a pool slot + a book read and then
+# gates out, so the per-series slots never reach the investable extreme strikes (measured:
+# shadow 03:15-14:20Z quoted 0/70 cycles; first quotes only after traversal widening).
+# 1 = extreme-strikes-first within each series (unparseable strikes still sort LAST);
+# 0 (default) = today's near-money-first, byte-identical.
+PIVOT_FAR_FIRST = _envb("KALSHI_PIVOT_FAR_FIRST")
 JOIN_SIZE = _envi("KALSHI_JOIN_SIZE", 100)          # contracts/side on non-void markets
 # REWARDS ARE PAID FOR QUOTES ON THE BOOK, NOT INVENTORY HELD. So BOTH sides must stay live
 # every cycle — the throttle SHRINKS the accumulating side but never pulls it to zero (that
@@ -2363,8 +2371,17 @@ def select_footprint(progs, now):
     def _prox(r):                       # near-money proxy: |strike - series median|
         s = _strike_of(r["ticker"])
         return abs(s - _med[r["ticker"].split("-")[0]]) if s is not None else 1e9
+
+    def _prox_key(r):
+        """Within-series ordering key. Default: near-money first (legacy, byte-identical).
+        PIVOT_FAR_FIRST: extreme strikes first — but an UNPARSEABLE strike (prox 1e9)
+        must still sort LAST in both modes, never first by sign-flip."""
+        p = _prox(r)
+        if not PIVOT_FAR_FIRST:
+            return (p, r["ticker"])
+        return ((-p if p < 1e9 else 1e9), r["ticker"])
     for s, rs in by_series.items():
-        rs.sort(key=lambda r: (_prox(r), r["ticker"]))          # near-money first, then ticker
+        rs.sort(key=_prox_key)          # near-money first (default) / far-first (flag)
     if ALLOC_KEY:
         # PIVOT branch on the SAME key (blind-review fix): series rotation and the density
         # remainder follow the rank order of `rows`; near-money still sorts within series.
@@ -2377,7 +2394,7 @@ def select_footprint(progs, now):
             picked.append(r)
             per_series[s] += 1
     dens = (list(rows) if ALLOC_KEY else                    # rank order IS the density order
-            sorted(rows, key=lambda r: (-r["usd_day"], _prox(r), r["ticker"])))  # 2) REMAINDER
+            sorted(rows, key=lambda r: (-r["usd_day"],) + _prox_key(r)))  # 2) REMAINDER
     seen = {id(r) for r in picked}
     for r in dens:
         if id(r) in seen:
