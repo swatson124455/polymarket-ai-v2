@@ -1692,10 +1692,10 @@ MAX_ENTRY_CUTOFF_MIN = _envf("KALSHI_MAX_ENTRY_CUTOFF_MIN", 120.0)
 MAX_DAYS_TO_CLOSE = _envf("KALSHI_MAX_DAYS_TO_CLOSE", 3.0)
 # MIN-RUNWAY ENTRY GATE (concentrated-cliff build 2026-08-19; the 08-13 roadmap's LOCKED
 # "window >= 49h" entry rule, learned live in R1: a program placeable at read time can be
-# un-placeable by GO time). Hours of PROGRAM runway (end_date - now) a candidate must have
-# left to be ENTERED; 0 = gate off (today's exact behavior). Program end is the accrual
-# clock, which is what the $1-cliff needs runway against; a market whose CLOSE lands before
-# its program end is still bounded by the late-life / wind-down gates downstream.
+# un-placeable by GO time). Hours of PROGRAM runway (m["end"] - now) a market must have
+# left for a FRESH entry; 0 = gate off (today's exact behavior). Enforced in
+# desired_quotes, entry-only and resting-aware — NOT a footprint drop (a footprint drop
+# would evict resting markets at end-49h and forfeit the accrual tail; section review).
 MIN_RUNWAY_H = _envf("KALSHI_MIN_RUNWAY_H", 0.0)
 # --- THE INVENTORY RISK RULE IS UNCONDITIONAL (operator Q1 decision, 2026-07-28) --------------
 # Operator's rule, on record 2026-07-27 19:48:56Z: "we can sell at a loss"; "we shouldnt be one
@@ -2136,13 +2136,9 @@ def select_footprint(progs, now):
                 and not _is_macro):
             drops["drop_far_close"] = drops.get("drop_far_close", 0) + 1
             continue
-        # MIN-RUNWAY GATE (KALSHI_MIN_RUNWAY_H, 0 = off): the cliff needs runway — a program
-        # whose remaining window cannot carry a $1.50 projection is dead weight at entry time.
-        # Macro designations exempt, same as the two horizon gates above.
-        if (MIN_RUNWAY_H > 0 and end < now + timedelta(hours=MIN_RUNWAY_H)
-                and not _is_macro):
-            drops["drop_min_runway"] = drops.get("drop_min_runway", 0) + 1
-            continue
+        # (MIN-RUNWAY lived here for one commit and was moved to desired_quotes by the
+        # section review: a footprint drop evicts RESTING markets at end-49h, forfeiting
+        # the accrual tail — the 49h rule is an ENTRY rule, so it must be resting-aware.)
         # window length in days — still needed for the per-market ramp below (NOT for usd_day).
         days = max((end - start).total_seconds() / 86400, 1 / 24)
         # R1 POOL — DO NOT DIVIDE BY WINDOW LENGTH. `period_reward / 10000` IS ALREADY the DAILY,
@@ -2982,6 +2978,20 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if stats is not None:
             stats["gate_entry_band"] = stats.get("gate_entry_band", 0) + 1
         return []
+    # MIN-RUNWAY ENTRY GATE (KALSHI_MIN_RUNWAY_H, 0 = off): the per-program $1 cliff needs
+    # runway — a program ENTERED with less remaining window than the cliff projection needs
+    # is guaranteed dead weight (accrues sub-$1 -> pays $0) at full fill risk. ENTRY-ONLY,
+    # like the presence gate below: a market we are already RESTING in keeps its quotes to
+    # the ordinary late-life/wind-down cutoffs (pulling them at end-49h would forfeit the
+    # accrual tail — the exact bug the section review caught in the footprint-drop version).
+    # Held inventory falls through to every later gate's reducing path untouched.
+    if MIN_RUNWAY_H > 0 and end < now + timedelta(hours=MIN_RUNWAY_H):
+        _resting_runway = (float((own or {}).get("yes") or 0.0)
+                           + float((own or {}).get("no") or 0.0)) > 0.0
+        if abs(inv) < INV_TOLERANCE and not _resting_runway:
+            if stats is not None:
+                stats["gate_min_runway"] = stats.get("gate_min_runway", 0) + 1
+            return []
     # MID-BAND EXCLUSION (KALSHI_MID_BAND_OUT, default off — see the knob's comment): book
     # mid inside the toxic band -> no ENTRY; held inventory still gets its reducing exit
     # (de-risk is never gated), same contract as the two entry gates directly above. Runs

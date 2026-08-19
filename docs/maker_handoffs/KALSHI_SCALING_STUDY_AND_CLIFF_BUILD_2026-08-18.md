@@ -147,12 +147,18 @@ switches, KALSHI_LIVE_ARMED three-lock, deploy md5-vs-blob, suite exit codes.
   code changes.
 - Full env delta set: `kalshi_live/concentrated_cliff.env.example` (template;
   applied to live.env only at deploy with relight GO, after shadow).
-- Cliff pacing note: KALSHI_MIN_CREDIT_USD=1.50 with PRESENCE_GATE is an ENTRY
-  gate (by design — resting markets accrue additively and are not re-pulled);
-  the daily sub-cliff eviction check therefore runs OUTSIDE the quoter via the
-  reward_pnl SUBCLIFF report (deployed 1ecd8060) at the 07:30Z read — operator
-  sees pacing, eviction stays a named act. (Reviewed: automating mid-window
-  eviction inside the quoter contradicts the no-mid-window-size-change rule.)
+- **Section-review catches (both fixed before any deploy):**
+  (1) MIN_RUNWAY as a footprint drop would have evicted RESTING markets at
+  end−49h, forfeiting every window's accrual tail — moved to the quote path,
+  entry-only + resting-aware (`gate_min_runway`), pinned by
+  `test_resting_orders_keep_their_market`.
+  (2) The in-quoter PRESENCE_GATE cannot be the cliff gate: it is scoped
+  `and not void` (F9 candidates are void books) and its projection embeds the
+  refuted sub-target-pays-nobody premise — armed, it would model $0 and block
+  the entire candidate set. It stays OFF; cliff gating = F9 selection
+  projection (entry) + OBS_HOLD proven-accrual rung gating (size) + daily
+  SUBCLIFF read with operator-NAMED eviction (pacing; automating mid-window
+  eviction would violate the no-mid-window-size-change rule).
 
 Calendar (operator picked (a) 2026-08-19 ~02:1xZ): build+review → shadow →
 relight ask (operator GO) → run to ~08-25 → payment reads 08-26/27 → mandate
