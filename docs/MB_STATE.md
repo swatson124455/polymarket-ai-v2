@@ -383,7 +383,7 @@
 > proven-negative stratum) both weaken under the venue formula — fills at
 > exactly 1.000 stay guaranteed-nonpositive, but 0.98–0.99 is now merely
 > terrible risk/reward, not deterministic loss. Operator decides: keep 0.98 /
-> move to 0.99 / other. 990/3,646 tokens rated at the conservative 0.07
+> move to 0.99 / other. **RULED 2026-08-19: KEEP AS IS (0.98).** 990/3,646 tokens rated at the conservative 0.07
 > unknown-category rate (pooled venue figure is thus slightly UNDERSTATED).
 >
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
