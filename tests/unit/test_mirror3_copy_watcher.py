@@ -502,3 +502,43 @@ def test_rtds_config_gating():
         {**base, "MIRROR3_RTDS_AB": "1", "RTDS_WS_URL": "wss://x"})
     assert cfg.rtds_ab is True and cfg.rtds_url == "wss://x"
     assert cfg.rtds_sink.endswith("mirror3_shadow_rtds.jsonl")
+
+
+# -- $1.00-fill gate + RTDS keepalive (2026-08-19) ----------------------------
+def test_max_fill_gate_blocks_no_upside_fills():
+    # measured defect: 281/3257 OK first-buys filled at >=0.999 - deterministic
+    # losers. whale 0.999 -> ask 1.000 passes the CHASE gate (0.001), so only
+    # an absolute fill ceiling can catch it.
+    v, f = cw.evaluate_gates(0.999, 0.999, 1.0, 0.02, 0.05, max_fill=0.98)
+    assert v == "PRICE_NO_UPSIDE" and f is None
+    v, f = cw.evaluate_gates(0.985, 0.98, 0.99, 0.02, 0.05, max_fill=0.98)
+    assert v == "PRICE_NO_UPSIDE" and f is None
+    # below the ceiling: unchanged behavior
+    v, f = cw.evaluate_gates(0.96, 0.96, 0.97, 0.02, 0.05, max_fill=0.98)
+    assert v == "OK" and f == 0.97
+
+
+def test_max_fill_default_none_is_byte_identical():
+    # omitted max_fill must reproduce the historical gate exactly - the fix is
+    # forward-only via config, never a rewrite of the record
+    cases = [(0.999, 0.999, 1.0), (0.5, 0.49, 0.51), (0.5, 0.4, 0.51),
+             (0.5, None, None), (0.5, 0.5, 0.58)]
+    for wp, bid, ask in cases:
+        assert (cw.evaluate_gates(wp, bid, ask, 0.02, 0.05)
+                == cw.evaluate_gates(wp, bid, ask, 0.02, 0.05, max_fill=None))
+    # and a 1.00 fill with max_fill=None still returns OK (old behavior)
+    assert cw.evaluate_gates(0.999, 0.999, 1.0, 0.02, 0.05)[0] == "OK"
+
+
+def test_max_fill_config_env_and_default():
+    base = {"MIRROR3_ROSTER_PATH": "r.json", "MIRROR3_RPC_URL": "http://x"}
+    assert cw.WatcherConfig.from_env(dict(base)).max_fill == 0.98
+    assert cw.WatcherConfig.from_env(
+        {**base, "MIRROR3_MAX_FILL_C": "95"}).max_fill == 0.95
+
+
+def test_rtds_pong_frames_are_not_trades():
+    # the keepalive reply must never be parsed as data
+    assert cw.parse_rtds_trades("PONG") == []
+    assert cw.parse_rtds_trades("pong") == []
+    assert cw.RTDS_APP_PING_S == 5.0  # reference-consumer interval (rtds_websocket.py:22)

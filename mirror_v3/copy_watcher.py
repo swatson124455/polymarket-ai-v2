@@ -33,6 +33,9 @@ GATES (per signal, all recorded, none fatal to the run):
   NO_BOOK          could not quote a book (CLOB /price timeout/empty)
   SPREAD_TOO_WIDE  ask - bid > max_spread
   PRICE_RAN_AWAY   ask > whale_price + max_chase (the edge already left)
+  PRICE_NO_UPSIDE  ask > max_fill (2026-08-19: 8.6% of OK first-buys filled
+                   at >=0.999 - zero upside, full downside; the chase gate
+                   cannot catch a 0.999->1.000 copy)
   OK               shadow-filled at the current ask (our copy price)
 
 LADDER CAPTURE (2026-07-12, additive): each record also carries the top
@@ -54,6 +57,8 @@ ENV (explicit when enabled; the v3 "unset is an error" rule):
   MIRROR3_SHADOW_PATH   JSONL sink (default /opt/pa2-shared/mirror3_shadow.jsonl)
   MIRROR3_MAX_CHASE_C   gate: max cents over whale price (default 2)
   MIRROR3_MAX_SPREAD_C  gate: max spread in cents (default 5)
+  MIRROR3_MAX_FILL_C    gate: max shadow fill price in cents (default 98 -
+                        the zero-upside bound at the flat 2% fee)
   MIRROR3_POLL_S        poll interval seconds (default 2)
 """
 from __future__ import annotations
@@ -235,11 +240,24 @@ def side_from_receipt_logs(logs: list, trader: str,
 
 def evaluate_gates(whale_price: float, best_bid: Optional[float],
                    best_ask: Optional[float], max_chase: float,
-                   max_spread: float) -> tuple[str, Optional[float]]:
+                   max_spread: float,
+                   max_fill: Optional[float] = None) -> tuple[str, Optional[float]]:
     """(verdict, shadow_fill_price). OK => we'd cross at the ask; every
-    other verdict is a skip whose cost is zero by construction."""
+    other verdict is a skip whose cost is zero by construction.
+
+    max_fill (2026-08-19, operator-approved defect fix): a hard ceiling on
+    the price we will shadow-pay. Measured over the full sink: 281/3,257 OK
+    first-buys (8.6%) filled at >= 0.999 - ZERO upside, ~full downside, a
+    deterministic loser after fees. The chase gate cannot catch it: whale at
+    0.999 -> ask 1.000 is a 0.001 chase, "fine". The 0.98 default is the
+    economic zero-upside bound at the flat 2% fee (1 - 1.02p <= 0 for
+    p >= 0.9804). None (the default) preserves the old behavior exactly -
+    existing callers and the historical record are untouched; the fix is
+    FORWARD-ONLY via the config."""
     if best_ask is None or best_ask <= 0:
         return "NO_BOOK", None
+    if max_fill is not None and best_ask > max_fill:
+        return "PRICE_NO_UPSIDE", None
     if best_bid is not None and (best_ask - best_bid) > max_spread:
         return "SPREAD_TOO_WIDE", None
     if best_ask > whale_price + max_chase:
@@ -318,6 +336,7 @@ class WatcherConfig:
     median_cache: str = "/opt/pa2-shared/mb_copyable_data/copyable_cache"
     max_chase: float = 0.02
     max_spread: float = 0.05
+    max_fill: float = 0.98  # $1.00-fill defect fix (see evaluate_gates)
     poll_s: float = 2.0
     # RTDS A/B consumer (2026-07-30, operator-approved latency build): OFF
     # unless MIRROR3_RTDS_AB=1 AND RTDS_WS_URL is set. Writes to its OWN sink
@@ -351,6 +370,7 @@ class WatcherConfig:
                 "/opt/pa2-shared/mb_copyable_data/copyable_cache"),
             max_chase=float(env.get("MIRROR3_MAX_CHASE_C", "2")) / 100.0,
             max_spread=float(env.get("MIRROR3_MAX_SPREAD_C", "5")) / 100.0,
+            max_fill=float(env.get("MIRROR3_MAX_FILL_C", "98")) / 100.0,
             poll_s=float(env.get("MIRROR3_POLL_S", "2")),
             rtds_url=rtds_url,
             rtds_sink=env.get("MIRROR3_RTDS_SHADOW_PATH",
@@ -634,7 +654,7 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     book = await fetch_book(session, sig["token_id"])
                     verdict, fill = evaluate_gates(
                         sig["whale_price"], bid, ask,
-                        cfg.max_chase, cfg.max_spread)
+                        cfg.max_chase, cfg.max_spread, cfg.max_fill)
                     rec = shadow_record(
                         sig, verdict, fill, bid, ask, block_ts, now,
                         tx=sig.pop("tx", ""), book=book)
@@ -667,6 +687,15 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
 #     not mutate the primary stream's estimand or conviction state.
 RTDS_SILENT_ALARM_S = 60.0
 RTDS_BACKOFF_S = (1.0, 5.0, 15.0, 60.0)  # reconnect schedule, capped at tail
+# Keepalive fix (2026-08-19, operator-approved): RTDS requires an APPLICATION-
+# level "PING" text frame - protocol-level websocket pings keep the transport
+# alive while the subscription goes dead (measured: 83 silent alarms vs 2
+# ConnectionClosedError in 13.9h; ~9.2% downtime; 98.9% of the A/B coverage
+# gap fell inside those outages). The repo's reference consumer already
+# documents this venue requirement (base_engine/data/rtds_websocket.py:22
+# _PING_INTERVAL=5 "RTDS requires keep-alive pings", :75 ping_interval=None
+# "we handle pings manually", :115 send("PING"), :170 PONG skip). Mirror it.
+RTDS_APP_PING_S = 5.0
 
 
 def parse_rtds_trades(msg: Any) -> list[dict]:
@@ -751,65 +780,95 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
         while True:
             try:
                 async with websockets.connect(
-                        cfg.rtds_url, ping_interval=20,
+                        cfg.rtds_url, ping_interval=None, ping_timeout=None,
                         open_timeout=12) as ws:
                     await asyncio.wait_for(ws.send(json.dumps(
                         {"action": "subscribe", "subscriptions":
                             [{"topic": "activity", "type": "trades"}]})),
                         timeout=10)
                     log("[rtds_watch] connected + subscribed (activity/trades)")
+
+                    async def _app_ping():
+                        # venue keepalive; on send failure just stop - the
+                        # recv loop's silent-alarm handles the dead socket
+                        while True:
+                            await asyncio.sleep(RTDS_APP_PING_S)
+                            try:
+                                await asyncio.wait_for(ws.send("PING"),
+                                                       timeout=10)
+                            except Exception:
+                                return
+                    ping_task = asyncio.create_task(_app_ping())
                     attempt = 0
-                    while True:
-                        try:
-                            raw = await asyncio.wait_for(
-                                ws.recv(), timeout=RTDS_SILENT_ALARM_S)
-                        except asyncio.TimeoutError:
-                            log(f"[rtds_watch] RTDS SILENT ALARM: no frames in "
-                                f"{RTDS_SILENT_ALARM_S:.0f}s on a ~50-trade/s "
-                                f"feed - RECONNECTING (chain poll unaffected)")
-                            break
-                        try:
-                            msg = json.loads(raw)
-                        except (TypeError, ValueError):
-                            continue
-                        for row in parse_rtds_trades(msg):
-                            if row["trader"] not in roster_set:
-                                continue
-                            if row["side"] != "BUY":
-                                continue  # estimand is first BUY, as chain path
-                            now = time.time()
-                            sig = rtds_sig(row)
-                            sig["first_buy"] = dedup.is_first(
-                                sig["trader"], sig["token_id"])
-                            tmed, n_obs = medians.stats(sig["trader"])
-                            mult, r = conviction_multiplier(
-                                sig["whale_size_usd"], tmed, n_obs)
-                            medians.observe(sig["trader"], sig["whale_size_usd"])
-                            sig["trailing_median_usd"] = tmed
-                            sig["conviction_r"] = (round(r, 4)
-                                                   if r is not None else None)
-                            sig["size_multiplier"] = mult
-                            bid, ask = await quote_book(session, sig["token_id"])
-                            sanity = quote_sanity_msg(bid, ask)
-                            if sanity:
-                                log(f"[rtds_watch] {sanity} "
-                                    f"tok={sig['token_id'][:10]}...")
-                            book = await fetch_book(session, sig["token_id"])
-                            verdict, fill = evaluate_gates(
-                                sig["whale_price"], bid, ask,
-                                cfg.max_chase, cfg.max_spread)
-                            rec = shadow_record(
-                                sig, verdict, fill, bid, ask,
-                                block_ts=int(row["trade_ts"] or now),
-                                now_ts=now, tx=row["tx"], book=book)
-                            with open(cfg.rtds_sink, "a") as f:
-                                f.write(json.dumps(rec) + "\n")
-                            log(f"[rtds_watch] {verdict:<15} "
-                                f"{sig['trader'][:10]}... "
-                                f"tok={sig['token_id'][:10]}... "
-                                f"whale={sig['whale_price']:.3f} ask={ask} "
-                                f"lag={rec['detect_lag_s']}s "
-                                f"first={sig['first_buy']}")
+                    last_data = time.time()
+                    try:
+                        while True:
+                           try:
+                               raw = await asyncio.wait_for(
+                                   ws.recv(), timeout=RTDS_SILENT_ALARM_S)
+                           except asyncio.TimeoutError:
+                               log(f"[rtds_watch] RTDS SILENT ALARM: no frames in "
+                                   f"{RTDS_SILENT_ALARM_S:.0f}s on a ~50-trade/s "
+                                   f"feed - RECONNECTING (chain poll unaffected)")
+                               break
+                           if raw in ("PONG", "pong"):
+                               # keepalive reply, NOT data. It wakes recv()
+                               # and would silently satisfy the 60s alarm -
+                               # so data-liveness is tracked separately: a
+                               # subscription answering PINGs while sending
+                               # zero trades is still DEAD and must reconnect.
+                               if time.time() - last_data > RTDS_SILENT_ALARM_S:
+                                   log(f"[rtds_watch] RTDS DATA-SILENT ALARM: "
+                                       f"PONGs alive but no data frames in "
+                                       f"{RTDS_SILENT_ALARM_S:.0f}s - "
+                                       f"RECONNECTING (chain poll unaffected)")
+                                   break
+                               continue
+                           last_data = time.time()
+                           try:
+                               msg = json.loads(raw)
+                           except (TypeError, ValueError):
+                               continue
+                           for row in parse_rtds_trades(msg):
+                               if row["trader"] not in roster_set:
+                                   continue
+                               if row["side"] != "BUY":
+                                   continue  # estimand is first BUY, as chain path
+                               now = time.time()
+                               sig = rtds_sig(row)
+                               sig["first_buy"] = dedup.is_first(
+                                   sig["trader"], sig["token_id"])
+                               tmed, n_obs = medians.stats(sig["trader"])
+                               mult, r = conviction_multiplier(
+                                   sig["whale_size_usd"], tmed, n_obs)
+                               medians.observe(sig["trader"], sig["whale_size_usd"])
+                               sig["trailing_median_usd"] = tmed
+                               sig["conviction_r"] = (round(r, 4)
+                                                      if r is not None else None)
+                               sig["size_multiplier"] = mult
+                               bid, ask = await quote_book(session, sig["token_id"])
+                               sanity = quote_sanity_msg(bid, ask)
+                               if sanity:
+                                   log(f"[rtds_watch] {sanity} "
+                                       f"tok={sig['token_id'][:10]}...")
+                               book = await fetch_book(session, sig["token_id"])
+                               verdict, fill = evaluate_gates(
+                                   sig["whale_price"], bid, ask,
+                                   cfg.max_chase, cfg.max_spread, cfg.max_fill)
+                               rec = shadow_record(
+                                   sig, verdict, fill, bid, ask,
+                                   block_ts=int(row["trade_ts"] or now),
+                                   now_ts=now, tx=row["tx"], book=book)
+                               with open(cfg.rtds_sink, "a") as f:
+                                   f.write(json.dumps(rec) + "\n")
+                               log(f"[rtds_watch] {verdict:<15} "
+                                   f"{sig['trader'][:10]}... "
+                                   f"tok={sig['token_id'][:10]}... "
+                                   f"whale={sig['whale_price']:.3f} ask={ask} "
+                                   f"lag={rec['detect_lag_s']}s "
+                                   f"first={sig['first_buy']}")
+                    finally:
+                        ping_task.cancel()
             except asyncio.CancelledError:
                 raise  # shutdown is the only way out
             except Exception as e:
