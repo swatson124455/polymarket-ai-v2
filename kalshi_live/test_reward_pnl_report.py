@@ -105,3 +105,50 @@ class TestParseIsoAndTickerToEvent:
     def test_ticker_to_event(self):
         from reward_pnl_report import ticker_to_event
         assert ticker_to_event("KXTOPMODEL-26AUG17-CLAUM") == "KXTOPMODEL-26AUG17"
+
+
+class TestCliffAwareLeakage:
+    """2026-08-18 gauge fix: history-based accrued-at-conclusion + per-PROGRAM cliff.
+    The old latest-snapshot read made every stiffed event invisible (n_leakage
+    vacuously 0); and the cliff is per-program, so multi-program events of sub-$1
+    programs are SUBCLIFF (expected $0), never LEAKAGE."""
+
+    LATE = NOW + datetime.timedelta(hours=15)          # 49h past 08-10T14:00Z end
+
+    def test_history_picks_last_value_at_or_before_end(self):
+        lines = [
+            '{"ts": "2026-08-10T12:00:00Z", "estimates": [{"program_id": "p1", "reward_centicents": 9000}]}',
+            '{"ts": "2026-08-10T13:30:00Z", "estimates": [{"program_id": "p1", "reward_centicents": 12000}]}',
+            '{"ts": "2026-08-10T15:00:00Z", "estimates": [{"program_id": "p1", "reward_centicents": 99999}]}',
+            '{"ts": "2026-08-11T00:00:00Z", "estimates": [{"program_id": "p3", "reward_centicents": 5000}]}',
+        ]
+        h = rp.history_at_conclusion(lines, MAP, NOW)
+        assert h["p1"]["accrued"] == 1.2               # post-end row ignored
+        assert "p3" not in h                           # program not concluded yet
+
+    def test_stiffed_above_cliff_event_now_visible_as_leakage(self):
+        """The class the old gauge could not see: concluded, >=$1 single program,
+        vanished from the live snapshot, unpaid past envelope -> LEAKAGE."""
+        h = {"p1": {"accrued": 1.2, "end": "2026-08-10T14:00:00Z"}}
+        acc = rp.merge_history_events(rp.accrued_by_event(snap([]), MAP), h, MAP, set())
+        status, a, p = rp.classify("KXA-26AUG10", acc["KXA-26AUG10"], None, self.LATE)
+        assert status == "LEAKAGE" and a == 1.2
+
+    def test_actbluetop_shape_is_subcliff_not_leakage(self):
+        """Four sub-$1 programs summing $1.24: per-program cliff -> expected $0."""
+        h = {"p1": {"accrued": 0.82, "end": "2026-08-10T14:00:00Z"},
+             "p2": {"accrued": 0.42, "end": "2026-08-10T14:00:00Z"}}
+        acc = rp.merge_history_events({}, h, MAP, set())
+        status, a, p = rp.classify("KXA-26AUG10", acc["KXA-26AUG10"], None, self.LATE)
+        assert status == "SUBCLIFF" and abs(a - 1.24) < 1e-9
+
+    def test_live_snapshot_programs_not_double_counted(self):
+        h = {"p1": {"accrued": 1.2, "end": "2026-08-10T14:00:00Z"}}
+        live = snap([("p1", 12000)])
+        acc = rp.merge_history_events(rp.accrued_by_event(live, MAP), h, MAP, {"p1"})
+        assert acc["KXA-26AUG10"]["accrued"] == 1.2    # once, not twice
+
+    def test_subcliff_between_dust_floor_and_cliff(self):
+        acc = rp.accrued_by_event(snap([("p1", 7000)]), MAP)      # $0.70
+        status, a, p = rp.classify("KXA-26AUG10", acc["KXA-26AUG10"], None, self.LATE)
+        assert status == "SUBCLIFF"

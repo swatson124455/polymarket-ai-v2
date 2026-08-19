@@ -28,6 +28,7 @@ import sys
 DATA = os.environ.get("KALSHI_DATA_DIR", "/opt/pa2-maker-kalshi-live")
 PARTIAL_FRAC = 0.90
 LEAK_MIN_USD = 0.50
+CLIFF_USD = 1.00             # per-PROGRAM payment cliff (canon 2026-08-18, 38/38 backtest)
 LEAK_AFTER_H = 48.0          # observed payment envelope; FIX-H paid at ~38.4h
 _EVENT_RE = re.compile(r"for event (\S+)")
 
@@ -66,6 +67,67 @@ def credits_by_event(credits):
     return out
 
 
+def history_at_conclusion(lines, program_map, now):
+    """{program_id: {'accrued': $ at conclusion, 'end': iso}} for CONCLUDED programs,
+    from the FULL estimates tape (iterable of raw jsonl lines).
+
+    THE 2026-08-18 GAUGE FIX: concluded programs VANISH from the live snapshot, so
+    the latest-snapshot read made every stiffed event invisible (historical
+    n_leakage: 0 was vacuous — proven against the $1-cliff backtest). The last
+    tape value at/before each program's end is the honest accrued-at-conclusion."""
+    out = {}
+    for ln in lines:
+        if not ln.strip():
+            continue
+        try:
+            snap = json.loads(ln)
+        except ValueError:
+            continue
+        ts = snap.get("ts")
+        try:
+            tsd = parse_iso(ts) if ts else None
+        except Exception:
+            continue
+        if tsd is None:
+            continue
+        for e in snap.get("estimates") or []:
+            pid = str(e.get("program_id"))
+            pr = (program_map or {}).get(pid) or {}
+            end = pr.get("end_date")
+            if not end:
+                continue
+            try:
+                end_dt = parse_iso(end)
+            except Exception:
+                continue
+            if end_dt > now or tsd > end_dt:
+                continue
+            cur = out.get(pid)
+            if cur is None or tsd > cur["_ts"]:
+                out[pid] = {"accrued": float(e.get("reward_centicents") or 0) / 10000.0,
+                            "end": end, "_ts": tsd}
+    for v in out.values():
+        v.pop("_ts", None)
+    return out
+
+
+def merge_history_events(acc, history, program_map, live_pids):
+    """Fold concluded-program at-conclusion values into the event dict wherever the
+    program is ABSENT from the live snapshot (present ones are already counted)."""
+    for pid, h in (history or {}).items():
+        if pid in live_pids:
+            continue
+        pr = (program_map or {}).get(pid) or {}
+        t = pr.get("market_ticker")
+        ev = ticker_to_event(t) if t else "?"
+        r = acc.setdefault(ev, {"accrued": 0.0, "end": None, "max_prog": 0.0})
+        r["accrued"] += h["accrued"]
+        r["max_prog"] = max(r.get("max_prog", 0.0), h["accrued"])
+        if h["end"] and (r["end"] is None or h["end"] > r["end"]):
+            r["end"] = h["end"]
+    return acc
+
+
 def accrued_by_event(snapshot, program_map):
     """{event: {'accrued': $, 'end': latest program end iso}} from ONE estimates snapshot.
     Unmapped program_ids are summed under '?' so map gaps are visible, not silent."""
@@ -74,8 +136,10 @@ def accrued_by_event(snapshot, program_map):
         pr = (program_map or {}).get(str(e.get("program_id"))) or {}
         t = pr.get("market_ticker")
         ev = ticker_to_event(t) if t else "?"
-        r = out.setdefault(ev, {"accrued": 0.0, "end": None})
-        r["accrued"] += float(e.get("reward_centicents") or 0) / 10000.0
+        r = out.setdefault(ev, {"accrued": 0.0, "end": None, "max_prog": 0.0})
+        v = float(e.get("reward_centicents") or 0) / 10000.0
+        r["accrued"] += v
+        r["max_prog"] = max(r["max_prog"], v)
         end = pr.get("end_date")
         if end and (r["end"] is None or end > r["end"]):
             r["end"] = end
@@ -103,11 +167,20 @@ def classify(ev, acc, paid_row, now):
         return ("EARNING" if accrued > 0 else "DUST", accrued, paid)
     if accrued < LEAK_MIN_USD:
         return ("DUST", accrued, paid)
-    return ("LEAKAGE" if hours_past > LEAK_AFTER_H else "PENDING", accrued, paid)
+    if hours_past <= LEAK_AFTER_H:
+        return ("PENDING", accrued, paid)
+    # $1-cliff canon (2026-08-18): the cliff is PER-PROGRAM — an event of several
+    # sub-$1 programs summing over $1 is still expected $0 (ACTBLUETOP shape).
+    # Alarm-worthy leakage = at least ONE program cleared the cliff, still unpaid.
+    if (acc or {}).get("max_prog", accrued) < CLIFF_USD:
+        return ("SUBCLIFF", accrued, paid)
+    return ("LEAKAGE", accrued, paid)
 
 
-def build_report(snapshot, program_map, credits, now):
+def build_report(snapshot, program_map, credits, now, history=None):
     acc = accrued_by_event(snapshot, program_map)
+    live_pids = {str(e.get("program_id")) for e in (snapshot or {}).get("estimates") or []}
+    acc = merge_history_events(acc, history, program_map, live_pids)
     paid = credits_by_event(credits)
     rows = []
     for ev in sorted(set(acc) | set(paid)):
@@ -119,6 +192,7 @@ def build_report(snapshot, program_map, credits, now):
                                         if r["status"] in ("EARNING", "PENDING")), 4),
               "paid_lifetime": round(sum(r["paid"] for r in rows), 2),
               "n_leakage": sum(1 for r in rows if r["status"] == "LEAKAGE"),
+              "n_subcliff": sum(1 for r in rows if r["status"] == "SUBCLIFF"),
               "n_paid_partial": sum(1 for r in rows if r["status"] == "PAID_PARTIAL")}
     return {"ts": now.isoformat(), "totals": totals, "rows": rows}
 
@@ -137,11 +211,16 @@ def main():
                     last = ln
     snapshot = json.loads(last) if last else {}
     program_map = json.load(open(os.path.join(DATA, "kalshi_program_map.json")))
+    def _all_lines():
+        for fp in files:
+            with open(fp) as fh:
+                yield from fh
+    history = history_at_conclusion(_all_lines(), program_map, now)
     credits = KalshiOrderClient(mode="live").get_credit_history(limit=1000)["credits"]
-    rep = build_report(snapshot, program_map, credits, now)
+    rep = build_report(snapshot, program_map, credits, now, history=history)
     print(json.dumps(rep["totals"]))
     order = {"LEAKAGE": 0, "PAID_PARTIAL": 1, "PENDING": 2, "EARNING": 3,
-             "UNKNOWN_END": 4, "PAID": 5, "DUST": 6}
+             "UNKNOWN_END": 4, "PAID": 5, "SUBCLIFF": 6, "DUST": 7}
     for r in sorted(rep["rows"], key=lambda r: (order.get(r["status"], 9), -r["accrued"])):
         if r["status"] == "DUST" and r["paid"] == 0:
             continue                                   # sub-floor noise; totals still count it
