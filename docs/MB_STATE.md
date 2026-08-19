@@ -386,6 +386,37 @@
 > move to 0.99 / other. **RULED 2026-08-19: KEEP AS IS (0.98).** 990/3,646 tokens rated at the conservative 0.07
 > unknown-category rate (pooled venue figure is thus slightly UNDERSTATED).
 >
+> ## 2026-08-19 (~17:40Z) — ALL FOUR RECS EXECUTED + OVER-CORRECTION AUDIT
+> (operator: proceed with all; speed directive: verdict ASAP without losing
+> function; PRICE cap ruled KEEP AS IS)
+>
+> **BAND TEST ARMED (the clock-starter):** `docs/BAND_PREREGISTRATION.md` +
+> `scripts/band_tracker.py` — anytime-valid mixture e-process, H0 edge≤0,
+> reject e≥20, econ floor post-gate, futility 600, forward epoch
+> **2026-08-19T18:00Z**, venue fees, immutable lock, daily e-value in the
+> 11:40Z cron. First run verified (correctly `accruing`, 0 pre-epoch leakage).
+> TIMELINE HONESTY: work done in one day; the VERDICT is evidence-bound —
+> e-process can fire in days if the edge runs hot, expected 2–9 weeks at
+> measured band flow (~4/day), shortened by every flow boost below.
+>
+> **OVER-CORRECTION AUDIT (operator-ordered):** PRICE_NO_UPSIDE = NOT an
+> over-correction (92 blocks/~3h, all sampled = whale 0.999→ask 1.00).
+> Locks/forward_only/fee-formula = functioning. **KEEPALIVE THEORY REFUTED
+> by live A/B** — 18 plain SILENT alarms in 2.9h post-PING (~unchanged),
+> coverage 13.8% vs 11.8%; the venue cycles connections regardless (reference
+> recorder also ~4/h). CORRECTED: `RTDS_SILENT_ALARM_S` 60→15 (outage cost
+> ~61s→~16s each; expected downtime ~9–13% → ~2–3%), PING kept + task-death
+> now logs. Deployed 17:33:37Z; 0 alarms in first minutes (VERIFY over hours).
+>
+> **ROSTER 30→31:** `0xfbfd14dd` → OBSERVATION-ONLY probe (fresh epoch,
+> maker_frac 0.886 objection in ledger note; readout header now
+> `15+8+6+1+1probe`; backup `chain_audit.json.pre-probe-fbfd-20260819`).
+>
+> **SCOUT DIVES RELAUNCHED** (9 candidates, cwd fix, stale-cache disclosed;
+> `/tmp/scout_queue2.sh`, repo copy `scripts/vps_jobs/`). **MAKER-SIDE
+> EXECUTION STUDY launched** (background agent: fill-rate proxy, adverse
+> selection, taker-vs-maker net economics incl. the band).
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
