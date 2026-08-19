@@ -363,6 +363,29 @@
 > (c) fee-rate calibration now decision-critical — authorize?
 > All three sit alongside the still-open items below.
 >
+> **2026-08-19 ~15:50Z — VENUE FEE FORMULA LIVE (6f8a36c) + RE-PRICING.**
+> Official formula fee = C·rate·p·(1−p), per-category rates (crypto .07,
+> sports/econ/culture/weather/other .05, finance/politics/mentions/tech .04,
+> geopolitics 0), VALIDATED pre-wiring vs 3,070 live charged fees (implied
+> rate p50 crypto 0.0700 exact, sports 0.0500 exact). Wired as
+> `fee_rate_map` (precedence rate→zero-exempt→flat; omitted = byte-identical
+> legacy), builder emits `fee_rate_map.json`, readout discloses
+> `fee=VENUE FORMULA`, clone refreshed — tomorrow's 12:30Z runs it.
+> **RE-PRICING (flat → venue, canonical pooled set 15:45Z):**
+> pooled 1,723 mkts **+0.00446/P=0.666 → +0.00518/P=0.685** — small NET gain,
+> not the big revaluation hoped: the flat model overcharged high-price fills
+> but UNDERCHARGED mid-price crypto. cohort2 **+0.0046→+0.0138**;
+> cohort4 (crypto-heavy, 47% of flow) **+0.0028→+0.0015** (down);
+> band 0.65–0.85 **+0.0812/P=0.993 → +0.0837/P=0.996** (strengthens);
+> fills ≥0.90 **−0.0227/P=0.001 → −0.0092/P=0.216** — NO LONGER
+> proven-negative under true fees. ⚠ FLAG (report+ask, gate UNCHANGED): the
+> PRICE_NO_UPSIDE 0.98 cap's two prior rationales (zero-upside at flat fee;
+> proven-negative stratum) both weaken under the venue formula — fills at
+> exactly 1.000 stay guaranteed-nonpositive, but 0.98–0.99 is now merely
+> terrible risk/reward, not deterministic loss. Operator decides: keep 0.98 /
+> move to 0.99 / other. 990/3,646 tokens rated at the conservative 0.07
+> unknown-category rate (pooled venue figure is thus slightly UNDERSTATED).
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
