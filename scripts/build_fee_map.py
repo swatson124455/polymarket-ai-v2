@@ -39,6 +39,21 @@ OUT = "/opt/pa2-shared/mb_copyable_data/copyable_cache/fee_map.json"
 H = {"Content-Type": "application/json", "User-Agent": "curl/8"}
 
 
+# Official per-category taker rates (docs.polymarket.com "Trading Fees",
+# fetched 2026-08-19; formula fee = C * rate * p * (1-p); VALIDATED against
+# 3,070 live charged fees: crypto implied p50 0.0700, sports 0.0500).
+# Unknown/missing category -> 0.07 = the HIGHEST published rate, conservative
+# for any pass verdict (disclosed in output).
+CATEGORY_RATES = {
+    "crypto": 0.07,
+    "sports": 0.05, "esports": 0.05, "economics": 0.05, "culture": 0.05,
+    "weather": 0.05, "other": 0.05,
+    "finance": 0.04, "politics": 0.04, "mentions": 0.04, "tech": 0.04,
+    "geopolitics": 0.0,
+}
+UNKNOWN_RATE = 0.07
+
+
 class FeeMapError(RuntimeError):
     """A guard tripped — fatal by design (see module docstring)."""
 
@@ -108,7 +123,8 @@ async def db_token_cids(toks: list[str]) -> dict[str, tuple[str, str, str]]:
         async with db.get_session() as s:
             await s.execute(text("SET LOCAL statement_timeout='120s'"))
             rows = (await s.execute(text(
-                "SELECT condition_id, yes_token_id, no_token_id FROM markets "
+                "SELECT condition_id, yes_token_id, no_token_id, category "
+                "FROM markets "
                 "WHERE yes_token_id = ANY(:t) OR no_token_id = ANY(:t)"),
                 {"t": toks})).fetchall()
     finally:
@@ -119,7 +135,7 @@ async def db_token_cids(toks: list[str]) -> dict[str, tuple[str, str, str]]:
         for k in ("yes_token_id", "no_token_id"):
             t = str(m[k])
             out[t] = (str(m["condition_id"]), str(m["yes_token_id"]),
-                      str(m["no_token_id"]))
+                      str(m["no_token_id"]), str(m.get("category") or ""))
     return out
 
 
@@ -139,8 +155,17 @@ async def run(args) -> int:
     cid_legs: dict[str, set[str]] = {}
     for t, cid in tok2cid.items():
         cid_legs.setdefault(cid, set()).update(legs_of(cache, cid) or [t])
-    for t, (cid, yt, nt) in db_map.items():
+    cid_cat: dict[str, str] = {}
+    for t, (cid, yt, nt, cat) in db_map.items():
         cid_legs.setdefault(cid, set()).update({yt, nt})
+        if cat:
+            cid_cat[cid] = cat.lower()
+    # category from the resolution cache fills remaining holes
+    for t, cid in tok2cid.items():
+        if cid not in cid_cat:
+            c = cache.get(cid)
+            if isinstance(c, dict) and c.get("category"):
+                cid_cat[cid] = str(c["category"]).lower()
     if not cid_legs:
         raise FeeMapError("0 condition_ids mapped — nothing verified")
     loop = asyncio.get_event_loop()
@@ -155,13 +180,26 @@ async def run(args) -> int:
         raise FeeMapError(f"0 of {len(cid_legs)} CLOB fee fetches succeeded — "
                           f"a zero-row fetch is a failure, not a map")
     fee_map: dict[str, int] = {}
+    rate_map: dict[str, float] = {}
+    unknown_cat = 0
     for cid, f in fees.items():
+        cat = cid_cat.get(cid, "")
+        if f == 0:
+            rate = 0.0  # venue-verified fee-free market
+        elif cat in CATEGORY_RATES:
+            rate = CATEGORY_RATES[cat]
+        else:
+            rate = UNKNOWN_RATE
+            unknown_cat += 1
         for t in cid_legs[cid]:
             fee_map[t] = f
+            rate_map[t] = rate
     zeros = sum(1 for v in fee_map.values() if v == 0)
     print(f"fetched fees for {len(fees)}/{len(cid_legs)} markets "
           f"(unreachable {len(cid_legs) - len(fees)}); map covers "
-          f"{len(fee_map)} tokens, zero-fee={zeros}")
+          f"{len(fee_map)} tokens, zero-fee={zeros}; rate map: "
+          f"{len(rate_map)} tokens, {unknown_cat} markets at the "
+          f"conservative unknown-category rate {UNKNOWN_RATE}")
     if not args.write:
         print("\nDRY RUN — map NOT written. Re-run with --write to apply.")
         return 0
@@ -183,6 +221,19 @@ async def run(args) -> int:
         json.dump(fee_map, f)
     os.replace(tmp, args.out)
     print(f"WROTE {args.out}: {len(fee_map)} tokens")
+    rate_out = args.out.replace("fee_map.json", "fee_rate_map.json")
+    if os.path.exists(rate_out):
+        with open(rate_out) as f:
+            old_rates = json.load(f)
+        if isinstance(old_rates, dict):
+            merged_r = dict(old_rates)
+            merged_r.update(rate_map)
+            rate_map = merged_r
+    tmp2 = rate_out + ".tmp"
+    with open(tmp2, "w") as f:
+        json.dump(rate_map, f)
+    os.replace(tmp2, rate_out)
+    print(f"WROTE {rate_out}: {len(rate_map)} tokens")
     return 0
 
 

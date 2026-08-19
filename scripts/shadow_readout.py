@@ -264,7 +264,8 @@ def cohort_readout(records, outcomes, trust_after, traders, cfg) -> dict:
     # others keep the flat cfg.fee. Absent attribute/None => legacy equation.
     return az.analyze(recs, outcomes, cfg.fee, cfg.econ_floor, cfg.p_min,
                       cfg.min_markets,
-                      fee_map=getattr(cfg, "fee_map_data", None))
+                      fee_map=getattr(cfg, "fee_map_data", None),
+                      fee_rate_map=getattr(cfg, "fee_rate_map_data", None))
 
 
 def per_trader_lines(recs, outcomes, trust, members, label, cfg) -> list[str]:
@@ -519,6 +520,21 @@ async def run(args) -> int:
         zeros = sum(1 for v in args.fee_map_data.values() if v == 0)
         fee_note = (f"fee=per-market (map: {len(args.fee_map_data)} tokens, "
                     f"{zeros} zero-fee exempt; others flat {args.fee:.2f})")
+    # venue-formula rate map (2026-08-19): rate*p*(1-p) per share, official
+    # published schedule validated vs live charged fees. Missing file =>
+    # prior behavior; corrupt => FATAL (a silent equation change is the
+    # failure mode). Locked verdicts are diagnostic and unaffected.
+    args.fee_rate_map_data = None
+    if args.fee_rate_map and os.path.exists(args.fee_rate_map):
+        with open(args.fee_rate_map) as f:
+            args.fee_rate_map_data = json.load(f)
+        if not isinstance(args.fee_rate_map_data, dict) or not args.fee_rate_map_data:
+            print(f"FATAL: fee rate map {args.fee_rate_map} empty/not an "
+                  f"object — refusing a silent equation change", file=sys.stderr)
+            return 2
+        fee_note = (f"fee=VENUE FORMULA rate*p*(1-p) "
+                    f"({len(args.fee_rate_map_data)} tokens rated; "
+                    f"unmapped fall back: {fee_note})")
     OBS = ("probe", "benched")  # observation-only groups: never a cohort count
     counts = "+".join(str(len(a)) for n, a, _ in cohorts if n not in OBS)
     for obs in OBS:
@@ -1066,6 +1082,13 @@ if __name__ == "__main__":
                          "Measured zero-fee tokens are not dinged; all others "
                          "keep the flat --fee. Missing file => legacy flat "
                          "equation (disclosed in the header either way).")
+    ap.add_argument("--fee-rate-map", dest="fee_rate_map",
+                    default="/opt/pa2-shared/mb_copyable_data/copyable_cache/"
+                            "fee_rate_map.json",
+                    help="token->official category taker rate; charges the "
+                         "venue's published formula rate*p*(1-p) per share "
+                         "(build_fee_map.py --write emits it). Missing file "
+                         "=> prior fee model, disclosed either way.")
     ap.add_argument("--locks",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
                             "verdict_locks.json",

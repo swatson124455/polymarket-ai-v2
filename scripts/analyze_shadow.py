@@ -162,7 +162,8 @@ def cluster_bootstrap_p(edges_by_token: dict[str, list[float]],
 
 def analyze(records: list[dict], outcomes: Optional[dict[str, int]],
             fee: float, econ_floor: float, p_min: float,
-            min_markets: int, fee_map: Optional[dict] = None) -> dict:
+            min_markets: int, fee_map: Optional[dict] = None,
+            fee_rate_map: Optional[dict] = None) -> dict:
     """fee_map (optional, 2026-07-30 operator-approved): token_id ->
     taker_base_fee bps from the CLOB (build_fee_map.py). When provided, a
     token measured at 0 bps is NOT dinged; every other token (fee-bearing or
@@ -171,7 +172,19 @@ def analyze(records: list[dict], outcomes: Optional[dict[str, int]],
     resolvable shadow markets = 1000 bps, 3 = 0; fee magnitude on fee-bearing
     markets ~2.8% of notional p50, n=1,826 — a calibrated per-market RATE is a
     separate, gated step; this only stops charging fees that provably do not
-    exist.) Omitted => byte-identical to the pre-2026-07-30 equation."""
+    exist.) Omitted => byte-identical to the pre-2026-07-30 equation.
+
+    fee_rate_map (2026-08-19, operator-approved): token_id -> the venue's
+    per-category taker RATE, charged with Polymarket's PUBLISHED formula
+    fee_per_share = rate * p * (1 - p) (docs.polymarket.com "Trading Fees";
+    formula validated against 3,070 live charged fees 2026-08-19: crypto
+    implied rate p50 = 0.0700 vs official 0.07, sports 0.0500 vs 0.05).
+    Precedence per token: fee_rate_map -> fee_map zero-exemption -> flat
+    `fee`. Omitted => the 07-30 behavior exactly. NOTE the flat model
+    OVERCHARGES high-priced fills (at p=0.9, flat 2% charges 0.018/share vs
+    true 0.07*0.9*0.1 = 0.0063) and undercharges mid prices - locked
+    verdicts computed under the flat model stay locked; this governs
+    diagnostics and post-2026-08-19 registrations only."""
     firsts = [r for r in records if r.get("first_buy")]
     verd = Counter(r.get("verdict") for r in firsts)
     lags = [float(r["detect_lag_s"]) for r in records
@@ -201,6 +214,7 @@ def analyze(records: list[dict], outcomes: Optional[dict[str, int]],
         edges_by_token: dict[str, list[float]] = defaultdict(list)
         unresolved = 0
         fee_exempt = 0
+        fee_rate_priced = 0
         for r in ok:
             o = outcomes.get(str(r.get("token_id")))
             if o is None:
@@ -208,11 +222,17 @@ def analyze(records: list[dict], outcomes: Optional[dict[str, int]],
                 continue
             fill = float(r["shadow_fill"])
             tok = str(r["token_id"])
-            r_fee = fee
-            if fee_map is not None and fee_map.get(tok) == 0:
-                r_fee = 0.0  # measured zero-fee market — do not invent a ding
+            rate = fee_rate_map.get(tok) if fee_rate_map is not None else None
+            if rate is not None:
+                # venue formula: per-share fee = rate * p * (1-p)
+                fee_dollars = float(rate) * fill * (1.0 - fill)
+                fee_rate_priced += 1
+            elif fee_map is not None and fee_map.get(tok) == 0:
+                fee_dollars = 0.0  # measured zero-fee market
                 fee_exempt += 1
-            edges_by_token[tok].append(o - fill - r_fee * fill)
+            else:
+                fee_dollars = fee * fill  # legacy flat charge
+            edges_by_token[tok].append(o - fill - fee_dollars)
         vals = [e for es in edges_by_token.values() for e in es]
         n_mkts = len(edges_by_token)
         p = cluster_bootstrap_p(edges_by_token)
@@ -227,7 +247,8 @@ def analyze(records: list[dict], outcomes: Optional[dict[str, int]],
             verdict = f"NOT DEMONSTRATED (P={p:.3f} < {p_min})"
         res.update({"resolved_mkts": n_mkts, "unresolved_ok_fills": unresolved,
                     "shadow_edge": edge, "shadow_edge_p": p,
-                    "edge_verdict": verdict, "fee_exempt_fills": fee_exempt})
+                    "edge_verdict": verdict, "fee_exempt_fills": fee_exempt,
+                    "fee_rate_priced_fills": fee_rate_priced})
     return res
 
 
