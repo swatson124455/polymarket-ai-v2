@@ -137,6 +137,23 @@ operator-named GO after shadow):
 Unchanged: $10/day halt, post-only, re-quote-on-fill, STOP discipline, all kill
 switches, KALSHI_LIVE_ARMED three-lock, deploy md5-vs-blob, suite exit codes.
 
+## IMPLEMENTATION RECORD (2026-08-19 ~03:0xZ)
+- **Operator capital decision: 5 markets × 40ct ≈ $200 deployed, ~$46 buffer.**
+- Code deltas shipped (one per commit, each default-preserving, 21 new pins, suite
+  1402/2 exit 0): `24ea507` MIN_RUNWAY gate · `725a7a1` MID_BAND gate ·
+  qualifiable-gate flag (commit after). Discovery during build: the live price band
+  0.04/0.96 refuses ALL 25 F9 candidates, and the CFTC unqualifiable skip would
+  refuse their sub-target books — both handled as explicit env deltas, not silent
+  code changes.
+- Full env delta set: `kalshi_live/concentrated_cliff.env.example` (template;
+  applied to live.env only at deploy with relight GO, after shadow).
+- Cliff pacing note: KALSHI_MIN_CREDIT_USD=1.50 with PRESENCE_GATE is an ENTRY
+  gate (by design — resting markets accrue additively and are not re-pulled);
+  the daily sub-cliff eviction check therefore runs OUTSIDE the quoter via the
+  reward_pnl SUBCLIFF report (deployed 1ecd8060) at the 07:30Z read — operator
+  sees pacing, eviction stays a named act. (Reviewed: automating mid-window
+  eviction inside the quoter contradicts the no-mid-window-size-change rule.)
+
 Calendar (operator picked (a) 2026-08-19 ~02:1xZ): build+review → shadow →
 relight ask (operator GO) → run to ~08-25 → payment reads 08-26/27 → mandate
 decision 2026-08-27.
