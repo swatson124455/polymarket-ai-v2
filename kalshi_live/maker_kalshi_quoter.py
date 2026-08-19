@@ -236,6 +236,9 @@ STANDDOWN = _envi("KALSHI_STANDDOWN", 0)            # 0 = today exact behavior, 
 STANDDOWN_MIN_USD_DAY = _envf("KALSHI_STANDDOWN_MIN_USD_DAY", 20.0)   # reward-density floor ($/day)
 STANDDOWN_VOID_MULT = _envf("KALSHI_STANDDOWN_VOID_MULT", 0.5)        # R3 discount for one-sided books
 MAX_ACTIVATE_CAPITAL = _envf("KALSHI_MAX_ACTIVATE_CAPITAL", 150.0)  # $/void market
+# 1 = the CFTC-snapshot "unqualifiable -> never open" skip (today's behavior); 0 = bypass it
+# (R1 refuted its premise: sub-target books DO accrue; see the call-site comment).
+QUALIFIABLE_GATE = _envb("KALSHI_QUALIFIABLE_GATE", default_on=True)
 MAX_MARKET_CAPITAL = _envf("KALSHI_MAX_MARKET_CAPITAL", 250.0)  # $ cap per market (both sides)
 MAX_TOTAL_CAPITAL = _envf("KALSHI_MAX_TOTAL_CAPITAL", 10000.0)  # $ cap on the whole resting book
 
@@ -3006,10 +3009,18 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     # never gated on reward) — this only stops us OPENING in markets that cannot pay.
     _addable = (MAX_ACTIVATE_CAPITAL / max(best_y, best_n, 0.01))
     _qualifiable = (ext_y + _addable >= target) and (ext_n + _addable >= target)
+    # KALSHI_QUALIFIABLE_GATE (default 1 = today's exact behavior). R1 (2026-08-13..16)
+    # REFUTED this gate's premise live: 5/7 probe programs accrued NONZERO on books far
+    # below Target on BOTH sides (floor-at-scoring refuted; the real payment floor is the
+    # per-program $1 cliff at conclusion — canon 2026-08-18). With the flag 0 the skip is
+    # bypassed and sub-target books are entered on the cliff/presence gates' own verdicts
+    # (concentrated-cliff mode: the F9 candidates are exactly this book shape). The stat
+    # still counts either way so telemetry shows what the gate WOULD have skipped.
     if not _qualifiable and abs(inv) < INV_TOLERANCE:
         if stats is not None:
             stats["unqualifiable"] = stats.get("unqualifiable", 0) + 1
-        return []                                   # cannot reach two-sided Target Size -> $0 reward
+        if QUALIFIABLE_GATE:
+            return []                               # cannot reach two-sided Target Size -> $0 reward
     # PRESENCE / $1-FLOOR GATE (KALSHI_PRESENCE_GATE, default 0 = provable no-op). The most basic
     # economic test there is, and the one nothing else asks: CAN THIS MARKET STILL PAY US AT ALL for
     # the time that is actually left? Reward is an integral over the window, and Kalshi pays $0 below
