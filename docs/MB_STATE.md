@@ -293,6 +293,23 @@
 > (pooled / random-effects / price-band stratification), and alternative
 > estimands (conviction, latency, chase, taker-vs-maker).
 >
+> **2026-08-19 ~14:35Z — BOTH DEFECT FIXES DEPLOYED (632ad5b, operator
+> 'proceed'):** (1) `PRICE_NO_UPSIDE` gate — optional `max_fill` in
+> `evaluate_gates` (default None = byte-identical legacy, test-proven);
+> `WatcherConfig.max_fill=0.98` (`MIRROR3_MAX_FILL_C`), the zero-upside bound
+> at the flat 2% fee; both watchers pass it. FORWARD-ONLY — history + locks
+> untouched. (2) RTDS app-level keepalive — `ping_interval=None` + PING task
+> every 5s + PONG skipped as non-data, mirroring `rtds_websocket.py`; PLUS a
+> DATA-SILENT alarm (adversarial self-review: PONGs wake recv() and would
+> have masked the 60s alarm — data-liveness is now tracked separately, so the
+> alarm keeps its meaning). 60/60 pytest incl. 4 new. Fenced restart 14:31:45Z,
+> RTDS connected 14:33:11Z, **0 silent alarms since restart** (prior rate
+> ~1/10min; a clean multi-hour window is the proof — VERIFY at next check-in:
+> `journalctl -u polymarket-mirror3 | grep -c "SILENT ALARM"` should stay ~0
+> and the A/B miss rate should collapse toward the 0.13% residue).
+> Backup `copy_watcher.py.pre-maxfill-20260819`. The 4-part edge-proof
+> workflow was resumed (`wf_8a4651be-90a`, cached prefix replays).
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
