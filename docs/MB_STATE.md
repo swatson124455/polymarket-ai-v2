@@ -310,6 +310,59 @@
 > Backup `copy_watcher.py.pre-maxfill-20260819`. The 4-part edge-proof
 > workflow was resumed (`wf_8a4651be-90a`, cached prefix replays).
 >
+> ## 2026-08-19 (~15:00Z) — EDGE-PROOF STUDY COMPLETE (4 analyses, each
+> adversarially re-verified; 3 of 4 headlines TRIMMED by their refuters —
+> the trimmed versions below are the citable ones)
+>
+> **1. POWER (ESTABLISHED, survived refutation twice — durable-log lines
+> reproduced to the digit):** pooled canonical set = 1,690 resolved markets /
+> 1,839 OK first-buys / SD of per-market edge 0.4105. Pooled NET edge
+> **+0.00645, P=0.754**. Proof at that edge needs **~27,500 markets ≈ 384
+> days** at the measured 71.6 mkts/day (324–639 across rate range). The 7
+> consumed tests ran at **8–10% power** (~1/60 of the sample the +0.02 floor
+> needs; P≥0.95 at n=30–50 demanded a +0.10 to +0.13 point estimate).
+> **STRUCTURAL: the full bar (edge≥+0.02 AND P≥0.95) can NEVER pass for a
+> true edge ≤ ~+0.022** — at true edge exactly +0.02 the joint power CAPS at
+> ~0.49 for ANY n (the floor arm fails half the time forever). Inversion:
+> 90 days proves ≥+0.0133 (P-arm) but the FULL bar asymptotes at ~+0.022.
+> ⇒ the bar itself needs an operator redesign decision; no calendar time
+> fixes it in the region we are likely in.
+>
+> **2. GROSS-VS-NET DECOMPOSITION (ESTABLISHED, reproduced to 1e-6):**
+> pooled GROSS edge **+0.0160 (P=0.942)**; the flat-2% fee term is
+> **0.0096 = 59.8% of gross**. The fee model is now the single biggest
+> number in the ledger ⇒ the per-market fee-RATE calibration (proposed
+> 07-30, gated) is RAISED to decision-critical. Also reproduced:
+> fills ≥0.90 are NET **−0.0233 (P=0.000)** — independent confirmation the
+> just-deployed PRICE_NO_UPSIDE gate cuts a genuinely negative stratum.
+>
+> **3. WINNER'S-CURSE (headline REFUTED as overreach; trimmed claim
+> stands):** per-trader split-half persistence r ≈ −0.004 (k=10);
+> between-trader dispersion at/below the pure-noise 1/sqrt(n) prediction;
+> random-effects tau ≈ 0. CITABLE FORM: **no detectable per-trader signal at
+> current n** — NOT "nothing to select on" (the refuter showed one decisive
+> number was an arm-count artifact and the design lacks power to prove
+> absence). Per-trader selection stays unproven in BOTH directions.
+>
+> **4. PRICE-BAND 0.65–0.85 (numbers exact, framing REFUTED):** edge
+> **+0.0853, P=0.9935, 140 markets** — reproduces to the digit and survives
+> LOO/jackknife/split-half. BUT it was found by searching many strata
+> (46 bucket tests; Poisson check: P(≥4 hits | null) = 0.201), the "only cut
+> that clears both bars" claim is factually false, and this framing has the
+> highest search-induced false-positive rate in the dataset. STATUS:
+> **HYPOTHESIS for a fresh forward pre-registration, never a result.** At a
+> true band edge near the observed, a forward test would need roughly
+> 160–450 markets (band accrual ~4/day ⇒ ~6 weeks to 4 months).
+>
+> **DECISIONS THIS PUTS TO THE OPERATOR (report + ask, nothing changed):**
+> (a) the pre-registered bar is structurally unclearable below ~+0.022 —
+> redesign? (drafted option: anytime-valid e-process vs H0 edge≤0, econ
+> floor as a post-significance gate — see 08-19 earlier block);
+> (b) adopt the fill-band 0.65–0.85 forward pre-registration as the next
+> registered test?
+> (c) fee-rate calibration now decision-critical — authorize?
+> All three sit alongside the still-open items below.
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
