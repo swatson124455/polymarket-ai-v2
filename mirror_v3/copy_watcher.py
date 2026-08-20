@@ -345,6 +345,10 @@ class WatcherConfig:
     rtds_url: str = ""
     rtds_sink: str = "/opt/pa2-shared/mirror3_shadow_rtds.jsonl"
     rtds_ab: bool = False
+    # shadow-bid simulator (2026-08-19, docs/BIDSIM_DESIGN.md): band-only
+    # maker-execution measurement. OFF unless MIRROR3_BIDSIM=1.
+    bidsim: bool = False
+    bidsim_path: str = "/opt/pa2-shared/mirror3_bidsim.jsonl"
 
     @classmethod
     def from_env(cls, env) -> "WatcherConfig":
@@ -376,6 +380,9 @@ class WatcherConfig:
             rtds_sink=env.get("MIRROR3_RTDS_SHADOW_PATH",
                               "/opt/pa2-shared/mirror3_shadow_rtds.jsonl"),
             rtds_ab=rtds_ab,
+            bidsim=str(env.get("MIRROR3_BIDSIM", "")).strip() == "1",
+            bidsim_path=env.get("MIRROR3_BIDSIM_PATH",
+                                "/opt/pa2-shared/mirror3_bidsim.jsonl"),
         )
 
 
@@ -522,6 +529,11 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
         f"poll={cfg.poll_s}s sink={cfg.shadow_path} "
         f"exchanges=V2 topic={FILL_TOPIC_V2[:10]}…")
 
+    bidreg = bidsim_make(cfg)
+    if bidreg is not None:
+        log(f"[bidsim] ENABLED sink={cfg.bidsim_path} band=[{BIDSIM_LO},"
+            f"{BIDSIM_HI}) expire={BIDSIM_EXPIRE_S/3600:.0f}h "
+            f"rehydrated_open={bidreg.n_open}")
     bc = BlockchainClient(rpc_url=cfg.rpc_url)
     await rpc_call(bc.ensure_client())  # hang at startup -> raise -> systemd restart
 
@@ -637,6 +649,16 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     sig.pop("_block", None)
                     sig["first_buy"] = dedup.is_first(
                         sig["trader"], sig["token_id"])
+                    if bidreg is not None and sig["first_buy"]:
+                        try:
+                            if bidreg.register(sig["trader"], sig["token_id"],
+                                               float(sig["whale_price"]),
+                                               now, "chain"):
+                                log(f"[bidsim] POST bid={sig['whale_price']:.3f} "
+                                    f"tok={sig['token_id'][:10]}... "
+                                    f"open={bidreg.n_open}")
+                        except Exception as e:
+                            log(f"[bidsim] register error: {e!r}")
                     # conviction annotation (A+D rule): r vs the trader's
                     # median BEFORE this wager, then observe it
                     tmed, n_obs = medians.stats(sig["trader"])
@@ -778,6 +800,8 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
     else:
         medians = TrailingMedians()
     dedup = FirstBuyDedup()
+    bidreg = bidsim_make(cfg)
+    last_sweep = time.time()
     os.makedirs(os.path.dirname(cfg.rtds_sink) or ".", exist_ok=True)
     log(f"[rtds_watch] A/B consumer STARTING url={cfg.rtds_url} "
         f"sink={cfg.rtds_sink} roster={len(roster_set)} "
@@ -841,6 +865,24 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
                            except (TypeError, ValueError):
                                continue
                            for row in parse_rtds_trades(msg):
+                               # bidsim: EVERY print (any trader) can fill an open
+                               # shadow bid; sweep expiries ~each minute
+                               if bidreg is not None:
+                                   try:
+                                       nf = bidreg.on_print(row["token_id"],
+                                                            row["price"], time.time())
+                                       if nf:
+                                           log(f"[bidsim] FILL x{nf} tok="
+                                               f"{row['token_id'][:10]}... print="
+                                               f"{row['price']:.3f} open={bidreg.n_open}")
+                                       if time.time() - last_sweep > 60:
+                                           last_sweep = time.time()
+                                           ne = bidreg.sweep_expired(last_sweep)
+                                           if ne:
+                                               log(f"[bidsim] EXPIRE x{ne} "
+                                                   f"open={bidreg.n_open}")
+                                   except Exception as e:
+                                       log(f"[bidsim] print/sweep error: {e!r}")
                                if row["trader"] not in roster_set:
                                    continue
                                if row["side"] != "BUY":
@@ -849,6 +891,18 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
                                sig = rtds_sig(row)
                                sig["first_buy"] = dedup.is_first(
                                    sig["trader"], sig["token_id"])
+                               if bidreg is not None and sig["first_buy"]:
+                                   try:
+                                       if bidreg.register(sig["trader"],
+                                                          sig["token_id"],
+                                                          float(sig["whale_price"]),
+                                                          now, "rtds"):
+                                           log(f"[bidsim] POST bid="
+                                               f"{sig['whale_price']:.3f} tok="
+                                               f"{sig['token_id'][:10]}... "
+                                               f"open={bidreg.n_open}")
+                                   except Exception as e:
+                                       log(f"[bidsim] register error: {e!r}")
                                tmed, n_obs = medians.stats(sig["trader"])
                                mult, r = conviction_multiplier(
                                    sig["whale_size_usd"], tmed, n_obs)
@@ -889,3 +943,139 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
             attempt += 1
             log(f"[rtds_watch] reconnecting in {delay:.0f}s (attempt {attempt})")
             await asyncio.sleep(delay)
+
+
+# -- Shadow-bid simulator (2026-08-19, docs/BIDSIM_DESIGN.md) ----------------
+# Band-only maker-execution measurement: on a roster first-buy BUY with
+# whale_price in [BIDSIM_LO, BIDSIM_HI), register a shadow BID at the whale
+# price; a FILL is any real print at price <= bid on that token (RTDS
+# firehose, all traders); EXPIRE after 24h. Fill rule is QUEUE-OPTIMISTIC by
+# design (registered) - it brackets the snapshot proxy's understatement.
+# Enabled only when MIRROR3_BIDSIM=1; otherwise every hook below is a no-op.
+BIDSIM_LO, BIDSIM_HI = 0.65, 0.85
+BIDSIM_EXPIRE_S = 24 * 3600.0
+
+
+class BidRegistry:
+    """Open shadow bids keyed by (trader, token). Pure core - offline-testable.
+    Emits events through the sink callback; never raises out of hooks."""
+
+    def __init__(self, sink_write: Callable[[dict], None]) -> None:
+        self._open: dict[tuple, dict] = {}
+        self._done: set[tuple] = set()  # one bid per (trader, token), ever
+        self._write = sink_write
+
+    def register(self, trader: str, token_id: str, whale_price: float,
+                 now_ts: float, source: str) -> bool:
+        """Register a bid at the whale price if in-band and not seen before."""
+        if not (BIDSIM_LO <= whale_price < BIDSIM_HI):
+            return False
+        key = (str(trader).lower(), str(token_id))
+        if key in self._done:
+            return False
+        self._done.add(key)
+        bid = {"type": "post", "trader": key[0], "token_id": key[1],
+               "bid": float(whale_price), "post_ts": round(now_ts, 3),
+               "source": source}
+        self._open[key] = bid
+        self._write(bid)
+        return True
+
+    def on_print(self, token_id: str, price: float, now_ts: float) -> int:
+        """A real trade printed on token_id at `price` (any trader). Fill every
+        open bid on that token with bid >= price. Returns fills emitted."""
+        n = 0
+        for key in [k for k, b in self._open.items()
+                    if k[1] == str(token_id) and price <= b["bid"] + 1e-12]:
+            b = self._open.pop(key)
+            self._write({"type": "fill", "trader": b["trader"],
+                         "token_id": b["token_id"], "bid": b["bid"],
+                         "post_ts": b["post_ts"],
+                         "fill_ts": round(now_ts, 3),
+                         "fill_print_price": float(price),
+                         "wait_s": round(now_ts - b["post_ts"], 1)})
+            n += 1
+        return n
+
+    def sweep_expired(self, now_ts: float) -> int:
+        """Expire bids older than BIDSIM_EXPIRE_S. Returns expiries emitted."""
+        n = 0
+        for key in [k for k, b in self._open.items()
+                    if now_ts - b["post_ts"] >= BIDSIM_EXPIRE_S]:
+            b = self._open.pop(key)
+            self._write({"type": "expire", "trader": b["trader"],
+                         "token_id": b["token_id"], "bid": b["bid"],
+                         "post_ts": b["post_ts"],
+                         "expire_ts": round(now_ts, 3)})
+            n += 1
+        return n
+
+    @property
+    def n_open(self) -> int:
+        return len(self._open)
+
+
+def bidsim_rehydrate(reg: "BidRegistry", sink_path: str, now_ts: float) -> int:
+    """Rebuild open bids from the sink after a restart: posts without a
+    terminal event, not yet expired. Terminal keys also seed _done so a
+    restart can never double-register. Returns bids reopened."""
+    if not os.path.exists(sink_path):
+        return 0
+    posts: dict[tuple, dict] = {}
+    terminal: set = set()
+    with open(sink_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            key = (str(e.get("trader", "")), str(e.get("token_id", "")))
+            if e.get("type") == "post":
+                posts[key] = e
+            elif e.get("type") in ("fill", "expire"):
+                terminal.add(key)
+    reopened = 0
+    for key, e in posts.items():
+        reg._done.add(key)
+        if key in terminal:
+            continue
+        if now_ts - float(e.get("post_ts") or 0) >= BIDSIM_EXPIRE_S:
+            reg._write({"type": "expire", "trader": key[0], "token_id": key[1],
+                        "bid": e.get("bid"), "post_ts": e.get("post_ts"),
+                        "expire_ts": round(now_ts, 3),
+                        "note": "expired across restart"})
+            continue
+        reg._open[key] = {"type": "post", "trader": key[0], "token_id": key[1],
+                          "bid": float(e.get("bid") or 0),
+                          "post_ts": float(e.get("post_ts") or 0),
+                          "source": e.get("source", "rehydrated")}
+        reopened += 1
+    for key in terminal:
+        reg._done.add(key)
+    return reopened
+
+
+_BIDSIM_SHARED: dict = {}
+
+
+def bidsim_make(cfg: "WatcherConfig") -> Optional["BidRegistry"]:
+    """SHARED registry wired to the sink (one instance per sink path — the
+    chain watch and rtds_watch run on one event loop and must see the same
+    open-bid set, or posts double and fills split), or None when disabled."""
+    if not cfg.bidsim:
+        return None
+    if cfg.bidsim_path in _BIDSIM_SHARED:
+        return _BIDSIM_SHARED[cfg.bidsim_path]
+    os.makedirs(os.path.dirname(cfg.bidsim_path) or ".", exist_ok=True)
+
+    def write(event: dict) -> None:
+        with open(cfg.bidsim_path, "a") as f:
+            f.write(json.dumps(event) + "\n")
+
+    reg = BidRegistry(write)
+    bidsim_rehydrate(reg, cfg.bidsim_path, time.time())
+    _BIDSIM_SHARED[cfg.bidsim_path] = reg
+    return reg

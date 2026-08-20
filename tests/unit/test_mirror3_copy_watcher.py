@@ -542,3 +542,71 @@ def test_rtds_pong_frames_are_not_trades():
     assert cw.parse_rtds_trades("PONG") == []
     assert cw.parse_rtds_trades("pong") == []
     assert cw.RTDS_APP_PING_S == 5.0  # reference-consumer interval (rtds_websocket.py:22)
+
+
+# -- shadow-bid simulator (2026-08-19, BIDSIM_DESIGN.md) ----------------------
+def _mkreg():
+    events = []
+    return cw.BidRegistry(events.append), events
+
+
+def test_bidsim_register_band_and_dedup():
+    reg, ev = _mkreg()
+    assert reg.register("0xA", "t1", 0.70, 100.0, "chain") is True
+    assert ev[-1]["type"] == "post" and ev[-1]["bid"] == 0.70
+    # same (trader, token) never registers twice - even from the other path
+    assert reg.register("0xA", "t1", 0.70, 101.0, "rtds") is False
+    # out of band rejected both sides
+    assert reg.register("0xB", "t2", 0.64, 100.0, "chain") is False
+    assert reg.register("0xB", "t3", 0.85, 100.0, "chain") is False
+    assert reg.n_open == 1 and len(ev) == 1
+
+
+def test_bidsim_fill_on_print_at_or_below_bid():
+    reg, ev = _mkreg()
+    reg.register("0xA", "t1", 0.70, 100.0, "chain")
+    assert reg.on_print("t1", 0.71, 200.0) == 0     # above bid: no fill
+    assert reg.on_print("tX", 0.10, 200.0) == 0     # other token: no fill
+    assert reg.on_print("t1", 0.70, 300.0) == 1     # at bid: fills
+    f = ev[-1]
+    assert f["type"] == "fill" and f["wait_s"] == 200.0
+    assert reg.n_open == 0
+    assert reg.on_print("t1", 0.60, 400.0) == 0     # already filled
+
+
+def test_bidsim_expiry_sweep():
+    reg, ev = _mkreg()
+    reg.register("0xA", "t1", 0.70, 100.0, "chain")
+    assert reg.sweep_expired(100.0 + cw.BIDSIM_EXPIRE_S - 1) == 0
+    assert reg.sweep_expired(100.0 + cw.BIDSIM_EXPIRE_S) == 1
+    assert ev[-1]["type"] == "expire" and reg.n_open == 0
+
+
+def test_bidsim_rehydrate(tmp_path):
+    p = tmp_path / "bidsim.jsonl"
+    lines = [
+        {"type": "post", "trader": "0xa", "token_id": "t1", "bid": 0.7,
+         "post_ts": 89000.0, "source": "chain"},                   # stays open
+        {"type": "post", "trader": "0xb", "token_id": "t2", "bid": 0.7,
+         "post_ts": 89000.0, "source": "chain"},
+        {"type": "fill", "trader": "0xb", "token_id": "t2", "bid": 0.7,
+         "post_ts": 89000.0, "fill_ts": 89500.0},                   # terminal
+        {"type": "post", "trader": "0xc", "token_id": "t3", "bid": 0.7,
+         "post_ts": 0.0, "source": "chain"},   # age 90000s > 86400s expired
+    ]
+    p.write_text("\n".join(__import__("json").dumps(e) for e in lines))
+    reg, ev = _mkreg()
+    n = cw.bidsim_rehydrate(reg, str(p), now_ts=90000.0)
+    assert n == 1 and reg.n_open == 1                # only 0xa/t1 reopened
+    assert any(e["type"] == "expire" and e["token_id"] == "t3" for e in ev)
+    # every historical key is in _done: no re-registration after restart
+    assert reg.register("0xb", "t2", 0.70, 90000.0, "chain") is False
+    assert reg.register("0xc", "t3", 0.70, 90000.0, "chain") is False
+
+
+def test_bidsim_config_gating():
+    base = {"MIRROR3_ROSTER_PATH": "r.json", "MIRROR3_RPC_URL": "http://x"}
+    assert cw.WatcherConfig.from_env(dict(base)).bidsim is False
+    cfg = cw.WatcherConfig.from_env({**base, "MIRROR3_BIDSIM": "1"})
+    assert cfg.bidsim is True and cfg.bidsim_path.endswith("mirror3_bidsim.jsonl")
+    assert cw.bidsim_make(cw.WatcherConfig.from_env(dict(base))) is None
