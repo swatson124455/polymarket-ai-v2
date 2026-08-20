@@ -218,3 +218,27 @@ arm-gate WRITES only in the client (needs review + operator signoff).**
 Calendar (operator picked (a) 2026-08-19 ~02:1xZ): build+review → shadow →
 relight ask (operator GO) → run to ~08-25 → payment reads 08-26/27 → mandate
 decision 2026-08-27.
+
+## RELIGHT RECORD (operator GO 2026-08-20; window T0 = 2026-08-20T16:40:24Z)
+- Pre-flight: +$73.50 cash step 08-19T14:43:52Z ($246.8126→$320.3126) held the
+  launch until the operator confirmed DEPOSIT (2026-08-20). Balance at launch
+  $320.3126 (API 16:42Z-era reads).
+- Sequence executed: cliff-shadow timer DISABLED; shadow sim state archived
+  (.bak-SHADOWSIM; relight state reset, operator GO covers the naming); ratified
+  env applied to live.env IN-PLACE, no duplicate keys (.bak-CLIFFRELIGHT);
+  scoreboard re-registered T0/T7/OBS = 08-20T16:40:24Z / 08-27T16:40:24Z /
+  08-29T16:40:24Z, T0_CASH=320.3126 (recorder 16:36:06Z, flat 0 resting);
+  polymarket-maker-kalshi-ws ENABLED+STARTED 16:40:24Z.
+- First live cycle 16:40:53Z: quoted 2, creates 4, 0 fails, committed $9.60/200.
+  Venue paged verify 16:43:05Z: 4 post-only resting — DIESELW-T5.26 pair
+  (y0.98 + no0.01≡y0.99) and T5.64 pair (y0.02 + no0.91≡y0.09), 5ct each.
+- ⚠ STANDING GAUGE CAVEAT: venue `balance` did NOT move when orders rested
+  (320.3126 with 4 resting) → recorder funded_cash (= balance + model
+  reservation) overstates by exactly the reservation while orders rest; the
+  scoreboard identity-gap alarm (+$9.60 = reservation) is that artifact. A REAL
+  break = gap ≠ current resting_reservation. Exit-2 alarms during the window
+  must be read against this.
+- Week-1 framing (honest): 2 quotable markets → gross ceiling ~$1.0-1.3/day
+  (INFERRED best-days rate) — BELOW the $2-5/day band; this window is the
+  cliff-clearing EXPERIMENT (do concentrated programs cross $1 and pay), not
+  the revenue plan. F14 thresholds frozen; halt $10/day; caps 60/60/200.
