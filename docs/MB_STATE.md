@@ -443,6 +443,19 @@
 > * Independent corroboration: the band's taker edge shows +0.0756 on this
 >   cut too (different denominator than the 143-mkt +0.0837; consistent).
 >
+> **2026-08-20 (~01:15Z) — SHADOW-BID SIMULATOR LIVE** (operator 'proceed';
+> design pre-registered in `docs/BIDSIM_DESIGN.md` BEFORE data). Band-only
+> [0.65,0.85) maker-execution measurement: shadow BID at whale price on
+> roster first-buys; FILL = any print <= bid (RTDS firehose, all traders) —
+> QUEUE-OPTIMISTIC by design, bracketing the snapshot proxy's 47.6% floor;
+> EXPIRE 24h; one bid per (trader,token); restart-safe rehydration; SHARED
+> registry (chain + rtds paths). Sink `mirror3_bidsim.jsonl`, env
+> `MIRROR3_BIDSIM=1`. Registered decision hypothesis: **true band fill rate
+> >= 74% => maker beats taker** (taker +0.0756 vs maker cond +0.1022, n=131).
+> 65/65 pytest; deployed + ENABLED 2026-08-20T01:14:19Z, 0 errors; backup
+> `copy_watcher.py.pre-bidsim-20260819`. Sink populates on the first in-band
+> whale buy (sparse — hours, not minutes).
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
