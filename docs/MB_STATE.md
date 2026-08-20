@@ -10,7 +10,7 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-30 (local steward session, ~16:45 UTC — full audit + operator 'proceed with all': re-review complete 20/20 FLIPPED:0; fee truth measured (2% haircut ~right, phantom-fee dead); cohort4 re-admission executed w/ new forward_only readout flag; RTDS A/B consumer LIVE beside the chain poll. HANDOFF: read the 2026-07-30 block in SS0 first) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-08-20 (session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
@@ -386,6 +386,52 @@
 > move to 0.99 / other. **RULED 2026-08-19: KEEP AS IS (0.98).** 990/3,646 tokens rated at the conservative 0.07
 > unknown-category rate (pooled venue figure is thus slightly UNDERSTATED).
 >
+> ## 2026-08-20 SESSION CLOSE — READ THIS FIRST (supersedes blocks below for
+> orientation; they remain the ledger detail)
+>
+> **⛔ OPERATOR RULE IN FORCE: FORWARD DATA ONLY** (2026-08-20; memory
+> `feedback_forward_data_only.md`): in-sample/backtest numbers carry ZERO
+> decision weight — hypothesis-generation only, never evidence, never beside
+> a forward number. Decision thresholds recomputed from forward data at
+> decision time. Externally-verified calibrations (venue fee formula vs live
+> charged fees, CLOB labels, fill mechanics) remain usable as infrastructure.
+>
+> **THE FOUR FORWARD INSTRUMENTS (all live, all $0, verdicts arrive on the
+> market's schedule):**
+> 1. **Band 0.65–0.85 test** — `docs/BAND_PREREGISTRATION.md`, epoch
+>    2026-08-19T18:00Z, e-process reject at e>=20, futility 600; daily
+>    e-value in the 11:40Z cron block. Last read 2026-08-20T11:41Z: **n=11,
+>    pooled −0.0216, e=0.717** (early, meaningless n; the tripwire decides).
+> 2. **Shadow-bid simulator** — `docs/BIDSIM_DESIGN.md`, sink
+>    `mirror3_bidsim.jsonl`. First reads 08-20 16:40Z: **16 posts, 13/13
+>    resolved bids FILLED**, 3 open (queue-optimistic by design; brackets
+>    truth with the conservative proxy). At ~100 resolved bids → chase-vs-
+>    post proposal computed from FORWARD data on both arms.
+> 3. **cohort5 qualification** (20 chain-ADMITs, single-look locks; 3
+>    consumed DOES-NOT-QUALIFY) + **cohort4** FWD window — daily cron.
+> 4. **probe(1) fbfd watch** — observation-only, roster=31.
+> **Scout sweep #1:** 3/9 REJECT, 6 relaunched 08-20T16:41Z (pid on VPS,
+> `/tmp/scout_queue3_main.log`; script copies in `scripts/vps_jobs/`).
+>
+> **RTDS: FIXED-ENOUGH** — 15s silent-window correction measured **3.0%
+> coverage gap** (28/925 since 08-20T01:14Z) vs 11.8–13.8% before. Dual-
+> socket idea PARKED as overcompensation (operator-reviewed) unless flow
+> becomes binding. App-PING theory REFUTED on record — venue cycles
+> connections ~6/h regardless; the fix is fast detection, not prevention.
+>
+> **FINAL PLAN (operator-ratified after over-correction review):** let the
+> four instruments vote; finish scout sweep #1; ONE build allowed = unified
+> daily scoreboard block in the cron log; everything else parked. PULLED as
+> overcompensation (on review): weekly scout cadence (decide after sweep #1),
+> auto-promote funnel (manual until first yield), dual-socket, fill-price
+> logging (already built). **OPERATOR DECISIONS OPEN:** conditional funding
+> number ("if a test passes I fund $X"); scout cadence after sweep #1.
+> **TRIPWIRES:** band e>=20 or n=600; bidsim ~100 resolved; scout verdicts
+> → admission proposals. PRICE cap ruled KEEP AS IS (0.98).
+>
+> **NEXT SESSION: start from `MB_DEEP_DIVE_NEXT_PROMPT.md` (rewritten
+> 2026-08-20, self-contained).**
+
 > ## 2026-08-19 (~17:40Z) — ALL FOUR RECS EXECUTED + OVER-CORRECTION AUDIT
 > (operator: proceed with all; speed directive: verdict ASAP without losing
 > function; PRICE cap ruled KEEP AS IS)

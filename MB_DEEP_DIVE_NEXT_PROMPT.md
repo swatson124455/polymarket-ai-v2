@@ -1,98 +1,94 @@
 # MB STEWARD — NEXT SESSION KICKOFF (copy-trader / shadow lane)
 
-**Written 2026-07-22. Supersedes the 07-19 version.** You are the local MB
-steward. The lane's headline changed this session: **the edge numbers were
-flattered by incomplete resolution labels**, that is now fixed for our markets,
-and a re-review of every ADMIT is in flight. Everything below is
-verify-don't-trust.
+**Written 2026-08-20. Supersedes the 07-22 version.** You are the local MB
+steward. The lane's posture changed this session: measurement machinery is
+DONE and trusted; four pre-registered FORWARD experiments are running; the
+job now is to READ them, not to build.
 
 ---
 
 ## STEP ZERO
 ```
 git ls-remote origin 'refs/heads/claude/*'
-git fetch origin <branch> && git show FETCH_HEAD:docs/MB_STATE.md | head -20
+git fetch origin claude/repo-setup-docs-fq9bhn
 ```
 Newest is on **`claude/repo-setup-docs-fq9bhn`**. Read in order: `CLAUDE.md` →
-newest `docs/MB_STATE.md` **§0 (the 2026-07-22 block)** + **§7 landmines (esp.
-the 07-22 additions)** → `docs/MB_HANDOFF_PROTOCOL.md`.
+newest `docs/MB_STATE.md` **§0 (the 2026-08-20 SESSION CLOSE block)** + **§7
+landmines** → `docs/MB_HANDOFF_PROTOCOL.md` → `docs/BAND_PREREGISTRATION.md` +
+`docs/BIDSIM_DESIGN.md` (the two live experiment charters).
+Worktree **`C:/lockes-picks/mb-steward`**; `git pull --ff-only` before every
+commit; push after each unit.
 
-## LOGISTICS (binding)
-- Worktree **`C:/lockes-picks/mb-steward`**; `git pull --ff-only` before EVERY
-  commit; push after each unit.
-- VPS: you run commands yourself —
-  `ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "..."`.
-  Read-only freely; state WHAT + WHY before any state change.
-- **Compose SSH payloads single-quoted from Git Bash. Sanitize uploaded scripts
-  to PURE ASCII** — em-dashes/`§` mangle in transit and break bash parsing.
-- **PEER RULE (07-20):** no bot has right of way on shared resources.
-  Coordinate; serialize on the shared RPC. MB-owned resources unaffected.
+## BINDING RULES (all operator-ratified, all bit us before)
+1. **FORWARD DATA ONLY (2026-08-20):** in-sample/backtest numbers carry ZERO
+   decision weight — hypothesis-generation only, never evidence. Decision
+   thresholds are recomputed from forward data at decision time. Venue
+   calibrations (fee formula validated vs live charged fees, CLOB labels)
+   remain usable as infrastructure.
+2. **NO FAST LANE:** self-test + pytest green, adversarial review for any
+   verdict/number code, first output cross-checked vs an INDEPENDENT source,
+   timeout on every network await, targeted pkill patterns.
+3. **NON-EMPTY ASSERTS EVERYWHERE:** a diff/count over zero rows printing
+   success is this lane's worst failure mode (bit repeatedly).
+4. **Verdicts/locks are immutable; roster changes are operator-gated;
+   pre-registered epochs never move.** PRICE_NO_UPSIDE cap ruled KEEP AS IS
+   (0.98). Verify-don't-trust everything below.
+5. SSH: `ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0`
+   — single-quoted payloads, PURE ASCII uploads. `/tmp` is wiped on reboot:
+   orchestration scripts have repo copies in `scripts/vps_jobs/`.
 
-## THE ONE BINDING SELF-RULE — NO FAST LANE
-Nothing touches VPS/live state without: self-test + pytest green, an adversarial
-review for any code producing a verdict/number, **first output cross-checked vs
-an INDEPENDENT source**, a timeout on every network await, and kill/deploy
-one-liners composed against §7. **And the 07-22 addition: any comparison must
-assert its inputs are NON-EMPTY.** An empty-set "IDENTICAL"/"FLIPPED: 0" is the
-single most dangerous failure mode in this lane — it bit twice in one session.
+## THE FOUR LIVE FORWARD INSTRUMENTS (verify each, then mostly leave alone)
+1. **Band 0.65–0.85 e-process test** — epoch 2026-08-19T18:00Z; reject at
+   e>=20; futility at 600 resolved band markets; econ floor (+0.02) applied
+   only after rejection; lock `deep_dive/band_lock.json`. Daily `[band]` line
+   in `deep_dive/label_fee_refresh.log` (11:40Z cron). Last read 08-20:
+   n=11, e=0.717 — meaningless n, let it accrue.
+2. **Shadow-bid simulator** (chase-vs-post decider) — sink
+   `/opt/pa2-shared/mirror3_bidsim.jsonl`; bid at whale price in-band; fill =
+   any print <= bid (queue-OPTIMISTIC; the 07-19 snapshot study is the
+   conservative bracket); expire 24h. First reads: 13/13 resolved bids
+   filled. At **~100 resolved bids**: produce the chase-vs-post proposal from
+   FORWARD data on both arms (forward taker edge vs forward fill-rate ×
+   maker edge) — NOT any in-sample threshold.
+3. **cohort5 qualification** (daily cron; single-look locks in
+   `deep_dive/cohort5_qual_locks.json`; 3 consumed, all DOES NOT QUALIFY) and
+   **cohort4** (verdict already LOCKED NOT DEMONSTRATED — diagnostic only).
+4. **probe(1) = 0xfbfd14dd** watch (observation-only; maker_frac 0.886
+   objection on record). Roster = 31; header `15+8+6+1+1probe`.
 
----
+**Also running:** scout sweep #1 remainder — 6 dives relaunched
+2026-08-20T16:41Z (`/tmp/scout_queue3_main.log`; 3 of 9 already REJECT).
+Verdicts are PROPOSALS; admission = operator gate.
 
-## CURRENT STATE (verify each)
+## THE FINAL PLAN (operator-ratified, over-correction-reviewed)
+- Let the four instruments vote. Do NOT add instruments until one reports.
+- **ONE build allowed:** a unified daily scoreboard block in the cron log
+  (band e-value + bidsim counts + cohort5 accrual + scout status in one
+  glance). Nothing else.
+- PARKED as overcompensation (operator-reviewed; re-raise only with cause):
+  weekly scout cadence (decide after sweep #1 reports), auto-promote funnel,
+  dual RTDS sockets.
+- OPEN OPERATOR DECISIONS: conditional funding number; scout cadence.
+- TRIPWIRES: band e>=20 (PASS → live-bot proposal + funding) or n=600
+  (futility close); bidsim ~100 resolved → chase-vs-post proposal; scout
+  completions → admission proposals.
 
-**Live roster = 30** (`chain_audit.json`): cohort1(15, REDUCED) + cohort2(8) +
-cohort3(6) + benched(1). `polymarket-mirror3` shadow, paper, $0, 0 alarms.
-Daily readout 12:30Z renders `15+8+6+1benched`; cohort1 prints
-`REDUCED :: NO VERDICT` by design (post-hoc cut, can never "survive").
+## START by reporting
+1. Date check (sessions have jumped days — `date -u` first, re-derive
+   everything at speaking time).
+2. The latest `[band]` line + bidsim post/fill/expire counts + scout sweep
+   status + cohort5 accrual + RTDS coverage spot-check (join both sinks,
+   expect ~3% chain-only) + watcher health (active, 0 DIED).
+3. Any tripwire crossed → the corresponding proposal, from forward data only.
+4. Then WAIT for operator direction. No roster changes, no new experiments,
+   no epoch changes without explicit go.
 
-**The bum `0x44886115` is BENCHED** (time-out, from_cohort=cohort1, stays
-watched). Three independent lines vindicate it: shadow drag −0.1051, forward
-line, and a chain deep-dive verdict of INSUFFICIENT (edge +0.0031, P=0.678) on
-his cleanest sample. **Re-admission bar (pre-registered): forward-since-bench
-edge ≥ +0.02 AND P ≥ 0.90 on ≥ 20 resolved → propose (operator go).**
-
-**Labels are FIXED for our markets** — CLOB supplement added 14,791 labels
-(gap 32% → 1.9%). Do NOT trust `markets.resolved` for shadow markets; the
-shared backfill structurally cannot see them.
-
-**⏳ IN FLIGHT — ADMIT RE-REVIEW (the key deliverable).**
-`/tmp/admit_rereview3.sh`, 20 ADMITs, out-dir
-`/opt/pa2-shared/mb_copyable_data/deep_dive_rereview/` (originals preserved).
-Check: `tail /tmp/rereview3_main.log`; JSON count in the out-dir; the final
-before/after table with `<== FLIPPED`. **If it shows FATAL / 0 compared, it did
-NOT run — do not read that as "all survived".**
-
-## PRIORITIES
-
-1. **[first] Read the re-review diff.** Any FLIPPED ADMIT is a PROPOSAL only —
-   no roster change without operator go. Pay special attention to the three
-   cohort-3 members graded on ~50% evidence (`0x216509be`, `0x7c3db723`,
-   `0xe542afd3`); cohort-3's live edge is currently NEGATIVE.
-2. **[then] Re-grade the 5 label-starved INSUFFICIENTs** — they may have been
-   wrongly shelved by the same gap.
-3. **[watch] Readout.** Nothing has cleared the bar (≥30 resolved AND P≥0.95 AND
-   edge≥+0.02). cohort2 18/30. cohort3 accruing from a fresh epoch.
-4. **[operator-gated, shared infra] (a)** backfill poison-batch ordering;
-   **(b)** `end_date_iso` NULL on 56% of markets; **(c)** the 123h stuck
-   force-exit loop on `polymarket-mirror`; **(d)** master docs-sync PR.
-5. **[optional]** deepen wave (13 run-4 INSUFFICIENTs), `0x70d94a` solo deepen.
-
-## WHAT THE DATA IS AND ISN'T (say this plainly to the operator)
-- **CANON:** the whale trades. 691,201 chain-verified BUYs, 0 mismatch. Every
-  shadow record carries an on-chain `tx`.
-- **MODEL, never executed:** our fills. ~89% have order-book depth behind them;
-  **zero** were executed. `bot_pnl.py` is empty for this lane by construction.
-- **EV of tailing = the `edge` figure** (per share, net of fee, at OUR entry).
-  Currently ~+0.03/share cohort1-2, NEGATIVE cohort3, none significant.
-  The tailing tax is ~1c/share + 2% fee against a +0.02–0.05 trader edge —
-  **that tax is the central risk to this strategy's EV.**
-- **NEVER quote $ P&L** (CLAUDE.md #11). Communicate via edge/calibration.
-
-## SESSION END
-Update `docs/MB_STATE.md` §0 + §7, refresh this prompt, push every unit,
-propose the master docs-sync PR.
-
-**START by reporting:** newest MB_STATE confirmed; re-review result (or its
-gate state); any ALERT + the latest readout line WITH concentration; watcher
-health; top-3 next actions. Then wait for operator go on anything that admits a
-trader or changes the roster.
+## KNOWN STATE OF THE WORLD (calibrations — usable infrastructure)
+- Venue fee = C·rate·p·(1−p); rates crypto .07 / sports+other .05 /
+  politics-class .04 / geopolitics 0 — validated vs 3,070 live charged fees.
+- Wallet (last on-chain read 07-25): ~2.24 pUSD (deposit proxy) + ~9.34
+  MATIC (EOA). Funding is an open operator decision.
+- RTDS venue cycles connections ~6/h regardless of pings (PING theory
+  refuted); 15s silent-window keeps the loss at ~3%.
+- `/opt/mirror3` deploy == repo `mirror_v3/` (verify byte-identity before
+  editing). Backups `copy_watcher.py.pre-*-2026081*` on the VPS.
