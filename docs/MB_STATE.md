@@ -456,6 +456,18 @@
 > `copy_watcher.py.pre-bidsim-20260819`. Sink populates on the first in-band
 > whale buy (sparse — hours, not minutes).
 >
+> **⛔ RULE (operator, 2026-08-20): FORWARD DATA ONLY.** Old/in-sample data
+> carries ZERO decision weight. In-sample edges, P-values and rankings may
+> motivate a hypothesis or design an instrument — never appear as evidence,
+> never share a headline with forward numbers. All decision thresholds are
+> recomputed from FORWARD data at decision time (incl. the bidsim
+> chase-vs-post comparison: forward taker edge vs forward maker fill×edge,
+> not the in-sample break-even). Externally-verified calibrations (venue fee
+> formula vs live charged fees, CLOB labels, fill mechanics) remain usable as
+> infrastructure — stated interpretation, operator-correctable. The running
+> forward instruments (band tracker, bidsim, cohort4, cohort5) are already
+> compliant by construction. Memory: `feedback_forward_data_only.md`.
+>
 > **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
 > single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
 > power daily; operator go still needed); backfill poison-batch;
