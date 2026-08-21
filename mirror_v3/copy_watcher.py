@@ -653,7 +653,8 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                         try:
                             if bidreg.register(sig["trader"], sig["token_id"],
                                                float(sig["whale_price"]),
-                                               now, "chain"):
+                                               now, "chain",
+                                               trigger_tx=sig.get("tx")):
                                 log(f"[bidsim] POST bid={sig['whale_price']:.3f} "
                                     f"tok={sig['token_id'][:10]}... "
                                     f"open={bidreg.n_open}")
@@ -869,8 +870,12 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
                                # shadow bid; sweep expiries ~each minute
                                if bidreg is not None:
                                    try:
-                                       nf = bidreg.on_print(row["token_id"],
-                                                            row["price"], time.time())
+                                       nf = bidreg.on_print(
+                                           row["token_id"], row["price"],
+                                           time.time(),
+                                           print_tx=row.get("tx"),
+                                           print_trader=row.get("trader"),
+                                           print_side=row.get("side"))
                                        if nf:
                                            log(f"[bidsim] FILL x{nf} tok="
                                                f"{row['token_id'][:10]}... print="
@@ -896,7 +901,8 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
                                        if bidreg.register(sig["trader"],
                                                           sig["token_id"],
                                                           float(sig["whale_price"]),
-                                                          now, "rtds"):
+                                                          now, "rtds",
+                                                          trigger_tx=sig.get("tx")):
                                            log(f"[bidsim] POST bid="
                                                f"{sig['whale_price']:.3f} tok="
                                                f"{sig['token_id'][:10]}... "
@@ -966,8 +972,14 @@ class BidRegistry:
         self._write = sink_write
 
     def register(self, trader: str, token_id: str, whale_price: float,
-                 now_ts: float, source: str) -> bool:
-        """Register a bid at the whale price if in-band and not seen before."""
+                 now_ts: float, source: str,
+                 trigger_tx: Optional[str] = None) -> bool:
+        """Register a bid at the whale price if in-band and not seen before.
+
+        `trigger_tx` is the transaction of the whale fill that PROMPTED this
+        bid. It is recorded so on_print can refuse to fill the bid from that
+        same transaction's own tape rows (2026-08-21 correction, see
+        docs/BIDSIM_DESIGN.md AMENDMENT 1)."""
         if not (BIDSIM_LO <= whale_price < BIDSIM_HI):
             return False
         key = (str(trader).lower(), str(token_id))
@@ -976,24 +988,44 @@ class BidRegistry:
         self._done.add(key)
         bid = {"type": "post", "trader": key[0], "token_id": key[1],
                "bid": float(whale_price), "post_ts": round(now_ts, 3),
-               "source": source}
+               "source": source,
+               "trigger_tx": (str(trigger_tx).lower() if trigger_tx else None)}
         self._open[key] = bid
         self._write(bid)
         return True
 
-    def on_print(self, token_id: str, price: float, now_ts: float) -> int:
-        """A real trade printed on token_id at `price` (any trader). Fill every
-        open bid on that token with bid >= price. Returns fills emitted."""
+    def on_print(self, token_id: str, price: float, now_ts: float,
+                 print_tx: Optional[str] = None,
+                 print_trader: Optional[str] = None,
+                 print_side: Optional[str] = None) -> int:
+        """A real trade printed on token_id at `price`. Fill every open bid on
+        that token with bid >= price, EXCEPT a bid whose own trigger
+        transaction is this print (a resting order cannot be filled by the
+        very order it was posted in reaction to - those makers were already
+        ahead of us in queue).
+
+        The print's identity (tx/trader/side) is recorded on the fill event so
+        the remaining open question - which side of the tape legitimately
+        fills a resting bid - is measurable from forward data rather than
+        assumed. Returns fills emitted."""
+        tx = str(print_tx).lower() if print_tx else None
         n = 0
         for key in [k for k, b in self._open.items()
-                    if k[1] == str(token_id) and price <= b["bid"] + 1e-12]:
+                    if k[1] == str(token_id) and price <= b["bid"] + 1e-12
+                    and not (tx and b.get("trigger_tx") == tx)]:
             b = self._open.pop(key)
             self._write({"type": "fill", "trader": b["trader"],
                          "token_id": b["token_id"], "bid": b["bid"],
                          "post_ts": b["post_ts"],
                          "fill_ts": round(now_ts, 3),
                          "fill_print_price": float(price),
-                         "wait_s": round(now_ts - b["post_ts"], 1)})
+                         "wait_s": round(now_ts - b["post_ts"], 1),
+                         "trigger_tx": b.get("trigger_tx"),
+                         "fill_tx": tx,
+                         "fill_trader": (str(print_trader).lower()
+                                         if print_trader else None),
+                         "fill_side": (str(print_side).upper()
+                                       if print_side else None)})
             n += 1
         return n
 
@@ -1051,7 +1083,8 @@ def bidsim_rehydrate(reg: "BidRegistry", sink_path: str, now_ts: float) -> int:
         reg._open[key] = {"type": "post", "trader": key[0], "token_id": key[1],
                           "bid": float(e.get("bid") or 0),
                           "post_ts": float(e.get("post_ts") or 0),
-                          "source": e.get("source", "rehydrated")}
+                          "source": e.get("source", "rehydrated"),
+                          "trigger_tx": e.get("trigger_tx")}
         reopened += 1
     for key in terminal:
         reg._done.add(key)

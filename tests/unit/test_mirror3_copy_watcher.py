@@ -574,6 +574,66 @@ def test_bidsim_fill_on_print_at_or_below_bid():
     assert reg.on_print("t1", 0.60, 400.0) == 0     # already filled
 
 
+def test_bidsim_no_self_fill_from_trigger_tx():
+    """2026-08-21 correction: the whale order that PROMPTED the bid cannot
+    fill it. Those makers were ahead of us in queue; counting their tape as
+    our fill measured 'did the whale order have >1 fill row' (21 of 30 live
+    fills landed <=5s, median 0.6s)."""
+    reg, ev = _mkreg()
+    reg.register("0xA", "t1", 0.70, 100.0, "rtds", trigger_tx="0xDEAD")
+    # the triggering transaction's own rows must NOT fill the bid
+    assert reg.on_print("t1", 0.70, 100.5, print_tx="0xdead") == 0
+    assert reg.on_print("t1", 0.68, 101.0, print_tx="0xDEAD") == 0
+    assert reg.n_open == 1
+    # independent later flow DOES fill it
+    assert reg.on_print("t1", 0.70, 900.0, print_tx="0xbeef") == 1
+    assert reg.n_open == 0
+
+
+def test_bidsim_fill_records_print_identity():
+    reg, ev = _mkreg()
+    reg.register("0xA", "t1", 0.70, 100.0, "rtds", trigger_tx="0xAAA")
+    assert reg.on_print("t1", 0.69, 700.0, print_tx="0xBBB",
+                        print_trader="0xSeller", print_side="sell") == 1
+    f = ev[-1]
+    assert f["fill_tx"] == "0xbbb"
+    assert f["fill_trader"] == "0xseller"
+    assert f["fill_side"] == "SELL"
+    assert f["trigger_tx"] == "0xaaa"
+
+
+def test_bidsim_rehydrate_preserves_trigger_tx():
+    """A restart must not resurrect the self-fill: the guard dies silently if
+    trigger_tx is dropped on rehydration."""
+    import json as _json
+    import tempfile, os as _os
+    fd, path = tempfile.mkstemp(suffix=".jsonl")
+    _os.close(fd)
+    try:
+        with open(path, "w") as fh:
+            fh.write(_json.dumps({"type": "post", "trader": "0xa",
+                                  "token_id": "t1", "bid": 0.7,
+                                  "post_ts": 89000.0, "source": "rtds",
+                                  "trigger_tx": "0xfeed"}) + chr(10))
+        reg, ev = _mkreg()
+        assert cw.bidsim_rehydrate(reg, path, now_ts=89100.0) == 1
+        assert reg.on_print("t1", 0.70, 89200.0, print_tx="0xfeed") == 0
+        assert reg.on_print("t1", 0.70, 89300.0, print_tx="0xother") == 1
+    finally:
+        _os.unlink(path)
+
+
+def test_bidsim_call_sites_pass_tx_through():
+    """Anti-no-op guard. This lane's documented worst failure mode is a fix
+    whose reporting path never adopts it. If a production call site stops
+    threading the tx, the correction is inert and every fill returns."""
+    import inspect
+    src = inspect.getsource(cw)
+    assert "print_tx=row.get(\"tx\")" in src, "RTDS on_print lost print_tx"
+    assert src.count("trigger_tx=sig.get(\"tx\")") == 2, (
+        "both register call sites (chain + rtds) must pass trigger_tx")
+
+
 def test_bidsim_expiry_sweep():
     reg, ev = _mkreg()
     reg.register("0xA", "t1", 0.70, 100.0, "chain")
