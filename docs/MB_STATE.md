@@ -10,13 +10,83 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-08-20 (session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-08-21 (bidsim AMENDMENT 1 deployed + scout sweep #1 CLOSED; read the 2026-08-21 block first) · *(prior: 2026-08-20 session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first)* · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
 ## 0. IMMEDIATE RESUME (read this block first)
+
+> ## 2026-08-21 (~14:49Z) — BIDSIM SELF-FILL DEFECT FIXED + SCOUT SWEEP #1 CLOSED
+> (operator: "delete duplicate, resolve sim now then get proper data")
+>
+> **1. SCOUT SWEEP #1 CLOSED — zero admissions.** Finished rc=0
+> **2026-08-21T09:23:40Z**, 9/9 verdicts: **8 REJECT + 1 INSUFFICIENT-EVIDENCE,
+> 0 ADMIT.** All 8 rejects on the same mechanical gate (UNCOPYABLE; true chain
+> rates 4,399 / 7,065 / 8,704 / 11,483 / 11,883 / 17,045 / 22,299 / 26,180
+> fills/day vs a 1,000 cut). `0xa16a1302` hit the receipt budget (30,000 of
+> 80,549 V2 txs attempted, 0 fetch failures) — a wall, not a finding. The
+> tripwire "scout completions -> admission proposals" fired with an EMPTY
+> proposal. Selection filter (notional >=$250k + >=100 mkts + >=500 trades over
+> 6h) returned nine machines — that is a finding about the FILTER, and the
+> scout-cadence decision remains OPEN with the operator. Verdicts backed up at
+> `deep_dive_scout.bak-sweep1-20260821` (md5 of `_summary_scout.json`
+> `08645d645a963a2ec9c0c098a8241011`, verified identical to live).
+>
+> **2. DUPLICATE SCOUT RUN KILLED (operator go).** The 08-20T16:41Z relaunch
+> sat in `scout_queue2.sh`'s `pgrep` wait-gate (so it never corrupted output —
+> the guard worked), then woke 8 min after the first run finished and spent
+> ~5.3h re-diving the same 6 already-graded addresses. Killed by exact PID
+> (3186231/3186232/3293330 — no `pkill`, per the self-match landmine). Verdicts
+> verified intact after the kill.
+>
+> **3. BIDSIM AMENDMENT 1 — the 93.8% fill rate was an artifact (a1996b9).**
+> At 35 posts / 30 fills / 2 expires the headline read 30/32 = **93.8%**, but
+> **21 of 30 fills landed within 5s, median wait 0.6s**, print price exactly ==
+> bid in 23/30, and all 5 chain-sourced posts filled in <=0.6s. Only 6 of 30
+> waited >60s. ROOT CAUSE (code-verified): `on_print` filled any open bid from
+> any print at/below the bid with no knowledge of WHICH TRADE the print
+> belonged to — a whale order matched against several makers arrives as several
+> tape rows, row 1 registered the bid and rows 2..N of the SAME TX filled it.
+> The pre-existing ordering guard covered only the literal trigger row.
+> **This is NOT the registered queue-optimism bias** — that is "we might sit
+> behind others at our level"; this was counting the very order we reacted to
+> as our counterparty.
+> FIX: `register()` records `trigger_tx`; `on_print()` refuses to fill from
+> that tx. Queue optimism deliberately RETAINED (still brackets the 07-19
+> 47.6% snapshot floor from above). Fills now carry `fill_tx`/`fill_trader`/
+> `fill_side`.
+> **NOT changed, and OPEN:** a resting BID is economically fillable only by
+> SELL aggression and the rule still ignores side. Measured on the 07-30
+> firehose capture (400,000 rows): BUY 346,225 / SELL 53,775; both sides
+> present in only 30,839 of 241,869 (token,ts,price) groups — a sell-only rule
+> would swap a known bias for an unquantified feed-asymmetry bias. Instrumented
+> instead of guessed. **OPERATOR DECISION OPEN.**
+> VERIFICATION: 92 pytest green; `trigger_tx` carried through
+> `bidsim_rehydrate` (a restart cannot resurrect the self-fill); anti-no-op
+> SOURCE test asserts all 3 call sites thread the tx, **mutation-tested**
+> (dropping `print_tx` fails the suite; restored passes) — this lane's worst
+> failure mode is a fix the reporting path never adopts.
+> **EPOCH RESET: 2026-08-21T14:48:56Z.** Old sample PARKED at
+> `mirror3_bidsim.jsonl.pre-amend1-20260821` (67 lines = 35+30+2), NOT poolable
+> and never to be quoted as a fill rate. New sink started empty; deploy
+> confirmed `[bidsim] ENABLED ... rehydrated_open=0`. **The ~100-resolved
+> tripwire RESTARTS FROM ZERO.** Backup `copy_watcher.py.pre-amend1-20260821`.
+>
+> **STILL PENDING (next session MUST verify — not yet observable):** the first
+> post+fill pairs on the new sink. Confirm no sub-second self-fills survive and
+> that `fill_tx != trigger_tx` on every fill:
+> `python3 -c "import json;r=[json.loads(l) for l in open('/opt/pa2-shared/mirror3_bidsim.jsonl') if l.strip()];f=[x for x in r if x['type']=='fill'];print(len(f),[x['wait_s'] for x in f][:20]);assert all(x.get('fill_tx')!=x.get('trigger_tx') for x in f)"`
+> Posts are sparse (hours). A still-empty sink after a day is a FAILURE signal,
+> not a quiet success.
+>
+> **UNCHANGED:** band n=14 pooled +0.0414 e=0.885 (08-21T11:41Z; no tripwire);
+> cohort5 20 eligible / **4 locked DOES-NOT-QUALIFY** (`0xf705fa04` locked
+> 08-20T11:41Z: edge +0.0666 PASS, P 0.890 FAIL vs 0.95, OK-rate 0.81 PASS) /
+> 16 accruing; roster 31 (`15+8+6+1+1probe`); RTDS gap re-measured **3.41%**
+> (43 chain-only of 1,261 unique, 20.25h tx-join, both sets asserted non-empty).
+
 
 > ## 2026-07-30 (~16:45Z) — FULL AUDIT + "PROCEED WITH ALL": fee truth, cohort4 re-admission, RTDS A/B LIVE
 >
