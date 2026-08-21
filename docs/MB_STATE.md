@@ -10,13 +10,790 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-17 (local steward session, ~12:40 UTC — run-3 killed, run-4 merged fair-params batch launched after 3-round blind review; hft-cache + stale-gamma landmines found+mitigated) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-08-21 (bidsim AMENDMENT 1 deployed + scout sweep #1 CLOSED; read the 2026-08-21 block first) · *(prior: 2026-08-20 session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first)* · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
-## 0. IMMEDIATE RESUME (2026-07-14 local steward session — read this block first)
+## 0. IMMEDIATE RESUME (read this block first)
+
+> ## 2026-08-21 (~14:49Z) — BIDSIM SELF-FILL DEFECT FIXED + SCOUT SWEEP #1 CLOSED
+> (operator: "delete duplicate, resolve sim now then get proper data")
+>
+> **1. SCOUT SWEEP #1 CLOSED — zero admissions.** Finished rc=0
+> **2026-08-21T09:23:40Z**, 9/9 verdicts: **8 REJECT + 1 INSUFFICIENT-EVIDENCE,
+> 0 ADMIT.** All 8 rejects on the same mechanical gate (UNCOPYABLE; true chain
+> rates 4,399 / 7,065 / 8,704 / 11,483 / 11,883 / 17,045 / 22,299 / 26,180
+> fills/day vs a 1,000 cut). `0xa16a1302` hit the receipt budget (30,000 of
+> 80,549 V2 txs attempted, 0 fetch failures) — a wall, not a finding. The
+> tripwire "scout completions -> admission proposals" fired with an EMPTY
+> proposal. Selection filter (notional >=$250k + >=100 mkts + >=500 trades over
+> 6h) returned nine machines — that is a finding about the FILTER, and the
+> scout-cadence decision remains OPEN with the operator. Verdicts backed up at
+> `deep_dive_scout.bak-sweep1-20260821` (md5 of `_summary_scout.json`
+> `08645d645a963a2ec9c0c098a8241011`, verified identical to live).
+>
+> **2. DUPLICATE SCOUT RUN KILLED (operator go).** The 08-20T16:41Z relaunch
+> sat in `scout_queue2.sh`'s `pgrep` wait-gate (so it never corrupted output —
+> the guard worked), then woke 8 min after the first run finished and spent
+> ~5.3h re-diving the same 6 already-graded addresses. Killed by exact PID
+> (3186231/3186232/3293330 — no `pkill`, per the self-match landmine). Verdicts
+> verified intact after the kill.
+>
+> **3. BIDSIM AMENDMENT 1 — the 93.8% fill rate was an artifact (a1996b9).**
+> At 35 posts / 30 fills / 2 expires the headline read 30/32 = **93.8%**, but
+> **21 of 30 fills landed within 5s, median wait 0.6s**, print price exactly ==
+> bid in 23/30, and all 5 chain-sourced posts filled in <=0.6s. Only 6 of 30
+> waited >60s. ROOT CAUSE (code-verified): `on_print` filled any open bid from
+> any print at/below the bid with no knowledge of WHICH TRADE the print
+> belonged to — a whale order matched against several makers arrives as several
+> tape rows, row 1 registered the bid and rows 2..N of the SAME TX filled it.
+> The pre-existing ordering guard covered only the literal trigger row.
+> **This is NOT the registered queue-optimism bias** — that is "we might sit
+> behind others at our level"; this was counting the very order we reacted to
+> as our counterparty.
+> FIX: `register()` records `trigger_tx`; `on_print()` refuses to fill from
+> that tx. Queue optimism deliberately RETAINED (still brackets the 07-19
+> 47.6% snapshot floor from above). Fills now carry `fill_tx`/`fill_trader`/
+> `fill_side`.
+> **NOT changed, and OPEN:** a resting BID is economically fillable only by
+> SELL aggression and the rule still ignores side. Measured on the 07-30
+> firehose capture (400,000 rows): BUY 346,225 / SELL 53,775; both sides
+> present in only 30,839 of 241,869 (token,ts,price) groups — a sell-only rule
+> would swap a known bias for an unquantified feed-asymmetry bias. Instrumented
+> instead of guessed. **OPERATOR DECISION OPEN.**
+> VERIFICATION: 92 pytest green; `trigger_tx` carried through
+> `bidsim_rehydrate` (a restart cannot resurrect the self-fill); anti-no-op
+> SOURCE test asserts all 3 call sites thread the tx, **mutation-tested**
+> (dropping `print_tx` fails the suite; restored passes) — this lane's worst
+> failure mode is a fix the reporting path never adopts.
+> **EPOCH RESET: 2026-08-21T14:48:56Z.** Old sample PARKED at
+> `mirror3_bidsim.jsonl.pre-amend1-20260821` (67 lines = 35+30+2), NOT poolable
+> and never to be quoted as a fill rate. New sink started empty; deploy
+> confirmed `[bidsim] ENABLED ... rehydrated_open=0`. **The ~100-resolved
+> tripwire RESTARTS FROM ZERO.** Backup `copy_watcher.py.pre-amend1-20260821`.
+>
+> **4. AMENDMENT 1b (~15:59Z) — THE FIRST FIX WAS 75% INERT; CAUGHT ON LIVE
+> DATA (456578c).** The RTDS register site read `trigger_tx=sig.get("tx")`, but
+> **`rtds_sig()` does not carry tx** (`copy_watcher.py:771-786`) — only the
+> chain path builds `sig["tx"]` (`:620`). So the guard was inert for every
+> RTDS-sourced post — **15 of 20 posts (75%) in the parked sample**. Found by
+> asserting on the first live epoch-1 posts: 2 of 3 carried `trigger_tx`, the
+> RTDS one was None. Now reads `row.get("tx")` (rows always carry it —
+> measured **0 missing in 20,000** rtds roster records). **The anti-no-op test
+> asserted only the call-site SPELLING and so let this through**; it now pins
+> both sources AND asserts the premise (`rtds_sig` has no tx) so it cannot
+> silently invert. Mutation-tested both ways.
+> **EPOCH RESET AGAIN: 2026-08-21T15:59:14Z** (1 of the 3 epoch-1 posts was
+> collected under the inert guard). Epoch-1 parked at
+> `mirror3_bidsim.jsonl.pre-amend1b-20260821`. LESSON for §7: a source-text
+> assertion proves a call site's SPELLING, never that the value it names is
+> populated on that path — assert the premise too.
+>
+> **5. SCOREBOARD SHIPPED (the one allowed build, 456578c).**
+> `scripts/mb_scoreboard.py` appends band + bidsim + cohort5 + scout to the
+> 11:40Z cron block. Every section reads its own authoritative artifact and
+> fails LOUD (explicit `UNAVAILABLE` + a missing-count line, never silence);
+> carries a standing **self-fill regression alarm** (`fill_tx == trigger_tx`
+> must stay 0). Self-tested on fixtures (healthy / all-4-missing / regression)
+> and run end-to-end as the cron user (rc=0). ALSO:
+> `deploy/label_and_fee_refresh_cron.sh` had **no repo copy** — it existed only
+> on the VPS inside a checkout that hard-resets to this branch daily. Now
+> committed (ASCII-sanitized) and the checkout synced to `456578c`.
+>
+> **STILL PENDING (next session MUST verify — not yet observable):** the first
+> post+fill pairs on the new sink. Confirm no sub-second self-fills survive, that EVERY post (chain AND rtds) carries a non-null trigger_tx, and
+> that `fill_tx != trigger_tx` on every fill:
+> `python3 -c "import json;r=[json.loads(l) for l in open('/opt/pa2-shared/mirror3_bidsim.jsonl') if l.strip()];f=[x for x in r if x['type']=='fill'];print(len(f),[x['wait_s'] for x in f][:20]);assert all(x.get('fill_tx')!=x.get('trigger_tx') for x in f)"`
+> Posts are sparse (hours). A still-empty sink after a day is a FAILURE signal,
+> not a quiet success.
+>
+> **UNCHANGED:** band n=14 pooled +0.0414 e=0.885 (08-21T11:41Z; no tripwire);
+> cohort5 20 eligible / **4 locked DOES-NOT-QUALIFY** (`0xf705fa04` locked
+> 08-20T11:41Z: edge +0.0666 PASS, P 0.890 FAIL vs 0.95, OK-rate 0.81 PASS) /
+> 16 accruing; roster 31 (`15+8+6+1+1probe`); RTDS gap re-measured **3.41%**
+> (43 chain-only of 1,261 unique, 20.25h tx-join, both sets asserted non-empty).
+
+
+> ## 2026-07-30 (~16:45Z) — FULL AUDIT + "PROCEED WITH ALL": fee truth, cohort4 re-admission, RTDS A/B LIVE
+>
+> **Operator directive:** full state audit + path-to-profit; then "proceed with
+> all" on (1) benched re-admission, (2) fee + copyability measurements,
+> (3) RTDS latency build. All three EXECUTED this session.
+>
+> **RE-REVIEW COMPLETE (the 07-22 key deliverable): 20/20, FLIPPED: 0** —
+> roster-complete via strict `rereview_diff.py` (rc=0). Chain edges survive
+> complete labels: +0.0101 → +0.0749 per trader. No roster removals.
+>
+> **FEE TRUTH (kills the phantom-fee hypothesis):** CLOB per-market
+> `taker_base_fee`: **145/148 resolvable shadow markets = 1000, 3 = 0**;
+> weighted by our OK first-buy fills: 181 fee-bearing / 6 zero-fee / 877
+> unmappable-via-cache (fee-known subset only — disclosed). Live RTDS fee
+> field: fee/(price×size) p50 ≈ **0.028** (n=1,826, dominated by crypto
+> 5-min up/down + esports — cohort3's exact hunting ground). ⇒ the readout's
+> 2% haircut is roughly RIGHT; the measured near-zero copy edges STAND.
+> Money path = copyability selection + latency, not a fee correction.
+>
+> **COPYABILITY (the structural insight):** whale chain edge ≠ our copy edge.
+> Diagnostic arms (post-hoc, Bonferroni-flagged): `0x84dbb710` chain +0.0199
+> vs copy **−0.0432** (57 mkts); `0x4ad6cade` −0.0305; `0x216509be` −0.0364 —
+> vs `0xc660ae71` +0.0450, `0xee00ba33` +0.0826, `0xecb14ac6` +0.0428.
+> Snapshot artifact: `deep_dive/copyability_snapshot_20260730.txt`. NEXT: a
+> pre-registered copy-edge-selected cohort (criteria to be registered BEFORE
+> composition; chain deep-dive stays as the fraud/skill screen).
+>
+> **COHORT4 RE-ADMISSION EXECUTED (operator go):** benched `0x44886115` met
+> his pre-registered bar (fwd-since-bench **+0.1114, P=0.972, 60 resolved**
+> vs bar ≥+0.02 / ≥0.90 / ≥20; readout 07-30 12:30Z). Ledger: benched →
+> `cohort4`, epoch 2026-07-30T16:22:32Z, **`forward_only: true`**, benched
+> emptied w/ history entry, clean=30 unchanged (watcher restart not needed
+> for the ledger — detection set identical). Backup
+> `chain_audit.json.pre-cohort4-20260730`. **Dry-run caught the trap:**
+> without forward_only the "fresh" cohort pooled his pre-bench history (132
+> mkts +0.0026 vs true 60 / +0.1114) — `trust_after` is NOT a time filter.
+> New ledger-driven `forward_only` flag in `shadow_readout.py` applies the
+> real detect_ts cutoff; label prints `FWD-only since 07-30`; cohort1/2/3
+> byte-identical (verified same-instant). Epoch = re-admission time, NOT
+> bench time — the bar-meeting window was admission EVIDENCE; reusing it as
+> the verdict window would select and verify on the same data.
+>
+> **RTDS A/B LIVE (cd29962):** `rtds_watch()` beside the chain poll —
+> match-time detection w/ identity (measured RTDS delivery p50 0.82s/p90
+> 1.2s/no tail vs chain p50 1.30s/p90 11.6s). OWN sink
+> `mirror3_shadow_rtds.jsonl`, source=rtds, chain stream canonical +
+> untouched. Env `MIRROR3_RTDS_AB=1`. Deployed 16:31:55Z, connected
+> 16:32:53Z, heartbeat `rtds=AB`, 0 alarms, 56/56 pytest. ⚠ A/B must answer
+> BEFORE any swap: (a) coverage — RTDS may emit taker-side only (maker-side
+> roster fills chain-only?); (b) fill-parity on the same tx; (c) realized
+> tax/lag delta. Judge by tx join once roster hits accrue (~1 day).
+>
+> **12:30Z readout state (07-30):** cohort1(15,REDUCED) −0.0067 P=0.446 (92
+> mkts); cohort2(8) POWERED **+0.0129 P=0.616 NOT DEMONSTRATED** (76);
+> cohort3(6) POWERED +0.0028 P=0.527 NOT DEMONSTRATED (34); ALERT fired for
+> both (per-trader + LOO run + archived same day).
+>
+> **17:00Z ADDENDUM — 'proceed with all recs' EXECUTED (fd6e6dd, e177acf):**
+> (1) **STOPPING RULE LIVE** — verdict locks: one pre-registered test per
+> cohort, consumed at first power-bar crossing; locks BACKFILLED from the
+> durable log's own first crossings (cohort1 07-20 P=0.617; cohort2 07-23
+> +0.0210 P=0.648; cohort3 07-27 −0.0131 P=0.307 — all NOT DEMONSTRATED);
+> later readouts print LOCKED + diagnostic; POWERED re-alert storm gone.
+> Locks file: `deep_dive/verdict_locks.json` (immutable; corrupt = loud).
+> (2) **PER-MARKET FEE IN THE EQUATION** (operator: 'ding market by market')
+> — measured-exemption only: fee_map (508 tokens, 56 zero-fee exempt) built
+> from CLOB `taker_base_fee`; zero-fee tokens not dinged, others keep flat 2%
+> until a rate calibration (separate gate). Header discloses the mode every
+> run. Corrupt map = readout REFUSES (silent equation change is the failure
+> mode). (3) **CRON 11:40Z daily**: label supplement + fee-map refresh before
+> the 12:30Z readout (`label_and_fee_refresh_cron.sh`). (4) **COHORT5
+> PRE-REGISTRATION drafted** (`docs/COHORT5_PREREGISTRATION.md`): copy-edge
+> selection (chain screen + fwd copy edge ≥+0.02 on ≥30 + P≥0.95 single-look
+> + OK-rate ≥75% + ≤50% conc; qualification records start 07-30T17:00Z) —
+> **composition awaits operator sign-off of the criteria.**
+>
+> **~17:30Z ADDENDUM 2 — CANDIDATE HUNT RESUMED (operator 'proceed'):**
+> (1) **INSUFFICIENT re-grade IN FLIGHT** — `/tmp/insuff_regrade.sh` (pid on
+> VPS, log `/tmp/insuff_regrade_main.log`, out-dir
+> `deep_dive_insuff_regrade/`): the 10 most label-starved INSUFFICIENTs
+> (9 with >80% of evidence unlabelable + `0x70d94a` at 65.7%; roster
+> `/tmp/insuff_regrade_roster.txt`; `0xfbfd14dd` has no API cache — dive
+> fetches). Gates mirror admit_rereview3: RPC-free → CLOB-supplement THEIR
+> cids (reuses `/tmp/clob_sup.py` via `/tmp/label_gap_cids.txt`) → coverage
+> verify → dive → strict roster-complete diff (`rereview_diff.py`, rc=4 on
+> any gap). ~2.2h/trader ⇒ ~22h. **Verdict changes are PROPOSALS ONLY.**
+> First launch died on a stale root-owned `/tmp/label_gap_cids.txt`
+> (PermissionError) — cleared and relaunched.
+> (2) **RTDS SCOUT RECORDER RUNNING** — `/tmp/rtds_scout.py`, 6h capture of
+> the FULL firehose (wallet/side/price/size/cid/ts) →
+> `rtds_scout/scout_20260730.jsonl`, then auto-ranks top non-roster wallets
+> by trades/notional/markets (roster excluded; 0 rows = FAILURE not empty
+> ranking). Output = future dive candidates, no roster impact.
+>
+> **~03:15Z 07-31 ADDENDUM 3 — 'proceed with all you can':**
+> (1) **SCOUT DIVE QUEUE LAUNCHED** (`/tmp/scout_queue.sh`, gated behind the
+> running re-grade): 9 candidates selected from the finished 6h scout
+> (983,755 trades / 26,123 wallets) by pre-stated filter notional ≥ $250k AND
+> markets ≥ 100 AND trades ≥ 500. EXCLUDED + disclosed: the 5-wallet
+> identical-fingerprint cluster (10 trades / $100,099 each — sybil pattern)
+> and single-market whales. No API caches for these wallets → dives run
+> chain-only reconstruction with `cache_status=missing` disclosed per
+> verdict; a targeted cache-build mode for `find_copyable_traders.py` is a
+> noted enhancement. Verdicts = PROPOSALS. Out-dir `deep_dive_scout/`.
+> (2) **A/B INTERIM (n=717 joined fills, ~10h)**: coverage — RTDS saw
+> **717/804 chain fills (89.2%), chain-only=87, rtds-only=0** (strict
+> subset, no phantoms). **[SUPERSEDED 2026-08-01 — see CORRECTION below;
+> the maker-side blind-spot reading was WRONG]**. Latency —
+> rtds−chain detect p50 **−0.56s** (min −10.9s, max +3.76s). Parity —
+> verdict 712/717, fill 702/717. ⇒ interim read: a pure SWAP would lose
+> ~11% of fills; the candidate architecture is HYBRID first-seen (RTDS for
+> speed + chain for completeness) — decision with the full-data report.
+> (3) Re-grade 8/10 done at 02:45Z; diff auto-runs at completion.
+>
+> ## 2026-08-01 00:30Z — CORRECTION + 4 VERIFIED FINDINGS (workflow, 8 agents,
+> every finding independently refutation-tested; all 4 survived)
+>
+> **⛔ CORRECTION — I WAS WRONG ON THE RECORD.** The 07-31 addendum called the
+> RTDS coverage gap STRUCTURAL ("RTDS emits taker-side only; the maker-side
+> blind spot is REAL"). **That reading is REFUTED.** The gap is our own
+> consumer's DOWNTIME:
+> * **360/364 (98.90%)** of chain-only roster fills fall INSIDE a measured
+>   RTDS outage window (either clock, ±5s). True unexplained residue = **4
+>   fills = 0.13%** of 3,075 in-window chain fills.
+> * When RTDS is provably connected: **maker-side capture 98.39%**
+>   (2,440/2,480) vs taker-side 99.62% (259/260) — a **1.2pp** spread. Maker
+>   fills are NOT invisible. Captured population is **90.4% maker**, mirroring
+>   the chain population (90.9%) — the opposite of a taker-only feed.
+> * Controls that make it decisive: **base-rate** (captured fills landing
+>   inside outages 0.48% vs a 9.21% outage base rate = 19x depletion);
+>   **placebo** (time-shifting the outage windows drops the hit rate from
+>   88.7% to 3.6–15.7%); **regime capture** 3.88% inside vs **98.50%** outside.
+> * Window 2026-07-30T16:32:53Z → 2026-08-01T00:11:33Z (31.64h); outage total
+>   10,500s = **9.21%**; observed miss **11.84%** (364/3,075).
+> ⇒ **The hybrid-vs-swap question is REOPENED and must be re-measured AFTER
+> the keepalive fix.** No architecture decision on the old premise.
+> (Earlier 804/717 counts were an ~10.5h snapshot of live-appending sinks;
+> the 31.6h re-measure supersedes them. The MISS RATE agrees, 10.8% vs 11.8%.)
+>
+> **ROOT CAUSE OF THE OUTAGES — a defect in OUR consumer, fix identified.**
+> `rtds_watch` never sends the application-level `"PING"` text frame this
+> venue requires. **This repo's own reference consumer already documents it:**
+> `base_engine/data/rtds_websocket.py:22` `_PING_INTERVAL = 5  # RTDS requires
+> keep-alive pings`, `:75-76` `ping_interval=None  # we handle pings manually
+> (RTDS protocol)`, `:115` `await self.ws.send("PING")`, `:170` PONG handling.
+> `copy_watcher.py:753-755` does the OPPOSITE (`ping_interval=20`, protocol-
+> level only; the ONLY `ws.send` in the loop is the one-time subscribe).
+> Signature: **83 silent alarms vs 2 ConnectionClosedError in 13.92h** —
+> transport alive, data dead (protocol pongs don't wake `ws.recv()`).
+> **The "slow consumer blocks the socket" hypothesis is REFUTED**: detect_lag
+> p50 0.9s / max 5.7s / **0 of 2,191 over 15s**; busy connections live **8.6x
+> LONGER** (med 729s with ≥5 records vs 85s with 0); **17/83** alarm-killed
+> connections logged ZERO records (no inline HTTP ran at all).
+>
+> **ADMISSION FLIP EXPLAINED — and it has a serious objection.**
+> `0xfbfd14dd` INSUFFICIENT→ADMIT. The "edge fell while verdict improved"
+> paradox is FALSE: the original +0.0160 was the mean of **ONE** market
+> (`n_labeled=1`) — never a measurement. The single gate that changed is
+> `skill_gradeable` (chain_deep_dive.py:482 soft branch); n_labeled 1 → 1090.
+> Every hard gate already passed before. Now mkts=1090, **P=0.96, edge
+> +0.0103**. **BUT: `maker_frac = 0.886`** — the edge is earned at MAKER
+> prices by an 88.6%-maker account, and we copy as a TAKER crossing the
+> spread. Also `incomplete_cache_sweep=TRUE` (both runs), the "100%" backing
+> is 99.789%, the copier-forensic leg never ran, and the hidden-activity check
+> was DISABLED (`hidden=null` ≠ zero hidden). Edge +0.0103 is also below our
+> +0.02 copy floor. NOT-MEASURED (flagged): maker fraction among the 1,090
+> GRADED first-buys — if that subset is taker-heavy the objection weakens.
+>
+> **SCOUT RELAUNCH — root cause found + a material correction.** Failure was
+> cwd: launched from `/home/ubuntu` (0750 ubuntu:ubuntu; polymarket in no
+> shared group) so pydantic's relative `env_file=".env"`
+> (`config/settings.py:1604`) hit EACCES. Verified: same import from
+> cwd=`/opt/polymarket-ai-v2` → IMPORT_OK. **CORRECTION to the 07-31 entry:**
+> the 9 candidates DO have API caches — but STALE (2026-07-10) and TRUNCATED
+> (500 rows, `status="hft"`). The dive would silently reuse them
+> (`chain_deep_dive.py:1283-1291` cache-hit short-circuit), producing verdicts
+> with the SAME `incomplete_cache_sweep=TRUE` weakness as `0xfbfd14dd`.
+> A cache refresh before diving is the difference between a real verdict and
+> a repeat of that weakness.
+>
+> **⚠ VPS REBOOTED 2026-08-01 00:08:51Z — `/tmp` WAS WIPED.** All 5 services
+> back active; every persistent artifact survived (`deep_dive_insuff_regrade`
+> 10/10, `verdict_locks.json`, both sinks, ledger). Lost: the ad-hoc `/tmp`
+> orchestration scripts + rosters (`insuff_regrade.sh`, `scout_queue.sh`,
+> `scout_dive_roster.txt`, and the prior session's `clob_sup.py`). **Lesson:
+> orchestration scripts belong in the repo, not `/tmp`** (the §7 landmine
+> "all copy-trader data is in /tmp — one reboot erases it" just came true for
+> the scripts).
+>
+> ## 2026-08-19 — TWO RESULTS THAT REFRAME THE LANE (sequential-design analysis
+> + a verified gate defect). Nothing changed on the box; findings only.
+>
+> **⛔ DEFECT FOUND — WE SHADOW-BUY AT $1.00.** Verified by direct count over
+> the whole sink (`/tmp/_fillchk.py`, 2026-08-19): of **3,257 OK first-buys**,
+> **281 (8.6%) have `shadow_fill` >= 0.999** and **365 (11.2%) >= 0.99**.
+> A fill at 1.000 has ZERO upside and ~full downside: edge = -fee
+> deterministically. Concentration: `0x4ad6cade` **190/199 = 95.5%** of his OK
+> first-buys are >=0.99 (**178 at exactly 1.000**, whale_price p50 0.9990) —
+> and he is **51% of cohort2's first-buys** (readout 2026-08-18T12:30Z), so
+> this defect has been dragging that cohort's number. Also `0x0e5bd767` 62.5%
+> (5/8), `0x7c3db723` 15.5% (53/343), `0xf705fa04` 13.4% (36/269),
+> `0xecb14ac6` 11.8%, `0xab197165` 10.7%.
+> **ROOT CAUSE — a hole in our own gates, not a market fact.** `evaluate_gates`
+> checks spread <= max_spread and chase (ask - whale_price) <= max_chase; at
+> whale 0.999 / ask 1.000 the chase is 0.001 so the gate says OK. **There is no
+> maximum-fill-price gate.** PROPOSED (operator gate, NOT applied): add a max
+> fill price; re-measure after. Locked verdicts stay locked — a fix applies
+> FORWARD only, under a fresh pre-registration.
+>
+> **⛔ THE +0.02 FLOOR IS DECORATIVE — IT NEVER BINDS.** Sequential-design
+> analysis (agent, 2026-08-19; ESTABLISHED where computed on real data):
+> **P>=0.95 at n=30 requires edge >= +0.127** (6.4x the stated +0.02 floor);
+> +0.105 at n=44; +0.024 at n=855. Whenever the P bar fires at n=30 the edge
+> bar is automatically satisfied — measured: the P-only and full-bar
+> false-positive rates are IDENTICAL (5.40%). **Power of the one-shot test at
+> realistic edges is 7-8%** against a 5.4% FPR. The seven consumed tests could
+> not have passed.
+>
+> **THE ONE-SHOT RULE WAS CORRECTLY BUILT AND COST NOTHING.** Measured FPR on
+> nulls built from our own per-market edge pool (N=3,467 market-instances,
+> sd 0.4219; 4,000 simulated subjects): **one-shot at n=30 = 5.40%**
+> (correctly calibrated); **naive daily retest = 17.78% at 13 looks, 22.28%
+> checked every market** (3.2-4.6x inflation — this is the number that
+> justifies the design). And it cost zero: across ~134 powered looks in the
+> durable log, **0 of 7 subjects ever reached P>=0.95 at any point**, and 0 do
+> now. ⚠ The hazard is real though: cohort2 re-ordered by detect-time instead
+> of resolution-time touches **P=0.962 at n=48** — a look-schedule change flips
+> "never significant" into "significant once".
+>
+> **WHAT PROOF COSTS (fixed-n, 80% power; INFERRED, and a LOWER BOUND — the
+> iid assumption is violated by same-event correlation):** +0.05 -> 440 mkts;
+> +0.02 -> 2,751; +0.01 -> 11,005; +0.005 -> 44,020. At measured accrual
+> (cohort1 6.7/d, cohort3 15.0/d, cohort4 46.4/d, single trader ~7/d):
+> +0.02 = **59 days at cohort4's rate, 1.1 years at cohort1's**; +0.01 =
+> 237 days to 4.5 years; +0.005 = 2.6 to 18 years.
+>
+> **ANYTIME-VALID DESIGN: valid, but it fixes the wrong problem alone.**
+> Betting e-process (mixture over lambda) measured FPR **1.55%** (and 3.48-4.73%
+> checked after every one of 20,000 markets) — error controlled under
+> continuous monitoring, as theory guarantees. Cost: **~1.8-1.9x** the fixed-n
+> sample for equal power. **Backtested on all 7 consumed tests under both
+> chronologies: NO subject rejects** (peak e-value 6.44 vs threshold 20). The
+> binding constraint is n, not the stopping rule.
+>
+> **ONE LIVE CANDIDATE:** `0x7c3db723` — edge **+0.0481** with **sd 0.294**
+> (vs 0.4219 pooled — unusually low variance is why he is tractable); needs
+> ~231 markets fixed-n / ~411 under the mixture e-process; **has 100**,
+> accrues ~7/day => **~6 weeks**. His single look is consumed and cannot be
+> re-opened; continuing him requires a FRESH forward pre-registration
+> (operator gate). NOTE: 15.5% of his OK first-buys are >=0.99 fills, so the
+> $1.00 defect touches his number too.
+>
+> **PROPOSED PRE-REGISTRATION (drafted, NOT adopted — operator gate):**
+> statistic = per-market mean edge (canonical unit); procedure = uniform
+> mixture betting e-process over lambda in {0.05,0.1,0.2,0.4,0.6,0.8};
+> **null H0: edge <= 0** (the +0.02 floor becomes an ECONOMIC gate applied
+> AFTER significance — folding it into the null roughly doubles n again);
+> alpha 0.05, reject at e-value >= 20; check every readout; pre-registered
+> futility N_fut per subject; **forward-only from a new epoch** (retro-fitting
+> inherits the selection it exists to prevent). Locks stay locked.
+>
+> ⚠ CAVEATS ON RECORD: all n* are LOWER BOUNDS (iid violated). Chronology is
+> imperfect — gamma `resolved_at` is a nominal end date, precedes the shadow
+> fill in 180/184 cases for one trader, and 38 market-instances carry dates
+> through 2027-06-30; both orderings were tested and only cohort2's
+> counterfactual moves. Reconstructions use TODAY's labels while the durable
+> log used the labels of the day — where they differ the durable log is the
+> record (it reproduces all 4 locks exactly). No changepoint analysis was run,
+> and an anytime-valid test of a constant mean is invalid under a changepoint.
+>
+> **STILL RUNNING (not yet reported):** the 4-part edge-proof workflow —
+> power/variance, winner's-curse split-half persistence, best-estimator
+> (pooled / random-effects / price-band stratification), and alternative
+> estimands (conviction, latency, chase, taker-vs-maker).
+>
+> **2026-08-19 ~14:35Z — BOTH DEFECT FIXES DEPLOYED (632ad5b, operator
+> 'proceed'):** (1) `PRICE_NO_UPSIDE` gate — optional `max_fill` in
+> `evaluate_gates` (default None = byte-identical legacy, test-proven);
+> `WatcherConfig.max_fill=0.98` (`MIRROR3_MAX_FILL_C`), the zero-upside bound
+> at the flat 2% fee; both watchers pass it. FORWARD-ONLY — history + locks
+> untouched. (2) RTDS app-level keepalive — `ping_interval=None` + PING task
+> every 5s + PONG skipped as non-data, mirroring `rtds_websocket.py`; PLUS a
+> DATA-SILENT alarm (adversarial self-review: PONGs wake recv() and would
+> have masked the 60s alarm — data-liveness is now tracked separately, so the
+> alarm keeps its meaning). 60/60 pytest incl. 4 new. Fenced restart 14:31:45Z,
+> RTDS connected 14:33:11Z, **0 silent alarms since restart** (prior rate
+> ~1/10min; a clean multi-hour window is the proof — VERIFY at next check-in:
+> `journalctl -u polymarket-mirror3 | grep -c "SILENT ALARM"` should stay ~0
+> and the A/B miss rate should collapse toward the 0.13% residue).
+> Backup `copy_watcher.py.pre-maxfill-20260819`. The 4-part edge-proof
+> workflow was resumed (`wf_8a4651be-90a`, cached prefix replays).
+>
+> ## 2026-08-19 (~15:00Z) — EDGE-PROOF STUDY COMPLETE (4 analyses, each
+> adversarially re-verified; 3 of 4 headlines TRIMMED by their refuters —
+> the trimmed versions below are the citable ones)
+>
+> **1. POWER (ESTABLISHED, survived refutation twice — durable-log lines
+> reproduced to the digit):** pooled canonical set = 1,690 resolved markets /
+> 1,839 OK first-buys / SD of per-market edge 0.4105. Pooled NET edge
+> **+0.00645, P=0.754**. Proof at that edge needs **~27,500 markets ≈ 384
+> days** at the measured 71.6 mkts/day (324–639 across rate range). The 7
+> consumed tests ran at **8–10% power** (~1/60 of the sample the +0.02 floor
+> needs; P≥0.95 at n=30–50 demanded a +0.10 to +0.13 point estimate).
+> **STRUCTURAL: the full bar (edge≥+0.02 AND P≥0.95) can NEVER pass for a
+> true edge ≤ ~+0.022** — at true edge exactly +0.02 the joint power CAPS at
+> ~0.49 for ANY n (the floor arm fails half the time forever). Inversion:
+> 90 days proves ≥+0.0133 (P-arm) but the FULL bar asymptotes at ~+0.022.
+> ⇒ the bar itself needs an operator redesign decision; no calendar time
+> fixes it in the region we are likely in.
+>
+> **2. GROSS-VS-NET DECOMPOSITION (ESTABLISHED, reproduced to 1e-6):**
+> pooled GROSS edge **+0.0160 (P=0.942)**; the flat-2% fee term is
+> **0.0096 = 59.8% of gross**. The fee model is now the single biggest
+> number in the ledger ⇒ the per-market fee-RATE calibration (proposed
+> 07-30, gated) is RAISED to decision-critical. Also reproduced:
+> fills ≥0.90 are NET **−0.0233 (P=0.000)** — independent confirmation the
+> just-deployed PRICE_NO_UPSIDE gate cuts a genuinely negative stratum.
+>
+> **3. WINNER'S-CURSE (headline REFUTED as overreach; trimmed claim
+> stands):** per-trader split-half persistence r ≈ −0.004 (k=10);
+> between-trader dispersion at/below the pure-noise 1/sqrt(n) prediction;
+> random-effects tau ≈ 0. CITABLE FORM: **no detectable per-trader signal at
+> current n** — NOT "nothing to select on" (the refuter showed one decisive
+> number was an arm-count artifact and the design lacks power to prove
+> absence). Per-trader selection stays unproven in BOTH directions.
+>
+> **4. PRICE-BAND 0.65–0.85 (numbers exact, framing REFUTED):** edge
+> **+0.0853, P=0.9935, 140 markets** — reproduces to the digit and survives
+> LOO/jackknife/split-half. BUT it was found by searching many strata
+> (46 bucket tests; Poisson check: P(≥4 hits | null) = 0.201), the "only cut
+> that clears both bars" claim is factually false, and this framing has the
+> highest search-induced false-positive rate in the dataset. STATUS:
+> **HYPOTHESIS for a fresh forward pre-registration, never a result.** At a
+> true band edge near the observed, a forward test would need roughly
+> 160–450 markets (band accrual ~4/day ⇒ ~6 weeks to 4 months).
+>
+> **DECISIONS THIS PUTS TO THE OPERATOR (report + ask, nothing changed):**
+> (a) the pre-registered bar is structurally unclearable below ~+0.022 —
+> redesign? (drafted option: anytime-valid e-process vs H0 edge≤0, econ
+> floor as a post-significance gate — see 08-19 earlier block);
+> (b) adopt the fill-band 0.65–0.85 forward pre-registration as the next
+> registered test?
+> (c) fee-rate calibration now decision-critical — authorize?
+> All three sit alongside the still-open items below.
+>
+> **2026-08-19 ~15:50Z — VENUE FEE FORMULA LIVE (6f8a36c) + RE-PRICING.**
+> Official formula fee = C·rate·p·(1−p), per-category rates (crypto .07,
+> sports/econ/culture/weather/other .05, finance/politics/mentions/tech .04,
+> geopolitics 0), VALIDATED pre-wiring vs 3,070 live charged fees (implied
+> rate p50 crypto 0.0700 exact, sports 0.0500 exact). Wired as
+> `fee_rate_map` (precedence rate→zero-exempt→flat; omitted = byte-identical
+> legacy), builder emits `fee_rate_map.json`, readout discloses
+> `fee=VENUE FORMULA`, clone refreshed — tomorrow's 12:30Z runs it.
+> **RE-PRICING (flat → venue, canonical pooled set 15:45Z):**
+> pooled 1,723 mkts **+0.00446/P=0.666 → +0.00518/P=0.685** — small NET gain,
+> not the big revaluation hoped: the flat model overcharged high-price fills
+> but UNDERCHARGED mid-price crypto. cohort2 **+0.0046→+0.0138**;
+> cohort4 (crypto-heavy, 47% of flow) **+0.0028→+0.0015** (down);
+> band 0.65–0.85 **+0.0812/P=0.993 → +0.0837/P=0.996** (strengthens);
+> fills ≥0.90 **−0.0227/P=0.001 → −0.0092/P=0.216** — NO LONGER
+> proven-negative under true fees. ⚠ FLAG (report+ask, gate UNCHANGED): the
+> PRICE_NO_UPSIDE 0.98 cap's two prior rationales (zero-upside at flat fee;
+> proven-negative stratum) both weaken under the venue formula — fills at
+> exactly 1.000 stay guaranteed-nonpositive, but 0.98–0.99 is now merely
+> terrible risk/reward, not deterministic loss. Operator decides: keep 0.98 /
+> move to 0.99 / other. **RULED 2026-08-19: KEEP AS IS (0.98).** 990/3,646 tokens rated at the conservative 0.07
+> unknown-category rate (pooled venue figure is thus slightly UNDERSTATED).
+>
+> ## 2026-08-20 SESSION CLOSE — READ THIS FIRST (supersedes blocks below for
+> orientation; they remain the ledger detail)
+>
+> **⛔ OPERATOR RULE IN FORCE: FORWARD DATA ONLY** (2026-08-20; memory
+> `feedback_forward_data_only.md`): in-sample/backtest numbers carry ZERO
+> decision weight — hypothesis-generation only, never evidence, never beside
+> a forward number. Decision thresholds recomputed from forward data at
+> decision time. Externally-verified calibrations (venue fee formula vs live
+> charged fees, CLOB labels, fill mechanics) remain usable as infrastructure.
+>
+> **THE FOUR FORWARD INSTRUMENTS (all live, all $0, verdicts arrive on the
+> market's schedule):**
+> 1. **Band 0.65–0.85 test** — `docs/BAND_PREREGISTRATION.md`, epoch
+>    2026-08-19T18:00Z, e-process reject at e>=20, futility 600; daily
+>    e-value in the 11:40Z cron block. Last read 2026-08-20T11:41Z: **n=11,
+>    pooled −0.0216, e=0.717** (early, meaningless n; the tripwire decides).
+> 2. **Shadow-bid simulator** — `docs/BIDSIM_DESIGN.md`, sink
+>    `mirror3_bidsim.jsonl`. First reads 08-20 16:40Z: **16 posts, 13/13
+>    resolved bids FILLED**, 3 open (queue-optimistic by design; brackets
+>    truth with the conservative proxy). At ~100 resolved bids → chase-vs-
+>    post proposal computed from FORWARD data on both arms.
+> 3. **cohort5 qualification** (20 chain-ADMITs, single-look locks; 3
+>    consumed DOES-NOT-QUALIFY) + **cohort4** FWD window — daily cron.
+> 4. **probe(1) fbfd watch** — observation-only, roster=31.
+> **Scout sweep #1:** 3/9 REJECT, 6 relaunched 08-20T16:41Z (pid on VPS,
+> `/tmp/scout_queue3_main.log`; script copies in `scripts/vps_jobs/`).
+>
+> **RTDS: FIXED-ENOUGH** — 15s silent-window correction measured **3.0%
+> coverage gap** (28/925 since 08-20T01:14Z) vs 11.8–13.8% before. Dual-
+> socket idea PARKED as overcompensation (operator-reviewed) unless flow
+> becomes binding. App-PING theory REFUTED on record — venue cycles
+> connections ~6/h regardless; the fix is fast detection, not prevention.
+>
+> **FINAL PLAN (operator-ratified after over-correction review):** let the
+> four instruments vote; finish scout sweep #1; ONE build allowed = unified
+> daily scoreboard block in the cron log; everything else parked. PULLED as
+> overcompensation (on review): weekly scout cadence (decide after sweep #1),
+> auto-promote funnel (manual until first yield), dual-socket, fill-price
+> logging (already built). **OPERATOR DECISIONS OPEN:** conditional funding
+> number ("if a test passes I fund $X"); scout cadence after sweep #1.
+> **TRIPWIRES:** band e>=20 or n=600; bidsim ~100 resolved; scout verdicts
+> → admission proposals. PRICE cap ruled KEEP AS IS (0.98).
+>
+> **NEXT SESSION: start from `MB_DEEP_DIVE_NEXT_PROMPT.md` (rewritten
+> 2026-08-20, self-contained).**
+
+> ## 2026-08-19 (~17:40Z) — ALL FOUR RECS EXECUTED + OVER-CORRECTION AUDIT
+> (operator: proceed with all; speed directive: verdict ASAP without losing
+> function; PRICE cap ruled KEEP AS IS)
+>
+> **BAND TEST ARMED (the clock-starter):** `docs/BAND_PREREGISTRATION.md` +
+> `scripts/band_tracker.py` — anytime-valid mixture e-process, H0 edge≤0,
+> reject e≥20, econ floor post-gate, futility 600, forward epoch
+> **2026-08-19T18:00Z**, venue fees, immutable lock, daily e-value in the
+> 11:40Z cron. First run verified (correctly `accruing`, 0 pre-epoch leakage).
+> TIMELINE HONESTY: work done in one day; the VERDICT is evidence-bound —
+> e-process can fire in days if the edge runs hot, expected 2–9 weeks at
+> measured band flow (~4/day), shortened by every flow boost below.
+>
+> **OVER-CORRECTION AUDIT (operator-ordered):** PRICE_NO_UPSIDE = NOT an
+> over-correction (92 blocks/~3h, all sampled = whale 0.999→ask 1.00).
+> Locks/forward_only/fee-formula = functioning. **KEEPALIVE THEORY REFUTED
+> by live A/B** — 18 plain SILENT alarms in 2.9h post-PING (~unchanged),
+> coverage 13.8% vs 11.8%; the venue cycles connections regardless (reference
+> recorder also ~4/h). CORRECTED: `RTDS_SILENT_ALARM_S` 60→15 (outage cost
+> ~61s→~16s each; expected downtime ~9–13% → ~2–3%), PING kept + task-death
+> now logs. Deployed 17:33:37Z; 0 alarms in first minutes (VERIFY over hours).
+>
+> **ROSTER 30→31:** `0xfbfd14dd` → OBSERVATION-ONLY probe (fresh epoch,
+> maker_frac 0.886 objection in ledger note; readout header now
+> `15+8+6+1+1probe`; backup `chain_audit.json.pre-probe-fbfd-20260819`).
+>
+> **SCOUT DIVES RELAUNCHED** (9 candidates, cwd fix, stale-cache disclosed;
+> `/tmp/scout_queue2.sh`, repo copy `scripts/vps_jobs/`). **MAKER-SIDE
+> EXECUTION STUDY launched** (background agent: fill-rate proxy, adverse
+> selection, taker-vs-maker net economics incl. the band).
+>
+> **2026-08-19 (~18:15Z) — MAKER-SIDE EXECUTION STUDY COMPLETE** (background
+> agent, read-only; scripts `/tmp/maker_study.py` + scratchpad copies; data
+> 60,011 records, 0 parse failures; fee rates known 217/1,459 comparison
+> records, rest assumed 0.07 = maker-flattering per design, 0.04 sensitivity
+> shown). Findings:
+> * **Fill-rate floor (INFERRED, conservative snapshot proxy): 47.6%**
+>   (1,090/2,290 covered OK first-buys; coverage 2,290/3,396 = 67.4%; median
+>   time-to-fill 136 min). Proxy UNDERSTATES (invisible between-snapshot
+>   taker hits; 4.2h median horizon right-censors).
+> * **Adverse selection real overall (−8.3pts filled-vs-not win rate) but
+>   ABSENT in the 0.65–0.85 band** (filled 55/66 = 83.3% vs unfilled 81.5%).
+>   Severe at extremes (≥0.85: cond edge −0.0455).
+> * **Band economics (n=131 labeled+covered):** taker **+0.0756** vs maker
+>   unconditional **+0.0515** (0.504 fill × +0.1022 cond). Paired gap
+>   **+0.0241 ± 0.0240 SE — statistically unresolved.** Maker break-even
+>   needs true fill ≥ ~74% vs the 49% proxy FLOOR; rebates uncounted
+>   (pro-maker).
+> * **Study verdict:** the snapshot proxy cannot resolve it; a live-style
+>   shadow-BID simulator (post at whale price, watch the real tape), BAND
+>   ONLY, is the instrument. Registered hypothesis for it: true band fill
+>   rate ≥74% ⇒ maker beats taker in 0.65–0.85. Outside the band maker-
+>   unconditional measured negative everywhere. **PROPOSED (new build,
+>   operator gate): band-only shadow-bid simulator.**
+> * Independent corroboration: the band's taker edge shows +0.0756 on this
+>   cut too (different denominator than the 143-mkt +0.0837; consistent).
+>
+> **2026-08-20 (~01:15Z) — SHADOW-BID SIMULATOR LIVE** (operator 'proceed';
+> design pre-registered in `docs/BIDSIM_DESIGN.md` BEFORE data). Band-only
+> [0.65,0.85) maker-execution measurement: shadow BID at whale price on
+> roster first-buys; FILL = any print <= bid (RTDS firehose, all traders) —
+> QUEUE-OPTIMISTIC by design, bracketing the snapshot proxy's 47.6% floor;
+> EXPIRE 24h; one bid per (trader,token); restart-safe rehydration; SHARED
+> registry (chain + rtds paths). Sink `mirror3_bidsim.jsonl`, env
+> `MIRROR3_BIDSIM=1`. Registered decision hypothesis: **true band fill rate
+> >= 74% => maker beats taker** (taker +0.0756 vs maker cond +0.1022, n=131).
+> 65/65 pytest; deployed + ENABLED 2026-08-20T01:14:19Z, 0 errors; backup
+> `copy_watcher.py.pre-bidsim-20260819`. Sink populates on the first in-band
+> whale buy (sparse — hours, not minutes).
+>
+> **⛔ RULE (operator, 2026-08-20): FORWARD DATA ONLY.** Old/in-sample data
+> carries ZERO decision weight. In-sample edges, P-values and rankings may
+> motivate a hypothesis or design an instrument — never appear as evidence,
+> never share a headline with forward numbers. All decision thresholds are
+> recomputed from FORWARD data at decision time (incl. the bidsim
+> chase-vs-post comparison: forward taker edge vs forward maker fill×edge,
+> not the in-sample break-even). Externally-verified calibrations (venue fee
+> formula vs live charged fees, CLOB labels, fill mechanics) remain usable as
+> infrastructure — stated interpretation, operator-correctable. The running
+> forward instruments (band tracker, bidsim, cohort4, cohort5) are already
+> compliant by construction. Memory: `feedback_forward_data_only.md`.
+>
+> **STILL OPEN (unchanged, not dropped):** stopping-rule fix (pre-committed
+> single evaluation point per cohort — FLAGGED URGENT, cohorts now crossing
+> power daily; operator go still needed); backfill poison-batch;
+> `end_date_iso` NULLs; 123h force-exit loop; docs-sync PR (pushed, needs
+> operator click: `claude/mb-docs-sync-20260723`); label residual 730/1062
+> tokens (re-run `shadow_label_supplement.py --write` after resolutions).
+
+> ## 2026-07-23 (~02:30Z) — THE DAILY READOUT WAS STILL FLATTERED. FIXED.
+>
+> **The 07-22 label fix never reached the thing that reports numbers.** The
+> CLOB supplement landed in the gamma cache; `scripts/shadow_readout.py` built
+> its token→outcome map from `markets` ONLY (deliberately, per its own 07-15
+> anti-stale-cache landmine) and never read that cache. So the 12:30Z readout —
+> the artifact that fires the ALERT and carries the pre-registered verdict —
+> kept printing the flattered edges. Two commits, both on branch head:
+> * `54540e0` — merge the supplement **UNDER** the DB (DB wins, supplement
+>   fills holes); every block now prints `labels: DB=n +supp=n, k/N shadow
+>   tokens still unlabelled`; a missing/unreadable/zero-label supplement makes
+>   the readout **REFUSE** (loud line in the durable log, ALERT untouched,
+>   rc=2) rather than silently revert to the flattered source.
+> * `28370a0` — `scripts/shadow_label_supplement.py`: the 07-22 supplement was
+>   keyed on the TRADERS' markets and covered **21 of 405 shadow tokens**. This
+>   labels the SHADOW set directly (unlabelled token → condition_id from
+>   `markets` → CLOB, derivation reused verbatim from `resolution_backfill`).
+>   Live: 262 targets, **262/262 reachable, 135 newly labelled**, 127 genuinely
+>   still open, **0 CONFLICT**; cache 213,623 → 213,758, backup
+>   `gamma_resolutions.json.pre-shadow-supplement-20260723`.
+>   Pre-write cross-check vs an INDEPENDENT source: 80 shadow markets the DB
+>   had already resolved, re-fetched from CLOB → **compared=80 AGREE=80
+>   DISAGREE=0** (non-emptiness asserted).
+>
+> **WHAT THE COMPLETE-LABEL READOUT SAYS** (dry-run 02:29Z, scratch
+> `--out`/`--alert`, durable log untouched; same instant, same records — arms
+> non-empty and identical, first-buys 107/118/130/45):
+>
+> | line | DB-only (old) | DB+supplement (now) |
+> |---|---|---|
+> | cohort1(15) REDUCED | 33 mkts +0.0607 P=0.854 | **42 mkts +0.0335 P=0.739** |
+> | cohort2(8) | 25 mkts +0.0331 P=0.707 | **39 mkts +0.0210 P=0.648** |
+> | cohort3(6) | 0 resolved | **7 mkts −0.0258 P=0.141** |
+> | benched(1) | 4 mkts −0.0176 | **19 mkts +0.0717 P=0.764** |
+>
+> cohort3 reproduces the prior session's independently-derived corrected figure
+> (**−0.0258 on 7**) to the digit, from a different code path — that is the
+> cross-check that the pipeline is now reading the true labels.
+>
+> **⚠ TWO THINGS THE OPERATOR MUST SEE:**
+> 1. **cohort2 is now POWERED and FAILS.** 39/30 resolved, edge +0.0210
+>    (barely over the +0.02 floor), **P=0.648 ≪ 0.95 ⇒ NOT DEMONSTRATED**,
+>    concentration `0xbaa2bcb5…39%`. The ALERT will fire on the next real
+>    12:30Z run and asks for the per-trader breakdown + LOO before any verdict.
+> 2. **The benched bum is drifting toward his re-admission bar** —
+>    forward-since-bench **+0.0717 on 19 resolved, P=0.764**. Bar is edge ≥
+>    +0.02 **AND P ≥ 0.90 on ≥ 20**: n is one short and P is well under. **No
+>    action, no proposal yet** — noting it so nobody is surprised.
+>
+> **Residual gap: 235 of 405 shadow tokens still unlabelled** — 127 markets
+> genuinely still open, the rest have no condition_id anywhere in `markets`
+> (97 tokens as measured 02:25Z) and need a token→market lookup to reach.
+> Re-run `shadow_label_supplement.py --write` after new resolutions land; the
+> readout needs no further change, it picks up whatever the cache gains.
+>
+> **ADMIT RE-REVIEW UNAFFECTED BY THAT CACHE WRITE** — `chain_deep_dive.py`
+> preloads the gamma cache ONCE per process (`:1259`) and the re-review is a
+> single long-lived invocation, so all 20 traders are graded on the same
+> 07-22 snapshot (keys=213,623). Internally uniform; verified alive after the
+> write (3 JSONs, pid 31257). `scripts/rereview_diff.py` (`16af40b`) is the
+> strict completion check: anything short of roster-complete is rc=4 naming
+> the uncompared addresses — "FLIPPED: 0" now only prints next to a
+> roster-complete compare. Interim (3/20): all ADMIT→ADMIT, edges
+> +0.0382→+0.0382, +0.0220→+0.0205, +0.0237→+0.0209.
+
+> ## 2026-07-22 SESSION CLOSE — READ THIS FIRST
+>
+> **HEADLINE: every edge number this lane has ever reported was FLATTERED.**
+> The `markets` resolution labels were incomplete, and the missing slice was
+> systematically NEGATIVE in every cohort. Corrected (CLOB-verified):
+> cohort1 **+0.0604 → +0.0315**; cohort2 **+0.0567 → +0.0399**; cohort3 was
+> reported "no resolved data" but actually had **7 markets at −0.0258**;
+> benched bum −0.5049 (n=2). Nothing moved toward passing; every P dropped.
+>
+> **ROOT CAUSE (shared infra, affects ALL bots):** `polymarket-ingestion`
+> crash-looping (334 restarts); its resolution queue hit the 300s statement
+> timeout every cycle, so the backfill wrote **nothing for 56h** against a
+> 38,696-market backlog. Fixed the query cost with a partial index
+> `idx_markets_unresolved_enddate` (matches the queue predicate + end_date
+> ordering; additive, CONCURRENTLY). Index alone was NOT enough — it needed
+> fresh stats; autoanalyze on `markets` 17:45Z supplied them and the queue
+> **succeeded 18:01Z, first time in 56h**.
+>
+> **LABEL FIX THAT ACTUALLY UNBLOCKED US — CLOB SUPPLEMENT.** The shared
+> backfill drains ~3 markets/30min (poison-batch: `end_date ASC` re-chews
+> permanently-unresolvable markets) ⇒ ~270 days, unusable. Instead supplemented
+> the gamma cache straight from CLOB (source proven: 196/196 verified, 0
+> unreachable, 0 mismatches): **+14,791 labels, gamma 198,832 → 213,623, ADMIT
+> label gap 32.0% → 1.9%** (residual = 610 genuinely-open + 330 CLOB-
+> unreachable, disclosed). Backup `gamma_resolutions.json.pre-clob-supplement`.
+>
+> **WHY THE TRADER VERDICTS ARE SUSPECT:** the deep-dive grades skill from
+> `DB + gamma cache` — the SAME degraded source. **26.5% of all ADMIT skill
+> evidence was unlabelable**, worst on three cohort-3 members graded on ~50%
+> of their evidence (`0x216509be` 53%, `0x7c3db723` 51%, `0xe542afd3` 50%).
+> That plausibly explains cohort-3's live edge landing NEGATIVE.
+> ⇒ **ADMIT RE-REVIEW of all 20 ADMITs RUNNING** (`/tmp/admit_rereview3.sh`,
+> out-dir `deep_dive_rereview/`, originals preserved for the before/after diff;
+> `<== FLIPPED` marks any verdict that fails complete labels). REJECTs are
+> rate-based ⇒ unaffected. 5 label-starved INSUFFICIENTs may have been wrongly
+> shelved.
+>
+> **EXECUTED THIS SESSION:** run-4 CLEAN-FINISH (28/28, 6 ADMIT/9 REJECT/13
+> INSUFFICIENT) → cohort-3 promotion + bum time-out in ONE fenced restart
+> (roster 25→30, verified `roster=30`, 0 alarms) → fill-cache proof gates (i)
+> and (ii) BOTH PASS → cohort-1 active-trader vetting (7): **6 ADMIT / 1
+> INSUFFICIENT**, and the INSUFFICIENT is the benched bum (edge +0.0031,
+> P=0.678 on his CLEANEST sample) — **his time-out is independently vindicated
+> by three lines of evidence**. NOTE those 6 ADMITs were ALSO graded on
+> incomplete labels ⇒ they are in the re-review (roster grew 14 → 20).
+>
+> **CROSS-BOT (WB relay):** master release `20260721_232241` (41 commits, a
+> month) went live on `polymarket-mirror` 03:27Z. **Verified on MB's own
+> terms:** scanning (`elites=300 open_positions=9`, ~2.8s cycles), gates
+> blocking, exits + zombie reap working, exposure reconciling, state restored,
+> **paper mode confirmed** (`simulation_mode=True`, canary 0). Calibrator
+> healthy post-c12: `fitted on 5000 resolved predictions`, fts fitted, 267
+> `mirror_calibrated` emissions adjusting BOTH directions. All error signatures
+> PRE-EXISTING and mostly improved per-hour (adverse slippage 29→4.5/h).
+> **KEEP THE RELEASE — no rollback.** One pre-existing anomaly: a 123h position
+> stuck in a force-exit retry loop, blocked by the 10% adverse-slippage guard
+> (correct protection, but it loops).
+>
+> **STILL OPEN / NOT FIXED (flagged, need operator go — shared infra):**
+> (a) backfill poison-batch ordering (~3/cycle ⇒ backlog never drains);
+> (b) `end_date_iso` NULL on **56%** of markets ⇒ starved by NULLS-LAST AND
+> invisible to the health check, so the true backlog exceeds the reported
+> 38,696; (c) the stuck force-exit loop; (d) master docs-sync PR for MB_STATE.
+
+> **2026-07-21 20:07Z — BATCH-BOUNDARY LEDGER MUTATION EXECUTED (operator-
+> authorized "fold into and proceed" + "proceed"). ROSTER DELTA (protocol-
+> logged):** run-4 finished CLEAN 07-20 23:52Z ([28/28], 6 ADMIT / 9 REJECT /
+> 13 INSUFFICIENT; final ADMIT set ≡ the queued 6, JSON-verified). ONE ledger
+> edit + readout-clone refresh (`21ad7ba`) + ONE fenced watcher restart:
+> **(a) COHORT-3 PROMOTED** — 6 ADMITs (0xf705fa04 graduates from probe,
+> 0x7c3db723, 0xe542afd3, 0x216509be, 0x2ee04b8b, 0xa6a856a8), own epoch
+> 2026-07-21T20:05:30Z, probe emptied; **(b) BUM BENCHED** — 0x44886115 moved
+> cohort1_original→`benched` (from_cohort=cohort1, TIME-OUT; reason: chain-
+> verified drag edge −0.1051 P=0.107 on 22 resolved, 46% conc; re-admit bar
+> pre-registered: forward-since-bench edge≥+0.02 AND P≥0.90 on ≥20 resolved,
+> operator go). clean=30 == c1(15)+c2(8)+c3(6)+benched(1); backup
+> `chain_audit.json.pre-cohort3-20260721`. Verified: `roster=30` in watcher
+> log, 0 alarms, VPS load_cohorts OK. cohort1 now prints REDUCED/NO-VERDICT
+> (its pre-registered verdict stays the LOCKED pre-bench line: POWERED at
+> 12:30Z 07-20, NOT DEMONSTRATED). **Fill-cache PROOF GATE (i): PASS**
+> (bounded A/B, 3 addrs, fill-multisets IDENTICAL, pinned [90439826,
+> 90639826]). **Gate (ii) RUNNING** (amended, disclosed: flag-off vs flag-on
+> FRESH dives of 0x7744bfd7 — inactive 32d → head-drift-immune; the
+> pre-registered compare-vs-07-17-JSON is impossible after 4d label drift);
+> verdict marker `/tmp/proof_gate_ii_VERDICT.txt`. **NEXT AUTO-STEP:** on gate
+> verdict → launch `/tmp/launch_c1vet.sh` (cohort-1 7-active vetting,
+> gate-conditional cache flag; expected ~2A/2R/3I at run-4 base rates). Then
+> deepen wave (freeze set: 13 run-4 INSUFFICIENTs ⊇ the 9 confounded) →
+> 0x70d94a solo. Watch next 12:30Z: header must read 15+8+6+1benched.
+
+> **➡ NEXT SESSION: start from `MB_DEEP_DIVE_NEXT_PROMPT.md` (fresh, self-
+> contained, 2026-07-19) — it has the current state, armed queues, procedures,
+> and this session's landmines. The dated blocks below (9–14 newest first) are
+> the ledger detail; the blocks before them are prior-session history, kept for
+> provenance. Do NOT re-derive from the old blocks — the prompt + blocks 9–14
+> are current.**
+>
+> **2026-07-19 SESSION CLOSE (one-paragraph state):** run-4 (fair-params
+> re-adjudication, code `27ee79b`) at **19/28, alive (pid 3269649)**; promotion
+> queue = **6 chain-verified ADMITs** (`0xf705fa` graduates from probe +
+> `0x7c3db723`/`0xe542afd3`/`0x216509be`/`0x2ee04b8b`/`0xa6a856a8`), executes
+> as **cohort3** in ONE fenced watcher restart at the batch boundary (operator
+> word). Shadow watcher healthy (roster 25, 0 alarms). Readout generalized to
+> `cohort<N>` (blocks 11,13,14) so the promotion works. Fill-cache + multi-
+> sweep BUILT behind `--fill-cache-dir` (block 10) with a pre-registered proof
+> gate before the deepen wave uses it. **Reviews this session: two adversarial
+> workflows + one root-cause audit → ~15 defects found & fixed AT ROOT, every
+> one in not-yet-exercised code (the running readout + live run-4 were clean
+> throughout).** All work pushed to the branch (`329444e`+). NO live batch-end
+> watcher survives session end — next session re-checks run-4 on start.
 
 > **2026-07-17 UPDATE (local steward session; operator-approved "proceed with
 > all action items") — RUN-3 KILLED, RUN-4 (merged, fair-params) LAUNCHED
@@ -120,6 +897,94 @@
 >    roster file, detached launch, --max-receipts 30000. (c) THEN
 >    `0x70d94a` solo deepen at --max-receipts 120000 (~4h receipts).
 >    Sequence strictly serial (one batch at a time on the shared RPC).
+> 10. **SPEEDUPS 1+2 BUILT (operator-approved 07-19; option 3/paid endpoint
+>    REJECTED): `scripts/chain_fill_cache.py` (`b67fe20`)** — persistent
+>    per-address chain-fill cache (+receipt-side memory, key tx|token_id)
+>    + populate_multi ONE-sweep-for-N-addresses; wired into chain_deep_dive
+>    behind `--fill-cache-dir` (default OFF = byte-identical old path,
+>    differentially proven by adversarial review). 5 review findings fixed
+>    (silent coverage hole on non-adjacent merge; reorg margin on the write
+>    path; cache-file collision with API caches; gap error-frac denominator;
+>    malformed-blob fallback). 65 tests green.
+>    **EMPIRICAL PROOF GATE (pre-registered, MUST pass before any batch uses
+>    the flag):** at run-4 exit, on the idle RPC: (i) bounded A/B — multi
+>    sweep vs per-addr sweeps over the same block range for 2-3 addrs →
+>    fill sets must be IDENTICAL; (ii) full re-dive of one completed trader
+>    via populate+cache → verdict AND tier-1/2 counts must match its
+>    existing JSON exactly. Only then does the deepen wave run with
+>    `--fill-cache-dir` (expected ~10-25x cheaper sweeps). Failure of
+>    either → deepen wave runs FLAG-OFF (old path), no function lost.
+> 11. **COHORT-3 PROMOTION PREREQUISITE BUILT (operator "go" 07-19; `cdf01fb`):**
+>    `shadow_readout.load_cohorts` generalized from hardcoded cohort1/cohort2/
+>    probe to read any `cohort<N>` key (own epoch, never pooled) — needed
+>    because the daily readout couldn't represent a 3rd cohort. Differential-
+>    IDENTICAL on the live 16+8+1probe roster (offline AND a VPS dry-run in
+>    the real venv). Adversarial workflow (4 lenses × verify) caught a REAL
+>    HIGH defect I introduced — an empty `cohort<N>` addresses list slipped
+>    every guard → `filter_traders("")` pools the WHOLE roster mislabeled →
+>    could fire a false POWERED go/no-go alert (the 2026-07-15 finding-A
+>    silent-pooling class). FIXED at root (empty admitted cohort now raises,
+>    matching HEAD's `if not c2`); self-test PASS incl the new case; a
+>    simulated real promotion (16+8+6, probe emptied) loads clean. Cron
+>    auto-adopts at 12:30Z (branch-pinned refresh THEN roster read = new code
+>    + new roster always consistent). **BATCH-BOUNDARY PROMOTION (armed):**
+>    at run-4 exit, the run-4 ADMITs (6 so far: 0xf705fa graduates from probe
+>    + 0x7c3db7/0xe542af/0x216509/0x2ee04b/0xa6a856; +any more before t28)
+>    become cohort3 via ONE fenced mirror3_shadow_deploy.sh restart —
+>    procedure in steward scratchpad `cohort3_promotion_procedure.md`
+>    (chain_audit.json: clean 25→30, add cohort3 key w/ own epoch, empty the
+>    probe key; invariant clean==union checked offline before deploy).
+> 12. **READOUT (07-19 14:56Z VPS dry-run, fresh labels):** cohort1(16)
+>    28/30 resolved edge +0.0440 P(>0)=0.720 conc 0x448861…37%; cohort2(8)
+>    14/30 edge +0.0432 P(>0)=0.648 conc 0xbaa2bc…35%; probe 0 resolved.
+>    Both UNDERPOWERED, both drifting mildly POSITIVE as markets resolve
+>    (cohort1 +0.031→+0.044 within the day). No verdict; no alert.
+> 13. **TRIPLE-BLIND REVIEW of all session code (07-19; 3 blind lenses ×
+>    adversarial verify): 5 confirmed findings, ALL in NOT-YET-EXERCISED code
+>    — the live-critical paths (running readout on the live roster, flag-off
+>    run-4) came back CLEAN. All 5 FIXED + committed (`7f5c771`,`d2bca15`,
+>    `8b3ce27`):**
+>    - [med, stack_vs_firstbuy_forward #2/#4/#5] the forward test read RAW
+>      /price best_ask+verdict, bypassing `az.repair_records` (the /book-ladder
+>      repair the money-gate readout treats as ground truth) → priced the
+>      estimand off a flattered/gate-dodging quote; AND powered the verdict on
+>      POSITION count while the bootstrap clusters by TOKEN → cross-trader
+>      token overlap could fire a "POWERED" verdict on ~2 markets; no
+>      concentration disclosure. FIX: canonical repair pipeline + power on
+>      DISTINCT token-clusters + inline concentration. Pre-registration
+>      corrected BEFORE any data (tool not yet run). 4 new self-test asserts.
+>    - [low, shadow_readout #1] an intra-group DUPLICATE address passed the
+>      cross-group set() guards but broke the leave-one-out `rest` →
+>      filter_traders("") → whole-roster pooling in the LOO line. FIX: fail
+>      loud on any intra-group dup.
+>    - [low, chain_fill_cache #3] a superset re-populate summed leaf_ok
+>      (double-count) → could understate the lossy-gap rpc_err_frac and mask
+>      an incomplete sweep. FIX: replace-on-superset (don't sum).
+>    Nothing here changed a currently-live number. Method note: the two
+>    workflow reviews this session (readout cohort<N>, then this triple-blind)
+>    each caught a real defect the single-pass reviews missed — the money-gate
+>    surface warrants the multi-lens adversarial pass.
+> 14. **ROOT-CAUSE AUDIT of all fixes (07-19; classify + adversarial challenge
+>    per fix): most fixes root-cause+clean; 3 real residuals fixed at ROOT
+>    (`2856fe8`):**
+>    - **[the important one] the empty-cohort raise + intra-group-dup raise
+>      were TWO reactive per-path guards on the SAME footgun** — cohort_readout
+>      passing empty members into filter_traders (where ""=all records) → whole
+>      roster pooled+mislabeled. Added the CLASS fix: cohort_readout treats
+>      empty members as ZERO records at the single chokepoint every group +
+>      every LOO flows through. Kept the two fail-loud guards (ledger-integrity
+>      value). Any future empty-member path is now safe, not just the two we
+>      enumerated. Defense-in-depth self-test added.
+>    - fill_cache merge_ranges: superset-replace only covered the reachable
+>      shape; a PARTIAL overlap still summed leaf_ok → now refuses anything but
+>      strict-adjacent-or-superset (general double-count closed).
+>    - forward test: `cluster_bootstrap_p` was copy-pasted → now calls the
+>      canonical `az.cluster_bootstrap_p` (a duplicated verdict statistic can
+>      drift). Removed the copy + unused `random` import.
+>    - SKIPPED (documented, not a band-aid): element-wise dict validation in
+>      chain_fill_cache.load() — a contrived corruption the write path never
+>      produces, degrades gracefully (one trader INSUFFICIENT, self-heals), not
+>      worth an O(n) scan on every load. All self-tests + 65 pytest green.
 
 > **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
@@ -699,6 +1564,74 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   `sudo cp -a /tmp/copyable_cache /tmp/walkforward3.json /tmp/walkforward3.log /tmp/gamma2.log /opt/pa2-shared/mb_copyable_data/`
 
 ## 7. Landmines (do not trip)
+
+### Added 2026-07-23 (readout label-source session)
+
+- **A DATA FIX IS NOT DONE UNTIL THE REPORTING PATH READS IT.** The 07-22 CLOB
+  supplement was correct and verified, and the daily readout kept printing
+  flattered edges for a full day because it built labels from `markets` only
+  and never opened the cache. When you fix a source, grep every consumer that
+  produces a NUMBER and prove each one moved — a fixed source with an unmoved
+  consumer looks exactly like a fix that worked.
+- **Two supplements, two different key sets.** `gamma_resolutions.json` was
+  built around the ADMIT deep-dive's evidence (the TRADERS' markets); it
+  covered 21 of 405 SHADOW tokens. "The cache is supplemented" never implies
+  it is supplemented for YOUR token set — measure the intersection.
+- **`chain_deep_dive.py` preloads the gamma cache ONCE per process** (`:1259`),
+  so a mid-run cache write does NOT contaminate a running dive — and equally,
+  a running dive will NOT pick up a label you just added. Restart to adopt.
+- **`shadow_readout.py` now REFUSES to run** (rc=2, loud line in the durable
+  log, ALERT untouched) if the supplement is missing/unreadable/labels nothing.
+  That is deliberate: a missing daily line is loud, a flattered one is not. If
+  the readout goes quiet, look for the FATAL line in `shadow_readout_log.txt`
+  before assuming cron died.
+- **`markets` knows the condition_id of markets it has NOT resolved.** That is
+  what makes a targeted CLOB pass cheap (203 of 300 unlabelled shadow tokens
+  were reachable that way). Only the residue needs a token→market lookup.
+
+### Added 2026-07-22 (label-integrity + infra session)
+
+- **EMPTY-SET FALSE PASS — the highest-value lesson of the session. Tripped
+  TWICE in different clothes.** (1) An A/B differential harness whose output
+  files silently failed to write: `diff` compared two EMPTY streams and printed
+  "IDENTICAL". (2) The ADMIT re-review's `mkdir` failed, the dive produced zero
+  JSONs, and the before/after diff globbed an empty dir and printed
+  **"FLIPPED: 0"** — indistinguishable from "all 20 ADMITs survived". ANY
+  comparison/verification MUST assert its inputs are NON-EMPTY and fail loud
+  otherwise. A zero-row result is never evidence of agreement.
+- **`/opt/pa2-shared/mb_copyable_data` is ROOT-owned — this bit again.** Any
+  polymarket-run job needing a NEW output dir must have it pre-created via
+  `sudo mkdir + sudo chown polymarket:polymarket`. `chain_deep_dive` dies at
+  `os.makedirs` with PermissionError and exits rc=0-looking within seconds.
+- **Non-ASCII in a script uploaded over SSH breaks bash** (`syntax error:
+  unexpected end of file`). Em-dashes / `§` / arrows mangle in transit. Sanitize
+  uploaded scripts to pure ASCII.
+- **`trust_after` is NOT a time filter.** `analyze_shadow.repair_record` KEEPS
+  every LADDER-ARMED record regardless of `detect_ts` — the epoch is consulted
+  ONLY for ladderless records. 80% of live records are ladder-armed, so passing
+  an epoch as `trust` does NOT create a forward-only window. A real forward cut
+  needs an explicit `detect_ts >= epoch` filter (see `run()`'s benched branch).
+- **The resolution backfill only sees markets the BOT TRADED** (queues driven by
+  `trades`/`paper_trades`/`traded_markets`/`positions`). The shadow lane writes
+  none of those, so shadow-copied markets are refreshed only by accident. Do not
+  assume `markets.resolved` is current for shadow markets — verify against CLOB.
+- **Backfill poison-batch:** the queue orders `end_date ASC NULLS LAST` and keeps
+  re-picking the OLDEST markets, which are the permanently-unresolvable ones ⇒
+  ~3 resolutions per 30-min cycle. A "backlog < N" gate is therefore UNREACHABLE
+  and must never be used as a precondition.
+- **A stale-stats plan can defeat a correct index.** The partial index alone did
+  not fix the resolution-queue timeout; it only took effect once `markets` was
+  analyzed. After adding an index to a big table, ANALYZE before concluding the
+  fix failed.
+- **CLOB is the trustworthy resolution source** (`resolution_backfill.
+  _fetch_market_by_condition_id` + `_clob_to_market_format`, resolution derived
+  from token PRICES which reflect UMA settlement). Verified 196/196 with 0
+  mismatches and 0 unreachable. Gamma cache format is
+  `{condition_id: {resolution, resolved_at, yes_token_id, no_token_id, category}}`
+  and the deep-dive merges it under the DB (DB wins, gamma fills holes).
+- **API cache rows key the market as `marketId`** (NOT `conditionId`) —
+  `copyable_cache/<addr>.json` → `{"status":..., "trades":[{marketId, tokenId,
+  side, size, price, timestamp}]}`. Guessing the field name silently yields 0.
 
 - **The V1 exchanges are DEAD for live flow (2026-07-12).** Any forward-
   looking on-chain detection MUST use the V2 exchanges + topic0
