@@ -902,7 +902,14 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
                                                           sig["token_id"],
                                                           float(sig["whale_price"]),
                                                           now, "rtds",
-                                                          trigger_tx=sig.get("tx")):
+                                                          # rtds_sig() does NOT
+                                                          # carry tx - the row
+                                                          # does (:932 uses it
+                                                          # the same way). Using
+                                                          # sig here made the
+                                                          # guard inert for every
+                                                          # RTDS post.
+                                                          trigger_tx=row.get("tx")):
                                            log(f"[bidsim] POST bid="
                                                f"{sig['whale_price']:.3f} tok="
                                                f"{sig['token_id'][:10]}... "

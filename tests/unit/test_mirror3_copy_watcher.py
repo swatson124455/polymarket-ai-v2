@@ -630,8 +630,17 @@ def test_bidsim_call_sites_pass_tx_through():
     import inspect
     src = inspect.getsource(cw)
     assert "print_tx=row.get(\"tx\")" in src, "RTDS on_print lost print_tx"
-    assert src.count("trigger_tx=sig.get(\"tx\")") == 2, (
-        "both register call sites (chain + rtds) must pass trigger_tx")
+    # The chain path builds sig["tx"] (:620); rtds_sig() does NOT carry tx, so
+    # the RTDS site must take it from the ROW. Asserting only the spelling
+    # "trigger_tx=sig.get(...)" once let a live 75%-inert guard through.
+    assert "trigger_tx=sig.get(\"tx\")" in src, "chain register lost trigger_tx"
+    assert "trigger_tx=row.get(\"tx\")" in src, (
+        "RTDS register must read tx from the row - rtds_sig has no tx")
+    # and prove the premise, so this can never silently invert
+    assert "tx" not in cw.rtds_sig({"trader": "0xa", "token_id": "t",
+                                    "price": 0.7, "size": 1.0,
+                                    "tx": "0xdead"}), (
+        "rtds_sig now carries tx - revisit which source the register uses")
 
 
 def test_bidsim_expiry_sweep():
