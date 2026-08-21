@@ -6472,8 +6472,16 @@ def _rest_maker_offset(client, ticker, pos, cost, tag):
     try:
         r = client.create_quote(ticker, side, price, cnt, post_only=True,
                                 client_order_id=f"mk-{tag}-{int(time.time())}-{side}")
-        o = r.get("order") if isinstance(r, dict) and isinstance(r.get("order"), dict) else {}
-        return o.get("order_id")
+        # SHAPE FIX (2026-08-21 incident, root-caused from venue order history): the live V2
+        # create response carries the order at TOP LEVEL, not under "order" — the `else {}`
+        # here (unlike the proven `else resp` fallback at the main create site and the taker
+        # cross) lost the id and reported 49 SUCCESSFULLY-RESTING exits as "re-rest FAILED /
+        # no working exit". create_order_v2 RAISES on a GTC order that fails to rest, so
+        # reaching this line means the exit IS resting — a parse miss must never be turned
+        # back into a false naked-position alarm.
+        o = r.get("order") if isinstance(r, dict) and isinstance(r.get("order"), dict) \
+            else (r if isinstance(r, dict) else {})
+        return o.get("order_id") or f"rested-unparsed-{tag}"
     except Exception as e:
         # DEFECT 10 (2026-08-02): this catch bound NOTHING — no `as e` — so a rejected EXIT
         # re-rest vanished into a flat global counter that cannot even name the ticker. Live
@@ -7190,8 +7198,10 @@ def _strand_cross(client, naked_by, costs_by, now, plan, strand_state, step_stat
             plan["exit_cross_cost_usd"] = round(plan.get("exit_cross_cost_usd", 0.0) + _paid5, 4)
             print(f"exit-calc {t}: PAID ~${_paid5:.2f} to cross {nc} ct "
                   f"(spread {_rec['spread_ticks']}t, fee-rate exact)")
+        # (label fix 2026-08-21: this line used to assert "maker exit re-rested" statically —
+        # it cannot know the re-rest outcome; _taker_cross_capped reports that itself.)
         print(f"strand cross {t}: naked {npos:+.2f} unfilled >= {STRAND_CROSS_S:.0f}s -> taker "
-              f"crossed {nc} ct ({'FLAT' if flat else 'RESIDUAL — maker exit re-rested'})")
+              f"crossed {nc} ct ({'FLAT' if flat else 'RESIDUAL'})")
         if flat:
             strand_state.pop(t, None)
             if step_state is not None:
