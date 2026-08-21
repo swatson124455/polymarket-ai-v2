@@ -74,8 +74,36 @@
 > confirmed `[bidsim] ENABLED ... rehydrated_open=0`. **The ~100-resolved
 > tripwire RESTARTS FROM ZERO.** Backup `copy_watcher.py.pre-amend1-20260821`.
 >
+> **4. AMENDMENT 1b (~15:59Z) — THE FIRST FIX WAS 75% INERT; CAUGHT ON LIVE
+> DATA (456578c).** The RTDS register site read `trigger_tx=sig.get("tx")`, but
+> **`rtds_sig()` does not carry tx** (`copy_watcher.py:771-786`) — only the
+> chain path builds `sig["tx"]` (`:620`). So the guard was inert for every
+> RTDS-sourced post — **15 of 20 posts (75%) in the parked sample**. Found by
+> asserting on the first live epoch-1 posts: 2 of 3 carried `trigger_tx`, the
+> RTDS one was None. Now reads `row.get("tx")` (rows always carry it —
+> measured **0 missing in 20,000** rtds roster records). **The anti-no-op test
+> asserted only the call-site SPELLING and so let this through**; it now pins
+> both sources AND asserts the premise (`rtds_sig` has no tx) so it cannot
+> silently invert. Mutation-tested both ways.
+> **EPOCH RESET AGAIN: 2026-08-21T15:59:14Z** (1 of the 3 epoch-1 posts was
+> collected under the inert guard). Epoch-1 parked at
+> `mirror3_bidsim.jsonl.pre-amend1b-20260821`. LESSON for §7: a source-text
+> assertion proves a call site's SPELLING, never that the value it names is
+> populated on that path — assert the premise too.
+>
+> **5. SCOREBOARD SHIPPED (the one allowed build, 456578c).**
+> `scripts/mb_scoreboard.py` appends band + bidsim + cohort5 + scout to the
+> 11:40Z cron block. Every section reads its own authoritative artifact and
+> fails LOUD (explicit `UNAVAILABLE` + a missing-count line, never silence);
+> carries a standing **self-fill regression alarm** (`fill_tx == trigger_tx`
+> must stay 0). Self-tested on fixtures (healthy / all-4-missing / regression)
+> and run end-to-end as the cron user (rc=0). ALSO:
+> `deploy/label_and_fee_refresh_cron.sh` had **no repo copy** — it existed only
+> on the VPS inside a checkout that hard-resets to this branch daily. Now
+> committed (ASCII-sanitized) and the checkout synced to `456578c`.
+>
 > **STILL PENDING (next session MUST verify — not yet observable):** the first
-> post+fill pairs on the new sink. Confirm no sub-second self-fills survive and
+> post+fill pairs on the new sink. Confirm no sub-second self-fills survive, that EVERY post (chain AND rtds) carries a non-null trigger_tx, and
 > that `fill_tx != trigger_tx` on every fill:
 > `python3 -c "import json;r=[json.loads(l) for l in open('/opt/pa2-shared/mirror3_bidsim.jsonl') if l.strip()];f=[x for x in r if x['type']=='fill'];print(len(f),[x['wait_s'] for x in f][:20]);assert all(x.get('fill_tx')!=x.get('trigger_tx') for x in f)"`
 > Posts are sparse (hours). A still-empty sink after a day is a FAILURE signal,
