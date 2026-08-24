@@ -18,6 +18,34 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-24 (~17:15Z) — CHAIN-TRUTH FILL CLASSIFICATION (operator: "it's
+> blockchain, isn't there a record?" — YES, and it resolves the feed gap)
+>
+> The RTDS feed hides who started each trade, but every fill_tx settles on
+> Polygon and the receipt names the aggressor: the OrderFilled whose
+> counterparty field is the exchange itself is the TAKER's order (validated
+> pattern, decode_fill_v2); the taker's side for our token comes from the
+> receipt transfer-log rule (side_from_receipt_logs). Retro-classified ALL 65
+> epoch-2 fills via raw eth_getTransactionReceipt (tenderly, 30s timeouts):
+> **65/65 classified, 0 errors, 0 unknowns** (`scripts/bidsim_classify_fills.py`).
+>
+> **RESULT (ESTABLISHED, 72 resolved bids at read time):**
+> * taker-SELL aggression (would hit a resting bid): **17/65 = 26.2%** of fills
+> * **chain-truth strict fill rate: 17/72 = 23.6%** vs the 74% break-even bar
+> * charter-rule (any print): 65/72 = 90.3%
+> * RTDS's own side field said 8 SELL — the chain found 17: the feed's side
+>   field is confirmed unreliable (perspective-dependent), never use it for
+>   this again; classify via receipts.
+>
+> **Honest caveat (microstructure, stated not assumed):** taker-BUY prints at
+> <= our bid imply ASKS were resting at/below our bid — in the counterfactual
+> where our bid exists, those incoming asks would have matched US first. So
+> strict taker-SELL-only likely UNDERCOUNTS the true maker fill rate; the
+> truth lies in [23.6%, 90.3%] and prints alone cannot pin it further. The
+> bracket is now measured from chain truth instead of an unreliable feed
+> field. Fill-side ruling remains OPEN — but the operator now has real
+> numbers: strict reading is FAR below 74%, loose reading far above.
+>
 > ## 2026-08-24 (~16:45Z) — OPERATOR RULINGS ON THE 6 RECS + TWO EXECUTED
 >
 > **RULINGS (operator, verbatim intent):**
