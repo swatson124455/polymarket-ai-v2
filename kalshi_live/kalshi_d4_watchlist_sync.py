@@ -48,11 +48,32 @@ def main():
         end = p.get("end_date") or ""
         r = rows.setdefault(t, {"cls": c, "pool": 0.0, "end": end})
         r["pool"] = max(r["pool"], pool)
-    allow_rows = sorted((t for t, r in rows.items() if r["cls"] in ALLOW),
+    # REVIEW FIX (2026-08-24 ~17:0xZ): markets we are RESTING in must ALWAYS be watched —
+    # the first build only ranked by pool, so the cap could cut exactly where our money is
+    # (the storm detector's whole point). Resting tickers go first, unconditionally.
+    resting = []
+    try:
+        cur2 = ""
+        for _ in range(50):
+            q2 = kal.P + "/portfolio/orders?status=resting&limit=1000" + (
+                f"&cursor={cur2}" if cur2 else "")
+            d2 = kal.get(q2)
+            resting += [o.get("ticker") for o in d2.get("orders") or []]
+            cur2 = d2.get("cursor") or ""
+            if not cur2:
+                break
+    except Exception as e:
+        print(f"WARNING resting-orders read failed ({e!r}) — watchlist built without "
+              f"resting-first priority this run")
+    resting = sorted({t for t in resting if t})
+    allow_rows = sorted((t for t, r in rows.items()
+                         if r["cls"] in ALLOW and t not in resting),
                         key=lambda t: (-rows[t]["pool"], rows[t]["end"], t))
-    parole_rows = sorted((t for t, r in rows.items() if r["cls"] in PAROLE),
+    parole_rows = sorted((t for t, r in rows.items()
+                          if r["cls"] in PAROLE and t not in resting),
                          key=lambda t: (-rows[t]["pool"], t))[:PAROLE_SLOTS]
-    picked = (allow_rows[:CAP - len(parole_rows)] + parole_rows)[:CAP]
+    picked = (resting + allow_rows[:max(0, CAP - len(resting) - len(parole_rows))]
+              + parole_rows)[:CAP]
     tmp = OUT + ".tmp"
     with open(tmp, "w") as f:
         json.dump(picked, f, indent=1)

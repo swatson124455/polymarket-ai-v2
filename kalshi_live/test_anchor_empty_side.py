@@ -59,10 +59,22 @@ def test_mid_range_one_sided_book_stays_refused():
     assert "anchor_paired" not in stats
 
 
-def test_crossable_pair_refused():
-    # present yes ref 0.99 + anchor 0.01 = 1.00 -> would cross; must refuse
+def test_modal_099_touch_book_anchors_one_tick_inside():
+    """THE modal live shape (245/245 refusals on 08-24): touch 0.99, empty other side.
+    The pair must FIT by stepping the present side to 0.98 — never refuse, never cross."""
     quotes, stats = _run([["0.99", "500"]], [])
-    assert quotes == [] and stats.get("gate_one_sided_book") == 1
+    assert stats.get("anchor_paired") == 1
+    sides = {o["side"]: o for o in quotes}
+    assert sides["yes"]["price_dollars"] == 0.98
+    assert sides["no"]["price_dollars"] == 0.01
+    assert sides["yes"]["price_dollars"] + sides["no"]["price_dollars"] < 1.0
+
+
+def test_present_side_never_steps_up():
+    # touch at 0.95 fits as-is with a 1c anchor -> join stays AT the touch
+    quotes, stats = _run([["0.95", "500"]], [])
+    assert stats.get("anchor_paired") == 1
+    assert {o["side"]: o["price_dollars"] for o in quotes}["yes"] == 0.95
 
 
 def test_holding_inventory_unchanged_reducing_path():

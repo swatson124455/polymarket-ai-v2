@@ -3001,17 +3001,24 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if ANCHOR_EMPTY_SIDE and (best_y is None) != (best_n is None):
             _pref = best_y if best_y is not None else best_n
             _yes_terms = _pref if best_y is not None else 1.0 - _pref
+            # PAIR-FIT FIX (review 2026-08-24 ~17:0xZ): the modal one-sided book touches at
+            # 0.99, and 0.99 + 0.01 = 1.00 is a self-crossed pair — the first build REFUSED
+            # it (anchor fired 0 times in 245 chances). Correct response: step the present
+            # side DOWN to the highest price that fits the pair one tick inside 1.00
+            # (0.99-touch -> join at 0.98). One tick behind the touch scores DF^1 and sits
+            # safer in the adverse-fill zone; never step UP (that would cross the touch).
+            _pp = min(_pref, round(1.0 - ANCHOR_PRICE - 0.01, 4))
             if ((_yes_terms >= 0.90 or _yes_terms <= 0.10)
-                    and _ok_entry_price(_pref) and _ok_entry_price(ANCHOR_PRICE)
-                    and _pref + ANCHOR_PRICE < 1.0):
-                _pct = _capped_join(_pref, ANCHOR_PRICE)
-                _act = _capped_join(ANCHOR_PRICE, _pref)
+                    and _ok_entry_price(_pp) and _ok_entry_price(ANCHOR_PRICE)
+                    and _pp + ANCHOR_PRICE < 1.0):
+                _pct = _capped_join(_pp, ANCHOR_PRICE)
+                _act = _capped_join(ANCHOR_PRICE, _pp)
                 if min(_pct, _act) >= max(int(MIN_QUOTE_CT), 1):
                     if stats is not None:
                         stats["anchor_paired"] = stats.get("anchor_paired", 0) + 1
                     _pside = "yes" if best_y is not None else "no"
                     _aside = "no" if best_y is not None else "yes"
-                    return [{"side": _pside, "price_dollars": _pref, "count": _pct,
+                    return [{"side": _pside, "price_dollars": _pp, "count": _pct,
                              "reason": "join"},
                             {"side": _aside, "price_dollars": ANCHOR_PRICE, "count": _act,
                              "reason": "join"}]
