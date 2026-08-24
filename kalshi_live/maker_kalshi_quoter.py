@@ -247,6 +247,11 @@ MAX_ACTIVATE_CAPITAL = _envf("KALSHI_MAX_ACTIVATE_CAPITAL", 150.0)  # $/void mar
 # 1 = the CFTC-snapshot "unqualifiable -> never open" skip (today's behavior); 0 = bypass it
 # (R1 refuted its premise: sub-target books DO accrue; see the call-site comment).
 QUALIFIABLE_GATE = _envb("KALSHI_QUALIFIABLE_GATE", default_on=True)
+# ANCHOR (concentrated-cliff, operator-named 2026-08-24): create the missing side of a
+# one-sided EXTREME book ourselves so the pair exists (see the gate in desired_quotes).
+# Default 0 = provable no-op. ANCHOR_PRICE is the created side's own-scale price.
+ANCHOR_EMPTY_SIDE = _envb("KALSHI_ANCHOR_EMPTY_SIDE")
+ANCHOR_PRICE = _envf("KALSHI_ANCHOR_PRICE", 0.01)
 MAX_MARKET_CAPITAL = _envf("KALSHI_MAX_MARKET_CAPITAL", 250.0)  # $ cap per market (both sides)
 MAX_TOTAL_CAPITAL = _envf("KALSHI_MAX_TOTAL_CAPITAL", 10000.0)  # $ cap on the whole resting book
 
@@ -2981,6 +2986,35 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     if best_y is None or best_n is None:            # one-sided: cannot JOIN, can still EXIT
         if abs(inv) >= INV_TOLERANCE:
             return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
+        # ANCHOR (KALSHI_ANCHOR_EMPTY_SIDE, default 0 = today's exact behavior; operator-named
+        # 2026-08-24). MEASURED BLOCKER: 65% of 5,592 checks on 08-24 failed one-sided — the
+        # safe extreme markets have a fair value under one tick on the cheap side, so nobody
+        # rests it and pairing is impossible. With the flag on and EXACTLY one side present,
+        # WE create the missing side at ANCHOR_PRICE (default 1c, that side's own scale) and
+        # join the present side's touch. The anchor order BECOMES the empty side's reference
+        # (best bid), so both sides score at N=0 in the R4 walk. Guards, in order:
+        #   - present-side ref must be EXTREME in yes-terms (>=0.90 or <=0.10) — the mid-band
+        #     gate's analog for a book whose mid is uncomputable (near-strike stays excluded);
+        #   - both prices inside the entry band, and pair sum < 1.00 (never crossable);
+        #   - flat only (held inventory took the reducing branch above).
+        # Anchor-side risk if hit: ANCHOR_PRICE per contract. Rich-side risk unchanged.
+        if ANCHOR_EMPTY_SIDE and (best_y is None) != (best_n is None):
+            _pref = best_y if best_y is not None else best_n
+            _yes_terms = _pref if best_y is not None else 1.0 - _pref
+            if ((_yes_terms >= 0.90 or _yes_terms <= 0.10)
+                    and _ok_entry_price(_pref) and _ok_entry_price(ANCHOR_PRICE)
+                    and _pref + ANCHOR_PRICE < 1.0):
+                _pct = _capped_join(_pref, ANCHOR_PRICE)
+                _act = _capped_join(ANCHOR_PRICE, _pref)
+                if min(_pct, _act) >= max(int(MIN_QUOTE_CT), 1):
+                    if stats is not None:
+                        stats["anchor_paired"] = stats.get("anchor_paired", 0) + 1
+                    _pside = "yes" if best_y is not None else "no"
+                    _aside = "no" if best_y is not None else "yes"
+                    return [{"side": _pside, "price_dollars": _pref, "count": _pct,
+                             "reason": "join"},
+                            {"side": _aside, "price_dollars": ANCHOR_PRICE, "count": _act,
+                             "reason": "join"}]
         # counter fires ONLY on the priceless [] path (blind review 2026-08-01 lens A #8:
         # counting the reducing-quote branch overstated "priceless exits")
         if stats is not None:
