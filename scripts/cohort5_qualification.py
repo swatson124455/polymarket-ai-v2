@@ -36,6 +36,26 @@ import shadow_readout as sr  # noqa: E402
 QUAL_EPOCH = datetime(2026, 7, 30, 17, 0, 0,
                       tzinfo=timezone.utc).timestamp()
 
+# COHORT1-UNTESTED group (operator go 2026-08-24: "do it if they pass the
+# test"): the 9 cohort1 CLEAN traders never chain-ADMITted and so never
+# eligible above. Same bars, same single-look locks file, but their OWN
+# forward epoch - 2026-08-24T17:00:00Z (records before it were visible when
+# this extension was decided; counting them would select and verify on the
+# same data). Passing = a PROPOSAL, exactly like cohort5.
+C1_FWD_EPOCH = datetime(2026, 8, 24, 17, 0, 0,
+                        tzinfo=timezone.utc).timestamp()
+C1_UNTESTED = [
+    "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+    "0x14964aefa2cd7caff7878b3820a690a03c5aa429",
+    "0x32cf8efc13583788ed0bbaeb4dccaccaa846b8d3",
+    "0x7fb7ad0d194d7123e711e7db6c9d418fac14e33d",
+    "0x9b979a065641e8cfde3022a30ed2d9415cf55e12",
+    "0x9c16127eccf031df45461ef1e04b52ea286a09cb",
+    "0xa9b44dca52ed35e59ac2a6f49d1203b8155464ed",
+    "0xafbacaeeda63f31202759eff7f8126e49adfe61b",
+    "0xecdbd79566a25693b9971c48d7de84bc05f7da79",
+]
+
 EDGE_BAR = 0.02
 P_BAR = 0.95
 N_BAR = 30
@@ -110,29 +130,39 @@ async def run(args) -> int:
              p_min=P_BAR, min_markets=N_BAR, fee_map_data=fee_map)
     locks = sr.load_locks(args.locks)
     proposals = []
-    for a in cands:
-        res = sr.cohort_readout(fwd, outcomes, QUAL_EPOCH, a, cfg)
-        n = res.get("resolved_mkts") or 0
-        if a in locks:
-            lk = locks[a]
-            print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: {lk['verdict']} "
-                  f"(single look consumed)")
-            continue
-        qual, status = bar_status(res)
-        marker = ""
-        if n >= N_BAR:
-            verdict = "QUALIFIES" if qual else "DOES NOT QUALIFY"
-            locks = sr.write_lock(args.locks, locks, a, {
-                "locked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
-                "resolved": n, "edge": res.get("shadow_edge"),
-                "p": res.get("shadow_edge_p"), "verdict": verdict,
-                "source": "cohort5_qualification single-look"})
-            marker = f"  <== {verdict} [LOCKED THIS RUN]"
-            if qual:
-                proposals.append(a)
-        print(f"  {a[:12]}..  {status}{marker}")
+
+    def grade(group, group_fwd, epoch, lock_source):
+        nonlocal locks
+        for a in group:
+            res = sr.cohort_readout(group_fwd, outcomes, epoch, a, cfg)
+            n = res.get("resolved_mkts") or 0
+            if a in locks:
+                lk = locks[a]
+                print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: {lk['verdict']} "
+                      f"(single look consumed)")
+                continue
+            qual, status = bar_status(res)
+            marker = ""
+            if n >= N_BAR:
+                verdict = "QUALIFIES" if qual else "DOES NOT QUALIFY"
+                locks = sr.write_lock(args.locks, locks, a, {
+                    "locked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
+                    "resolved": n, "edge": res.get("shadow_edge"),
+                    "p": res.get("shadow_edge_p"), "verdict": verdict,
+                    "source": lock_source})
+                marker = f"  <== {verdict} [LOCKED THIS RUN]"
+                if qual:
+                    proposals.append(a)
+            print(f"  {a[:12]}..  {status}{marker}")
+
+    grade(cands, fwd, QUAL_EPOCH, "cohort5_qualification single-look")
+    c1fwd = forward_records(recs, C1_FWD_EPOCH)
+    print(f"cohort1-untested ({len(C1_UNTESTED)}) - window since "
+          f"{datetime.fromtimestamp(C1_FWD_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ} | "
+          f"forward records: {len(c1fwd)}")
+    grade(C1_UNTESTED, c1fwd, C1_FWD_EPOCH, "cohort1_untested single-look")
     if proposals:
-        print(f"\nPROPOSALS (operator go required for composition): "
+        print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
     return 0
 
@@ -164,6 +194,16 @@ def _self_test() -> int:
                                   tzinfo=timezone.utc).timestamp())
     print(f"  [epoch] fixed at 2026-07-30T17:00:00Z, never derived : {ok3}")
     ok &= ok3
+    ok3b = (C1_FWD_EPOCH == datetime(2026, 8, 24, 17, 0, 0,
+                                     tzinfo=timezone.utc).timestamp()
+            and C1_FWD_EPOCH > QUAL_EPOCH)
+    print(f"  [epoch2] cohort1-untested fixed at 2026-08-24T17:00:00Z : {ok3b}")
+    ok &= ok3b
+    ok3c = (len(C1_UNTESTED) == 9 and len(set(C1_UNTESTED)) == 9
+            and all(a == a.lower() and a.startswith("0x") and len(a) == 42
+                    for a in C1_UNTESTED))
+    print(f"  [group] 9 unique lowercase full addresses : {ok3c}")
+    ok &= ok3c
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         try:
