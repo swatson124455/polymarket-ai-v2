@@ -18,6 +18,37 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-24 (~16:45Z) — OPERATOR RULINGS ON THE 6 RECS + TWO EXECUTED
+>
+> **RULINGS (operator, verbatim intent):**
+> * **FUNDING RULED: start ~$500 once a test passes; grow to ~$5,000 as it
+>   proves out live.** (The long-open "conditional funding number" is now
+>   SET. Band pass => $500 pilot; scaling to $5k on live proof.)
+> * "Don't fund yet" — RATIFIED.
+> * Scout filter fix — GO. **EXECUTED (b8deacf):** discovery — the old floor
+>   (>=500 trades/6h = 2,000/day) sat ABOVE the dive's 1,000/day UNCOPYABLE
+>   ceiling: the filter could only EVER select machines; sweep #1's 9/9 bots
+>   was structural. New band notional>=$25k / markets>=5 / 10<=n<250 per 6h.
+>   Dry-run on the real 07-30 capture (26,123 wallets): **82 human-scale
+>   candidates, 89 machines dropped.** No sweep launched — cadence still open.
+> * The 9 untested cohort1 traders — GO, "if they pass the test."
+>   **EXECUTED (3c76580):** cohort1-untested group added to the daily
+>   qualification cron; own fresh epoch **2026-08-24T17:00:00Z**, same bars,
+>   same locks file, source tag `cohort1_untested single-look`. End-to-end
+>   verified as the cron user (9 x ACCRUING 0/30, existing locks untouched).
+>   Deployed via mb_readout checkout sync.
+> * The 13 INSUFFICIENTs — ruled "positive EV -> add, negative -> remove."
+>   **FINDING: their dive verdicts contain NO edge measurement at all** (that
+>   is what INSUFFICIENT means; verified across all 13 JSONs — no
+>   edge_mean/n_labeled fields). One of the 13 is `0x44886115` = cohort4,
+>   ALREADY on the roster — the real set is 12. Forward EV requires WATCHING
+>   them: the concrete plan is 12 observation-only probes (roster 31->43,
+>   ledger + watcher restart, fresh epoch, single-look bar as above).
+>   **AWAITING explicit confirm — roster changes stay operator-gated and the
+>   ruling did not name a 12-probe roster expansion.**
+> * Fill-side ruling — still OPEN; operator asked for a simpler explanation
+>   of the bracket proposal before ruling (given in chat 2026-08-24).
+>
 > ## 2026-08-24 (~16:05Z) — FIX VERIFIED LIVE + INTERIM chase-vs-post (operator "proceed")
 >
 > **AMENDMENT 1/1b VERIFIED ON LIVE DATA:** 74 posts on the epoch-2 sink —
