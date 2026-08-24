@@ -18,6 +18,38 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-24 (~16:05Z) — FIX VERIFIED LIVE + INTERIM chase-vs-post (operator "proceed")
+>
+> **AMENDMENT 1/1b VERIFIED ON LIVE DATA:** 74 posts on the epoch-2 sink —
+> **0 missing trigger_tx, 0 self-fills** (scoreboard alarm 0 across 3 daily
+> runs). Median wait moved 0.6s (pre-fix) → 30.3s: the instrument measures a
+> different, credible quantity now. Pending-verification item CLOSED.
+>
+> **INTERIM chase-vs-post at 71 resolved bids (NOT the ~100 proposal; both
+> fill-side interpretations, no ruling made):**
+> * A (charter rule, all prints fill): fill_rate 64/71 = 0.901; cond edge
+>   **−0.2520 on only 14 LABELED fills of 64 (22% coverage — the other 50
+>   markets are simply unresolved after ≤3 days)**. HEADLINE = THE BLINDNESS:
+>   the 14 fast-resolvers are a horizon-biased subset; the −0.25 must not be
+>   quoted as the maker edge.
+> * B (SELL-prints only): fill_rate 8/71 = 0.113; **0 of 8 labeled — cond
+>   edge unavailable.**
+> * Fill sides on record: 55 BUY / 8 SELL prints (the fill-side ruling now has
+>   forward data accruing; OPERATOR DECISION still open).
+> * **STRUCTURAL NOTE for the tripwire:** "~100 resolved bids" gives the
+>   FILL-RATE arm, but the cond-edge arm needs those markets to RESOLVE —
+>   which lags days–weeks behind bid resolution. The proposal at ~100 will be
+>   fill-rate-firm and cond-edge-thin; expect a two-stage read.
+> * Method: labels = daily-supplemented gamma_resolutions.json (refreshed
+>   2026-08-24T11:42Z); venue fee = rate·p·(1−p), unmapped flat 2%; read-only.
+>
+> **Other movement (source: 08-24T11:42Z scoreboard + locks file):** band
+> n=31 pooled −0.0685 e=0.417 (trajectory 0.717→0.885→0.683→0.501→0.417 — no
+> tripwire, descriptive); **cohort5 lock #5:** `0xc660ae71` DOES NOT QUALIFY
+> 08-23T11:43Z (edge −0.0623, P 0.235, n=30) — 5 of 20 graded, 5 failed.
+> Watcher 3d uptime, 0 restarts. PRs: #5 (docs sync), #6 (sports lane,
+> operator-commanded) — both opened, merge = operator.
+>
 > ## 2026-08-21 (~14:49Z) — BIDSIM SELF-FILL DEFECT FIXED + SCOUT SWEEP #1 CLOSED
 > (operator: "delete duplicate, resolve sim now then get proper data")
 >
