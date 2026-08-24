@@ -3001,16 +3001,19 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if ANCHOR_EMPTY_SIDE and (best_y is None) != (best_n is None):
             _pref = best_y if best_y is not None else best_n
             _yes_terms = _pref if best_y is not None else 1.0 - _pref
-            # PAIR-FIT FIX (review 2026-08-24 ~17:0xZ): the modal one-sided book touches at
-            # 0.99, and 0.99 + 0.01 = 1.00 is a self-crossed pair — the first build REFUSED
-            # it (anchor fired 0 times in 245 chances). Correct response: step the present
-            # side DOWN to the highest price that fits the pair one tick inside 1.00
-            # (0.99-touch -> join at 0.98). One tick behind the touch scores DF^1 and sits
-            # safer in the adverse-fill zone; never step UP (that would cross the touch).
-            _pp = min(_pref, round(1.0 - ANCHOR_PRICE - 0.01, 4))
+            # GRID-FIT (review chain 2026-08-24, v3 — v2's step-down was WRONG): the anchor
+            # order must not cross the present touch's IMPLIED opposite ask (= 1 - touch).
+            # On a 0.99-touch book that implied ask is 0.01, so a 1c anchor post-only
+            # REJECTS every cycle — and the join leg then rests ALONE (unpaired presence:
+            # earns nothing, keeps fill risk; observed live 17:08-17:11Z, 4 markets).
+            # A 1-cent grid leaves NO legal anchor price there: 0.99-touch books are
+            # STRUCTURALLY UNANCHORABLE and must fall through to the one-sided gate.
+            # Anchorable iff ANCHOR_PRICE < 1 - touch (touch <= 0.98 at 1c): join AT the
+            # touch, anchor at ANCHOR_PRICE, pair sum <= 0.99, nothing crosses.
             if ((_yes_terms >= 0.90 or _yes_terms <= 0.10)
-                    and _ok_entry_price(_pp) and _ok_entry_price(ANCHOR_PRICE)
-                    and _pp + ANCHOR_PRICE < 1.0):
+                    and _ok_entry_price(_pref) and _ok_entry_price(ANCHOR_PRICE)
+                    and ANCHOR_PRICE < round(1.0 - _pref, 4)):
+                _pp = _pref
                 _pct = _capped_join(_pp, ANCHOR_PRICE)
                 _act = _capped_join(ANCHOR_PRICE, _pp)
                 if min(_pct, _act) >= max(int(MIN_QUOTE_CT), 1):
