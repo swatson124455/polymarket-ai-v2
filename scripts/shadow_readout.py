@@ -228,11 +228,18 @@ def supplement_outcomes(path: str, tokens: list[str]) -> dict[str, int]:
 
 
 def merge_outcomes(db: dict[str, int], supp: dict[str, int]) -> dict[str, int]:
-    """DB WINS, supplement fills holes only — the chain deep-dive's precedence.
-    The DB is the system's own settled record; the supplement exists solely
-    because the backfill structurally cannot see shadow markets."""
-    merged = dict(supp)
-    merged.update(db)
+    """CANON merge (wired 2026-08-25, operator-approved): DB wins, supplement
+    fills holes - but a token where BOTH sources exist and DISAGREE is a
+    CONFLICT: excluded from the merged map and reported LOUDLY, never
+    silently resolved (mb_canon.merge_labels; the old silent DB-wins merge
+    is retired). A conflict is a data error either way - grading on it
+    would let the wrong source pick verdicts."""
+    import mb_canon as _mc
+    merged, conflicts = _mc.merge_labels(db, supp)
+    if conflicts:
+        print(f"  [labels] LABEL CONFLICTS: {len(conflicts)} token(s) where "
+              f"DB and supplement disagree - EXCLUDED from grading: "
+              + ", ".join(str(t)[:14] + ".." for t in list(conflicts)[:6]))
     return merged
 
 

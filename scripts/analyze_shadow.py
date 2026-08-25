@@ -75,7 +75,8 @@ def filter_traders(records: list[dict], traders_csv: str) -> list[dict]:
 
 
 def repair_record(r: dict, max_chase: float = 0.02, max_spread: float = 0.05,
-                  trust_after: Optional[float] = None
+                  trust_after: Optional[float] = None,
+                  max_fill: float = 0.98
                   ) -> tuple[Optional[dict], str]:
     """(repaired record | None, status) — status REPAIRED | KEPT | EXCLUDED.
 
@@ -94,6 +95,14 @@ def repair_record(r: dict, max_chase: float = 0.02, max_spread: float = 0.05,
         wp = r.get("whale_price")
         if real_ask is None or real_ask <= 0:
             v, fill = "NO_BOOK", None
+        elif real_ask > max_fill:
+            # PRICE_NO_UPSIDE parity (bug-fix 2026-08-25, operator-approved;
+            # SAME gate ORDER as evaluate_gates): the live watcher has
+            # refused ask > 0.98 since 2026-08-19 17:33Z - BEFORE the band
+            # epoch - and this repair claimed to "mirror evaluate_gates
+            # exactly" while silently re-admitting those deterministic-loser
+            # fills. Restores the registered estimand (strategy-as-deployed).
+            v, fill = "PRICE_NO_UPSIDE", None
         elif real_bid is not None and (real_ask - real_bid) > max_spread:
             v, fill = "SPREAD_TOO_WIDE", None
         elif isinstance(wp, (int, float)) and real_ask > wp + max_chase:
@@ -268,6 +277,9 @@ def report(res: dict, econ_floor: float) -> None:
               f"  on {res['resolved_mkts']} resolved mkts"
               f"  ({res['unresolved_ok_fills']} OK fills unresolved — counted, not guessed)")
         print(f"  VERDICT vs +{econ_floor:.02f} floor: {res['edge_verdict']}")
+        print(f"  fee sources: {res.get('fee_rate_priced_fills', 0)} venue-formula"
+              f" / {res.get('fee_exempt_fills', 0)} zero-fee-exempt"
+              f" (rest flat 2% - disclosure, 2026-08-25)")
     else:
         print("  (no --gamma-cache: operability/latency/tax only — edge needs outcomes)")
     print("  per trader (first-buys):")

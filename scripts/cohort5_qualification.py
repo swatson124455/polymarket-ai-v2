@@ -82,15 +82,24 @@ def eligible_admits(deep_dive_dir: str, rereview_dir: str) -> list[str]:
     authority (20/20 graded on supplemented labels); the base dir fills in
     any ADMIT the re-review did not cover. Empty result is a hard error."""
     import glob
-    out: set[str] = set()
-    for d in (rereview_dir, deep_dive_dir):
+    # VETO fix (2026-08-25, operator-approved): the re-review dir is the
+    # AUTHORITY - its verdict (ADMIT or not) overrides the base dir for any
+    # address it covers. The old union let a stale base-dir ADMIT survive a
+    # re-review REJECT (re-grading on complete labels is the re-review's
+    # whole purpose). A corrupt verdict file is now LOUD, not skipped.
+    verdicts: dict = {}
+    for d in (deep_dive_dir, rereview_dir):        # rereview LAST = wins
         for f in glob.glob(os.path.join(d, "0x*.json")):
             try:
                 blob = json.load(open(f))
-            except (OSError, ValueError):
+            except (OSError, ValueError) as e:
+                print(f"  [eligibility] WARNING unreadable verdict file "
+                      f"{os.path.basename(f)}: {e!r} - NOT silently skipped")
                 continue
-            if str(blob.get("verdict", "")).startswith("ADMIT"):
-                out.add(str(blob.get("address", "")).lower())
+            a = str(blob.get("address", "")).lower()
+            if a:
+                verdicts[a] = str(blob.get("verdict", ""))
+    out = {a for a, v in verdicts.items() if v.startswith("ADMIT")}
     if not out:
         raise ValueError("0 chain-ADMITs found — eligibility set empty; "
                          "refusing to report 'no candidates' on missing input")
@@ -140,7 +149,13 @@ async def run(args) -> int:
     outcomes = sr.merge_outcomes(db, supp)
     fee_map = None
     if args.fee_map and os.path.exists(args.fee_map):
-        fee_map = json.load(open(args.fee_map))
+        try:
+            fee_map = json.load(open(args.fee_map))
+        except ValueError as e:
+            raise SystemExit(f"FATAL: fee_map corrupt ({e!r}) - refusing to "
+                             f"grade under a silently-changed fee equation")
+        if not isinstance(fee_map, dict) or not fee_map:
+            raise SystemExit("FATAL: fee_map empty/malformed - refusing")
     cfg = NS(max_chase=0.02, max_spread=0.05, fee=0.02, econ_floor=EDGE_BAR,
              p_min=P_BAR, min_markets=N_BAR, fee_map_data=fee_map)
     locks = sr.load_locks(args.locks)
@@ -173,9 +188,14 @@ async def run(args) -> int:
     grade(cands, fwd, QUAL_EPOCH, "cohort5_qualification single-look")
     frm = None
     if args.fee_rate_map and os.path.exists(args.fee_rate_map):
-        frm = json.load(open(args.fee_rate_map))
+        try:
+            frm = json.load(open(args.fee_rate_map))
+        except ValueError as e:
+            raise SystemExit(f"FATAL: fee_rate_map corrupt ({e!r}) - the C1 "
+                             f"group grades on the venue formula; refusing "
+                             f"to silently fall back to flat 2%")
         if not isinstance(frm, dict) or not frm:
-            frm = None
+            raise SystemExit("FATAL: fee_rate_map empty/malformed - refusing")
     c1fwd = forward_records(recs, C1_FWD_EPOCH)
     print(f"cohort1-untested ({len(C1_UNTESTED)}) - window since "
           f"{datetime.fromtimestamp(C1_FWD_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ} | "
