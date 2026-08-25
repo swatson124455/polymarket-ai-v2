@@ -1716,6 +1716,33 @@ MIN_RUNWAY_H = _envf("KALSHI_MIN_RUNWAY_H", 0.0)
 # Ended-program rows never reach the table (_est_feed_cached skips them) and the feed lags
 # its recompute batches (sweep F2), so the trigger is conservative. 0 = exemption off.
 RUNWAY_ACCRUED_EXEMPT_USD = _envf("KALSHI_RUNWAY_ACCRUED_EXEMPT_USD", 0.50)
+# --- D3 (operator-approved design 2026-08-25, doc KALSHI_D3_DESIGN_REPAIR_AND_DOLLAR_RISK) ---
+# A. RE-PAIR AFTER CHEAP FILL: while HOLDING inventory whose avg basis <= REPAIR_BASIS_MAX_D,
+#    ALSO rest the consumed (accumulating) side beside the exit — the official LIP terms pay
+#    per-side shares in a qualifying book, so exit-only forfeits ~the accumulating side's
+#    share for the whole holding period. Reached ONLY after every entry gate has passed
+#    (poor/unqualifiable/banned markets return reduce-only from their own gates first);
+#    max added downside per round = basis x count <= 0.02 x join. Default 0 = byte-identical.
+REPAIR_CHEAP_FILL = _envi("KALSHI_REPAIR_CHEAP_FILL", 0)
+REPAIR_BASIS_MAX_D = _envf("KALSHI_REPAIR_BASIS_MAX_D", 0.02)   # $/ct; 07-27 class (0.30-0.40) stays exit-only
+# B. DOLLAR-WEIGHTED EVENT DELTA: the event throttle historically counted CONTRACTS, so 40ct
+#    of $0.02-basis inventory ($0.80 bounded loss) muted sibling earners exactly like 40ct at
+#    $0.35 (live 2026-08-25 16:1xZ: T5.82 gate_event_directional off T5.42's $0.80 position).
+#    With the flag on, ev = sum(inv_ct x basis $/ct) and the thresholds below apply; defaults
+#    = the contract thresholds x the 07-27 incident's ~$0.35 basis, so the mid-band class that
+#    motivated the throttle keeps today's protection exactly. Default 0 = byte-identical.
+EVENT_DELTA_DOLLARS = _envi("KALSHI_EVENT_DELTA_DOLLARS", 0)
+EVENT_SOFT_USD = _envf("KALSHI_EVENT_SOFT_USD", 5.25)           # = INV_SOFT_CT 15 x $0.35
+EVENT_HARD_USD = _envf("KALSHI_EVENT_HARD_USD", 17.50)          # = INV_HARD_CT 50 x $0.35
+EVENT_FALLBACK_BASIS_D = _envf("KALSHI_EVENT_FALLBACK_BASIS_D", 0.35)  # unknown basis -> legacy parity
+
+
+def _ev_thresholds():
+    """(soft, hard) for the EVENT-delta throttle, in the unit `ev` is computed in:
+    contracts by default; dollars-at-risk under KALSHI_EVENT_DELTA_DOLLARS (D3-B)."""
+    if EVENT_DELTA_DOLLARS:
+        return EVENT_SOFT_USD, EVENT_HARD_USD
+    return INV_SOFT_CT, INV_HARD_CT
 # --- THE INVENTORY RISK RULE IS UNCONDITIONAL (operator Q1 decision, 2026-07-28) --------------
 # Operator's rule, on record 2026-07-27 19:48:56Z: "we can sell at a loss"; "we shouldnt be one
 # sided unles we are exiting". Flat => both sides or nothing. Holding => the reducing side and
@@ -3295,7 +3322,7 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # inv is frozen) — rest ONLY the reducing side to unwind passively.
         if abs(inv) >= INV_TOLERANCE:
             return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
-        if abs(ev) > INV_SOFT_CT:
+        if abs(ev) > _ev_thresholds()[0]:
             if stats is not None:
                 stats["gate_event_directional"] = stats.get("gate_event_directional", 0) + 1
             return []                               # event already directional -> don't ADD via activate
@@ -3355,7 +3382,38 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         if abs(inv) >= INV_TOLERANCE:
             if stats is not None:
                 stats["holding_exit_only"] = stats.get("holding_exit_only", 0) + 1
-            return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
+            base = _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
+            # D3-A RE-PAIR AFTER CHEAP FILL (default OFF; operator-approved design 2026-08-25).
+            # Reached ONLY on a market that passed EVERY entry gate this cycle (capture,
+            # qualifiable, band, runway, mid-band, netev — each returns reduce-only from its
+            # own block while holding). The 07-27 rule is preserved verbatim for basis above
+            # the threshold; unknown basis (cost<=0) fails closed. The re-rested side honors
+            # the SAME event-throttle the flat join applies (shrink/step in the soft band,
+            # banned at/above hard when it would GROW |ev|), the INV_HARD envelope, the entry
+            # band, and — downstream, by reason != "unwind" — the d3 ramp clamp, capital caps,
+            # write budget, breaker strip and governor strips, exactly like any join.
+            if (REPAIR_CHEAP_FILL and 0.0 < cost <= REPAIR_BASIS_MAX_D
+                    and INV_HARD_CT > 0 and abs(inv) < INV_HARD_CT):
+                if inv < 0:
+                    _rp_side, _rp_px, _rp_lv = "no", best_n, nl
+                    _rp_cnt = _capped_join(best_n, best_y)
+                else:
+                    _rp_side, _rp_px, _rp_lv = "yes", best_y, yl
+                    _rp_cnt = _capped_join(best_y, best_n)
+                _rp_cnt = min(int(_rp_cnt), int(INV_HARD_CT - abs(inv)))
+                _soft_ev, _hard_ev = _ev_thresholds()
+                _grows_ev = (_rp_side == "yes" and ev > 0) or (_rp_side == "no" and ev < 0)
+                if _grows_ev and abs(ev) >= _hard_ev:
+                    _rp_cnt = 0                     # hard envelope: never add into the drift
+                elif _grows_ev and abs(ev) > _soft_ev:
+                    _over = min(1.0, (abs(ev) - _soft_ev) / max(1.0, _hard_ev - _soft_ev))
+                    _rp_px, _rp_cnt = _throttled_quote(_rp_px, _rp_cnt, _over, _rp_lv, target)
+                if _rp_cnt >= 1 and _ok_entry_price(_rp_px):
+                    if stats is not None:
+                        stats["repair_rested"] = stats.get("repair_rested", 0) + 1
+                    base = base + [{"side": _rp_side, "price_dollars": _rp_px,
+                                    "count": int(_rp_cnt), "reason": "repair"}]
+            return base
         # JOIN: external depth meets Target both sides, so shaping OUR size never voids it.
         # BOTH sides ALWAYS rest here (never pulled to zero) — the resting quotes are what earns
         # the rewards; inventory earns nothing. Reachable only when FLAT (sub-tolerance dust):
@@ -3394,15 +3452,16 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
             scale = max(0.0, (mins_left - WIND_DOWN_MIN) / max(1.0, ramp_min - WIND_DOWN_MIN))
             y_cnt = max(MIN_QUOTE_CT, int(y_cnt * scale))
             n_cnt = max(MIN_QUOTE_CT, int(n_cnt * scale))
-        if abs(ev) > INV_SOFT_CT:
+        _soft_ev, _hard_ev = _ev_thresholds()       # contracts, or dollars-at-risk (D3-B)
+        if abs(ev) > _soft_ev:
             acc = 1 if ev > 0 else -1
             mag = abs(ev)
-            hard = mag >= INV_HARD_CT
+            hard = mag >= _hard_ev
             # shrink the accumulating side toward MIN_QUOTE_CT and step it 1 tick inside so it
             # fills last. AT/ABOVE HARD the accumulating side IS pulled to zero (audit MED-3):
             # the MIN_QUOTE floor would keep leaking fills on a one-way market, so HARD is the
             # hard envelope. Above it, bounded risk beats that side's reward.
-            over = min(1.0, (mag - INV_SOFT_CT) / max(1.0, INV_HARD_CT - INV_SOFT_CT))
+            over = min(1.0, (mag - _soft_ev) / max(1.0, _hard_ev - _soft_ev))
             if acc > 0:                             # event drifts YES-ward -> throttle YES
                 if hard:
                     y_cnt = 0                       # HARD STOP: cap the envelope, stop the leak
@@ -5467,7 +5526,7 @@ def run_once():
 
         # per-EVENT aggregate signed delta (post de-risk) — drives the throttle direction so
         # correlated nested strikes can't accumulate unbounded directional exposure.
-        ev_delta = event_deltas(held_by)
+        ev_delta = event_deltas(held_by, cost_by=cost_by)   # D3-B: dollar unit when flagged
         # ...but ONLY across events proved to be additive threshold ladders. A categorical event
         # is reported per-ticker instead (see event_deltas); count them so an un-nettable event
         # in the book is visible rather than inferred.
@@ -7499,7 +7558,7 @@ def _is_ladder_event(tickers):
     return len(set(strikes)) == len(strikes)
 
 
-def event_deltas(held_by):
+def event_deltas(held_by, cost_by=None):
     """Aggregate SIGNED net position across the strikes of each event — but ONLY where the
     event is a PROVABLE additive threshold ladder (_is_ladder_event). Kalshi ticker =
     SERIES-EVENT-STRIKE; strikes of one nested-threshold ladder ('above X') are DIRECTIONALLY
@@ -7515,7 +7574,15 @@ def event_deltas(held_by):
     Returns {risk_key: signed_delta}. risk_key is the EVENT key for a proven ladder and the
     TICKER ITSELF otherwise (independent risks are reported independently, never netted). Look a
     ticker up with event_delta_for() — a bare ev[_event_key(t)] index silently reads 0.0 on a
-    categorical event, which is exactly the failure this fix removes."""
+    categorical event, which is exactly the failure this fix removes.
+
+    D3-B (2026-08-25): under KALSHI_EVENT_DELTA_DOLLARS with `cost_by` supplied, each
+    ticker's contribution is weighted by its avg basis $/ct (dollars-at-risk instead of
+    contracts; unknown basis -> EVENT_FALLBACK_BASIS_D = legacy-parity conservative).
+    Flag off or cost_by absent -> contracts, byte-identical."""
+    if EVENT_DELTA_DOLLARS and cost_by is not None:
+        held_by = {t: v * float(cost_by.get(t) or EVENT_FALLBACK_BASIS_D)
+                   for t, v in (held_by or {}).items()}
     groups = defaultdict(list)
     for t in (held_by or {}):
         groups[_event_key(t)].append(t)

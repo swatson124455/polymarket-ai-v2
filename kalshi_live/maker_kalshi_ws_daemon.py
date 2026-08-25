@@ -182,7 +182,7 @@ class HotContext:
         own = M.own_resting(standing)
         held_cost, held_by, cost_by = M._held_cost(client)
         naked_by = M.ladder_pairing(held_by, {})
-        ev_delta = M.event_deltas(held_by)
+        ev_delta = M.event_deltas(held_by, cost_by=cost_by)  # D3-B: same unit as the cold path
         # breaker: same formula as run_once, over the state file's held history
         st = M.load_state()
         risk = M.naked_held_cost(held_by, cost_by)
