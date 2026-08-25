@@ -722,7 +722,7 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     log(f"[copy_watcher] {verdict:<15} {sig['trader'][:10]}… "
                         f"tok={sig['token_id'][:10]}… whale={sig['whale_price']:.3f} "
                         f"ask={ask} lag={rec['detect_lag_s']}s "
-                        f"first={sig['first_buy']} mult={mult}x")
+                        f"first={sig['first_buy']}")
             # cursor is advanced per-window above (retry-don't-skip); no
             # blanket jump to head here — that was the dropped-window bug
 
