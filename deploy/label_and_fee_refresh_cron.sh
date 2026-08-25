@@ -38,3 +38,8 @@ cd /opt/polymarket-ai-v2
   PYTHONPATH=/opt/mirror3 \
     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/canon_verify.py" 2>&1
 } >> "$LOG"
+{
+  echo "===== $(date -u +%FT%TZ) trader funnel (one-table review) ====="
+  DATABASE_URL="$DBURL" PYTHONPATH="$D" \
+    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/trader_funnel.py" 2>&1
+} >> "$LOG"
