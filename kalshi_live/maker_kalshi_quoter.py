@@ -1743,6 +1743,72 @@ def _ev_thresholds():
     if EVENT_DELTA_DOLLARS:
         return EVENT_SOFT_USD, EVENT_HARD_USD
     return INV_SOFT_CT, INV_HARD_CT
+
+
+# --- R6 (operator-approved 2026-08-25, METERS-FIRST rollout): per-UNDERLYING exposure ---------
+# 18 gas strikes across daily/weekly/monthly series are ONE bet on the AAA gas print; every
+# older cap counts markets/series/events. Meters run every cycle (plan key
+# "underlying_exposure"); the two enforcement caps SHIP DARK (0 = off) and get armed from the
+# observed distribution, not a guess (design doc KALSHI_R6_UNDERLYING_RISK_DESIGN_2026-08-25).
+# Map merges risk only — an UNMAPPED series is its own underlying (independent, fail-safe).
+# NOTE for arming: the WS hot path repriceable-quotes are not re-gated here (cold-path gate);
+# acceptable while enforcement is coarse — revisit at arm time.
+UNDERLYING_MAP_RAW = os.environ.get(
+    "KALSHI_UNDERLYING_MAP",
+    "KXAAAGASD:aaa_gas,KXAAAGASW:aaa_gas,KXAAAGASM:aaa_gas,"
+    "KXDIESELW:diesel,KXDIESELM:diesel,KXTOPMODEL:topmodel")
+UNDERLYING_MAX_COMMITTED_USD = _envf("KALSHI_UNDERLYING_MAX_COMMITTED_USD", 0.0)  # 0 = meter only
+UNDERLYING_MAX_HELD_USD = _envf("KALSHI_UNDERLYING_MAX_HELD_USD", 0.0)            # 0 = meter only
+
+
+def _parse_underlying_map(raw):
+    """{SERIES: label}. Malformed input REFUSES LOUDLY at import (the MID_BAND_OUT pattern:
+    a silently-ignored risk knob is worse than a crash at deploy time)."""
+    out = {}
+    raw = (raw or "").strip()
+    if not raw:
+        return out
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError(f"KALSHI_UNDERLYING_MAP entry {part!r} is not SERIES:label")
+        s, label = part.split(":", 1)
+        if not s.strip() or not label.strip():
+            raise ValueError(f"KALSHI_UNDERLYING_MAP entry {part!r} has an empty side")
+        out[s.strip()] = label.strip()
+    return out
+
+
+UNDERLYING_MAP = _parse_underlying_map(UNDERLYING_MAP_RAW)
+
+
+def _underlying_of(ticker):
+    series = (ticker or "").split("-")[0]
+    return UNDERLYING_MAP.get(series, series)
+
+
+def _underlying_exposure(held_by, cost_by, desired):
+    """({underlying: held_usd}, {underlying: committed_usd}).
+    held      = |inv| x basis $/ct (bounded further loss; unknown basis -> the same
+                EVENT_FALLBACK_BASIS_D conservative unit D3-B uses).
+    committed = held + ACCUMULATING resting intent (price x count = worst-case new basis
+                if everything fills); unwind quotes are de-risking and never counted."""
+    held = {}
+    for t, v in (held_by or {}).items():
+        u = _underlying_of(t)
+        basis = float((cost_by or {}).get(t) or EVENT_FALLBACK_BASIS_D)
+        held[u] = held.get(u, 0.0) + abs(float(v)) * basis
+    committed = dict(held)
+    for t, qs in (desired or {}).items():
+        u = _underlying_of(t)
+        for _q in qs or []:
+            if _q.get("reason") == "unwind":
+                continue
+            committed[u] = committed.get(u, 0.0) + \
+                float(_q.get("price_dollars") or 0.0) * float(_q.get("count") or 0.0)
+    return held, committed
 # --- THE INVENTORY RISK RULE IS UNCONDITIONAL (operator Q1 decision, 2026-07-28) --------------
 # Operator's rule, on record 2026-07-27 19:48:56Z: "we can sell at a loss"; "we shouldnt be one
 # sided unles we are exiting". Flat => both sides or nothing. Holding => the reducing side and
@@ -5915,6 +5981,35 @@ def run_once():
             desired.setdefault(t2, []).append(
                 {"side": "no" if qn > 0 else "yes", "price_dollars": price2,
                  "count": cross, "reason": "ladder"})
+
+        # R6 PER-UNDERLYING EXPOSURE (meters ALWAYS; caps dark until armed — see knob block).
+        # Runs on the FINAL desired book so 'committed' reflects real intent; sits BEFORE the
+        # breaker so the breaker (stricter: everything reduce-only) still wins afterwards.
+        try:
+            _u_held, _u_comm = _underlying_exposure(held_by, cost_by, desired)
+            plan["underlying_exposure"] = {
+                u: {"held": round(_u_held.get(u, 0.0), 4), "committed": round(c, 4)}
+                for u, c in sorted(_u_comm.items())}
+            _u_strip = set()
+            if UNDERLYING_MAX_HELD_USD > 0:
+                _u_strip |= {u for u, h in _u_held.items() if h >= UNDERLYING_MAX_HELD_USD}
+            if UNDERLYING_MAX_COMMITTED_USD > 0:
+                _u_strip |= {u for u, c in _u_comm.items()
+                             if c >= UNDERLYING_MAX_COMMITTED_USD}
+            if _u_strip:
+                _n_cut = 0
+                for _t9u in list(desired):
+                    if _underlying_of(_t9u) in _u_strip:
+                        _kept = [q9 for q9 in desired[_t9u] if q9.get("reason") == "unwind"]
+                        _n_cut += len(desired[_t9u]) - len(_kept)
+                        if _kept:
+                            desired[_t9u] = _kept
+                        else:
+                            del desired[_t9u]
+                plan["underlying_capped"] = _n_cut
+                plan["underlying_capped_groups"] = sorted(_u_strip)
+        except Exception:
+            _SILENT["underlying_meter_fail"] += 1
 
         # VELOCITY BREAKER application: reduce-only book — only 'unwind' quotes survive; every
         # accumulating quote (join/activate) is dropped from desired, so the diff CANCELS its
