@@ -18,6 +18,33 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-25 (~17:05Z) — HYGIENE FIX BATCHES A/B/C/E EXECUTED + D RATIFIED
+> (operator "proceed with recs"; commits d95027e, e335d9b, 72448ab, 2086513)
+>
+> **A canon-alignment (verdict pipeline):** repair_record gains
+> PRICE_NO_UPSIDE parity in evaluate_gates' exact order (charter-RESTORING;
+> amendment in BAND_PREREGISTRATION; error direction while it stood =
+> conservative); merge_outcomes now routes through mb_canon.merge_labels
+> (conflicts EXCLUDED + printed, silent DB-wins retired at the live joins);
+> cohort5 eligibility: re-review verdict VETOES base dir + unreadable files
+> warn loudly (post-fix eligible count unchanged at 20 = the defect was
+> latent); fee-map loads refuse corrupt/empty; fee-source counters printed.
+> **B ops:** scoreboard band line >26h old now reads STALE (never served as
+> current); cron band stage keeps tracebacks (grep filter removed).
+> **C watcher recording integrity (deployed 17:03:19Z, backup
+> copy_watcher.py.pre-batchc-20260825):** quote_book -> (bid, ask,
+> quote_err); records carry quote_error + one_sided_book; block_ts fallback
+> stamps block_ts_est; cursor-init RPC wrapped; **first-buy dedup persists:
+> seeded 4,724 pairs (chain) + 3,660 (rtds) from the sinks at boot — the
+> 16.4% restart artifact is CLOSED forward.** 0 errors since restart;
+> cohort5 + scoreboard verified end-to-end as cron user.
+> **D RATIFIED:** v3 verdict field satisfies the Decision-5 rejection-
+> logging precondition — legacy wind-down ELIGIBLE, execution awaits the
+> explicit sign-off (#1 on the ledger); legacy defect fixes stay frozen
+> until that ruling. **E:** ledger items 29-35 appended.
+> NOTE: bidsim at 83 resolved of ~100 — the chase-vs-post tripwire is
+> ~1 day out; fill-side ruling still OPEN ahead of it.
+>
 > ## 2026-08-25 (~16:45Z) — HYGIENE REVIEW: MEASUREMENT BATTERY + ADVERSARIAL
 > RE-VERIFICATION + OPERATOR RULINGS ("ok to all recs")
 >
