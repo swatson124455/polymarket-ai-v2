@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze_shadow as az  # noqa: E402
+import band_tracker as bt  # noqa: E402  (anytime-valid e-process, C1 group)
+import mb_canon as mc  # noqa: E402  (canonical estimand, 2026-08-25)
 import shadow_readout as sr  # noqa: E402
 
 # The approved forward-window epoch — 2026-07-30T17:00:00Z, fixed by the
@@ -55,6 +57,19 @@ C1_UNTESTED = [
     "0xafbacaeeda63f31202759eff7f8126e49adfe61b",
     "0xecdbd79566a25693b9971c48d7de84bc05f7da79",
 ]
+
+# C1 AMENDMENT (2026-08-25, operator: "proceed with your rec"; registered
+# BEFORE any C1 look was consumed - only count-only ACCRUING 0/30 lines had
+# printed): the C1 group is graded ANYTIME-VALID (docs/
+# COHORT1_UNTESTED_AMENDMENT.md), mirroring the band design, because the
+# single-look bar has 7-8% one-shot power at realistic edges (08-19 study).
+# QUALIFY: e >= 20 AND pooled canon edge >= +0.02 AND OK-rate >= 0.75.
+# FUTILITY: 300 resolved markets with e < 20 -> NOT DEMONSTRATED.
+# Fees: VENUE FORMULA via fee_rate_map (canon; post-08-19 registration rule,
+# analyze_shadow fee precedence). The ORIGINAL 20 keep their 07-30 charter
+# scoring (flat 2%, single look) untouched - divergence disclosed per run.
+C1_E_REJECT = 20.0
+C1_FUTILITY_N = 300
 
 EDGE_BAR = 0.02
 P_BAR = 0.95
@@ -156,11 +171,65 @@ async def run(args) -> int:
             print(f"  {a[:12]}..  {status}{marker}")
 
     grade(cands, fwd, QUAL_EPOCH, "cohort5_qualification single-look")
+    frm = None
+    if args.fee_rate_map and os.path.exists(args.fee_rate_map):
+        frm = json.load(open(args.fee_rate_map))
+        if not isinstance(frm, dict) or not frm:
+            frm = None
     c1fwd = forward_records(recs, C1_FWD_EPOCH)
     print(f"cohort1-untested ({len(C1_UNTESTED)}) - window since "
           f"{datetime.fromtimestamp(C1_FWD_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ} | "
-          f"forward records: {len(c1fwd)}")
-    grade(C1_UNTESTED, c1fwd, C1_FWD_EPOCH, "cohort1_untested single-look")
+          f"forward records: {len(c1fwd)} | ANYTIME-VALID e-process "
+          f"(amendment 2026-08-25; reject e>={C1_E_REJECT:.0f}, futility "
+          f"{C1_FUTILITY_N}) | fee=VENUE formula "
+          f"({len(frm) if frm else 0} rated; unmapped flat 2%)")
+    print("  [fee disclosure] original-20 stay on their 07-30 charter "
+          "(flat 2%, single look); C1 group on canon venue fees")
+    for a in C1_UNTESTED:
+        if a in locks:
+            lk = locks[a]
+            print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: {lk['verdict']} "
+                  f"(consumed)")
+            continue
+        t_recs = [r for r in c1fwd
+                  if str(r.get("trader", "")).lower() == a]
+        seq = mc.per_market_edges(t_recs, outcomes, frm or {},
+                                  fee_map or {}, epoch=C1_FWD_EPOCH)
+        edges = [e for _, _, e in seq]
+        n = len(edges)
+        res = sr.cohort_readout(c1fwd, outcomes, C1_FWD_EPOCH, a, cfg)
+        okr = res.get("ok_rate")
+        if n == 0:
+            print(f"  {a[:12]}..  ACCRUING (0 resolved, e=n/a)")
+            continue
+        ev = bt.e_value(edges)
+        pooled = mc.pooled_edge(seq)
+        line = (f"  {a[:12]}..  n={n} e={ev:.3f} pooled={pooled:+.4f} "
+                f"ok_rate={okr if okr is None else round(okr, 2)}")
+        if ev >= C1_E_REJECT:
+            econ_ok = pooled is not None and pooled >= EDGE_BAR
+            ok_ok = isinstance(okr, float) and okr >= OKRATE_BAR
+            verdict = ("QUALIFIES" if (econ_ok and ok_ok)
+                       else "E-PASS BUT GATE FAIL "
+                            f"(econ_ok={econ_ok} ok_rate_ok={ok_ok})")
+            locks = sr.write_lock(args.locks, locks, a, {
+                "locked_at": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%MZ"),
+                "resolved": n, "edge": pooled, "p": ev, "verdict": verdict,
+                "source": "cohort1_untested e-process (amendment 2026-08-25)"})
+            print(line + f"  <== {verdict} [LOCKED THIS RUN]")
+            if verdict == "QUALIFIES":
+                proposals.append(a)
+        elif n >= C1_FUTILITY_N:
+            locks = sr.write_lock(args.locks, locks, a, {
+                "locked_at": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%MZ"),
+                "resolved": n, "edge": pooled, "p": ev,
+                "verdict": "NOT DEMONSTRATED (futility)",
+                "source": "cohort1_untested e-process (amendment 2026-08-25)"})
+            print(line + "  <== NOT DEMONSTRATED (futility) [LOCKED]")
+        else:
+            print(line + "  ACCRUING")
     if proposals:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
@@ -228,6 +297,9 @@ if __name__ == "__main__":
     ap.add_argument("--supplement",
                     default="/opt/pa2-shared/mb_copyable_data/copyable_cache/"
                             "gamma_resolutions.json")
+    ap.add_argument("--fee-rate-map", dest="fee_rate_map",
+                    default="/opt/pa2-shared/mb_copyable_data/copyable_cache/"
+                            "fee_rate_map.json")
     ap.add_argument("--fee-map", dest="fee_map",
                     default="/opt/pa2-shared/mb_copyable_data/copyable_cache/"
                             "fee_map.json")
