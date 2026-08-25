@@ -546,24 +546,14 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
     from base_engine.data.blockchain_client import BlockchainClient
     from web3 import Web3
 
-    from mirror_v3.sizing import (
-        TrailingMedians, conviction_multiplier, merge_same_tx,
-        seed_medians_from_cache)
+    from mirror_v3.sizing import merge_same_tx
 
     roster = load_roster(cfg.roster_path)
     roster_set = set(roster)
     roster_topics = [addr_topic(a) for a in roster]  # topic-2 = order owner
     v2_addrs = [Web3.to_checksum_address(a)
                 for a in (EXCHANGE_V2, NEGRISK_EXCHANGE_V2)]
-    if cfg.median_cache and os.path.isdir(cfg.median_cache):
-        medians = seed_medians_from_cache(cfg.median_cache, roster)
-        seeded = sum(1 for a in roster if medians.stats(a)[1] > 0)
-        log(f"[copy_watcher] conviction medians seeded for {seeded}/{len(roster)} "
-            f"traders from {cfg.median_cache}")
-    else:
-        medians = TrailingMedians()
-        log(f"[copy_watcher] NO median cache ({cfg.median_cache!r}) — all "
-            f"traders cold-start at 1.0x until {20} observed wagers")
+    # conviction median machinery RETIRED 2026-08-25 (rec 9 / ledger #30)
     log(f"[copy_watcher] roster={len(roster)} rpc={cfg.rpc_url} "
         f"gates: chase<={cfg.max_chase:.02f} spread<={cfg.max_spread:.02f} "
         f"poll={cfg.poll_s}s sink={cfg.shadow_path} "
@@ -705,15 +695,11 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                                     f"open={bidreg.n_open}")
                         except Exception as e:
                             log(f"[bidsim] register error: {e!r}")
-                    # conviction annotation (A+D rule): r vs the trader's
-                    # median BEFORE this wager, then observe it
-                    tmed, n_obs = medians.stats(sig["trader"])
-                    mult, r = conviction_multiplier(
-                        sig["whale_size_usd"], tmed, n_obs)
-                    medians.observe(sig["trader"], sig["whale_size_usd"])
-                    sig["trailing_median_usd"] = tmed
-                    sig["conviction_r"] = round(r, 4) if r is not None else None
-                    sig["size_multiplier"] = mult
+                    # conviction annotation RETIRED 2026-08-25 (operator
+                    # "go with rec 9", ledger #30): its sole purpose - the
+                    # pre-registered Option-D Spearman gate - was never
+                    # built, no reader existed. sizing.py stays as a tested
+                    # library for any future clean re-test.
                     bid, ask, quote_err = await quote_book(
                         session, sig["token_id"])
                     quote_ts = time.time()
@@ -842,14 +828,8 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
     import aiohttp
     import websockets
 
-    from mirror_v3.sizing import (
-        TrailingMedians, conviction_multiplier, seed_medians_from_cache)
-
     roster_set = set(load_roster(cfg.roster_path))
-    if cfg.median_cache and os.path.isdir(cfg.median_cache):
-        medians = seed_medians_from_cache(cfg.median_cache, sorted(roster_set))
-    else:
-        medians = TrailingMedians()
+    # conviction median machinery RETIRED 2026-08-25 (rec 9 / ledger #30)
     dedup = FirstBuyDedup()
     _seeded = seed_firstbuy(dedup, cfg.rtds_sink)
     log(f"[rtds_watch] first-buy dedup seeded from sink: {_seeded} pairs")
@@ -968,14 +948,8 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
                                                f"open={bidreg.n_open}")
                                    except Exception as e:
                                        log(f"[bidsim] register error: {e!r}")
-                               tmed, n_obs = medians.stats(sig["trader"])
-                               mult, r = conviction_multiplier(
-                                   sig["whale_size_usd"], tmed, n_obs)
-                               medians.observe(sig["trader"], sig["whale_size_usd"])
-                               sig["trailing_median_usd"] = tmed
-                               sig["conviction_r"] = (round(r, 4)
-                                                      if r is not None else None)
-                               sig["size_multiplier"] = mult
+                               # conviction annotation RETIRED 2026-08-25
+                               # (see chain path note)
                                bid, ask, quote_err = await quote_book(
                                    session, sig["token_id"])
                                quote_ts = time.time()

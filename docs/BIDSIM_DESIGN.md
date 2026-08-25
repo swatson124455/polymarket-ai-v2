@@ -89,3 +89,14 @@ amendment epoch are PARKED (kept, never pooled, never quoted as fill rate):
 **Registered decision hypothesis is UNCHANGED:** true band fill rate >= 74%
 => maker beats taker in [0.65, 0.85). The forward comparison is still forward
 taker edge vs forward fill-rate x maker edge, per FORWARD DATA ONLY.
+
+## AMENDMENT 2 (2026-08-25) - FILL-SIDE RULING (operator: "go with rec 3")
+The chase-vs-post decision reads TWO fill rates, both from chain truth:
+- STRICT (headline): taker-SELL aggression only, classified per fill_tx
+  receipt (scripts/bidsim_classify_fills.py) - the fills a resting bid
+  could genuinely receive.
+- BRACKET (upper): the charter any-print rate.
+DECISION RULE: maker (post) wins ONLY if BOTH rates clear the 74%
+break-even bar; otherwise the default is chase (taker). The ~100-resolved
+proposal reports both plus the label-coverage caveat (two-stage: fill-rate
+firm first, cond-edge as markets resolve).

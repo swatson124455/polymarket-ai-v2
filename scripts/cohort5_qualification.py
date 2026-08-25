@@ -71,6 +71,36 @@ C1_UNTESTED = [
 C1_E_REJECT = 20.0
 C1_FUTILITY_N = 300
 
+# RE-REGISTRATION (2026-08-25, operator: "go with rec 4"): the 15 unconsumed
+# ORIGINAL-cohort5 looks move to the SAME anytime-valid e-process. Their
+# per-trader diagnostics were visible in daily readouts, so they get a FRESH
+# forward epoch (below) rather than keeping 07-30 - stricter than required,
+# immune to the peeking objection. The 5 consumed locks stay locked forever.
+# Fees: canon venue formula (the new registration supersedes flat-2%).
+REREG_EPOCH = datetime(2026, 8, 25, 18, 0, 0,
+                       tzinfo=timezone.utc).timestamp()
+
+# INSUFFICIENT-PROBES (2026-08-25, operator: "go with rec 5"): the 12
+# never-regraded INSUFFICIENT-EVIDENCE traders join as observation-only
+# probes (roster 31->43); forward EV is the only way to apply the operator's
+# "positive EV -> add, negative -> remove" rule. Same e-process, same fresh
+# epoch. Chain screen NOT re-run - these are probes, not admits; QUALIFIES
+# here is a PROPOSAL that would ALSO need the fraud screen before live copy.
+INSUFF_PROBES = [
+    "0x48185887c8dc95de60ee89722f1d0ee7894cbf0b",
+    "0x92672c80d36dcd08172aa1e51dface0f20b70f9a",
+    "0x9cb990f1862568a63d8601efeebe0304225c32f2",
+    "0xa8c63f775ddbbe66b56614191747def3021444e8",
+    "0xc257ea7e3a81ca8e16df8935d44d513959fa358e",
+    "0xcd9bc2939f0dac121f6ccde59cca5e0b6a91414d",
+    "0xe40ea00e74059c76c0035c919ef6b99c3e25a94d",
+    "0xea8ee311382139d952087a669252252625663de0",
+    "0xed107a85a4585a381e48c7f7ca4144909e7dd2e5",
+    "0xed88d69d689f3e2f6d1f77b2e35d089c581df3c4",
+    "0xf5198df69e13937a40d1c76d6f72d9aa067d906b",
+    "0xfbf3d501e88815464642d0e913f15379c3eeb218",
+]
+
 EDGE_BAR = 0.02
 P_BAR = 0.95
 N_BAR = 30
@@ -161,95 +191,73 @@ async def run(args) -> int:
     locks = sr.load_locks(args.locks)
     proposals = []
 
-    def grade(group, group_fwd, epoch, lock_source):
+    def eproc_grade(group, epoch, lock_source):
         nonlocal locks
+        gfwd = forward_records(recs, epoch)
         for a in group:
-            res = sr.cohort_readout(group_fwd, outcomes, epoch, a, cfg)
-            n = res.get("resolved_mkts") or 0
             if a in locks:
                 lk = locks[a]
-                print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: {lk['verdict']} "
-                      f"(single look consumed)")
+                print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: "
+                      f"{lk['verdict']} (consumed)")
                 continue
-            qual, status = bar_status(res)
-            marker = ""
-            if n >= N_BAR:
-                verdict = "QUALIFIES" if qual else "DOES NOT QUALIFY"
+            t_recs = [r for r in gfwd
+                      if str(r.get("trader", "")).lower() == a]
+            seq = mc.per_market_edges(t_recs, outcomes, frm or {},
+                                      fee_map or {}, epoch=epoch)
+            edges = [e for _, _, e in seq]
+            n = len(edges)
+            res = sr.cohort_readout(gfwd, outcomes, epoch, a, cfg)
+            okr = res.get("ok_rate")
+            if n == 0:
+                print(f"  {a[:12]}..  ACCRUING (0 resolved, e=n/a)")
+                continue
+            ev = bt.e_value(edges)
+            pooled = mc.pooled_edge(seq)
+            line = (f"  {a[:12]}..  n={n} e={ev:.3f} pooled={pooled:+.4f} "
+                    f"ok_rate={okr if okr is None else round(okr, 2)}")
+            if ev >= C1_E_REJECT:
+                econ_ok = pooled is not None and pooled >= EDGE_BAR
+                ok_ok = isinstance(okr, float) and okr >= OKRATE_BAR
+                verdict = ("QUALIFIES" if (econ_ok and ok_ok)
+                           else "E-PASS BUT GATE FAIL "
+                                f"(econ_ok={econ_ok} ok_rate_ok={ok_ok})")
                 locks = sr.write_lock(args.locks, locks, a, {
-                    "locked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
-                    "resolved": n, "edge": res.get("shadow_edge"),
-                    "p": res.get("shadow_edge_p"), "verdict": verdict,
-                    "source": lock_source})
-                marker = f"  <== {verdict} [LOCKED THIS RUN]"
-                if qual:
+                    "locked_at": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%MZ"),
+                    "resolved": n, "edge": pooled, "p": ev,
+                    "verdict": verdict, "source": lock_source})
+                print(line + f"  <== {verdict} [LOCKED THIS RUN]")
+                if verdict == "QUALIFIES":
                     proposals.append(a)
-            print(f"  {a[:12]}..  {status}{marker}")
+            elif n >= C1_FUTILITY_N:
+                locks = sr.write_lock(args.locks, locks, a, {
+                    "locked_at": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%MZ"),
+                    "resolved": n, "edge": pooled, "p": ev,
+                    "verdict": "NOT DEMONSTRATED (futility)",
+                    "source": lock_source})
+                print(line + "  <== NOT DEMONSTRATED (futility) [LOCKED]")
+            else:
+                print(line + "  ACCRUING")
 
-    grade(cands, fwd, QUAL_EPOCH, "cohort5_qualification single-look")
-    frm = None
-    if args.fee_rate_map and os.path.exists(args.fee_rate_map):
-        try:
-            frm = json.load(open(args.fee_rate_map))
-        except ValueError as e:
-            raise SystemExit(f"FATAL: fee_rate_map corrupt ({e!r}) - the C1 "
-                             f"group grades on the venue formula; refusing "
-                             f"to silently fall back to flat 2%")
-        if not isinstance(frm, dict) or not frm:
-            raise SystemExit("FATAL: fee_rate_map empty/malformed - refusing")
-    c1fwd = forward_records(recs, C1_FWD_EPOCH)
-    print(f"cohort1-untested ({len(C1_UNTESTED)}) - window since "
-          f"{datetime.fromtimestamp(C1_FWD_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ} | "
-          f"forward records: {len(c1fwd)} | ANYTIME-VALID e-process "
-          f"(amendment 2026-08-25; reject e>={C1_E_REJECT:.0f}, futility "
-          f"{C1_FUTILITY_N}) | fee=VENUE formula "
-          f"({len(frm) if frm else 0} rated; unmapped flat 2%)")
-    print("  [fee disclosure] original-20 stay on their 07-30 charter "
-          "(flat 2%, single look); C1 group on canon venue fees")
-    for a in C1_UNTESTED:
-        if a in locks:
-            lk = locks[a]
-            print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: {lk['verdict']} "
-                  f"(consumed)")
-            continue
-        t_recs = [r for r in c1fwd
-                  if str(r.get("trader", "")).lower() == a]
-        seq = mc.per_market_edges(t_recs, outcomes, frm or {},
-                                  fee_map or {}, epoch=C1_FWD_EPOCH)
-        edges = [e for _, _, e in seq]
-        n = len(edges)
-        res = sr.cohort_readout(c1fwd, outcomes, C1_FWD_EPOCH, a, cfg)
-        okr = res.get("ok_rate")
-        if n == 0:
-            print(f"  {a[:12]}..  ACCRUING (0 resolved, e=n/a)")
-            continue
-        ev = bt.e_value(edges)
-        pooled = mc.pooled_edge(seq)
-        line = (f"  {a[:12]}..  n={n} e={ev:.3f} pooled={pooled:+.4f} "
-                f"ok_rate={okr if okr is None else round(okr, 2)}")
-        if ev >= C1_E_REJECT:
-            econ_ok = pooled is not None and pooled >= EDGE_BAR
-            ok_ok = isinstance(okr, float) and okr >= OKRATE_BAR
-            verdict = ("QUALIFIES" if (econ_ok and ok_ok)
-                       else "E-PASS BUT GATE FAIL "
-                            f"(econ_ok={econ_ok} ok_rate_ok={ok_ok})")
-            locks = sr.write_lock(args.locks, locks, a, {
-                "locked_at": datetime.now(timezone.utc).strftime(
-                    "%Y-%m-%dT%H:%MZ"),
-                "resolved": n, "edge": pooled, "p": ev, "verdict": verdict,
-                "source": "cohort1_untested e-process (amendment 2026-08-25)"})
-            print(line + f"  <== {verdict} [LOCKED THIS RUN]")
-            if verdict == "QUALIFIES":
-                proposals.append(a)
-        elif n >= C1_FUTILITY_N:
-            locks = sr.write_lock(args.locks, locks, a, {
-                "locked_at": datetime.now(timezone.utc).strftime(
-                    "%Y-%m-%dT%H:%MZ"),
-                "resolved": n, "edge": pooled, "p": ev,
-                "verdict": "NOT DEMONSTRATED (futility)",
-                "source": "cohort1_untested e-process (amendment 2026-08-25)"})
-            print(line + "  <== NOT DEMONSTRATED (futility) [LOCKED]")
-        else:
-            print(line + "  ACCRUING")
+    print(f"  [amendment 2026-08-25] ALL unconsumed looks are ANYTIME-VALID "
+          f"e-process (reject e>={C1_E_REJECT:.0f}, futility {C1_FUTILITY_N},"
+          f" canon venue fees); the 5 consumed single-looks stay locked")
+    print(f"original-20 unconsumed - re-registered epoch "
+          f"{datetime.fromtimestamp(REREG_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
+          f" (fresh: prior diagnostics were visible):")
+    eproc_grade(cands, REREG_EPOCH,
+                "cohort5 re-registered e-process (2026-08-25)")
+    print(f"cohort1-untested ({len(C1_UNTESTED)}) - epoch "
+          f"{datetime.fromtimestamp(C1_FWD_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}:")
+    eproc_grade(C1_UNTESTED, C1_FWD_EPOCH,
+                "cohort1_untested e-process (amendment 2026-08-25)")
+    print(f"insufficient-probes ({len(INSUFF_PROBES)}) - epoch "
+          f"{datetime.fromtimestamp(REREG_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
+          f" (observation-only; QUALIFIES = proposal + fraud screen still "
+          f"required):")
+    eproc_grade(INSUFF_PROBES, REREG_EPOCH,
+                "insufficient_probe e-process (2026-08-25)")
     if proposals:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
@@ -288,6 +296,17 @@ def _self_test() -> int:
             and C1_FWD_EPOCH > QUAL_EPOCH)
     print(f"  [epoch2] cohort1-untested fixed at 2026-08-24T17:00:00Z : {ok3b}")
     ok &= ok3b
+    ok3d = (REREG_EPOCH == datetime(2026, 8, 25, 18, 0, 0,
+                                    tzinfo=timezone.utc).timestamp()
+            and REREG_EPOCH > C1_FWD_EPOCH)
+    print(f"  [epoch3] re-registration fixed at 2026-08-25T18:00:00Z : {ok3d}")
+    ok &= ok3d
+    ok3e = (len(INSUFF_PROBES) == 12 and len(set(INSUFF_PROBES)) == 12
+            and all(a == a.lower() and a.startswith("0x") and len(a) == 42
+                    for a in INSUFF_PROBES)
+            and not (set(INSUFF_PROBES) & set(C1_UNTESTED)))
+    print(f"  [group2] 12 unique probe addresses, disjoint from C1 : {ok3e}")
+    ok &= ok3e
     ok3c = (len(C1_UNTESTED) == 9 and len(set(C1_UNTESTED)) == 9
             and all(a == a.lower() and a.startswith("0x") and len(a) == 42
                     for a in C1_UNTESTED))
