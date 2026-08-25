@@ -27,7 +27,7 @@ cd /opt/polymarket-ai-v2
 {
   echo "===== $(date -u +%FT%TZ) band 0.65-0.85 forward test ====="
   DATABASE_URL="$DBURL" PYTHONPATH="$D" \
-    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/band_tracker.py" 2>&1 | grep -E "^\[band\]"
+    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/band_tracker.py" 2>&1
 } >> "$LOG"
 {
   DATABASE_URL="$DBURL" PYTHONPATH="$D" \

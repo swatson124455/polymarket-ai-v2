@@ -40,6 +40,23 @@ def band_line(log_path):
                 last = ln.strip()
     if not last:
         return None, "no [band] line in log (band tracker never ran?)"
+    # staleness guard (2026-08-25, hygiene review): the band cron stage can
+    # die invisibly; serving yesterday's line as current is the exact
+    # dead-instrument-impersonating-live failure this board exists to stop.
+    import re as _re
+    m = _re.search(r"(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})Z", last)
+    if m:
+        from datetime import datetime as _dt, timezone as _tz
+        try:
+            t = _dt.strptime(m.group(0), "%Y-%m-%dT%H:%MZ").replace(
+                tzinfo=_tz.utc)
+            age_h = (_dt.now(_tz.utc) - t).total_seconds() / 3600.0
+            if age_h > 26:
+                return None, (f"STALE - last [band] line is {age_h:.0f}h old "
+                              f"({m.group(0)}); the band stage has NOT run "
+                              f"today - investigate the cron")
+        except ValueError:
+            pass
     return last, None
 
 
