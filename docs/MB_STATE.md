@@ -18,6 +18,35 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-25 (~14:10Z) — STRESS CAMPAIGN: ALL ITEMS vs CANON DATA, BLINDLY
+> (operator: "stress test all items with canon data blindly")
+>
+> **Positive runs (fresh /dev/urandom seeds, 3x sample):** seeds 4762895 +
+> 14372946, each 25 records + 25 labels + 15 fees = **130/130 clean**;
+> cumulative with the daily-seed run: **152/152 blind checks vs chain
+> receipts / CLOB resolutions / venue fees, 0 alarms.**
+> **Negative controls (the stick must be able to FAIL):** corrupted-sink copy
+> (all 71,222 prices +0.05) -> **10/10 sampled records ALARMED**;
+> flipped-labels copy (239,828 resolutions inverted) -> **10/10 sampled
+> labels ALARMED**. 100%% detection both axes. canon_verify gained
+> --sink/--gamma override flags for exactly such audits.
+> **Fuzz:** 2,000 seeded random trials (seed 1599970607) on mb_canon +
+> e_value - 0 invariant failures (bounds, ordering, pooling, empty->None,
+> merge partition/conflict); e-process boundary hammer clean (all-positive
+> edges e=25.2 crosses 20; all-negative 0.28).
+> **Restore drills:** bundle untarred - locks/ledger md5-MATCH, sink
+> restored 71,221/71,222 lines (append-only gap = expected);
+> shadow_fills snapshot pg_restored into a scratch schema: **9,514/9,514
+> rows**, schema dropped after. Pulled Windows bundle lists 95/95 entries.
+> **Ledger blind spot-check** (seed 1712492766, 5 random claims re-grepped):
+> 5/5 held. **Full lane pytest: 105 green.**
+> **Honest notes:** (1) band_lock.json does not exist yet - CORRECT
+> (created on first crossing); my ad-hoc drill printed a false MATCH for
+> missing-vs-missing - drill flaw, not backup flaw, disclosed. (2) cohort5
+> grading deliberately NOT re-run in the stress: 0xee00ba33 sat at 23/30 at
+> 11:40Z and an unscheduled run risks consuming an original-20 single look.
+> (3) /tmp/sf.sql left postgres-owned in /tmp (wiped on reboot).
+>
 > ## 2026-08-25 (~14:00Z) — OVERHAUL PROGRAM EXECUTED (operator 7-item
 > directive; parallel agents authorized; "nothing but excellence")
 >

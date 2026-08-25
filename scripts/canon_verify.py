@@ -202,7 +202,16 @@ def main() -> int:
     ap.add_argument("--k-fees", type=int, default=6)
     ap.add_argument("--seed", type=int, default=None,
                     help="override the date seed (audit reruns)")
+    ap.add_argument("--sink", default=None,
+                    help="override sink path (stress/negative-control runs)")
+    ap.add_argument("--gamma", default=None,
+                    help="override label-cache path (stress runs)")
     a = ap.parse_args()
+    global SINK, GAMMA
+    if a.sink:
+        SINK = a.sink
+    if a.gamma:
+        GAMMA = a.gamma
     now = datetime.now(timezone.utc)
     seed = a.seed if a.seed is not None else int(now.strftime("%Y%m%d"))
     rng = random.Random(seed)
