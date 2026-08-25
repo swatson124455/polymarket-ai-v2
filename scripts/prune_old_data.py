@@ -39,7 +39,9 @@ DEFAULT_RETENTION = {
     "trade_events": 90,
     "reconciliation_breaks": 60,
     "paper_trades": 90,
-    "shadow_fills": 90,
+    # "shadow_fills" removed 2026-08-25 (operator sign-off #21) - see the
+    # DELETE_QUERIES note; keeping it here would KeyError the nightly
+    # --table all run against the removed query.
 }
 
 # Delete queries per table.  trade_events has a safety guard; others are simple date-based.
@@ -73,14 +75,14 @@ DELETE_QUERIES = {
             LIMIT :batch
         )
     """,
-    "shadow_fills": """
-        DELETE FROM shadow_fills
-        WHERE ctid IN (
-            SELECT ctid FROM shadow_fills
-            WHERE created_at < NOW() - make_interval(days => :days)
-            LIMIT :batch
-        )
-    """,
+    # shadow_fills EXCLUDED from pruning (2026-08-25, operator sign-off #21,
+    # docs/MB_DISPOSITION_LEDGER.md): the table holds the 12,713-row-era L2
+    # fill ladders - the salvage-era precise fill model - and the 90-day
+    # retention had ALREADY silently deleted ~3,199 rows before the hygiene
+    # review caught it (snapshot: /opt/pa2-backups/mb_evidence/
+    # shadow_fills_snapshot_20260825.dump). DELETE query removed so
+    # --table all can never touch it again; re-enabling requires operator
+    # sign-off + this comment's removal.
 }
 
 # Existence-check queries for dry-run
@@ -206,7 +208,7 @@ def main():
     parser = argparse.ArgumentParser(description="Prune old trade data rows")
     parser.add_argument(
         "--table",
-        choices=["trade_events", "reconciliation_breaks", "paper_trades", "shadow_fills", "all"],
+        choices=["trade_events", "reconciliation_breaks", "paper_trades", "all"],
         default="all",
         help="Which table(s) to prune (default: all)",
     )
