@@ -389,7 +389,13 @@ class WatcherConfig:
 def shadow_record(sig: dict, verdict: str, fill: Optional[float],
                   best_bid: Optional[float], best_ask: Optional[float],
                   block_ts: int, now_ts: float, tx: str,
-                  book: Optional[dict] = None) -> dict:
+                  book: Optional[dict] = None,
+                  quote_ts: Optional[float] = None) -> dict:
+    # quote_ts (2026-08-25, operator-approved rec): the moment the /price
+    # quote was actually taken. detect_ts is stamped BEFORE the per-signal
+    # receipt/block RPC work, so quote_ts - detect_ts measures the fill
+    # quote's staleness relative to detection - previously unmeasurable
+    # (hygiene-review finding: the latency tail is recorder burst-queueing).
     return {
         **sig,
         "verdict": verdict,
@@ -401,6 +407,9 @@ def shadow_record(sig: dict, verdict: str, fill: Optional[float],
         "block_ts": block_ts,
         "detect_ts": round(now_ts, 3),
         "detect_lag_s": round(now_ts - block_ts, 3),
+        "quote_ts": round(quote_ts, 3) if quote_ts is not None else None,
+        "quote_lag_s": (round(quote_ts - now_ts, 3)
+                        if quote_ts is not None else None),
         "tx": tx,
     }
 
@@ -670,6 +679,7 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     sig["conviction_r"] = round(r, 4) if r is not None else None
                     sig["size_multiplier"] = mult
                     bid, ask = await quote_book(session, sig["token_id"])
+                    quote_ts = time.time()
                     sanity = quote_sanity_msg(bid, ask)
                     if sanity:
                         log(f"[copy_watcher] {sanity} "
@@ -680,7 +690,8 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                         cfg.max_chase, cfg.max_spread, cfg.max_fill)
                     rec = shadow_record(
                         sig, verdict, fill, bid, ask, block_ts, now,
-                        tx=sig.pop("tx", ""), book=book)
+                        tx=sig.pop("tx", ""), book=book,
+                        quote_ts=quote_ts)
                     with open(cfg.shadow_path, "a") as f:
                         f.write(json.dumps(rec) + "\n")
                     log(f"[copy_watcher] {verdict:<15} {sig['trader'][:10]}… "
@@ -925,6 +936,7 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
                                                       if r is not None else None)
                                sig["size_multiplier"] = mult
                                bid, ask = await quote_book(session, sig["token_id"])
+                               quote_ts = time.time()
                                sanity = quote_sanity_msg(bid, ask)
                                if sanity:
                                    log(f"[rtds_watch] {sanity} "
@@ -936,7 +948,8 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
                                rec = shadow_record(
                                    sig, verdict, fill, bid, ask,
                                    block_ts=int(row["trade_ts"] or now),
-                                   now_ts=now, tx=row["tx"], book=book)
+                                   now_ts=now, tx=row["tx"], book=book,
+                                   quote_ts=quote_ts)
                                with open(cfg.rtds_sink, "a") as f:
                                    f.write(json.dumps(rec) + "\n")
                                log(f"[rtds_watch] {verdict:<15} "

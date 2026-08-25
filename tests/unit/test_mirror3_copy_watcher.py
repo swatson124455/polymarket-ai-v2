@@ -574,6 +574,19 @@ def test_bidsim_fill_on_print_at_or_below_bid():
     assert reg.on_print("t1", 0.60, 400.0) == 0     # already filled
 
 
+def test_shadow_record_quote_ts():
+    """quote_ts/quote_lag_s (2026-08-25 rec): staleness of the fill quote
+    relative to detection must be measurable; absent stays None (old
+    records / error paths), never a fake zero."""
+    rec = cw.shadow_record({"trader": "0xa", "token_id": "t"}, "OK", 0.7,
+                           0.69, 0.71, 100, 105.0, "0xtx",
+                           quote_ts=106.5)
+    assert rec["quote_ts"] == 106.5 and rec["quote_lag_s"] == 1.5
+    rec2 = cw.shadow_record({"trader": "0xa", "token_id": "t"}, "OK", 0.7,
+                            0.69, 0.71, 100, 105.0, "0xtx")
+    assert rec2["quote_ts"] is None and rec2["quote_lag_s"] is None
+
+
 def test_bidsim_no_self_fill_from_trigger_tx():
     """2026-08-21 correction: the whale order that PROMPTED the bid cannot
     fill it. Those makers were ahead of us in queue; counting their tape as
