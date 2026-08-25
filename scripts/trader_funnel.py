@@ -170,7 +170,9 @@ def _self_test() -> int:
     print(f"  [sort] highest-e TRIAL first, FAILED last : {ok3}"); ok &= ok3
     import inspect
     src = inspect.getsource(sys.modules[__name__])
-    ok4 = "write_lock" not in src
+    # the probe must not match its own definition line: count call sites of
+    # the lock-writer pattern; exactly zero may exist outside this check
+    ok4 = src.count("sr." + "write_lock(") == 0
     print(f"  [read-only] funnel never writes locks : {ok4}"); ok &= ok4
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
