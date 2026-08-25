@@ -18,6 +18,52 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-25 (~14:00Z) — OVERHAUL PROGRAM EXECUTED (operator 7-item
+> directive; parallel agents authorized; "nothing but excellence")
+>
+> **THE CANON MEASURING STICK IS LIVE (TOP PRIORITY, item 4; 55b96a5).**
+> `scripts/mb_canon.py` = THE estimand (per-market mean per the ratified band
+> charter; venue-fee precedence chain; conflict-detecting label merge — the
+> silent DB-wins merge is retired for new code). `scripts/canon_verify.py` =
+> daily BLIND date-seeded verification of recorded data vs ground truth:
+> shadow records re-derived from Polygon receipts, labels re-checked vs CLOB,
+> fee map re-checked vs venue. **First live run 2026-08-25T13:49Z seed
+> 20260825: records 8/8, labels 8/8, fees 6/6, ALARMS=0.** Wired into the
+> 11:40Z cron; any mismatch prints a loud ALARM; all-sources-unsampleable
+> exits rc=2 (a blind verifier is never a pass). Rulebook:
+> `docs/MEASUREMENT_CANON.md` (definitions, NAMING LAW — bare "edge" =
+> canonical only — verification protocol, consumption rule: IMPORT canon,
+> never re-implement; change control). 8 canon tests, 55 pytest green.
+>
+> **REC EXECUTED (item 6; same commit):** C1_UNTESTED re-registered
+> ANYTIME-VALID before any look was consumed —
+> `docs/COHORT1_UNTESTED_AMENDMENT.md`: e-process (reject e>=20, futility
+> 300, econ gate +0.02 at crossing, OK-rate 0.75), CANON venue fees, epoch
+> 2026-08-24T17:00Z UNMOVED. Legitimacy: only count-only "0/30" lines had
+> ever printed for the 9. Original 20 keep their 07-30 charter (flat 2%,
+> single look) + per-run fee-divergence disclosure. End-to-end verified as
+> cron user (9 x ACCRUING e=n/a; 1,515 forward records in window).
+> **PROPOSED, operator ruling pending: re-register the 15 unconsumed
+> original-cohort5 looks the same way.**
+>
+> **EVIDENCE BACKUP LIVE (item 5; 84c0407).** Nightly VPS bundle 03:30Z
+> (`/opt/pa2-backups/mb_evidence/`, tier1 full + shadow sinks gzipped, 14d
+> retention, gamma weekly): first bundle 20M / 95 entries. OFF-BOX leg:
+> Windows schtasks `MB_Evidence_Pull` daily 05:00 local pulls to
+> `C:\lockes-picks\mb-evidence-backup\` — tested, **md5 verified identical**
+> (e82df0bf..). Cloud bucket = upgrade path, needs operator creds (no
+> aws/rclone on the box).
+>
+> **EVERY-SESSION SURFACING (item 7):** banners atop
+> `MB_DEEP_DIVE_NEXT_PROMPT.md` + `docs/MB_SESSION_STARTUP.md`; memory
+> `project_mb_overhaul_program.md` indexed top of MEMORY.md. Read order:
+> agenda -> canon -> [canon] line (ALARMS must be 0 before quoting numbers).
+>
+> **ITEM 1 (disposition ledger):** drafted by agent; finalization + the
+> one-word sign-off sheet land next block. NOTHING retired/stopped yet —
+> every disposition is operator-gated. Measurement-canon doc (items 2+3) =
+> `docs/MEASUREMENT_CANON.md`, finalized from agent draft.
+>
 > ## 2026-08-24 (~17:15Z) — CHAIN-TRUTH FILL CLASSIFICATION (operator: "it's
 > blockchain, isn't there a record?" — YES, and it resolves the feed gap)
 >
