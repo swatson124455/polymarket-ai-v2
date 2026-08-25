@@ -43,3 +43,5 @@ fi
 ls -1t "$BASE"/mb_evidence_*.tar.gz | tail -n +15 | xargs -r rm -f
 ls -1t "$BASE"/gamma_resolutions_*.json 2>/dev/null | tail -n +5 | xargs -r rm -f
 echo "[$(date -u +%FT%TZ)] mb_evidence backup OK: $OUT ($SZ, $N entries)"
+# cloud leg (rec 7): dormant until operator provisions /root/.mb_backup_s3
+[ -x /opt/pa2-backups/mb_evidence_s3_sync.sh ] && bash /opt/pa2-backups/mb_evidence_s3_sync.sh
