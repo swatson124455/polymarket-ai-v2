@@ -229,3 +229,13 @@ Item 21's hazard is CONFIRMED ACTIVE, not hypothetical:
   7 days on the same box). Stated plainly.
 - STILL OPERATOR-GATED: excluding shadow_fills from prune_old_data (a
   shared-module change) - sign-off sheet item 21.
+
+---
+## ADDITIONS (2026-08-25 hygiene review - pathway fleet artifact verdicts, all grep-cited in docs/mb_hygiene_findings.json)
+29. decode_fill (V1) + get_logs_compat in mirror_v3/copy_watcher.py - test-only consumers, zero production callers. Proposed: RETIRE.
+30. Conviction annotation branch (conviction_r/size_multiplier/trailing_median_usd + TrailingMedians upkeep + median cache seeding) - sole stated purpose (pre-registered Option-D Spearman gate) never built; no reader exists. Proposed: build the reader OR RETIRE the branch (operator picks).
+31. was_taker field in the shadow sink - no reader. Proposed: RETIRE (stop writing) or KEEP as cheap forensics. 
+32. Legacy S155 per-category pipeline (stage1-4 + sunset list) - consumed by nothing. Proposed: RETIRE with legacy disposition.
+33. Legacy elite_traders parallel remnant - superseded by watchlist. Proposed: RETIRE with legacy disposition.
+34. mirrored_trades Redis persistence machinery - write-only bookkeeping (CLAUDE.md-confirmed). Proposed: RETIRE with legacy disposition.
+35. RATIFIED 2026-08-25 ("proceed with recs"): the v3 shadow verdict field satisfies MB_REBUILD_PLAN Decision-5 step-3's rejection-logging precondition - the legacy wind-down is now ELIGIBLE. Sign-off #1 (stop polymarket-mirror per the safe sequence) awaits the operator's explicit word; until then legacy runs and its 5 hygiene defects stay REPORT-ONLY per the review's own ordering rule.
