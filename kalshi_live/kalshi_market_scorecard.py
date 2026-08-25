@@ -27,7 +27,11 @@ def qualifying_share(bids, our_price, our_size, target, df):
     """R4: reference = highest bid (<1.0); walk down accumulating size to Target; score = DF^N*size,
     N = ticks from reference; return (our normalized share, side_qualifies)."""
     bids = sorted(((p, s) for p, s in bids if s > 0), key=lambda x: -x[0])
-    if not bids or bids[0][0] >= 1.0:
+    # R4 fix (2026-08-25): the filing (CFTC rules02112639183, Appendix A) disqualifies a side
+    # whose best bid "is not less than the highest possible price" — i.e. a bid AT 1-TICK
+    # (0.99 on the cent grid) leaves the side with NO qualifying bids. The old `>= 1.0` test
+    # modeled credit on 0.99-touch sides the venue scores $0.
+    if not bids or bids[0][0] >= (1.0 - TICK) - 1e-9:
         return 0.0, False
     ref = bids[0][0]
     cum = total = 0.0

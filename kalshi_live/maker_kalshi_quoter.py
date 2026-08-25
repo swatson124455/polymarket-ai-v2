@@ -2697,7 +2697,11 @@ def _qualifying_score(bids, our_price, our_size, target, df, own_orders=None):
     machinery out of the live quoter's import graph; test_capture_gate pins equivalence to the
     scorecard on shared fixtures."""
     bids = sorted(((p, s) for p, s in bids if s > 0), key=lambda x: -x[0])
-    if not bids or bids[0][0] >= 1.0:
+    # R4 fix (2026-08-25): filing rule — a side whose best bid sits AT the highest possible
+    # price (1-TICK = 0.99) has NO qualifying bids ("...or is not less than the highest
+    # possible price"). `>= 1.0` under-modeled this: 0.99-touch sides scored here while the
+    # venue pays the whole snapshot $0. Kept byte-equivalent to kalshi_market_scorecard.
+    if not bids or bids[0][0] >= (1.0 - TICK) - 1e-9:
         return 0.0, False
     ref = bids[0][0]
     cum = total = 0.0

@@ -133,3 +133,14 @@ def test_p7_held_inventory_unwinds_through_unqualifiable_book(monkeypatch):
     sides = {x["side"]: x for x in qs}
     assert "yes" in sides and sides["yes"]["count"] == 40
     assert all(x.get("reason") == "unwind" for x in qs)
+
+
+def test_p8_max_price_side_disqualified(monkeypatch):
+    # R4 fix pin (filing: best bid at the highest possible price -> NO qualifying bids).
+    _live_cfg(monkeypatch)
+    share, qual = q._qualifying_score([[0.99, 5000.0]], 0.99, 40, 1000, 0.5)
+    assert (share, qual) == (0.0, False)
+    share, qual = q._qualifying_score([[0.98, 5000.0]], 0.98, 40, 1000, 0.5)
+    assert qual and share > 0.0                        # one tick lower is unaffected
+    import kalshi_market_scorecard as sc
+    assert sc.qualifying_share([[0.99, 5000.0]], 0.99, 40, 1000, 0.5) == (0.0, False)
