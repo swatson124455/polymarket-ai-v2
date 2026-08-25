@@ -33,3 +33,8 @@ cd /opt/polymarket-ai-v2
   DATABASE_URL="$DBURL" PYTHONPATH="$D" \
     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_scoreboard.py" 2>&1
 } >> "$LOG"
+{
+  echo "===== $(date -u +%FT%TZ) canon verification (blind, date-seeded) ====="
+  PYTHONPATH=/opt/mirror3 \
+    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/canon_verify.py" 2>&1
+} >> "$LOG"
