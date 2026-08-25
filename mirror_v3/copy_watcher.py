@@ -450,6 +450,30 @@ def canary_state(zero_streak: int, n_events: int) -> tuple[int, Optional[str]]:
     return streak, None
 
 
+def seed_firstbuy(dedup: "FirstBuyDedup", sink_path: str) -> int:
+    """Rehydrate first-buy dedup from the sink (2026-08-25, operator-approved
+    fix for the restart artifact: 924 excess first-buy flags / 16.4% of
+    first-buy records were duplicates from memory-only dedup). Marks every
+    (trader, token) pair ever recorded so a restart can never re-flag a
+    repeat as first. Returns pairs seeded; missing sink = 0 (fresh box)."""
+    if not sink_path or not os.path.exists(sink_path):
+        return 0
+    n = 0
+    with open(sink_path, errors="replace") as f:
+        for ln in f:
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            t, tok = r.get("trader"), r.get("token_id")
+            if t and tok and dedup.is_first(str(t), str(tok)):
+                n += 1
+    return n
+
+
 class FirstBuyDedup:
     """The graded estimand is FIRST BUY per (trader, token); repeat fills
     (multi-fill orders, later adds) are recorded but marked duplicate so
@@ -468,7 +492,8 @@ class FirstBuyDedup:
 
 # ── Network runner (VPS; everything above is testable offline) ──────────────
 async def quote_book(session, token_id: str,
-                     timeout_s: float = 2.0) -> tuple[Optional[float], Optional[float]]:
+                     timeout_s: float = 2.0
+                     ) -> tuple[Optional[float], Optional[float], bool]:
     """(best_bid, best_ask) from the public CLOB /price endpoint.
 
     /price's `side` names the BOOK SIDE being read: side=BUY returns the
@@ -478,6 +503,7 @@ async def quote_book(session, token_id: str,
     mapping REVERSED — every record's bid/ask were swapped and shadow
     fills quoted the bid, flattering edge by the spread."""
     bid = ask = None
+    quote_err = False
     for side, out in (("BUY", "bid"), ("SELL", "ask")):
         try:
             async with session.get(
@@ -486,12 +512,17 @@ async def quote_book(session, token_id: str,
                     timeout=timeout_s) as r:
                 px = float((await r.json()).get("price", 0)) or None
         except Exception:
+            # 2026-08-25 (hygiene review, operator-approved): a transport/
+            # endpoint failure must be DISTINGUISHABLE from a genuinely empty
+            # book - outage-correlated NO_BOOK exclusion silently selects the
+            # OK population toward calm markets.
             px = None
+            quote_err = True
         if out == "bid":
             bid = px
         else:
             ask = px
-    return bid, ask
+    return bid, ask, quote_err
 
 
 async def fetch_book(session, token_id: str,
@@ -558,7 +589,9 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
 
     os.makedirs(os.path.dirname(cfg.shadow_path) or ".", exist_ok=True)
     dedup = FirstBuyDedup()
-    cursor = int(await bc.w3.eth.get_block_number()) + 1  # forward-only
+    _seeded = seed_firstbuy(dedup, cfg.shadow_path)
+    log(f"[watch] first-buy dedup seeded from sink: {_seeded} pairs")
+    cursor = int(await rpc_call(bc.w3.eth.get_block_number())) + 1  # forward-only
     fail_streak = 0  # consecutive failures of the SAME window (stall guard)
     canary_zero_streak = 0
     canary_seen_first = False  # first result is logged either way
@@ -655,6 +688,9 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                         block_ts = int(blk["timestamp"])
                     except Exception:
                         block_ts = int(now)
+                        # marker (2026-08-25): fabricated timestamp - lag
+                        # stats must be able to exclude it
+                        sig["block_ts_est"] = True
                     sig.pop("_block", None)
                     sig["first_buy"] = dedup.is_first(
                         sig["trader"], sig["token_id"])
@@ -678,8 +714,11 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     sig["trailing_median_usd"] = tmed
                     sig["conviction_r"] = round(r, 4) if r is not None else None
                     sig["size_multiplier"] = mult
-                    bid, ask = await quote_book(session, sig["token_id"])
+                    bid, ask, quote_err = await quote_book(
+                        session, sig["token_id"])
                     quote_ts = time.time()
+                    sig["quote_error"] = quote_err
+                    sig["one_sided_book"] = (bid is None)
                     sanity = quote_sanity_msg(bid, ask)
                     if sanity:
                         log(f"[copy_watcher] {sanity} "
@@ -812,6 +851,8 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
     else:
         medians = TrailingMedians()
     dedup = FirstBuyDedup()
+    _seeded = seed_firstbuy(dedup, cfg.rtds_sink)
+    log(f"[rtds_watch] first-buy dedup seeded from sink: {_seeded} pairs")
     bidreg = bidsim_make(cfg)
     last_sweep = time.time()
     os.makedirs(os.path.dirname(cfg.rtds_sink) or ".", exist_ok=True)
@@ -935,8 +976,11 @@ async def rtds_watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> 
                                sig["conviction_r"] = (round(r, 4)
                                                       if r is not None else None)
                                sig["size_multiplier"] = mult
-                               bid, ask = await quote_book(session, sig["token_id"])
+                               bid, ask, quote_err = await quote_book(
+                                   session, sig["token_id"])
                                quote_ts = time.time()
+                               sig["quote_error"] = quote_err
+                               sig["one_sided_book"] = (bid is None)
                                sanity = quote_sanity_msg(bid, ask)
                                if sanity:
                                    log(f"[rtds_watch] {sanity} "

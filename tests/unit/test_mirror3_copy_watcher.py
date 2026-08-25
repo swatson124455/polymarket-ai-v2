@@ -357,7 +357,8 @@ def test_quote_book_side_mapping_pins_endpoint_semantics():
             return _Resp({"BUY": "0.08", "SELL": "0.09"}[params["side"]])
 
     s = _Session()
-    bid, ask = asyncio.run(cw.quote_book(s, "123"))
+    bid, ask, qerr = asyncio.run(cw.quote_book(s, "123"))
+    assert qerr is False
     assert bid == 0.08, f"side=BUY must land in bid, got bid={bid}"
     assert ask == 0.09, f"side=SELL must land in ask, got ask={ask}"
     assert ask >= bid, "a correct mapping yields an uncrossed book"
@@ -383,7 +384,8 @@ def test_quote_book_error_isolation_per_side():
                     return False
             return _R()
 
-    bid, ask = asyncio.run(cw.quote_book(_Boom(), "123"))
+    bid, ask, qerr = asyncio.run(cw.quote_book(_Boom(), "123"))
+    assert qerr is True   # outage DISTINGUISHABLE from empty book (2026-08-25)
     assert bid == 0.4 and ask is None  # one side failing never poisons the other
 
 
@@ -572,6 +574,22 @@ def test_bidsim_fill_on_print_at_or_below_bid():
     assert f["type"] == "fill" and f["wait_s"] == 200.0
     assert reg.n_open == 0
     assert reg.on_print("t1", 0.60, 400.0) == 0     # already filled
+
+
+def test_seed_firstbuy_from_sink(tmp_path):
+    """Restart artifact fix (2026-08-25): dedup rehydrates from the sink so a
+    repeat buy after restart is never re-flagged first."""
+    import json as _json
+    p = tmp_path / "sink.jsonl"
+    rows = [{"trader": "0xa", "token_id": "t1"},
+            {"trader": "0xa", "token_id": "t1"},      # repeat: one pair
+            {"trader": "0xb", "token_id": "t2"}]
+    p.write_text(chr(10).join(_json.dumps(r) for r in rows) + chr(10))
+    d = cw.FirstBuyDedup()
+    assert cw.seed_firstbuy(d, str(p)) == 2           # unique pairs seeded
+    assert d.is_first("0xa", "t1") is False           # restart-proof
+    assert d.is_first("0xc", "t9") is True            # new pair still first
+    assert cw.seed_firstbuy(cw.FirstBuyDedup(), str(tmp_path / "nope")) == 0
 
 
 def test_shadow_record_quote_ts():
