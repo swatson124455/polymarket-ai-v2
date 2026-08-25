@@ -60,7 +60,7 @@ def trader_row(a: str, epoch: float, recs: list, outcomes: dict,
 
 
 def fmt(v, spec, dash="   -"):
-    if v is None:
+    if v is None or (isinstance(v, float) and v != v):   # None or NaN
         return dash
     try:
         return format(v, spec)
@@ -145,7 +145,7 @@ async def run(args) -> int:
         print(f"{x['a'][:12]+'..':<14} {x['state']:<7} "
               f"{fmt(x['n'], 'd'):>4} {fmt(x['e'], '.2f'):>7} "
               f"{fmt(x['edge'], '+.4f'):>8} "
-              f"{fmt(None if x['ok'] is None else x['ok']*100, '.0f'):>4} "
+              f"{fmt(None if x['ok'] is None or x['ok'] != x['ok'] else x['ok']*100, '.0f'):>4} "
               f"{fmt(x['days'], 'd'):>4}  {x['note']}")
     if n_pass:
         print(f"  >> {n_pass} PASSED = PROPOSAL(S) - composition is an "
