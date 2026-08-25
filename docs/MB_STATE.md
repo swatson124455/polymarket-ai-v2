@@ -56,6 +56,19 @@
 > operator's eyeball of the shared RedisCache commit. NOTE: master's MB
 > docs are the 08-21 snapshot - a fresh sync PR is the next session-close
 > duty.
+> **INCIDENT (disclosed): the rec-9 retire CRASH-LOOPED the watcher
+> 20:01-20:10Z** - a surviving `mult` reference in the record log line
+> NameError'd at every first roster signal (~9 boot-die cycles; records in
+> that window lost at first-signal per boot - a ~9min detection gap in the
+> canonical sink). ROOT CAUSE OF THE MISS: my AST no-live-reference check
+> listed 3 names, not ALL names the retired blocks bound. Hotfixed
+> 20:10:17Z (3fb9777d); recheck now walks all 7 bound names; VERIFIED
+> SURVIVING past a real signal (SPREAD record at 20:1xZ, restarts_delta=0,
+> DIED=0, and `first=False` on a seeded repeat pair = dedup persistence
+> confirmed live). Lesson appended to the standing list: a partial-removal
+> check must enumerate the removed binding set COMPLETELY, and the only
+> proof for untested paths is surviving live traffic.
+>
 > **9 CONVICTION RETIRED** from the watcher (both paths + median seeding;
 > sizing.py kept as tested library; ledger #30 EXECUTED). AST-level
 > no-live-reference check performed because the network loops are
