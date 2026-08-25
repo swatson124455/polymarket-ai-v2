@@ -76,3 +76,28 @@ Per-section adversarial review incl. EV; verified numbers w/ denominators; Rule 
 ship discipline; one live change per observation window (today's density was operator-
 ordered); second-source before asserting; never restart ~60min of 00:00Z; 07-27 session
 quarantined; operator ruled 08-27 is NOT a guillotine.
+
+## ADDENDUM — PARK-REVIEW FINDINGS (~23:5xZ, operator-ordered full-pathway review)
+**F-A (THE finding, measured): the d3 ramp clock resets on gate flickers longer than
+30min, keeping the EARNERS at probe size.** quoter_state read 23:57Z: first_seen ages =
+T5.44 **1.1 min** (rung 0 again), T5.82 29.8 min, vs 3.900 1,920 min. D3_KEEP_S=1800s
+grace < real flicker durations (the pre-D3-B event-throttle mute alone was ~1.6h). This
+explains the size decay seen in the tape (40→25→10→5ct) AND the est-feed flatness since
+~16:14Z: tiny size -> tiny share. It caps accrual ~4-8x below intent and is the direct
+blocker on the small-level-profit goal (cliffs get missed at probe size).
+OPTION for operator (env-only + one restart): raise KALSHI_D3_KEEP_S to e.g. 21600 (6h).
+Risk assessment: LOW — the ramp only sizes markets that RE-PASS every entry gate; a
+genuinely bad book is refused at admission regardless of remembered rung. Deeper fix
+(cumulative-presence clock) is a code change for later. NOT changed while parked.
+**Review verdict elsewhere: no safety or rules-compliance defects found.** Checked:
+gate ordering incl. all holding paths (capture/qualifiable/void reduce-only before
+re-pair — re-pair unreachable on unpayable books); re-pair envelope + churn bound
+(<= $1.00/mkt/episode at 2c basis, INV_HARD stop); R6 meter math vs known positions;
+exits venue-bounds-only + never gated (verified in every new path's pins); halt/caps/
+breaker untouched; est-feed/cash/scoreboard/d4/storm timers all firing (list read
+03:45Z, reward-pnl+scoreboard ran 07:30/07:40Z); rules compliance — post-only resting
+quotes, self-trade prevention on, real two-sided liquidity, no wash patterns, eligible-
+participant status, sizes tiny. One curiosity logged (not a defect): our own 0.99 exit
+makes that side's best bid = max price -> disqualifies the side for everyone while it
+rests (moot on 3.900 whose NO side fails Target anyway); exit doctrine (venue bounds
+only) deliberately unchanged.
