@@ -29,5 +29,7 @@ dropped_machine=[w for w,(n,usd,mk) in stats.items()
                  and n>=CEIL]
 print("dropped as machine-flow at selection:", len(dropped_machine))
 assert sel, "0 candidates - ABORT"
-open("/tmp/scout_dive_roster.txt","w").write("\n".join(sorted(sel))+"\n")
+# roster2: fresh filename (fs.protected_regular blocks reuse of the stale
+# root-blocked /tmp file - the 07-30 landmine, again)
+open("/tmp/scout_dive_roster2.txt","w").write("\n".join(sorted(sel))+"\n")
 print("selected",len(sel))
