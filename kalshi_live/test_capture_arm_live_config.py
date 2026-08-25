@@ -30,7 +30,7 @@ def _mkt(usd_day=100.0, target=1000):
 def _live_cfg(monkeypatch):
     """The knobs as ruled by the operator 2026-08-25 (D1/D4) on top of live.env."""
     monkeypatch.setattr(q, "CAPTURE_GATE", 1)
-    monkeypatch.setattr(q, "CAPTURE_MIN_USD_DAY", 2.00)  # D4 ruling: floor $2.00
+    monkeypatch.setattr(q, "CAPTURE_MIN_USD_DAY", 1.00)  # D4 corrected to $1.00 (operator, 2026-08-25 ~16:5xZ: "$2" was a misread)
     monkeypatch.setattr(q, "QUALIFIABLE_GATE", True)     # D1 ruling: re-armed
     monkeypatch.setattr(q, "CAPTURE_DF_DEFAULT", 0.5)
     monkeypatch.setattr(q, "W12_PRICE_SHAPE", 0)
@@ -56,7 +56,7 @@ def test_p1_deep_rival_book_refused_flat(monkeypatch):
     qs = q.desired_quotes(_mkt(), _YL_DEEP, _NL_DEEP, q.utcnow(), inv=0.0, stats=stats)
     assert qs == []                                    # pays us ~$0 -> no entry
     assert stats.get("capture_skipped") == 1           # refused BY CAPTURE (book qualifies)
-    assert stats.get("capture_min_pc") < 2.0
+    assert stats.get("capture_min_pc") < 1.0
 
 
 def test_p2_holding_exit_still_rests_full_size(monkeypatch):
@@ -73,7 +73,7 @@ def test_p3_healed_book_readmits_same_cycle(monkeypatch):
     qs = q.desired_quotes(_mkt(), _YL_WALL, _NL_HEAL, q.utcnow(), inv=0.0, stats=stats)
     sides = {x["side"]: x for x in qs}
     # both sides reach Target; our share (~30/1060, ~40/1100 of $100/day ~= $3/day model)
-    # clears the $2.00 floor -> the join returns with no sticky state.
+    # clears the $1.00 floor -> the join returns with no sticky state.
     assert stats.get("capture_skipped") is None
     assert sides["yes"]["count"] == 30 and sides["no"]["count"] == 40
     assert sides["yes"]["price_dollars"] == 0.98 and sides["no"]["price_dollars"] == 0.01
@@ -82,7 +82,7 @@ def test_p3_healed_book_readmits_same_cycle(monkeypatch):
 def test_p4_capture_exactly_at_floor_is_admitted(monkeypatch):
     _live_cfg(monkeypatch)
     pc = q._prospective_capture(_mkt(), _YL_WALL, _NL_HEAL, 0.98, 0.01, 1000, own_orders=None)
-    assert pc >= 2.00                                  # sanity: healed book clears D4 floor
+    assert pc >= 1.00                                  # sanity: healed book clears the floor
     monkeypatch.setattr(q, "CAPTURE_MIN_USD_DAY", pc)
     stats = {}
     qs = q.desired_quotes(_mkt(), _YL_WALL, _NL_HEAL, q.utcnow(), inv=0.0, stats=stats)
