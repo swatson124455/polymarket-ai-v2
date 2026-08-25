@@ -101,6 +101,27 @@ def test_verifier_alarms_on_bad_data():
     assert p_ok2 is True
 
 
+def test_fee_invariants_randomized():
+    """Property layer for fees - added 2026-08-25 after a mutation audit
+    showed the bounds-only fuzz invariants are blind to a fee SIGN flip
+    (atoms stay inside [-1.02, 1]). Invariants: fee >= 0 always; venue fee
+    equals rate*f*(1-f) recomputed here independently; fee never exceeds
+    the flat fallback's worst case."""
+    import random
+    rng = random.Random(20260825)
+    for _ in range(500):
+        f = rng.uniform(0.001, 0.999)
+        rate = rng.choice([0.0, 0.04, 0.05, 0.07])
+        fee, src = mc.canon_fee("tv", f, {"tv": rate}, {})
+        assert fee >= 0.0, (rate, f, fee)
+        assert abs(fee - rate * f * (1.0 - f)) < 1e-12
+        fee2, src2 = mc.canon_fee("unknown", f, {"tv": rate}, {})
+        assert fee2 >= 0.0 and src2 == "flat_2pct_fallback"
+        assert abs(fee2 - 0.02 * f) < 1e-12
+        # venue fee at max rate 0.07 peaks at 0.0175 < flat cap 0.02
+        assert fee <= 0.07 * 0.25 + 1e-12
+
+
 def test_date_seed_is_deterministic():
     import random
     a = random.Random(20260825).sample(range(1000), 10)
