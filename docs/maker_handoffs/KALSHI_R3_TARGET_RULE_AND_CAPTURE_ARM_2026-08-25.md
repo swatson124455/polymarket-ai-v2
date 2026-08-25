@@ -70,6 +70,38 @@ paid on THIS book".
   (T5.42 ×1 tripping its loss governor, AAAGASD-26AUG26 ×2) — the R1 churn shape,
   live; motivates the R1 re-pair/exit-economics design still pending signoff.
 
+## 4b. STRESS-TEST RESULT (operator-ordered, ~14:0xZ) — one real gap found + pinned
+`kalshi_live/test_capture_arm_live_config.py` (commit `c794f23`, 5 pins at the LIVE knob
+values; kalshi suite 1,433/2 exit 0):
+- P1-P4 PASS: deep-rival join book refused via capture_skipped at floor $1.00; holding
+  exit rests full |inv|; healed book re-admits the SAME cycle (no sticky state); floor
+  boundary admits.
+- **P5 — KNOWN GAP (found by this stress test): a thin-but-NONEMPTY side (< Target)
+  makes `void=True` (:3072) → ACTIVATE path → the capture gate is scoped out
+  (`not void`, :3230) and does NOT protect.** That is the exact 08-24 gas shape (NO
+  side 49ct): the gas presence since 08-24 afternoon entered via activate, capture-
+  exempt. Today's flat gas books are blocked only because their thin side is fully
+  EMPTY (`gate_one_sided_book`). Exposure in the gap: ≤ MAX_ACTIVATE_CAPITAL=$60 per
+  market (live.env 14:0xZ), no reward-awareness (MIN_CREDIT on that path is dead
+  behind PRESENCE_GATE=0, ratified OFF 08-19).
+- **CANON CONFLICT SURFACED (must be resolved before coding a void-path fix)**: the
+  quoter's own comment (:3083-:3089) records the R1 floor probe (08-13..16) measuring
+  5/7 probe programs accruing NONZERO on books below Target on both sides ("floor-at-
+  scoring refuted", canon 08-18) — that is why QUALIFIABLE_GATE is bypassed. This
+  window's data says the opposite for 3.900 (sub-Target side → $0 over 12h+ at
+  $0.0065 feed sensitivity) while both-sides-qualified DIESELW accrued. Candidate
+  reconciliations (UNVERIFIED): per-program target_size differences (filing range
+  100-20,000 — probe programs may have had small targets), or probe-order depth
+  itself lifting a side to target. Next study: re-read the archived R1 probe records
+  (`/opt/pa2-maker-backups/r1_probe_archive_20260819/`) against each probe program's
+  actual target_size_fp.
+- Operator options for the void gap (Rule Nine — decisions, not actions): (a) arm
+  PRESENCE_GATE — reverses a ratified 08-19 cliff decision, would gate ALL activates
+  by expected credit; (b) code change "activate fully-to-Target or rest nothing"
+  (matches the :711 macro-probe 'rest NOTHING' doctrine) — BLOCKED on the R1-probe
+  reconciliation above; (c) accept the $60/market bounded window, est-feed as the
+  standing detector. No unilateral action taken.
+
 ## 5. Adversarial review (incl. EV)
 - *Does arming risk Bug-14-class blanket cuts?* The gate is book-state-conditional
   and self-reversing (re-admits when the book qualifies), unlike a static
