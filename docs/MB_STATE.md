@@ -18,6 +18,49 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-25 (~20:10Z) — ALL NINE RULINGS EXECUTED ("go with rec 1-9")
+>
+> **1 LEGACY WOUND DOWN:** final canonical P&L (bot_pnl 2160h) +
+> mirror_rejected_signals archived (1.1GB pg_dump) to
+> /opt/pa2-backups/mb_evidence/ (NOTE: the 1.1GB archive is same-box only -
+> the nightly bundle carries the small tier; a one-time manual pull of the
+> big dump is open); `systemctl stop + disable polymarket-mirror` at
+> ~20:04Z; mirror3/weather/esports/ingestion all verified active. The 8
+> ~$1 legacy paper positions freeze in the DB as-is. Legacy code
+> disposition (removal/archive) proceeds via the ledger sign-offs.
+> **2 ITEM #21 DONE:** shadow_fills excluded from prune_old_data (retention
+> map + DELETE query + CLI choice together - a partial removal would have
+> KeyError'd the nightly run); deployed into the live release
+> (.pre-item21 backup), dry-run verified: 'all' = 3 tables, count 9,519
+> and protected.
+> **3 FILL-SIDE RULED** (BIDSIM_DESIGN Amendment 2): strict chain-truth
+> taker-SELL headline + any-print bracket; maker wins only if BOTH clear
+> 74%; default chase.
+> **4+5 RE-REGISTRATION LIVE** (docs/COHORT5_REREG_AND_PROBES_AMENDMENT.md):
+> the 15 unconsumed original looks + the 12 INSUFFICIENT probes graded by
+> the unified e-process (fresh epoch 2026-08-25T18:00:00Z - fresh because
+> their diagnostics were visible; the 9 C1 keep 08-24T17:00Z; 5 consumed
+> locks immutable). ROSTER 31->43 (probe group 13; backup
+> chain_audit.json.pre-probes12-20260825); watcher restarted 20:01:01Z,
+> 0 errors, dedup-seeded (restarts no longer corrupt first_buy).
+> **6 SCOUT SWEEP #2 RUNNING:** 82 human-scale candidates (fixed band),
+> launched 20:05:56Z (`/tmp/scout_sweep2_main.log`, out
+> deep_dive_scout2/); serial ETA days. Repo copy scripts/vps_jobs/
+> scout_queue3.sh. Hit the /tmp protected_regular landmine AGAIN - fresh
+> filename roster2 is the fix (recorded).
+> **7 CLOUD LEG DORMANT-READY:** mb_evidence_s3_sync.sh chained into the
+> nightly backup; activates when the operator creates /root/.mb_backup_s3
+> (steps in the script header) + installs awscli. Until then the Windows
+> pull remains the off-box leg.
+> **8 PR #5 MERGED to master** (docs sync). PR #6 remains open pending the
+> operator's eyeball of the shared RedisCache commit. NOTE: master's MB
+> docs are the 08-21 snapshot - a fresh sync PR is the next session-close
+> duty.
+> **9 CONVICTION RETIRED** from the watcher (both paths + median seeding;
+> sizing.py kept as tested library; ledger #30 EXECUTED). AST-level
+> no-live-reference check performed because the network loops are
+> untested - it caught my own first patch attempt failing to write.
+>
 > ## 2026-08-25 (~17:05Z) — HYGIENE FIX BATCHES A/B/C/E EXECUTED + D RATIFIED
 > (operator "proceed with recs"; commits d95027e, e335d9b, 72448ab, 2086513)
 >
