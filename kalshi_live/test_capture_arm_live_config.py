@@ -1,35 +1,25 @@
-"""Stress pins for the 2026-08-25 CAPTURE_GATE arming — the LIVE config, the LIVE book shapes.
+"""Stress pins for the 2026-08-25 gate config — LIVE knob values, LIVE book shapes.
 
-test_capture_gate.py pins the mechanism at floor $5 / 100-ct joins. These pins re-run it at the
-values actually armed on the box 2026-08-25T13:53Z (floor $1.00, JOIN 40, MAX_MARKET_CAPITAL 60,
-QUALIFIABLE_GATE bypassed, cliff band 0.003/0.995) against the shapes measured this window:
+History: first version pinned the 13:53Z CAPTURE_GATE arming (floor $1.00, QUALIFIABLE
+bypassed) and documented the VOID-BYPASS known gap as P5. Operator rulings later the same
+day (D1/D4): QUALIFIABLE_GATE re-armed with the D1 _addable clamp tightening (the R1-probe
+refutation that justified the bypass was dissolved by the official-rules read, R3 doc), and
+the capture floor raised to $2.00. P5 now pins the gap CLOSED under the armed gate; P5b
+preserves the legacy bypass behavior under env=0.
 
-  P1  JOIN path, wall-dilution shape (both sides reach Target, deep rival walls, our share ~0
-      -> pc < $1): armed gate refuses the flat entry via capture_skipped.
-  P2  Holding in that book: the EXIT still rests at full |inv| (de-risk never blocked).
-  P3  The book heals (thin side reaches Target, our share meaningful): the gate re-admits the
-      full two-sided join THE SAME CYCLE — no sticky state (the "reenter" property).
-  P4  Boundary: capture exactly AT the floor is admitted (`< floor`, not `<=`).
-  P5  KNOWN GAP, pinned as CURRENT behavior (2026-08-25 stress-test finding, doc
-      KALSHI_R3_TARGET_RULE_AND_CAPTURE_ARM §status): a thin-but-NONEMPTY side (< Target)
-      classifies the book VOID (:3072) -> ACTIVATE path -> the capture gate is scoped out
-      (`not void`) and does NOT protect. This is the exact 08-24 gas shape (NO side 49ct).
-      Exposure there is bounded by MAX_ACTIVATE_CAPITAL=$60/market only. If this pin ever
-      FAILS because activate became capture-gated, that is a deliberate design change —
-      update the doc trail, don't silently re-pin.
+Shapes are the measured window shapes: the 08-24 KXAAAGASW-26AUG31-3.900 book (D4 raw tape
+17-20Z: yes 1,060ct at 0.98 incl. our 40, no 49ct at 0.01) and deep-rival / healed variants.
 """
 from test_live_hardening import q
 
 
-# P1/P2 shape — both sides clear Target 1000 but rival depth dwarfs our 30-40ct join:
-# share ~ 40/20000 -> pc ~ $100 * ~0.002 avg << $1 floor.
-_YL_DEEP = [[0.98, 20000.0]]
+_YL_DEEP = [[0.98, 20000.0]]           # P1/P2: both sides clear Target, rivals dwarf us
 _NL_DEEP = [[0.01, 20000.0]]
-# P3/P4 shape — thin-side book healed to Target: our join is a meaningful share.
-_YL_WALL = [[0.98, 1060.0]]
+_YL_WALL = [[0.98, 1060.0]]            # healed-book pair: meaningful share
 _NL_HEAL = [[0.01, 1100.0]]
-# P5 shape — the measured 08-24 KXAAAGASW-26AUG31-3.900 book (D4 raw tape 17-20Z).
-_NL_THIN = [[0.01, 49.0]]
+_NL_THIN = [[0.01, 49.0]]              # the measured 08-24 gas shape (sub-Target side)
+_YL_MID = [[0.50, 920.0]]              # P6: residual-band shape — gap 80 fundable in $
+_NL_MID = [[0.49, 920.0]]              # (120ct at ~0.50) but above the 50ct INV_HARD clamp
 
 
 def _mkt(usd_day=100.0, target=1000):
@@ -38,43 +28,43 @@ def _mkt(usd_day=100.0, target=1000):
 
 
 def _live_cfg(monkeypatch):
-    """The knobs as armed on the box 2026-08-25T13:53Z (live.env reads 13:53:22Z/14:0xZ)."""
+    """The knobs as ruled by the operator 2026-08-25 (D1/D4) on top of live.env."""
     monkeypatch.setattr(q, "CAPTURE_GATE", 1)
-    monkeypatch.setattr(q, "CAPTURE_MIN_USD_DAY", 1.00)
-    monkeypatch.setattr(q, "QUALIFIABLE_GATE", False)    # live: KALSHI_QUALIFIABLE_GATE=0
+    monkeypatch.setattr(q, "CAPTURE_MIN_USD_DAY", 2.00)  # D4 ruling: floor $2.00
+    monkeypatch.setattr(q, "QUALIFIABLE_GATE", True)     # D1 ruling: re-armed
     monkeypatch.setattr(q, "CAPTURE_DF_DEFAULT", 0.5)
     monkeypatch.setattr(q, "W12_PRICE_SHAPE", 0)
     monkeypatch.setattr(q, "STANDDOWN", 0)
-    monkeypatch.setattr(q, "PRESENCE_GATE", 0)           # live: 0 (ratified 08-19)
+    monkeypatch.setattr(q, "PRESENCE_GATE", 0)           # live: 0 (ratified 08-19, unchanged)
     monkeypatch.setattr(q, "MIN_PRICE_DOLLARS", 0.003)   # cliff band
     monkeypatch.setattr(q, "MAX_PRICE_DOLLARS", 0.995)
-    monkeypatch.setattr(q, "MIN_DEPTH_SYM", 0.0)         # isolate capture from the sym gate
+    monkeypatch.setattr(q, "MIN_DEPTH_SYM", 0.0)
     monkeypatch.setattr(q, "MAX_SPREAD_TICKS", 8)
-    monkeypatch.setattr(q, "JOIN_SIZE", 40)              # live
+    monkeypatch.setattr(q, "JOIN_SIZE", 40)
     monkeypatch.setattr(q, "MIN_QUOTE_CT", 2)
-    monkeypatch.setattr(q, "INV_SOFT_CT", 15.0)          # live
-    monkeypatch.setattr(q, "INV_HARD_CT", 50.0)          # live
-    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)         # live
-    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 60.0)   # live F15 per-market cap
-    monkeypatch.setattr(q, "MAX_ACTIVATE_CAPITAL", 60.0)  # live
+    monkeypatch.setattr(q, "INV_SOFT_CT", 15.0)
+    monkeypatch.setattr(q, "INV_HARD_CT", 50.0)
+    monkeypatch.setattr(q, "INV_TOLERANCE", 1.0)
+    monkeypatch.setattr(q, "MAX_MARKET_CAPITAL", 60.0)
+    monkeypatch.setattr(q, "MAX_ACTIVATE_CAPITAL", 60.0)
+    monkeypatch.setattr(q, "MIN_RUNWAY_H", 0.0)          # runway pins live in their own file
 
 
 def test_p1_deep_rival_book_refused_flat(monkeypatch):
     _live_cfg(monkeypatch)
     stats = {}
     qs = q.desired_quotes(_mkt(), _YL_DEEP, _NL_DEEP, q.utcnow(), inv=0.0, stats=stats)
-    assert qs == []                                    # no entry on a book that pays us ~$0
-    assert stats.get("capture_skipped") == 1           # refused BY CAPTURE, not a fallthrough
-    assert stats.get("capture_min_pc") < 1.0           # sub-floor share, both sides qualifying
+    assert qs == []                                    # pays us ~$0 -> no entry
+    assert stats.get("capture_skipped") == 1           # refused BY CAPTURE (book qualifies)
+    assert stats.get("capture_min_pc") < 2.0
 
 
 def test_p2_holding_exit_still_rests_full_size(monkeypatch):
     _live_cfg(monkeypatch)
     qs = q.desired_quotes(_mkt(), _YL_DEEP, _NL_DEEP, q.utcnow(), inv=-40.0)
     sides = {x["side"]: x for x in qs}
-    assert "yes" in sides                              # reducing side of a -40 (long NO) position
-    assert sides["yes"]["count"] == 40                 # full |inv| — de-risk never down-sized
-    assert all(x.get("reason") == "unwind" for x in qs)  # nothing accumulating while holding
+    assert "yes" in sides and sides["yes"]["count"] == 40   # de-risk never down-sized
+    assert all(x.get("reason") == "unwind" for x in qs)
 
 
 def test_p3_healed_book_readmits_same_cycle(monkeypatch):
@@ -82,31 +72,64 @@ def test_p3_healed_book_readmits_same_cycle(monkeypatch):
     stats = {}
     qs = q.desired_quotes(_mkt(), _YL_WALL, _NL_HEAL, q.utcnow(), inv=0.0, stats=stats)
     sides = {x["side"]: x for x in qs}
-    # both sides reach Target and our share is meaningful (~30/1060, ~40/1100 of $100/day
-    # ≈ $3/day model) >= the $1.00 floor -> the join comes back with no state to clear.
+    # both sides reach Target; our share (~30/1060, ~40/1100 of $100/day ~= $3/day model)
+    # clears the $2.00 floor -> the join returns with no sticky state.
     assert stats.get("capture_skipped") is None
-    assert sides["yes"]["count"] == 30                 # int((60/2)/0.98) — per-side $ cap
-    assert sides["no"]["count"] == 40                  # JOIN_SIZE cap at 0.01
+    assert sides["yes"]["count"] == 30 and sides["no"]["count"] == 40
     assert sides["yes"]["price_dollars"] == 0.98 and sides["no"]["price_dollars"] == 0.01
 
 
 def test_p4_capture_exactly_at_floor_is_admitted(monkeypatch):
     _live_cfg(monkeypatch)
     pc = q._prospective_capture(_mkt(), _YL_WALL, _NL_HEAL, 0.98, 0.01, 1000, own_orders=None)
-    assert pc >= 1.00                                  # sanity: healed book clears the floor
-    monkeypatch.setattr(q, "CAPTURE_MIN_USD_DAY", pc)  # raise the floor to exactly pc
+    assert pc >= 2.00                                  # sanity: healed book clears D4 floor
+    monkeypatch.setattr(q, "CAPTURE_MIN_USD_DAY", pc)
     stats = {}
     qs = q.desired_quotes(_mkt(), _YL_WALL, _NL_HEAL, q.utcnow(), inv=0.0, stats=stats)
     assert stats.get("capture_skipped") is None and qs   # `< floor` boundary admits
 
 
-def test_p5_void_thin_side_bypasses_capture_KNOWN_GAP(monkeypatch):
+def test_p5_void_thin_side_now_refused_gate_armed(monkeypatch):
+    # THE GAP, CLOSED (D1 ruling): thin NO side (49 < Target 1000) and the bridge we could
+    # actually rest (min($60/0.98, INV_HARD 50) = 50ct) cannot reach Target -> unqualifiable
+    # -> NOTHING rests. Before the ruling this book slipped down the activate path.
     _live_cfg(monkeypatch)
     stats = {}
     qs = q.desired_quotes(_mkt(), _YL_WALL, _NL_THIN, q.utcnow(), inv=0.0, stats=stats)
-    # thin side (49 < Target) -> void -> ACTIVATE path; capture gate scoped out (`not void`).
-    # The book that motivated the arming is NOT protected by it — pinned so the gap is visible.
-    assert stats.get("capture_skipped") is None        # capture never ran
-    assert any(x.get("reason") == "activate" for x in qs)  # entered via activate regardless
+    assert qs == []
+    assert stats.get("unqualifiable") == 1
+    assert not any(x.get("reason") == "activate" for x in qs)
+
+
+def test_p5b_legacy_bypass_preserved_under_env_zero(monkeypatch):
+    # env KALSHI_QUALIFIABLE_GATE=0 must restore the pre-ruling behavior byte-for-byte:
+    # the thin-side book takes the activate path (the documented former gap).
+    _live_cfg(monkeypatch)
+    monkeypatch.setattr(q, "QUALIFIABLE_GATE", False)
+    stats = {}
+    qs = q.desired_quotes(_mkt(), _YL_WALL, _NL_THIN, q.utcnow(), inv=0.0, stats=stats)
+    assert any(x.get("reason") == "activate" for x in qs)
+    assert stats.get("unqualifiable") == 1             # stat still counts either way (:3092)
     cost = sum(x["price_dollars"] * x["count"] for x in qs)
-    assert cost <= 60.0 + 1e-9                         # only MAX_ACTIVATE_CAPITAL bounds it
+    assert cost <= 60.0 + 1e-9
+
+
+def test_p6_residual_band_closed_by_addable_clamp(monkeypatch):
+    # D1 tightening pin: gap (80ct/side) IS fundable in dollars ($60/0.50 = 120ct) but sits
+    # above the 50ct INV_HARD clamp the activate branch applies -> the old capital-only
+    # "addable" would have admitted it; the clamped bridge refuses it.
+    _live_cfg(monkeypatch)
+    stats = {}
+    qs = q.desired_quotes(_mkt(), _YL_MID, _NL_MID, q.utcnow(), inv=0.0, stats=stats)
+    assert qs == []
+    assert stats.get("unqualifiable") == 1
+
+
+def test_p7_held_inventory_unwinds_through_unqualifiable_book(monkeypatch):
+    # The armed gate is flat-only: held inventory in a sub-Target book still rests its
+    # reducing quote (de-risk is never gated on reward).
+    _live_cfg(monkeypatch)
+    qs = q.desired_quotes(_mkt(), _YL_WALL, _NL_THIN, q.utcnow(), inv=-40.0)
+    sides = {x["side"]: x for x in qs}
+    assert "yes" in sides and sides["yes"]["count"] == 40
+    assert all(x.get("reason") == "unwind" for x in qs)

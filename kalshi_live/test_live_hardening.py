@@ -379,6 +379,11 @@ def test_event_delta_throttles_when_ticker_below_soft(monkeypatch):
 def test_activate_market_rests_reducing_side_when_carrying_inventory(monkeypatch):
     # thin book (both sides < target) -> ACTIVATE branch; carrying inventory -> DO NOT blanket-pull;
     # rest ONLY the reducing side as a passive maker unwind (fix D).
+    # D1 (2026-08-25): the armed QUALIFIABLE_GATE refuses this unbridgeable book outright
+    # (gap >> INV_HARD clamp); this test pins the LEGACY bypass path (env=0), where the
+    # activate-branch inventory behavior it asserts still runs. Armed-mode equivalents:
+    # test_capture_arm_live_config P5/P7.
+    monkeypatch.setattr(q, "QUALIFIABLE_GATE", False)
     monkeypatch.setattr(q, "INV_SOFT_CT", 30.0)
     thin_y = [["0.50", "10"]]; thin_n = [["0.49", "10"]]   # depth 10 << target 1000 -> void/activate
     out = q.desired_quotes(_mkt(1000), thin_y, thin_n, q.utcnow(), inv=50.0)  # long yes

@@ -1710,6 +1710,12 @@ MAX_DAYS_TO_CLOSE = _envf("KALSHI_MAX_DAYS_TO_CLOSE", 3.0)
 # desired_quotes, entry-only and resting-aware — NOT a footprint drop (a footprint drop
 # would evict resting markets at end-49h and forfeit the accrual tail; section review).
 MIN_RUNWAY_H = _envf("KALSHI_MIN_RUNWAY_H", 0.0)
+# D2 (operator-approved 2026-08-25): a program the venue's own estimate feed shows ALREADY
+# ACCRUING for us above this floor has PROVEN it earns inside its remaining window — refusing
+# RE-ENTRY there forfeits the accrual tail (measured cost: ~1.6d of DIESELW-26AUG24, 08-21).
+# Ended-program rows never reach the table (_est_feed_cached skips them) and the feed lags
+# its recompute batches (sweep F2), so the trigger is conservative. 0 = exemption off.
+RUNWAY_ACCRUED_EXEMPT_USD = _envf("KALSHI_RUNWAY_ACCRUED_EXEMPT_USD", 0.50)
 # --- THE INVENTORY RISK RULE IS UNCONDITIONAL (operator Q1 decision, 2026-07-28) --------------
 # Operator's rule, on record 2026-07-27 19:48:56Z: "we can sell at a loss"; "we shouldnt be one
 # sided unles we are exiting". Flat => both sides or nothing. Holding => the reducing side and
@@ -3050,9 +3056,23 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         _resting_runway = (float((own or {}).get("yes") or 0.0)
                            + float((own or {}).get("no") or 0.0)) > 0.0
         if abs(inv) < INV_TOLERANCE and not _resting_runway:
-            if stats is not None:
-                stats["gate_min_runway"] = stats.get("gate_min_runway", 0) + 1
-            return []
+            # D2 accrued-re-entry exemption (see RUNWAY_ACCRUED_EXEMPT_USD): a market whose
+            # program is already accruing for us per the est-feed re-enters despite short
+            # runway. Fail-closed: any feed problem reads as $0 accrued -> gate holds.
+            _acc = 0.0
+            if RUNWAY_ACCRUED_EXEMPT_USD > 0:
+                try:
+                    _acc = float(_est_feed_cached(now.timestamp()).get(
+                        m.get("ticker")) or 0.0)
+                except Exception:
+                    _acc = 0.0
+            if _acc > RUNWAY_ACCRUED_EXEMPT_USD:
+                if stats is not None:
+                    stats["runway_exempt_accrued"] = stats.get("runway_exempt_accrued", 0) + 1
+            else:
+                if stats is not None:
+                    stats["gate_min_runway"] = stats.get("gate_min_runway", 0) + 1
+                return []
     # MID-BAND EXCLUSION (KALSHI_MID_BAND_OUT, default off — see the knob's comment): book
     # mid inside the toxic band -> no ENTRY; held inventory still gets its reducing exit
     # (de-risk is never gated), same contract as the two entry gates directly above. Runs
@@ -3078,7 +3098,14 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     # We can only bridge a gap we can actually fund, so qualification is judged against the
     # most size our per-market activate budget could add. Inventory still unwinds (de-risk is
     # never gated on reward) — this only stops us OPENING in markets that cannot pay.
+    # D1 tightening (operator-approved 2026-08-25): the activate path clamps every add to
+    # INV_HARD_CT (audit F1, :3309), so capital-only "addable" over-promised — a side whose
+    # gap is fundable in dollars but above the contract clamp still ends sub-Target, which
+    # the official LIP terms (CFTC rules02112639183, R3 doc) score $0 for the whole snapshot.
+    # Judge the bridge at the size the activate branch would ACTUALLY rest.
     _addable = (MAX_ACTIVATE_CAPITAL / max(best_y, best_n, 0.01))
+    if INV_HARD_CT > 0:
+        _addable = min(_addable, float(INV_HARD_CT))
     _qualifiable = (ext_y + _addable >= target) and (ext_n + _addable >= target)
     # KALSHI_QUALIFIABLE_GATE (default 1 = today's exact behavior). R1 (2026-08-13..16)
     # REFUTED this gate's premise live: 5/7 probe programs accrued NONZERO on books far

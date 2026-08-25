@@ -306,6 +306,10 @@ def test_activate_never_emits_zero_count_orders(monkeypatch):
     # count-0 order the venue rejects every cycle.
     monkeypatch.setattr(q, "JOIN_SIZE", 0)
     monkeypatch.setattr(q, "MAX_ACTIVATE_CAPITAL", 150.0)
+    # D1 (2026-08-25): the no-side gap (90) exceeds the INV_HARD-clamped bridge, so the
+    # armed QUALIFIABLE_GATE refuses this book before the activate branch. The zero-count
+    # emit logic under test is path-identical either way; pin it on the legacy bypass.
+    monkeypatch.setattr(q, "QUALIFIABLE_GATE", False)
     m = {"ticker": "T1", "target": 100, "end": "2099-01-01T00:00:00Z"}
     yl = [["0.50", "500"]]                           # yes side already deep (ext >= target)
     nl = [["0.49", "10"]]                            # no side short by 90

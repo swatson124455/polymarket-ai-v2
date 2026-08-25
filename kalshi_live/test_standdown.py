@@ -161,6 +161,9 @@ def test_standdown_never_blocks_exits(monkeypatch):
 def test_standdown_skips_thin_activate_but_never_a_held_exit(monkeypatch):
     _std_cfg(monkeypatch, on=True)
     monkeypatch.setattr(q, "MAX_ACTIVATE_CAPITAL", 100000.0)
+    # D1 (2026-08-25): armed QUALIFIABLE_GATE refuses this unbridgeable book before
+    # STANDDOWN can be exercised; pin the standdown-vs-exit contract on the legacy bypass.
+    monkeypatch.setattr(q, "QUALIFIABLE_GATE", False)
     thin_y = [["0.50", "10"]]                                  # depth 10 << target 1000 -> void/activate
     thin_n = [["0.49", "10"]]
     # thin reward void: eff = 5 * 0.5 = 2.5 < 20 -> do NOT commit activate depth (skip entirely)
