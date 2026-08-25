@@ -18,6 +18,56 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-25 (~16:45Z) — HYGIENE REVIEW: MEASUREMENT BATTERY + ADVERSARIAL
+> RE-VERIFICATION + OPERATOR RULINGS ("ok to all recs")
+>
+> **HEADLINE CORRECTION (the review catching itself):** the interim finding
+> "the spread gate rejects +0.0587 edge" was an ARTIFACT of grading rejects
+> at the whale price (unattainable by construction). Re-graded at the
+> RECORDED best_ask (the real crossing price at detection): SPREAD_TOO_WIDE
+> = **-0.1096, P(>0)=0.000 (253 labeled mkts)**; PRICE_RAN_AWAY = -0.0188.
+> The finding was ALSO 50%-concentrated in 0x216509be (LOO all-negative).
+> **The gates are doing their jobs. Withdrawn on the record.**
+>
+> **VERIFIED SURVIVORS of the battery (canon-graded, denominators inline):**
+> * OK first-buys, whole roster: edge **-0.0024** on 2,411 labeled mkts of
+>   4,550 OK first-buy records (label-timing selection caveat applies).
+> * PRICE_NO_UPSIDE (0.98 cap): blocked buys graded -0.0265 despite 0.971
+>   win rate (35 labeled mkts) - the cap makes money sense. KEEP (ruled).
+> * Conviction/confidence carries no measurable signal in EITHER bot:
+>   v3 conviction_r vs edge r=-0.013 (2,939 labeled fills; band-only
+>   r=+0.055 n=234) - measured on restart-corrupted annotations, so verdict
+>   = UNPROVEN not dead; legacy confidence split >=0.60 did WORSE than <0.60
+>   (33.7%% vs 32.3%% WR, scripts/bot_pnl.py MirrorBot 168h). RULED: no
+>   sizing built on conviction until measured clean.
+> * Legacy funnel: ~1.57M rejections vs 794 trades / 7d
+>   (mirror_rejected_signals counts); book = eight ~$1 positions (bot_pnl).
+> * Stuck-position reframe: the ~678h position is in profit at the MARK
+>   (entry .55, marked .68) but the real bid is .31 - the slippage guard
+>   correctly refuses the fill; the defects are the forever-retry and the
+>   misleading current_price mark.
+> * Detect-lag tail (p99 27.5s) = recorder burst-queueing (lag>10s records
+>   sit in 5s-windows with median 14 siblings vs 2 overall), NOT chain
+>   slowness. RULED: no speed infra; record quote staleness instead.
+>
+> **"SECOND DEDUP BUG" RESOLVED - NOT A BUG:** journal retention starts
+> 08-09 while the sink starts 07-13; the 347 "unexplained" dup first-buy
+> flags cluster in the pre-journal era, 0 of 924 dup pairs have gap<60s,
+> sink is pure chain records. The ONE known defect (memory-only dedup reset
+> at restart) explains all 924. Dup rate remains real: 16.4%% of first-buy
+> records (924 excess / 560 pairs) - the restart artifact is material to the
+> estimand and dedup persistence is the fix path (still report-only).
+>
+> **RULINGS EXECUTED ("ok to all recs"):** (1) gates + 0.98 cap KEEP -
+> recorded; (2) dedup root-cause DONE (above - no code change yet, fix
+> awaits its own go); (3) conviction: no sizing on it, clean re-measure
+> needs median persistence first; (4) **quote_ts/quote_lag_s SHIPPED**
+> (both paths, recording-only, 66 pytest, deployed 2026-08-25T16:40:41Z,
+> backup copy_watcher.py.pre-quotets-20260825; NOTE the deploy restart adds
+> one more dedup-reset boundary - known artifact, disclosed).
+> Pathway-walkthrough fleet (9 auditors + 9 verifiers) still running;
+> full hygiene doc on landing.
+>
 > ## 2026-08-25 (~14:10Z) — STRESS CAMPAIGN: ALL ITEMS vs CANON DATA, BLINDLY
 > (operator: "stress test all items with canon data blindly")
 >
