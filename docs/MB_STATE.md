@@ -18,6 +18,33 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-26 (~02:45Z) — ZERO-BASED SIFTER LAUNCHED (operator: "redo
+> sifter with assumption all prior info is wrong")
+>
+> **Charter `docs/ZERO_BASED_SIFTER.md`:** nothing strategic inherited —
+> voided for the NEW pipeline: copy-skilled-whales premise, winners-only
+> orientation, first-buy/hold-only estimand, the band, all scout-filter
+> numbers, the 1,000/day bot line, all bars, the one-afternoon universe.
+> Retained: only ground-truth-proven mechanics (venue protocol, canon,
+> fees, labels, e-process math). Stages: 7-day full capture → population
+> study (distributions out, no thresholds in; every cut = a percentile
+> with sensitivity) → mechanical followability (measured latency vs
+> wallet tempo) → TWO-SIDED sluice (copy-score AND fade-score, multiple
+> pre-registered estimands) → assay last, on the few. Old-pipeline live
+> tests continue untouched.
+>
+> **ORE FEED LIVE:** `scripts/firehose_recorder.py` deployed + running
+> (launched 2026-08-26T02:40:24Z; 8,000 trades in the first ~2 min; daily
+> gz rotation, 14-file retention, 20GB disk guards) + hourly ensure-running
+> guard cron (17 * * * * root). Population study unlocks at 7 full days:
+> **2026-09-02**.
+>
+> **BULK-WATCH CAPACITY MEASURED:** eth_getLogs owner-topic filter vs
+> tenderly: 43/150/300/600 addresses all OK (<=0.5s); 1,200 = "exceed max
+> topics" error. ⇒ one chain query watches up to ~600 wallets; beyond =
+> split calls; RTDS side is client-side (any n). The sluice can watch
+> hundreds.
+>
 > ## 2026-08-25 (~20:10Z) — ALL NINE RULINGS EXECUTED ("go with rec 1-9")
 >
 > **1 LEGACY WOUND DOWN:** final canonical P&L (bot_pnl 2160h) +
