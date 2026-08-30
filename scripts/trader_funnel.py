@@ -31,6 +31,7 @@ import analyze_shadow as az  # noqa: E402
 import band_tracker as bt  # noqa: E402
 import cohort5_qualification as cq  # noqa: E402  (groups/epochs/bars: theirs)
 import mb_canon as mc  # noqa: E402
+import mb_sizer as msz  # noqa: E402  (pre-registered sizing rule, read-only)
 import shadow_readout as sr  # noqa: E402
 
 AUDIT = "/opt/pa2-shared/mb_copyable_data/chain_audit.json"
@@ -50,13 +51,47 @@ def trader_row(a: str, epoch: float, recs: list, outcomes: dict,
                               epoch=epoch)
     edges = [e for _, _, e in seq]
     res = sr.cohort_readout(gfwd, outcomes, epoch, a, cfg)
+    # median OK first-buy fill (+ its token) = the display reference point
+    # for the sizer column; trade-time sizing uses the live quote instead
+    fills = sorted((float(r["shadow_fill"]), str(r.get("token_id")))
+                   for r in t_recs
+                   if r.get("first_buy") and r.get("verdict") == "OK"
+                   and isinstance(r.get("shadow_fill"), (int, float))
+                   and 0 < r["shadow_fill"] < 1)
+    med = fills[len(fills) // 2] if fills else None
     return {
         "n": len(edges),
         "e": bt.e_value(edges) if edges else None,
         "edge": mc.pooled_edge(seq),
         "ok": res.get("ok_rate"),
         "first_buys": res.get("first_buys"),
+        "lcb": msz.lcb_edge(edges, bt.e_value, bt.Y_MIN) if edges else None,
+        "med_fill": med,
     }
+
+
+def sizer_params_from_env():
+    """All four operator parameters or None - the sizer has NO defaults and
+    the funnel does not invent them (zero-base rule)."""
+    names = ("MB_SIZER_BANKROLL", "MB_SIZER_KELLY_MULT",
+             "MB_SIZER_CONCURRENCY", "MB_SIZER_MIN_VIABLE")
+    vals = [os.environ.get(n) for n in names]
+    if any(v is None for v in vals):
+        return None
+    return {"bankroll": float(vals[0]), "kelly_mult": float(vals[1]),
+            "concurrency": int(vals[2]), "min_viable": float(vals[3])}
+
+
+def display_stake(r: dict, params, frm: dict, fee_map: dict):
+    """Read-only display stake at the trader's median recorded fill.
+    Book depth is a TRADE-TIME input, not knowable per-trader here, so the
+    display passes a non-binding depth and says so in the header."""
+    if params is None or not r.get("med_fill") or r.get("lcb") is None:
+        return None
+    fill, tok = r["med_fill"]
+    fee, _src = mc.canon_fee(tok, fill, frm or {}, fee_map or {})
+    return msz.recommend_stake_from_lcb(
+        r["lcb"], fill, fee, book_depth_usd=1e12, **params)
 
 
 def fmt(v, spec, dash="   -"):
@@ -92,6 +127,7 @@ async def run(args) -> int:
              econ_floor=cq.EDGE_BAR, p_min=cq.P_BAR,
              min_markets=cq.N_BAR, fee_map_data=fee_map)
     locks = sr.load_locks(args.locks)
+    sz = sizer_params_from_env()
 
     # group + epoch per trader, straight from the grader's module
     originals = set(cq.eligible_admits(args.deep_dive, args.rereview))
@@ -124,8 +160,10 @@ async def run(args) -> int:
                                  "diagnostic only"})
             continue
         r = trader_row(a, epoch, recs, outcomes, frm, fee_map, cfg)
+        srec = display_stake(r, sz, frm, fee_map)
         rows.append({"a": a, "state": "TRIAL", "n": r["n"], "e": r["e"],
-                     "edge": r["edge"], "ok": r["ok"],
+                     "edge": r["edge"], "ok": r["ok"], "lcb": r["lcb"],
+                     "stake": None if srec is None else srec["stake"],
                      "days": days_since(epoch), "note": grp})
 
     order = {"TRIAL": 0, "PASSED": 1, "OBS": 2, "FAILED": 3}
@@ -139,12 +177,23 @@ async def run(args) -> int:
           f"| TRIAL {n_trial} | PASSED {n_pass} | FAILED {n_fail} "
           f"(bar: e>={cq.C1_E_REJECT:.0f} + edge>=+{cq.EDGE_BAR:.02f} + "
           f"ok>={cq.OKRATE_BAR:.02f}; futility {cq.C1_FUTILITY_N}) =====")
+    if sz is None:
+        print("[sizer] stakes unset - set MB_SIZER_BANKROLL / "
+              "MB_SIZER_KELLY_MULT / MB_SIZER_CONCURRENCY / "
+              "MB_SIZER_MIN_VIABLE (operator values; sizer has no defaults)")
+    else:
+        print(f"[sizer] bankroll ${sz['bankroll']:.0f} x mult "
+              f"{sz['kelly_mult']} / conc {sz['concurrency']} @ each "
+              f"trader's median recorded fill; book depth is trade-time, "
+              f"not applied here")
     print(f"{'TRADER':<14} {'STATE':<7} {'n':>4} {'e':>7} {'edge':>8} "
-          f"{'ok%':>4} {'days':>4}  note")
+          f"{'lcb':>8} {'$stake':>7} {'ok%':>4} {'days':>4}  note")
     for x in rows:
         print(f"{x['a'][:12]+'..':<14} {x['state']:<7} "
               f"{fmt(x['n'], 'd'):>4} {fmt(x['e'], '.2f'):>7} "
               f"{fmt(x['edge'], '+.4f'):>8} "
+              f"{fmt(x.get('lcb'), '+.4f'):>8} "
+              f"{fmt(x.get('stake'), '.2f'):>7} "
               f"{fmt(None if x['ok'] is None or x['ok'] != x['ok'] else x['ok']*100, '.0f'):>4} "
               f"{fmt(x['days'], 'd'):>4}  {x['note']}")
     if n_pass:
@@ -174,6 +223,35 @@ def _self_test() -> int:
     # the lock-writer pattern; exactly zero may exist outside this check
     ok4 = src.count("sr." + "write_lock(") == 0
     print(f"  [read-only] funnel never writes locks : {ok4}"); ok &= ok4
+    saved = {n: os.environ.pop(n, None) for n in
+             ("MB_SIZER_BANKROLL", "MB_SIZER_KELLY_MULT",
+              "MB_SIZER_CONCURRENCY", "MB_SIZER_MIN_VIABLE")}
+    try:
+        ok5 = sizer_params_from_env() is None
+        os.environ.update({"MB_SIZER_BANKROLL": "500",
+                           "MB_SIZER_KELLY_MULT": "0.25",
+                           "MB_SIZER_CONCURRENCY": "20",
+                           "MB_SIZER_MIN_VIABLE": "1"})
+        p = sizer_params_from_env()
+        ok5 = ok5 and p == {"bankroll": 500.0, "kelly_mult": 0.25,
+                            "concurrency": 20, "min_viable": 1.0}
+    finally:
+        for n, v in saved.items():
+            os.environ.pop(n, None)
+            if v is not None:
+                os.environ[n] = v
+    print(f"  [sizer] env foursome all-or-nothing, no defaults : {ok5}")
+    ok &= ok5
+    r_neg = {"med_fill": (0.50, "tok_x"), "lcb": -0.10}
+    p = {"bankroll": 500.0, "kelly_mult": 0.25, "concurrency": 20,
+         "min_viable": 1.0}
+    s_neg = display_stake(r_neg, p, {}, {})
+    ok6 = (display_stake(r_neg, None, {}, {}) is None
+           and s_neg is not None and s_neg["stake"] == 0.0
+           and display_stake({"med_fill": None, "lcb": 0.1}, p, {}, {})
+           is None)
+    print(f"  [sizer] unproven lcb -> $0; no params -> no column : {ok6}")
+    ok &= ok6
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
