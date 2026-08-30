@@ -18,6 +18,29 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-30 (~21:35Z) — SIZER BUILT (adversarially reviewed, armed idle)
+>
+> Operator: "how the fuck do we not have a sizing tool" -> "adversarial
+> review report then build check in on each step" -> "proceed".
+> **`scripts/mb_sizer.py` + `docs/MB_SIZER_DESIGN.md`** (the review IS the
+> pre-registration): LCB by INVERSION of the grader's own e-process at the
+> ruled e>=20 bar (no invented shrinkage), exact binary Kelly
+> `LCB/(1-fill-fee)`, bankroll pre-divided by MEASURED concurrency, rails
+> down-only (book depth, $300 canon, below-min -> $0 NEVER clamped up).
+> Unproven trader -> $0 structurally. 16 unit tests + **10/10 mutants
+> killed** (1 initial blind spot closed: borderline-LCB gate case).
+> Funnel gains `lcb`/`$stake` columns, env-gated on the operator foursome
+> `MB_SIZER_BANKROLL/KELLY_MULT/CONCURRENCY/MIN_VIABLE` (NO defaults in
+> code) — live 2026-08-30T21:30Z: roster 59, TRIAL 52, PASSED 0, stakes
+> correctly unset. **Live run caught a real funnel defect:** sweep2 admits
+> fell to OBS "no test registered" — fixed (TRIAL 36->52) + negative-
+> controlled group-completeness self-test (a grader group the funnel
+> ignores turns the self-test RED by name). Deployed to mb_readout
+> (backup trader_funnel.py.pre-sizer-20260830); commits `fa5d351`,
+> `a9715cf`. **OPERATOR DECISIONS OPEN (sizer §5):** kelly_mult, bankroll
+> basis ($500 pilot?), concurrency source pre-Sept-2, min_viable, and
+> whether the cron carries the foursome once chosen.
+
 > ## 2026-08-30 (~20:35Z) — RECS 1-5 EXECUTED ("go with recs 1-2-3-4-5")
 >
 > **1 DONE — the 16 sweep-2 ADMITs are IN:** roster 43->59 (probe group 29;
