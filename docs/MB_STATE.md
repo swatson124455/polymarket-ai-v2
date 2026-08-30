@@ -18,6 +18,28 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-30 (~20:35Z) — RECS 1-5 EXECUTED ("go with recs 1-2-3-4-5")
+>
+> **1 DONE — the 16 sweep-2 ADMITs are IN:** roster 43->59 (probe group 29;
+> backup chain_audit.json.pre-sweep2-20260830), SWEEP2_ADMITS group in the
+> grader (e-process, fresh epoch 2026-08-30T20:30:00Z, self-test extended),
+> watcher restarted and CONFIRMED roster=59, dedup seeded, 0 errors. They
+> appear in the funnel from tomorrow's 11:41Z run.
+> **2 RATIFIED — CHASE:** the chase-vs-post question is CLOSED by the ruled
+> both-brackets rule (strict 40/177 = 22.6% vs 74%; stable vs n=72
+> interim). Bot behavior unchanged (already chases). Bidsim CONTINUES
+> passively (operator choice (a)) — its data feeds zero-based
+> followability; wind-down would be a future sign-off.
+> **3 SCHEDULED — the 57 sweep-2 INSUFFICIENTs** fold into the zero-based
+> sluice watch-first AFTER the 2026-09-02 population study (no dives —
+> ~125 dive-hours avoided; forward data grades them free).
+> **4 RATIFIED — band runs to its charter** (n=76 e=0.491; futility 600;
+> no early stop — optional-stopping discipline).
+> **5 SCHEDULED — population study 2026-09-02** when the capture closes 7
+> full days: distributions out, thresholds derived-only (incl. re-deriving
+> the 08-24 filter numbers), followability from measured latency, then the
+> two-sided sluice thresholds. THE week''s main event.
+>
 > ## 2026-08-30 (~19:40Z) — TWO TRIPWIRES FIRED: bidsim PROPOSAL (CHASE) +
 > sweep #2 delivers 16 ADMITs
 >
