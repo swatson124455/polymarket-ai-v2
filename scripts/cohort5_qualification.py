@@ -101,6 +101,33 @@ INSUFF_PROBES = [
     "0xfbf3d501e88815464642d0e913f15379c3eeb218",
 ]
 
+# SWEEP2-ADMITS (2026-08-30, operator "go with recs 1-5" rec 1): the 16
+# chain-ADMITs from scout sweep #2 (the first human-scale admits; filter
+# fixed 08-24) join the sluice as watch trials. ADMIT = integrity screen
+# passed, NOT profitability - the e-process decides that. Fresh epoch
+# 2026-08-30T20:30:00Z (post-decision; no forward edge of theirs was ever
+# computed before this registration).
+SWEEP2_EPOCH = datetime(2026, 8, 30, 20, 30, 0,
+                        tzinfo=timezone.utc).timestamp()
+SWEEP2_ADMITS = [
+    "0x0063b23cdeb43166d6c0246c05baaf9b9bd72dd2",
+    "0x122b758a408246a180efeb5ba654e21b553fac59",
+    "0x30b9c9d6670c66936550e3af670c12b90db7214c",
+    "0x35bbbad2415fe5e39b12da9a316cdc80b022009b",
+    "0x3e73934b881659aa25a4f08bc8ab9067295bc4ec",
+    "0x401ee31e9ebf9ab9f6315cd95faca5f950436fc9",
+    "0x5e04e12c3376a6a68f8cdffc8b972df3bd9e08a2",
+    "0x60a92c8620846d81f5ea17b0564e0d4b7c545a71",
+    "0x6918ea182d963b1fb7888860b8a8b8bcfba5782b",
+    "0x6e2c3937e6dd094a3a9f814ecbdc289d3fd5b7f8",
+    "0x731a241767938bb23d1b2fac4c9cd2f3cea9033f",
+    "0x91667e40b80c447050904b042f3b85d22fc6b479",
+    "0xa7614974faca5be9a1b809c978d0a8fc532a866b",
+    "0xc96aeabae8c81faf8d803201da1d2461cefc396a",
+    "0xd703c88c0b726ae01ee9602a422013ca8d4171bf",
+    "0xdf804b17329a461425116c9e0f599e248b443259",
+]
+
 EDGE_BAR = 0.02
 P_BAR = 0.95
 N_BAR = 30
@@ -258,6 +285,11 @@ async def run(args) -> int:
           f"required):")
     eproc_grade(INSUFF_PROBES, REREG_EPOCH,
                 "insufficient_probe e-process (2026-08-25)")
+    print(f"sweep2-admits ({len(SWEEP2_ADMITS)}) - epoch "
+          f"{datetime.fromtimestamp(SWEEP2_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
+          f" (integrity-screened; profit undecided - the e-process rules):")
+    eproc_grade(SWEEP2_ADMITS, SWEEP2_EPOCH,
+                "sweep2_admit e-process (2026-08-30)")
     if proposals:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
@@ -301,6 +333,14 @@ def _self_test() -> int:
             and REREG_EPOCH > C1_FWD_EPOCH)
     print(f"  [epoch3] re-registration fixed at 2026-08-25T18:00:00Z : {ok3d}")
     ok &= ok3d
+    ok3f = (SWEEP2_EPOCH == datetime(2026, 8, 30, 20, 30, 0,
+                                     tzinfo=timezone.utc).timestamp()
+            and len(SWEEP2_ADMITS) == 16 and len(set(SWEEP2_ADMITS)) == 16
+            and all(a == a.lower() and a.startswith("0x") and len(a) == 42
+                    for a in SWEEP2_ADMITS)
+            and not (set(SWEEP2_ADMITS) & (set(C1_UNTESTED) | set(INSUFF_PROBES))))
+    print(f"  [group3] 16 unique sweep2 addresses, disjoint : {ok3f}")
+    ok &= ok3f
     ok3e = (len(INSUFF_PROBES) == 12 and len(set(INSUFF_PROBES)) == 12
             and all(a == a.lower() and a.startswith("0x") and len(a) == 42
                     for a in INSUFF_PROBES)
