@@ -18,6 +18,45 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-08-30 (~19:40Z) — TWO TRIPWIRES FIRED: bidsim PROPOSAL (CHASE) +
+> sweep #2 delivers 16 ADMITs
+>
+> **GAUGE FIRST: canon 5/5 daily runs since 08-26, ALARMS=0** — numbers
+> below are quotable.
+>
+> **BIDSIM TRIPWIRE (177 resolved >= ~100) — THE CHASE-VS-POST PROPOSAL:**
+> chain-truth classification of ALL 156 fills (156/156 classified, 0
+> errors): strict taker-SELL fill rate **40/177 = 22.6%**; charter
+> any-print rate 156/177 = 88.1%. Under the RULED decision rule (Amendment
+> 2: maker wins only if BOTH clear 74%): strict fails decisively (22.6% vs
+> 74%), and is STABLE vs the n=72 interim (23.6%). **PROPOSAL: chase-vs-
+> post = CHASE (taker). No bot change needed — chasing is current
+> behavior.** Stage-2 cond-edge remains label-thin as forecast; it cannot
+> overturn stage 1 under the both-brackets rule. Operator options on the
+> instrument itself: (a) ratify verdict + keep collecting passively,
+> (b) ratify + wind the bidsim down (a disposition, needs sign-off).
+>
+> **SWEEP #2 COMPLETE (82/82): 16 ADMIT / 57 INSUFFICIENT / 9 REJECT** —
+> the first human-scale ADMITs ever from the fixed filter (sweep #1 was
+> 0/9). PROPOSAL: add the 16 chain-ADMITs to the sluice as watch-only
+> trials (roster 43->59, fresh epoch on add; ADMIT = integrity screen
+> passed, NOT profitability — the e-process decides that). Also 57 new
+> INSUFFICIENTs = the zero-based sifter's exact customer class (watch-
+> first). Awaiting operator go on the 16.
+>
+> **FUNNEL (08-30T11:41Z):** TRIAL 36 / PASSED 0 / FAILED 5; early accrual
+> on the fresh epochs — top e=1.54 (0xecb14ac6, n=3, +0.4084), several
+> small-n positives incl. two of the 12 insuff-probes already producing.
+> Meaningless n's; the table is doing its job.
+>
+> **BAND:** n=76, pooled −0.0009, e=0.491 — dead-flat at growing n, no
+> tripwire (reject 20 / futility 600).
+>
+> **FIREHOSE:** day 5 of 7 (~977MB over 5 daily files); recorder
+> reconnects=1,533 (~14/h — venue cycling faster than the watcher's ~6/h;
+> capture continuous, gap-rate unmeasured — flag for the population
+> study). Population study unlocks 2026-09-02.
+>
 > ## 2026-08-26 (~02:45Z) — ZERO-BASED SIFTER LAUNCHED (operator: "redo
 > sifter with assumption all prior info is wrong")
 >
