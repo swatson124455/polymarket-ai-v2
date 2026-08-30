@@ -133,6 +133,7 @@ async def run(args) -> int:
     originals = set(cq.eligible_admits(args.deep_dive, args.rereview))
     c1 = set(cq.C1_UNTESTED)
     probes12 = set(cq.INSUFF_PROBES)
+    sweep2 = set(cq.SWEEP2_ADMITS)
     rows = []
     for a in clean:
         if a in locks:
@@ -150,6 +151,8 @@ async def run(args) -> int:
             epoch, grp = cq.REREG_EPOCH, "insuff-probe"
         elif a in originals:
             epoch, grp = cq.REREG_EPOCH, "orig-rereg"
+        elif a in sweep2:
+            epoch, grp = cq.SWEEP2_EPOCH, "sweep2-admit"
         else:
             # watched, no registered per-trader test (e.g. cohort4, fbfd
             # probe) - diagnostic only, honestly labeled
@@ -205,8 +208,23 @@ async def run(args) -> int:
 def _self_test() -> int:
     print("SELF-TEST - trader funnel (offline)\n")
     ok = True
-    ok1 = not (set(cq.C1_UNTESTED) & set(cq.INSUFF_PROBES))
-    print(f"  [groups] C1 and probes disjoint : {ok1}"); ok &= ok1
+    ok1 = not (set(cq.C1_UNTESTED) & set(cq.INSUFF_PROBES)) \
+        and not (set(cq.SWEEP2_ADMITS) & (set(cq.C1_UNTESTED)
+                                          | set(cq.INSUFF_PROBES)))
+    print(f"  [groups] registered groups disjoint : {ok1}"); ok &= ok1
+    # pattern-completeness (2026-08-30 defect: sweep2 admits fell to OBS
+    # as "no test registered"): EVERY address-list group the grader
+    # defines must be consulted by name somewhere in this file
+    import inspect as _i
+    src0 = _i.getsource(sys.modules[__name__])
+    groups = [n for n, v in vars(cq).items()
+              if isinstance(v, (list, tuple, set)) and v
+              and all(isinstance(x, str) and x.startswith("0x") for x in v)]
+    missing = [n for n in groups if f"cq.{n}" not in src0]
+    ok1b = bool(groups) and not missing
+    print(f"  [groups] funnel consults every grader group "
+          f"({len(groups)} found{', MISSING: ' + str(missing) if missing else ''}) : {ok1b}")
+    ok &= ok1b
     ok2 = fmt(None, ".2f") == "   -" and fmt(1.5, ".2f") == "1.50"
     print(f"  [fmt] None renders as dash, never fake zero : {ok2}"); ok &= ok2
     order = {"TRIAL": 0, "PASSED": 1, "OBS": 2, "FAILED": 3}
