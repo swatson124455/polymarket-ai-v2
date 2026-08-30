@@ -13,18 +13,24 @@ import maker_kalshi_quoter as q                     # noqa: E402
 M = {"target": 100, "end": "2099-01-01T00:00:00Z", "ticker": "KXTEST-01"}
 
 
-def _run(yl, nl, inv=0.0, flag=True, anchor=0.01):
+def _run(yl, nl, inv=0.0, flag=True, anchor=0.01, join=150, cap=400.0):
     stats = {}
-    old = (q.ANCHOR_EMPTY_SIDE, q.ANCHOR_PRICE, q.MIN_PRICE_DOLLARS, q.MAX_PRICE_DOLLARS)
+    old = (q.ANCHOR_EMPTY_SIDE, q.ANCHOR_PRICE, q.MIN_PRICE_DOLLARS, q.MAX_PRICE_DOLLARS,
+           q.JOIN_SIZE, q.MAX_MARKET_CAPITAL)
     # the mode's LIVE price band (live.env 0.003/0.995) — code defaults (0.01/0.97)
-    # refuse both the 0.98 rich ref and the 1c anchor, same as the earlier band pins
+    # refuse both the 0.98 rich ref and the 1c anchor, same as the earlier band pins.
+    # S4 (2026-08-30): anchor now requires the anchored side to REACH TARGET by itself
+    # (its only depth is our order), so the firing pins size the join above target=100;
+    # the sub-target skip has its own pin below.
     q.ANCHOR_EMPTY_SIDE, q.ANCHOR_PRICE = flag, anchor
     q.MIN_PRICE_DOLLARS, q.MAX_PRICE_DOLLARS = 0.003, 0.995
+    q.JOIN_SIZE, q.MAX_MARKET_CAPITAL = join, cap
     try:
         quotes = q.desired_quotes(M, yl, nl, q.utcnow(), inv=inv, stats=stats)
     finally:
         (q.ANCHOR_EMPTY_SIDE, q.ANCHOR_PRICE,
-         q.MIN_PRICE_DOLLARS, q.MAX_PRICE_DOLLARS) = old
+         q.MIN_PRICE_DOLLARS, q.MAX_PRICE_DOLLARS,
+         q.JOIN_SIZE, q.MAX_MARKET_CAPITAL) = old
     return quotes, stats
 
 
@@ -96,3 +102,14 @@ def test_both_sides_empty_never_anchors():
 def test_shipped_default_is_off():
     if "KALSHI_ANCHOR_EMPTY_SIDE" not in os.environ:
         assert q.ANCHOR_EMPTY_SIDE is False
+
+
+def test_anchor_stands_down_when_it_cannot_reach_target():
+    # S4 pin (operator-approved 2026-08-30): anchored side depth = our order alone; if the
+    # clamped anchor count cannot reach Target, the book pays $0 for everyone (R3 canon)
+    # -> rest NOTHING via anchor (falls through to the one-sided gate).
+    quotes, stats = _run([["0.98", "5000"]], [], join=40)   # 40ct anchor vs target 100
+    assert quotes == []
+    assert stats.get("anchor_subtarget_skip") == 1
+    assert "anchor_paired" not in stats
+    assert stats.get("gate_one_sided_book") == 1

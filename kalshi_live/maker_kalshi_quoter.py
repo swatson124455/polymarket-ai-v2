@@ -1735,6 +1735,40 @@ EVENT_DELTA_DOLLARS = _envi("KALSHI_EVENT_DELTA_DOLLARS", 0)
 EVENT_SOFT_USD = _envf("KALSHI_EVENT_SOFT_USD", 5.25)           # = INV_SOFT_CT 15 x $0.35
 EVENT_HARD_USD = _envf("KALSHI_EVENT_HARD_USD", 17.50)          # = INV_HARD_CT 50 x $0.35
 EVENT_FALLBACK_BASIS_D = _envf("KALSHI_EVENT_FALLBACK_BASIS_D", 0.35)  # unknown basis -> legacy parity
+# S3 WIDE-BOOK MODE (operator-approved 2026-08-30; see the mid-band gate for the doctrine).
+WIDEBOOK_MODE = _envi("KALSHI_WIDEBOOK_MODE", 0)                # 0 = today's exact behavior
+WIDEBOOK_MIN_SPREAD_TICKS = _envi("KALSHI_WIDEBOOK_MIN_SPREAD_TICKS", 20)
+WIDEBOOK_TICKS_INSIDE = _envi("KALSHI_WIDEBOOK_TICKS_INSIDE", 2)  # rest this far behind each touch (DF=0.5 halves share per tick)
+WIDEBOOK_MAX_CT = _envi("KALSHI_WIDEBOOK_MAX_CT", 40)           # per-side contract cap in this mode
+# S1 UPTIME RANK (operator-approved 2026-08-30): order the candidate pool by
+# pool$ x MEASURED qualifying-uptime (kalshi_uptime_census.py over the D4 tape) —
+# a book that never holds Target both sides pays $0 whatever its pool (R3 canon;
+# census 08-26: 33/41 watched tickers at 0%). Unmeasured tickers get the DEFAULT
+# multiplier so discovery/exploration keeps a slot path. 0 = today's exact order.
+UPTIME_RANK = _envi("KALSHI_UPTIME_RANK", 0)
+UPTIME_RANK_DEFAULT = _envf("KALSHI_UPTIME_RANK_DEFAULT", 0.25)
+UPTIME_CENSUS_PATH = os.environ.get("KALSHI_UPTIME_CENSUS",
+                                    os.path.join(DATA_DIR, "kalshi_uptime_census.json"))
+UPTIME_CENSUS_MAX_AGE_S = _envf("KALSHI_UPTIME_CENSUS_MAX_AGE_S", 100000.0)  # ~28h fail-open
+_UPTIME_CACHE = {"ts": 0.0, "table": {}}
+
+
+def _uptime_census_cached(now_ts, max_age_s=300.0):
+    """{ticker: uptime 0..1} from the census file; stale/missing/torn -> {} (fail-open:
+    every ticker then ranks at UPTIME_RANK_DEFAULT-neutral, i.e. legacy-shaped order)."""
+    if now_ts - _UPTIME_CACHE["ts"] > max_age_s:
+        table = {}
+        try:
+            raw = json.load(open(UPTIME_CENSUS_PATH))
+            for t, v in raw.items():
+                ts = float(v.get("ts") or 0.0)
+                if now_ts - ts <= UPTIME_CENSUS_MAX_AGE_S:
+                    table[t] = max(0.0, min(1.0, float(v.get("uptime") or 0.0)))
+        except Exception:
+            table = {}
+        _UPTIME_CACHE["table"] = table
+        _UPTIME_CACHE["ts"] = now_ts
+    return _UPTIME_CACHE["table"]
 
 
 def _ev_thresholds():
@@ -2183,6 +2217,15 @@ def _record_pool_shape(rows, picked, shape):
         _SILENT["pool_shape_fail"] += 1
 
 
+def _rank_usd(r):
+    """Slot-ordering dollar value for a footprint row: pool x measured qualifying-uptime
+    under S1 UPTIME_RANK, plain pool otherwise (flag off = byte-identical legacy order)."""
+    if UPTIME_RANK:
+        return (float(r.get("usd_day") or 0.0)
+                * max(float(r.get("uptime", UPTIME_RANK_DEFAULT) or 0.0), 0.0))
+    return float(r.get("usd_day") or 0.0)
+
+
 def select_footprint(progs, now):
     FP_DROPS.clear()
     FP_SHAPE.clear()
@@ -2276,7 +2319,13 @@ def select_footprint(progs, now):
                      # gate (off by default) -> inert. Needed because reward is an INTEGRAL over the
                      # window: entering 80% through caps the score at ~20% however well we execute.
                      "life_min": life_min})
-    rows.sort(key=lambda r: (-r["usd_day"], r["ticker"]))
+    # S1 UPTIME RANK (see knob block): earnable$ = pool x measured qualifying-uptime.
+    # Flag off -> exact legacy order.
+    if UPTIME_RANK:
+        _uct = _uptime_census_cached(now.timestamp())
+        for r in rows:
+            r["uptime"] = _uct.get(r["ticker"], UPTIME_RANK_DEFAULT)
+    rows.sort(key=lambda r: (-_rank_usd(r), r["ticker"]))
     # MARKET-CLOCK PRE-FILTER (funnel audit 2026-07-29). The far-market-close veto originally ran
     # in run_once AFTER selection — so long-dated markets carrying short reward windows (the
     # KXNHPRIMARY28 pattern: market resolves 2028, program ends this week) consumed footprint
@@ -2426,7 +2475,7 @@ def select_footprint(progs, now):
         if ALLOC_KEY:
             series_order = sorted(by_series, key=lambda s: (_first.get(s, 1 << 30), s))
         else:
-            series_order = sorted(by_series, key=lambda s: (-by_series[s][0]["usd_day"], s))
+            series_order = sorted(by_series, key=lambda s: (-_rank_usd(by_series[s][0]), s))
         picked, per_series = [], defaultdict(int)
         progressed = True
         while len(picked) < FOOTPRINT_TOP and progressed:
@@ -2491,14 +2540,14 @@ def select_footprint(progs, now):
         # remainder follow the rank order of `rows`; near-money still sorts within series.
         series_order = sorted(by_series, key=lambda s: (_first.get(s, 1 << 30), s))
     else:
-        series_order = sorted(by_series, key=lambda s: (-by_series[s][0]["usd_day"], s))
+        series_order = sorted(by_series, key=lambda s: (-_rank_usd(by_series[s][0]), s))
     picked, per_series = [], defaultdict(int)
     for s in series_order:              # 1) COVERAGE floor: >=PIVOT_COVERAGE per active series
         for r in by_series[s][:PIVOT_COVERAGE]:
             picked.append(r)
             per_series[s] += 1
     dens = (list(rows) if ALLOC_KEY else                    # rank order IS the density order
-            sorted(rows, key=lambda r: (-r["usd_day"],) + _prox_key(r)))  # 2) REMAINDER
+            sorted(rows, key=lambda r: (-_rank_usd(r),) + _prox_key(r)))  # 2) REMAINDER
     seen = {id(r) for r in picked}
     for r in dens:
         if id(r) in seen:
@@ -3119,7 +3168,23 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
                 _pp = _pref
                 _pct = _capped_join(_pp, ANCHOR_PRICE)
                 _act = _capped_join(ANCHOR_PRICE, _pp)
-                if min(_pct, _act) >= max(int(MIN_QUOTE_CT), 1):
+                # S4 (operator-approved 2026-08-30): the official LIP rules (R3 canon) pay a
+                # snapshot ONLY when BOTH sides hold Target depth. The anchored side's ENTIRE
+                # depth is our own anchor order, so unless the anchor count itself reaches
+                # Target — and the present side (plus our join) does too — the anchored book
+                # scores $0 for everyone: presence + fill risk, no reward (measured 08-25:
+                # 405 anchor rows overnight on a 2%-qualifying book). Filing Target range is
+                # >100ct, so at today's 50ct clamp this stands anchor down on Target-1000
+                # programs; it self-re-enables wherever a small-Target program appears.
+                _tgt4 = float(m.get("target") or 0.0)
+                _present_ext4 = sum(s for _, s in (yl if best_y is not None else nl))
+                _anchor_pays = (_tgt4 <= 0
+                                or (_act >= _tgt4 and _present_ext4 + _pct >= _tgt4))
+                if not _anchor_pays:
+                    if stats is not None:
+                        stats["anchor_subtarget_skip"] = \
+                            stats.get("anchor_subtarget_skip", 0) + 1
+                elif min(_pct, _act) >= max(int(MIN_QUOTE_CT), 1):
                     if stats is not None:
                         stats["anchor_paired"] = stats.get("anchor_paired", 0) + 1
                     _pside = "yes" if best_y is not None else "no"
@@ -3174,14 +3239,32 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     # mid inside the toxic band -> no ENTRY; held inventory still gets its reducing exit
     # (de-risk is never gated), same contract as the two entry gates directly above. Runs
     # every cycle so a market that DRIFTS into the band is evicted at its next re-quote.
+    _widebook = False
     if MID_BAND_OUT is not None:
         _mid = (best_y + (1.0 - best_n)) / 2.0
         if MID_BAND_OUT[0] < _mid < MID_BAND_OUT[1]:
             if abs(inv) >= INV_TOLERANCE:
                 return _reducing_quotes(best_y, best_n, inv, cost, improve=_improve)
-            if stats is not None:
-                stats["gate_mid_band"] = stats.get("gate_mid_band", 0) + 1
-            return []
+            # S3 WIDE-BOOK MODE (operator-approved 2026-08-30, strategy review): the
+            # mid-band toxicity canon (19.6%/hr near-strike moves) was measured for
+            # AT-TOUCH quoting on tight books. A WIDE mid-band book that holds Target
+            # depth both sides pays real DF^k share to depth parked INSIDE the spread
+            # (official rules, R3 canon) at a very different fill-risk profile — census
+            # 08-26: the two highest qualifying-uptime markets (90%) were exactly this
+            # shape and this gate refused them. Admission: flat + spread wide enough;
+            # every later gate still runs (qualifiable, capture, caps), the JOIN branch
+            # rests WIDEBOOK_TICKS_INSIDE ticks back with a DISCOUNTED credit re-check,
+            # and holding stays reduce-only above. Default 0 = today's exact behavior.
+            _wb_spread = round((1.0 - best_n - best_y) / TICK)
+            if (WIDEBOOK_MODE and abs(inv) < INV_TOLERANCE
+                    and _wb_spread >= WIDEBOOK_MIN_SPREAD_TICKS):
+                _widebook = True
+                if stats is not None:
+                    stats["widebook_admitted"] = stats.get("widebook_admitted", 0) + 1
+            else:
+                if stats is not None:
+                    stats["gate_mid_band"] = stats.get("gate_mid_band", 0) + 1
+                return []
     # external depth = public depth minus our own resting order on that side
     ext_y = max(0.0, sum(s for _, s in yl) - float(own.get("yes", 0)))
     ext_n = max(0.0, sum(s for _, s in nl) - float(own.get("no", 0)))
@@ -3366,10 +3449,13 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     # reliably fills; a one-directional/wide book is the gas-ladder trap that adverse-selects
     # us and then won't let the passive exit fill. This is the primary defense of "flatten as
     # a maker". ACTIVATE (void) markets are intentionally thin -> exempt (handled elsewhere).
+    # S3: a WIDEBOOK admission (above) exists BECAUSE the book is wide — the wide test
+    # here would un-admit it; the sym test still applies (a lopsided wide book is the
+    # gas-ladder trap in both regimes).
     if not void and abs(inv) < INV_TOLERANCE:       # ONLY when truly FLAT (not just below SOFT):
         spread_ticks = (1.0 - best_n - best_y) / TICK   # any inventory in [TOL,SOFT) must keep
         sym = min(ext_y, ext_n) / max(ext_y, ext_n, 1e-9)   # quoting the reducing side to unwind
-        if spread_ticks > MAX_SPREAD_TICKS or sym < MIN_DEPTH_SYM:
+        if (spread_ticks > MAX_SPREAD_TICKS and not _widebook) or sym < MIN_DEPTH_SYM:
             if stats is not None:
                 stats["gate_wide_or_asym"] = stats.get("gate_wide_or_asym", 0) + 1
             return []                               # one-sided / wide -> unwind-unreliable, skip
@@ -3492,6 +3578,32 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
         # below still shapes a flat ticker inside a directional event.
         y_price, y_cnt, y_reason = best_y, _capped_join(best_y, best_n), "join"
         n_price, n_cnt, n_reason = best_n, _capped_join(best_n, best_y), "join"
+        # S3 WIDE-BOOK shaping: rest INSIDE the spread, k ticks behind each touch, capped
+        # size, and re-check credit at OUR DISCOUNTED price — the at-reference capture
+        # model above overstates a k-tick-back quote by DF^-k, so it must not be the
+        # admitting check for this mode. Fill risk if hit: our own price per contract
+        # (e.g. ~0.09-0.13 on the census books), bounded by WIDEBOOK_MAX_CT + all caps;
+        # a fill flips the ticker to the standard HOLDING => EXIT-ONLY doctrine.
+        if _widebook:
+            _kwb = max(int(WIDEBOOK_TICKS_INSIDE), 1)
+            y_price = round(best_y - _kwb * TICK, 4)
+            n_price = round(best_n - _kwb * TICK, 4)
+            y_cnt = min(y_cnt, int(WIDEBOOK_MAX_CT))
+            n_cnt = min(n_cnt, int(WIDEBOOK_MAX_CT))
+            _dfwb = m.get("df") or CAPTURE_DF_DEFAULT
+            _own_wb = own_orders or {}
+            _rywb, _qywb = _qualifying_score(yl, y_price, y_cnt, target, _dfwb,
+                                             own_orders=_own_wb.get("yes"))
+            _rnwb, _qnwb = _qualifying_score(nl, n_price, n_cnt, target, _dfwb,
+                                             own_orders=_own_wb.get("no"))
+            _pcwb = 0.0
+            if _qywb and _qnwb:
+                _pcwb = ((_rywb / (1.0 + _rywb) + _rnwb / (1.0 + _rnwb)) / 2.0) \
+                    * float(m.get("usd_day") or 0.0)
+            if _pcwb < CAPTURE_MIN_USD_DAY:
+                if stats is not None:
+                    stats["widebook_credit_skip"] = stats.get("widebook_credit_skip", 0) + 1
+                return []
         # STAND-DOWN: on a thin-reward regime, size BOTH accumulating sides down to MIN_QUOTE_CT
         # (price left AT reference so the snapshot still qualifies + earns the thin reward, only the
         # SIZE shrinks -> each fill's adverse loss shrinks in proportion). Applied to the base join
