@@ -40,6 +40,13 @@ cd /opt/polymarket-ai-v2
 } >> "$LOG"
 {
   echo "===== $(date -u +%FT%TZ) trader funnel (one-table review) ====="
+  # operator sizer foursome (2026-08-30 "1 ok"): sourced, never hardcoded -
+  # /opt/pa2-shared/mb_sizer.env is the ONE place to change sizing params
+  [ -f /opt/pa2-shared/mb_sizer.env ] && . /opt/pa2-shared/mb_sizer.env
   DATABASE_URL="$DBURL" PYTHONPATH="$D" \
+  MB_SIZER_BANKROLL="$MB_SIZER_BANKROLL" \
+  MB_SIZER_KELLY_MULT="$MB_SIZER_KELLY_MULT" \
+  MB_SIZER_CONCURRENCY="$MB_SIZER_CONCURRENCY" \
+  MB_SIZER_MIN_VIABLE="$MB_SIZER_MIN_VIABLE" \
     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/trader_funnel.py" 2>&1
 } >> "$LOG"

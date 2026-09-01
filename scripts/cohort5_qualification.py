@@ -128,6 +128,28 @@ SWEEP2_ADMITS = [
     "0xdf804b17329a461425116c9e0f599e248b443259",
 ]
 
+# CRACK-ADMITS (2026-08-30, operator "2 ok" on the crack proposals): the 10
+# reviewed-but-never-tracked addresses found by the crack census - latest
+# verdict INSUFFICIENT-EVIDENCE (9 in deep_dive + 1 in deep_dive_scout),
+# neither on roster nor locked. INSUFFICIENT under the voided metrics is a
+# process crack, not evidence against them. REJECTs are deliberate
+# exclusions and stay out. Fresh post-EXECUTION epoch (ruling 08-30,
+# executed 09-01; epoch 2026-09-01T13:00Z, never back-dated).
+CRACK_EPOCH = datetime(2026, 9, 1, 13, 0, 0,
+                       tzinfo=timezone.utc).timestamp()
+CRACK_ADMITS = [
+    "0x0c0e270cf879583d6a0142fc817e05b768d0434e",
+    "0x44c1dfe43260c94ed4f1d00de2e1f80fb113ebc1",
+    "0x70d94a4ff67ed919a8480885cf0808afefe7a684",
+    "0xa16a1302ca05463f30faebeb5c045767fde233a1",
+    "0xabb89972b21b304c1bed2bf26f35c8741ac9bba3",
+    "0xcc500cbcc8b7cf5bd21975ebbea34f21b5644c82",
+    "0xd189664c5308903476f9f079820431e4fd7d06f4",
+    "0xdbade4c82fb72780a0db9a38f821d8671aba9c95",
+    "0xdf17f4a8dd01a4cfa6fc3da323a2baee5f8697d1",
+    "0xe613b515bd46b1585a8b137a4d291d9b80bd540e",
+]
+
 EDGE_BAR = 0.02
 P_BAR = 0.95
 N_BAR = 30
@@ -290,6 +312,12 @@ async def run(args) -> int:
           f" (integrity-screened; profit undecided - the e-process rules):")
     eproc_grade(SWEEP2_ADMITS, SWEEP2_EPOCH,
                 "sweep2_admit e-process (2026-08-30)")
+    print(f"crack-admits ({len(CRACK_ADMITS)}) - epoch "
+          f"{datetime.fromtimestamp(CRACK_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
+          f" (census re-admits; INSUFFICIENT under voided metrics = process "
+          f"crack, not evidence):")
+    eproc_grade(CRACK_ADMITS, CRACK_EPOCH,
+                "crack_admit e-process (2026-08-30)")
     if proposals:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
@@ -340,7 +368,17 @@ def _self_test() -> int:
                     for a in SWEEP2_ADMITS)
             and not (set(SWEEP2_ADMITS) & (set(C1_UNTESTED) | set(INSUFF_PROBES))))
     print(f"  [group3] 16 unique sweep2 addresses, disjoint : {ok3f}")
+    ok3g = (CRACK_EPOCH == datetime(2026, 9, 1, 13, 0, 0,
+                                    tzinfo=timezone.utc).timestamp()
+            and len(CRACK_ADMITS) == 10 and len(set(CRACK_ADMITS)) == 10
+            and all(a == a.lower() and a.startswith("0x") and len(a) == 42
+                    for a in CRACK_ADMITS)
+            and not (set(CRACK_ADMITS) & (set(C1_UNTESTED)
+                                          | set(INSUFF_PROBES)
+                                          | set(SWEEP2_ADMITS))))
+    print(f"  [group3] 10 unique crack addresses, disjoint : {ok3g}")
     ok &= ok3f
+    ok &= ok3g
     ok3e = (len(INSUFF_PROBES) == 12 and len(set(INSUFF_PROBES)) == 12
             and all(a == a.lower() and a.startswith("0x") and len(a) == 42
                     for a in INSUFF_PROBES)
