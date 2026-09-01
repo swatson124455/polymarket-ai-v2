@@ -49,7 +49,7 @@ MAKER_MAX_PER_SECTOR=2
 MAKER_MARKET_GROSS_CAP_USD=30
 MAKER_EVENT_CAP_USD=30
 MAKER_SECTOR_GROSS_CAP_USD=60
-MAKER_DAY_LOSS_FLOOR_USD=15
+MAKER_DAY_LOSS_FLOOR_USD=10
 
 # ── behavior ───────────────────────────────────────────────────────────────
 MAKER_ONESIDED_DERISK=1
@@ -73,6 +73,10 @@ MAKER_QUOTE_STYLE=wide
 # noise (07-25: pnl=-76.20, settle_realized=-0.57). REALIZED arm catches real
 # settlement bleed; the $15 MARK floor above stays as the wallet-protection arm.
 MAKER_DAY_REALIZED_FLOOR_USD=10
+# OPERATOR RULING 2026-09-01: "lose max 10 in 24 hours" — the MARK floor above
+# is set to $10 (it sees every loss, marks included, so it enforces the ruling
+# directly); the realized arm stays at $10 as the backstop for the one case the
+# mark gauge is blind to (frozen/unmarked inventory, RULE TWELVE class).
 # Market-clock veto: no market entering selection with <24h of life (the 07-25
 # expiring-cluster trap) or >30d to end (capital locked to resolution).
 MAKER_MIN_HOURS_TO_END=24
