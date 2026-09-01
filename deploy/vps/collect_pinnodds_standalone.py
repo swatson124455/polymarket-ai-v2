@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+import json,os,re,time,unicodedata,urllib.request,urllib.error,urllib.parse
+from datetime import datetime,timezone
+ENV=os.environ.get("PINNODDS_ENV_PATH","/opt/pa2-shared/.env")
+SNAP=os.environ.get("PINNODDS_SNAPSHOT_PATH","/home/ubuntu/eb-odds/pinnodds_snapshots.jsonl")
+ALIASES=os.environ.get("EB_ALIASES_PATH","/home/ubuntu/eb-odds/aliases.json")
+URL="https://pinnodds.com/kit/v1/markets?sport_id=11&event_type=prematch"
+UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+PROP=re.compile(r"\((kills?|games?|maps?|rounds?|towers?|handicap|total)\)\s*$",re.I)
+# GAP B: Polymarket match-winner index (Gamma tag_id=64) for bet-time PM price.
+# EVENTS endpoint (2026-07-14 coverage fix): /markets offset paging 422-caps at
+# ~2000-2500 and the tag ballooned to ~7800 markets when the EWC prop flood
+# landed — slate match winners sank beyond the reachable window in ANY order.
+# ~651 active EVENTS (~7 pages) carry ALL nested markets. Mirrors
+# pm_market_index._default_fetch_page/_flatten_page_item.
+GAMMA="https://gamma-api.polymarket.com/events"
+YESNO={"YES","NO","1","0","TRUE","FALSE"}
+VS=re.compile(r"\bvs\.?\b",re.I)
+PMPROP=re.compile(r"\bgame\s*\d|\bmap\s*\d|handicap|\bkills?\b|\btotal\b|odd\s*/\s*even|\bodd\b|\beven\b|over\s*/\s*under|\bover\b|\bunder\b|\brounds?\b|\btowers?\b|first blood|\bspread\b|correct score|most (picked|banned)",re.I)
+def key():
+    for l in open(ENV,encoding="utf-8"):
+        if l.startswith("PINNACLE_ODDS_API_KEY=") and l.strip()!="PINNACLE_ODDS_API_KEY=":
+            return l.split("=",1)[1].strip()
+    raise SystemExit("no PINNACLE_ODDS_API_KEY in "+ENV)
+def norm(s): return str(s or "").strip().lower()
+def mkey(a,b,d):
+    a,b=norm(a),norm(b); d=(d or "")[:10]
+    if a>b: a,b=b,a
+    return f"{a}||{b}||{d}"
+# Team matching mirrors esports_v2.model.team_match (kept in sync; parity-checked
+# against the canonical module). normalize splits on punctuation like
+# orientation.normalize_team; same_team = conservative token-subset sharing a
+# non-generic token; match2 = bijective both-teams match. Correct-or-absent.
+GENERIC={"esports","esport","e-sports","gaming","team","club","academy","youth","challengers","challenger","junior"}
+# Sibling-roster qualifiers (mirrors team_match.SIBLING_QUALIFIERS): a DIFFERENCE
+# in these vetoes the match — "T1" != "T1 Academy" (different roster, same org),
+# even via aliases. Same-qualifier pairs still match ("T1 Academy"=="T1 Esports Academy").
+QUAL={"academy","youth","junior","juniors","rookies","challenger","challengers","female","fe","women","womens","ladies","gc","blue","white","black","gold","stars"}
+def tnorm(s):
+    # NFKD fold mirrors orientation.normalize_team ('Leviatán'=='Leviatan' —
+    # real 2026-07-15 marquee PM-match miss; sources romanize inconsistently).
+    s=str(s or "").lower().replace("_"," ")
+    s=unicodedata.normalize("NFKD",s)
+    s="".join(c for c in s if not unicodedata.combining(c))
+    s=re.sub(r"[^\w\s]"," ",s)
+    return re.sub(r"\s+"," ",s).strip()
+# Optional alias map (mirrors esports_v2.data.alias_file, correct-or-absent):
+# aliases.json {"groups": [[name, ...], ...]} from deploy/vps/eb_dump_aliases.sh.
+# Missing/malformed/empty -> None -> matching runs exactly as before.
+def load_aliases():
+    try:
+        with open(ALIASES,encoding="utf-8") as f: d=json.load(f)
+        if not isinstance(d,dict): return None
+        m={}
+        for g in d.get("groups") or []:
+            if not isinstance(g,list): continue
+            names=[str(n).strip() for n in g if str(n or "").strip()]
+            if len(names)<2: continue
+            for n in names:
+                k=tnorm(n)
+                if k: m.setdefault(k,set()).update(names)
+        return m or None
+    except Exception: return None
+def same_team(x,y,am=None):
+    nx,ny=tnorm(x),tnorm(y)
+    if nx and nx==ny: return True
+    if not nx or not ny: return False
+    if (set(nx.split())&QUAL)!=(set(ny.split())&QUAL): return False
+    if am:
+        ax={nx}|{tnorm(n) for n in am.get(nx,())}; ay={ny}|{tnorm(n) for n in am.get(ny,())}
+        ax.discard(""); ay.discard("")
+        if ax&ay: return True
+    tx,ty=set(nx.split()),set(ny.split())
+    if not tx or not ty: return False
+    if not ((tx&ty)-GENERIC): return False
+    return tx.issubset(ty) or ty.issubset(tx)
+def match2(h,a,ra,rb,am=None):
+    ha,hb=same_team(h,ra,am),same_team(h,rb,am); aa,ab=same_team(a,ra,am),same_team(a,rb,am)
+    o1=ha and ab and not hb and not aa; o2=hb and aa and not ha and not ab
+    if o1 and not o2: return True
+    if o2 and not o1: return False
+    return None
+def dwin(d,w):
+    from datetime import datetime as _dt,timedelta as _td
+    try: base=_dt.strptime(d,"%Y-%m-%d")
+    except (ValueError,TypeError): return {d}
+    return {(base+_td(days=o)).strftime("%Y-%m-%d") for o in range(-w,w+1)}
+def match_ref(h,a,starts,refs,window=1,am=None):
+    # refs: list of (condition_id, yes_token_id, yes_outcome, market_price, team_a, team_b, day)
+    day=str(starts or "")[:10]
+    if len(day)<10: return None
+    days=dwin(day,window)
+    cands=[r for r in refs if r[6] in days and match2(h,a,r[4],r[5],am) is not None]
+    if not cands: return None
+    if len({r[0] for r in cands})!=1: return None
+    return cands[0]
+def coerce(v):
+    try: f=float(v)
+    except (TypeError,ValueError): return None
+    return f if f>1.0 else None
+def jlist(raw):
+    if isinstance(raw,list): return raw
+    if isinstance(raw,str):
+        try: p=json.loads(raw)
+        except (TypeError,ValueError): return []
+        return p if isinstance(p,list) else []
+    return []
+def price(v):
+    try: f=float(v)
+    except (TypeError,ValueError): return None
+    return f if 0.0<f<1.0 else None
+def fetch(k):
+    req=urllib.request.Request(URL,headers={"x-portal-apikey":k,"User-Agent":UA,"Accept":"application/json"})
+    for a in range(1,5):
+        try:
+            with urllib.request.urlopen(req,timeout=25) as r: return json.load(r)
+        except ValueError:
+            # 200 with a non-JSON body (WAF challenge page): lost tick, not a crash
+            print("non-JSON 200 body, giving up"); return {}
+        except urllib.error.HTTPError as e:
+            if e.code==429 and a<4:
+                ra=e.headers.get("Retry-After") if e.headers else None
+                try: w=min(int(ra),60) if ra else 2**a
+                except ValueError: w=2**a
+                print(f"429 attempt {a}, sleep {w}s"); time.sleep(max(1,w)); continue
+            print(f"HTTP {e.code} giving up"); return {}
+        except (urllib.error.URLError,TimeoutError) as e:
+            if a<4: print(f"transport {e}, backoff"); time.sleep(2**a); continue
+            return {}
+    return {}
+def gamma_page(off):
+    # newest-first is REQUIRED: gamma 422-caps offset paging at ~2100 and the tag
+    # holds ~3600 active markets — oldest-first order hid 93/130 live match winners.
+    q=urllib.parse.urlencode({"tag_id":64,"closed":"false","active":"true","archived":"false","order":"id","ascending":"false","limit":100,"offset":off})
+    req=urllib.request.Request(GAMMA+"?"+q,headers={"User-Agent":"eb-pm-index/1.0"})
+    try:
+        with urllib.request.urlopen(req,timeout=20) as r: d=json.load(r)
+        return d if isinstance(d,list) else None
+    except Exception: return None
+def gamma_pages(workers=8,max_pages=30):
+    # Wave-parallel paging (mirrors pm_market_index.build_pm_index latency fix):
+    # page 0 first (fail->{} contract), then waves of `workers`; stop at the
+    # first wave with a short/empty/failed page; retry only provable mid-holes.
+    first=gamma_page(0)
+    if not first: return {}
+    pages={0:first}
+    if len(first)>=100:
+        from concurrent.futures import ThreadPoolExecutor
+        nxt=1
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            while nxt<max_pages:
+                wave=list(range(nxt,min(nxt+workers,max_pages)))
+                pages.update(dict(pool.map(lambda p:(p,gamma_page(p*100)),wave)))
+                holes=[p for p in wave if pages[p] is None and any(pages.get(q) for q in pages if q>p)]
+                if holes: pages.update(dict(pool.map(lambda p:(p,gamma_page(p*100)),holes)))
+                if any(pages[p] is None or len(pages[p])<100 for p in wave): break
+                nxt=wave[-1]+1
+    return pages
+def flatten_item(it):
+    # page item = bare market dict (old shape) OR event dict with nested
+    # markets. /events does NOT server-filter nested markets -> drop the
+    # explicitly closed/inactive ones (stale-price + false-ambiguity risk).
+    if not isinstance(it,dict): return []
+    nested=it.get("markets")
+    if not isinstance(nested,list): return [it]
+    return [m for m in nested if isinstance(m,dict)
+            and m.get("closed") is not True and m.get("active") is not False]
+def pm_index():
+    # list of (condition_id, yes_token_id, yes_outcome, market_price, team_a, team_b, day);
+    # de-dup by condition_id. Ambiguity resolved at match time (match_ref).
+    refs=[]; seen=set(); pages=gamma_pages()
+    for pg in range(30):
+        ms=pages.get(pg)
+        if ms is None:
+            if pg in pages and any(pages.get(q) for q in range(pg+1,30)):
+                print(f"pm_index page {pg} absent after retry (hole)"); continue
+            break
+        for m in (x for it in ms for x in flatten_item(it)):
+            if not isinstance(m,dict): continue
+            q=str(m.get("question") or "").strip()
+            if not q or not VS.search(q) or PMPROP.search(q): continue
+            outs=jlist(m.get("outcomes"))
+            if len(outs)!=2: continue
+            labs={str(o).strip().upper() for o in outs if str(o).strip()}
+            if not labs or labs<=YESNO: continue
+            ta,tb=str(outs[0]).strip(),str(outs[1]).strip()
+            if not ta or not tb: continue
+            toks=jlist(m.get("clobTokenIds"))
+            if len(toks)!=2 or not str(toks[0]).strip(): continue
+            cid=str(m.get("conditionId") or "").strip()
+            gs=str(m.get("gameStartTime") or "").strip(); day=gs[:10]
+            if not cid or len(day)<10 or cid in seen: continue
+            prs=jlist(m.get("outcomePrices"))
+            mp=price(prs[0]) if len(prs)==2 else None
+            seen.add(cid); refs.append((cid,str(toks[0]).strip(),ta,mp,ta,tb,day))
+        if len(ms)<100: break
+    # Silent-drop guard (mirrors pm_market_index): full final page at the cap
+    # means more events exist beyond page 30 and are dropped from PM capture.
+    last=pages.get(29)
+    if last is not None and len(last)>=100:
+        print("pm_index_TRUNCATED: hit 30-page cap with a full final page — more events beyond the cap are SILENTLY DROPPED; raise the cap")
+    return refs
+def safe_pm_index():
+    try: return pm_index()
+    except Exception as e:
+        print(f"pm_index failed {type(e).__name__}, null PM fields"); return []
+# GAP C: executable prices — best bid/ask (+ touch sizes) from the live CLOB
+# book of each MATCHED market's yes token. market_price is the mid BY
+# CONSTRUCTION (gamma outcomePrices == (bestBid+bestAsk)/2, verified
+# 2026-07-13); the touch is what a fill actually costs. Mirrors
+# pm_market_index.fetch_touch_quotes. Correct-or-absent: any failure/empty
+# book -> null quote fields; odds + mid capture never blocked.
+CLOB="https://clob.polymarket.com/book"
+def best_level(levels,side):
+    best=None
+    for lv in levels if isinstance(levels,list) else []:
+        if not isinstance(lv,dict): continue
+        try: p,s=float(lv.get("price")),float(lv.get("size"))
+        except (TypeError,ValueError): continue
+        if not (0.0<p<1.0) or s<=0: continue
+        if best is None or (p>best[0] if side=="bid" else p<best[0]): best=(p,s)
+    return best if best is not None else (None,None)
+def clob_book(tid):
+    req=urllib.request.Request(CLOB+"?token_id="+urllib.parse.quote(str(tid)),headers={"User-Agent":"eb-pm-index/1.0"})
+    try:
+        with urllib.request.urlopen(req,timeout=10) as r: d=json.load(r)
+        return d if isinstance(d,dict) else None
+    except Exception: return None
+def touch_quotes(tids,workers=8):
+    tids=[t for t in dict.fromkeys(tids) if t]
+    if not tids: return {}
+    from concurrent.futures import ThreadPoolExecutor
+    def one(tid):
+        try:
+            b=clob_book(tid)
+            if not isinstance(b,dict): return tid,None
+            bb,bs=best_level(b.get("bids"),"bid"); ba,az=best_level(b.get("asks"),"ask")
+            if bb is None and ba is None: return tid,None
+            return tid,(bb,ba,bs,az)
+        except Exception: return tid,None
+    out={}
+    with ThreadPoolExecutor(max_workers=max(1,workers)) as pool:
+        for tid,q in pool.map(one,tids):
+            if q is not None: out[tid]=q
+    return out
+def safe_touch_quotes(tids):
+    try: return touch_quotes(tids)
+    except Exception as e:
+        print(f"touch_quotes failed {type(e).__name__}, null quote fields"); return {}
+def main():
+    cap=datetime.now(timezone.utc).isoformat(); recs=[]; t0=time.monotonic()
+    # LATENCY: fetch the PM index and the PinnOdds odds CONCURRENTLY — both are
+    # pure I/O; this halves tick wall-time AND captures market_price closer in
+    # time to the odds it is stored beside (better price/line simultaneity).
+    k=key()
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_pm=ex.submit(safe_pm_index); fut_ev=ex.submit(fetch,k)
+        pmi=fut_pm.result(); data=fut_ev.result()
+    am=load_aliases()
+    for ev in data.get("events",[]):
+        h,a=str(ev.get("home") or "").strip(),str(ev.get("away") or "").strip()
+        if not h or not a or PROP.search(h) or PROP.search(a): continue
+        p=ev.get("periods") or {}; n0=p.get("num_0") if isinstance(p,dict) else None
+        ml=n0.get("money_line") if isinstance(n0,dict) else None
+        if not isinstance(ml,dict): continue
+        oa,ob=coerce(ml.get("home")),coerce(ml.get("away"))
+        if oa is None or ob is None: continue
+        mk=mkey(h,a,ev.get("starts")); pm=match_ref(h,a,ev.get("starts"),pmi,am=am)
+        recs.append({"captured_at":cap,"match_key":mk,"home":h,"away":a,
+                     "starts":ev.get("starts"),"league_name":ev.get("league_name"),
+                     "odds_a":oa,"odds_b":ob,"event_type":"prematch",
+                     "condition_id":pm[0] if pm else None,"yes_token_id":pm[1] if pm else None,
+                     "yes_outcome":pm[2] if pm else None,"market_price":pm[3] if pm else None,
+                     "best_bid":None,"best_ask":None,"bid_size":None,"ask_size":None})
+    # GAP C: one CLOB book read per distinct matched market, concurrent.
+    tq=safe_touch_quotes([r["yes_token_id"] for r in recs if r.get("yes_token_id")])
+    for r in recs:
+        q=tq.get(r.get("yes_token_id"))
+        if q: r["best_bid"],r["best_ask"],r["bid_size"],r["ask_size"]=q
+    os.makedirs(os.path.dirname(SNAP),exist_ok=True)
+    with open(SNAP,"a",encoding="utf-8") as f:
+        for r in recs: f.write(json.dumps(r,ensure_ascii=False)+"\n")
+    total=sum(1 for _ in open(SNAP,encoding="utf-8"))
+    matched=sum(1 for r in recs if r.get("condition_id"))
+    quoted=sum(1 for r in recs if r.get("best_bid") is not None or r.get("best_ask") is not None)
+    print(f"{cap} appended={len(recs)} pm_matched={matched} books={quoted} total_lines={total} dur={time.monotonic()-t0:.1f}s file={SNAP}")
+if __name__=="__main__": main()

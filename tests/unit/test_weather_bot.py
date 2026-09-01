@@ -2,7 +2,7 @@
 
 import asyncio
 import math
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -25,6 +25,24 @@ from bots.weather.engine.base_engine.weather.market_mapper import (
 )
 from bots.weather.engine.base_engine.weather.probability_engine import WeatherProbabilityEngine
 from bots.weather.engine.base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
+
+
+def _run(coro):
+    """Run a coroutine on a private event loop (ordering-pollution immunity).
+
+    The deprecated ``asyncio.get_event_loop().run_until_complete(...)`` pattern
+    breaks under full-suite ordering: any earlier sync test that calls
+    ``asyncio.run()`` (e.g. test_mirror_scoring_runner.py, test_mirror_v3_silo.py)
+    leaves the policy with ``_set_called=True`` and no current loop, after which
+    ``get_event_loop()`` raises ``RuntimeError: There is no current event loop``
+    instead of auto-creating one (Python 3.12+). A private loop that is never
+    registered as the current loop is immune to that global state — same pattern
+    as ``_run`` in test_bug21_terminal_exit_close.py."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -315,11 +333,43 @@ class TestMarketMapper:
 
 
 class TestDateParsing:
+    # S234: these two asserted `date(now.year, ...)` unconditionally, which
+    # silently encoded a CALENDAR ASSUMPTION rather than the parser's contract.
+    # _parse_date applies rule L2 (market_mapper.py): with no explicit year, a
+    # date more than 180 days in the PAST is read as next year's ("January 5"
+    # asked in December targets the coming January). So the expected year flips
+    # partway through every year. `January 22` crossed the boundary at 181 days
+    # past and began failing on 2026-07-21; `Feb 3` was 169 days past and would
+    # have started failing ~2026-08-02 — the same latent bug, 12 days behind.
+    # The helper mirrors L2 so both stay correct on every calendar day.
+    @staticmethod
+    def _expected(month: int, day: int) -> date:
+        today = datetime.now(timezone.utc).date()
+        parsed = date(today.year, month, day)
+        if (today - parsed).days > 180:
+            parsed = date(today.year + 1, month, day)
+        return parsed
+
     def test_full_month_name(self):
-        assert _parse_date("January 22") == date(datetime.now().year, 1, 22)
+        assert _parse_date("January 22") == self._expected(1, 22)
 
     def test_abbreviated_month(self):
-        assert _parse_date("Feb 3") == date(datetime.now().year, 2, 3)
+        assert _parse_date("Feb 3") == self._expected(2, 3)
+
+    def test_l2_rollforward_is_actually_exercised(self):
+        """Guard the guard: prove L2 really does roll a long-past date forward
+        and leave a recent one alone — so _expected() above can't mirror a bug.
+        Calendar-stable: the parser always builds from the CURRENT year, so a
+        date 200 days back lands on year+1 whether or not it crossed Jan 1."""
+        today = datetime.now(timezone.utc).date()
+
+        long_past = today - timedelta(days=200)
+        got = _parse_date(f"{long_past.strftime('%B')} {long_past.day}")
+        assert got == date(long_past.year + 1, long_past.month, long_past.day)
+
+        recent = today - timedelta(days=10)
+        got = _parse_date(f"{recent.strftime('%B')} {recent.day}")
+        assert got == date(today.year, recent.month, recent.day)
 
     def test_with_year(self):
         assert _parse_date("March 15, 2026") == date(2026, 3, 15)
@@ -1977,9 +2027,8 @@ class TestWeatherConfidenceCalibrator:
 
     def test_no_db_returns_false(self):
         """fit_from_trade_events returns False when no DB provided."""
-        import asyncio
         cal = WeatherConfidenceCalibrator()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             cal.fit_from_trade_events(db=None, window_days=30)
         )
         assert result is False
@@ -2033,7 +2082,6 @@ class TestWeatherConfidenceCalibrator:
 
     def test_brier_guard_rejects_worse_calibration(self):
         """Calibration that worsens Brier score is rejected."""
-        import asyncio
         cal = WeatherConfidenceCalibrator()
         mock_session = AsyncMock()
         # Generate well-calibrated data — LR can't improve it
@@ -2056,7 +2104,7 @@ class TestWeatherConfidenceCalibrator:
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_db = MagicMock()
         mock_db.get_session = MagicMock(return_value=mock_session)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             cal.fit_from_trade_events(db=mock_db, window_days=30, min_samples=200)
         )
         # Either fitted (no harm) or rejected — both are correct behavior
@@ -2387,7 +2435,7 @@ class TestZeroKellyGuard:
         group.station = MagicMock()
         group.station.station_id = "KJFK"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             WeatherBot._execute_weather_trade(bot, opp, group)
         )
         assert result is False, "Zero-Kelly trade should return False, not fire at $5"
@@ -2423,7 +2471,7 @@ class TestZeroKellyGuard:
         group.station = MagicMock()
         group.station.station_id = "KJFK"
 
-        asyncio.get_event_loop().run_until_complete(
+        _run(
             WeatherBot._execute_weather_trade(bot, opp, group)
         )
         bot.base_engine.db.insert_trade_event.assert_called_once()

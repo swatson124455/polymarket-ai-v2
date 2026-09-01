@@ -49,6 +49,19 @@ python -m pytest tests/unit/ --tb=short -q 2>&1 || {
 }
 # Verify SSH key exists
 [ -f "$KEY" ] || { echo "ABORT: SSH key not found at $KEY"; exit 1; }
+# CR guard (2026-09-01): a Windows-side edit CRLF'd healthcheck_probe.sh
+# and the VPS bash died on \r AFTER the symlink swap — failing the health
+# gate and triggering rollback for a non-code reason. Catch it before upload.
+# Python byte-check, NOT grep: MSYS grep's CR handling is environment-
+# dependent and false-positived all 11 scripts (byte-verified CR-free, two
+# with months-old mtimes) on the 2026-09-01 attempt-3 preflight — same
+# platform-quirk class as the grep -P locale note in step 7 below.
+_crlf_hits=$(python -c "import pathlib; print('\n'.join(str(p) for p in sorted(pathlib.Path('deploy').glob('*.sh')) if b'\r' in p.read_bytes()))")
+if [ -n "$_crlf_hits" ]; then
+    echo "ABORT: CR bytes in deploy scripts (VPS bash will choke):"
+    echo "$_crlf_hits"
+    exit 1
+fi
 # Bug-class pattern check (P0.0) — enforced on full codebase regardless of hook bypass
 _bcp_violations=0
 _bcp_hits=$(grep -rn --include="*.py" 'place_order.*event_type=' \
@@ -221,11 +234,18 @@ sudo systemctl disable polymarket-ai 2>/dev/null || true
 # S145: Explicit stop before start — frees all PgBouncer slots before new code loads.
 # Without this, old processes hold connections during the restart window, causing
 # pool exhaustion if the new processes also try to connect simultaneously.
-sudo systemctl enable polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion
-sudo systemctl stop polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion 2>/dev/null || true
+# 2026-09-01 operator ruling ("Deploy, keep mirror down"): polymarket-mirror
+# (the LEGACY live MirrorBot service) was deliberately stopped+disabled on
+# 2026-08-25 (MB overhaul / legacy wind-down track) — a deploy must NOT
+# resurrect it. It is excluded here AND in deploy/healthcheck_probe.sh
+# (BOT_SERVICES/SCAN_SERVICES); re-add to BOTH places only on explicit
+# operator instruction. The mirror3 shadow watcher is a separate unit and
+# is not managed by this script.
+sudo systemctl enable polymarket-weather polymarket-esports polymarket-ingestion
+sudo systemctl stop polymarket-weather polymarket-esports polymarket-ingestion 2>/dev/null || true
 sleep 2  # Let PgBouncer reclaim slots
-sudo systemctl start polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion
-echo "  polymarket-weather, polymarket-mirror, polymarket-esports, polymarket-ingestion started (clean)"
+sudo systemctl start polymarket-weather polymarket-esports polymarket-ingestion
+echo "  polymarket-weather, polymarket-esports, polymarket-ingestion started (clean); polymarket-mirror left stopped+disabled (2026-09-01 ruling)"
 REMOTE
 echo "  Restarting..."
 

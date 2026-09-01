@@ -15,6 +15,21 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def shin_available() -> bool:
+    """True if the optional ``shin`` package is importable.
+
+    ``odds_to_implied`` silently falls back to simple normalization when the
+    package is absent (kept for back-compat — its existing callers tolerate
+    it). Drivers that LABEL their output with the de-vig method must check
+    this first and refuse to run, or they print 'shin' numbers that are
+    actually simple (a correct-or-absent violation caught 2026-07-13)."""
+    try:
+        import shin  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def odds_to_implied(odds_a: float, odds_b: float) -> Tuple[float, float]:
     """
     Convert decimal odds to implied probabilities using Shin's method.

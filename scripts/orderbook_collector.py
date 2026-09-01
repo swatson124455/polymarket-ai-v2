@@ -29,6 +29,87 @@ BATCH_PAUSE = 0.5
 POLL_INTERVAL = 60
 
 
+def _clean_levels(levels, *, best_first_desc):
+    """Validate raw CLOB /book levels and sort them BEST-FIRST.
+
+    The raw /book response sorts bids ASCENDING and asks DESCENDING by price
+    (verified live 2026-07-14: gamma bestBid/bestAsk == bids[-1]/asks[-1]), so
+    positional [0] access reads the WORST level. Sort defensively instead of
+    trusting feed order. Entries with non-numeric price/size, price outside
+    (0, 1), or size <= 0 are dropped rather than poisoning the snapshot.
+
+    bids: best_first_desc=True (highest price first); asks: False (lowest first).
+    """
+    out = []
+    for lv in levels if isinstance(levels, list) else []:
+        try:
+            p, s = float(lv["price"]), float(lv["size"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (0.0 < p < 1.0) or s <= 0:
+            continue
+        out.append({"price": p, "size": s})
+    out.sort(key=lambda x: x["price"], reverse=best_first_desc)
+    return out
+
+
+def parse_book_metrics(book):
+    """Compute the orderbook_snapshots metric fields from one raw /book dict.
+
+    Returns the metrics dict (no token/market/time stamps) or None when the
+    book is empty/unusable. Pure — unit-testable."""
+    if not book:
+        return None
+
+    bids = _clean_levels(book.get("bids"), best_first_desc=True)
+    asks = _clean_levels(book.get("asks"), best_first_desc=False)
+
+    if not bids and not asks:
+        return None
+
+    best_bid = bids[0]["price"] if bids else None
+    best_ask = asks[0]["price"] if asks else None
+
+    spread = None
+    mid = None
+    if best_bid is not None and best_ask is not None:
+        spread = best_ask - best_bid
+        mid = (best_bid + best_ask) / 2
+
+    # Depth within 1% and 5% of mid
+    bid_d1 = bid_d5 = ask_d1 = ask_d5 = 0.0
+    if mid and mid > 0:
+        for b in bids:
+            p, s = b["price"], b["size"]
+            if abs(p - mid) <= mid * 0.01:
+                bid_d1 += s
+            if abs(p - mid) <= mid * 0.05:
+                bid_d5 += s
+        for a in asks:
+            p, s = a["price"], a["size"]
+            if abs(p - mid) <= mid * 0.01:
+                ask_d1 += s
+            if abs(p - mid) <= mid * 0.05:
+                ask_d5 += s
+
+    # Imbalance (top 5 levels, best-first after the sort above)
+    bv = sum(b["size"] for b in bids[:5])
+    av = sum(a["size"] for a in asks[:5])
+    imbalance = (bv - av) / (bv + av) if (bv + av) > 0 else 0.0
+
+    return {
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "spread": spread,
+        "mid_price": mid,
+        "bid_depth_1pct": bid_d1,
+        "ask_depth_1pct": ask_d1,
+        "bid_depth_5pct": bid_d5,
+        "ask_depth_5pct": ask_d5,
+        "imbalance": round(imbalance, 4),
+    }
+
+
 async def collect_orderbooks(limit: int = 200):
     """Single collection pass: fetch orderbooks and persist snapshots."""
     db = Database()
@@ -79,57 +160,14 @@ async def collect_orderbooks(limit: int = 200):
                         market_id=condition_id,
                         token_id=token_id
                     )
-                    if not book:
+                    metrics = parse_book_metrics(book)
+                    if metrics is None:
                         return None
-
-                    bids = book.get("bids", [])
-                    asks = book.get("asks", [])
-
-                    if not bids and not asks:
-                        return None
-
-                    best_bid = float(bids[0]["price"]) if bids else None
-                    best_ask = float(asks[0]["price"]) if asks else None
-
-                    spread = None
-                    mid = None
-                    if best_bid is not None and best_ask is not None:
-                        spread = best_ask - best_bid
-                        mid = (best_bid + best_ask) / 2
-
-                    # Depth within 1% and 5% of mid
-                    bid_d1 = bid_d5 = ask_d1 = ask_d5 = 0.0
-                    if mid and mid > 0:
-                        for b in bids:
-                            p, s = float(b["price"]), float(b["size"])
-                            if abs(p - mid) <= mid * 0.01:
-                                bid_d1 += s
-                            if abs(p - mid) <= mid * 0.05:
-                                bid_d5 += s
-                        for a in asks:
-                            p, s = float(a["price"]), float(a["size"])
-                            if abs(p - mid) <= mid * 0.01:
-                                ask_d1 += s
-                            if abs(p - mid) <= mid * 0.05:
-                                ask_d5 += s
-
-                    # Imbalance (top 5 levels)
-                    bv = sum(float(b.get("size", 0)) for b in bids[:5])
-                    av = sum(float(a.get("size", 0)) for a in asks[:5])
-                    imbalance = (bv - av) / (bv + av) if (bv + av) > 0 else 0.0
 
                     return {
                         "token_id": token_id,
                         "market_id": market_id,
-                        "best_bid": best_bid,
-                        "best_ask": best_ask,
-                        "spread": spread,
-                        "mid_price": mid,
-                        "bid_depth_1pct": bid_d1,
-                        "ask_depth_1pct": ask_d1,
-                        "bid_depth_5pct": bid_d5,
-                        "ask_depth_5pct": ask_d5,
-                        "imbalance": round(imbalance, 4),
+                        **metrics,
                         "snapshot_time": now,
                     }
                 except Exception as e:

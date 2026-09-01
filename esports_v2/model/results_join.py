@@ -1,0 +1,336 @@
+"""Join sharp closing lines to the free match RESULTS we already have on disk.
+
+Step 2 of the sharp-line backtest: given the per-match closing lines from
+``closing_line.reduce_to_closing_lines`` (keyed by ``match_key``), attach WHO WON
+by matching each line to a finished match in the free results corpus
+(``data/esports_matches_bulk.jsonl`` — Oracle's Elixir + GRID; and
+``data/cs2/pandascore_cs2.json`` — PandaScore). The join key is the two team
+names (via the alias matcher) plus the match day.
+
+CORRECT-OR-ABSENT, because a wrong winner label silently corrupts every metric
+downstream (the "impossible numbers" failure class):
+  - a line joins only when BOTH its teams map bijectively to the two teams of a
+    finished match (each line-team to a distinct result-team);
+  - if the same day+teams has MULTIPLE finished matches with DIFFERENT winners
+    (e.g. per-game rows of a Bo-series, or two group-stage meetings), the join is
+    AMBIGUOUS for a match-winner line -> dropped;
+  - team equality is exact-normalized, alias-overlap (inject the real
+    ``esports_team_aliases`` map on the VPS), or a conservative token-subset that
+    shares a non-generic token ("G2 Esports" <-> "G2"). No fuzzy thresholds.
+
+The alias hook mirrors ``orientation.resolve_yes_is_team_a`` exactly: pass an
+``alias_expand(team) -> [aliases]`` callable to inject the matcher's alias map;
+offline it works on exact-normalized + token-subset matches.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
+
+from esports_v2.model.closing_line import ClosingLine, parse_ts
+from esports_v2.model.orientation import normalize_team
+# The conservative team-match primitives were lifted verbatim into team_match so
+# pm_market_index can reuse the SAME matcher. Re-exported under their original
+# private names — behavior and callers unchanged.
+from esports_v2.model.team_match import (
+    GENERIC_TOKENS as _GENERIC_TOKENS,
+    alias_set as _alias_set,
+    match_teams as _match_teams,
+    same_team as _same_team,
+)
+
+logger = logging.getLogger(__name__)
+
+# PinnOdds ``league_name`` is "<Game> - <Tournament>" (verified on the full live
+# league set 2026-07-14: 37/37 distinct leagues carry the game as the prefix).
+# Map that prefix to the RESULT ``game`` token so the join can refuse a
+# cross-game namesake attach (Fnatic/FaZe/Liquid field rosters in LoL+CS2+
+# Valorant on the same day). Values match ResultRecord.game (valorant/cs2/lol/
+# dota2/r6); cod/sc2/mlbb have no free results, so those lines simply never join.
+_GAME_PREFIX = {
+    "cs2": "cs2", "counter-strike": "cs2", "counter-strike 2": "cs2",
+    "cs:go": "cs2", "csgo": "cs2",
+    "valorant": "valorant",
+    "league of legends": "lol", "lol": "lol",
+    "dota 2": "dota2", "dota2": "dota2", "dota": "dota2",
+    "rainbow six": "r6", "rainbow six siege": "r6", "r6": "r6",
+    "call of duty": "cod",
+    "starcraft 2": "sc2", "starcraft ii": "sc2",
+    "mobile legends": "mlbb", "mobile legends bang bang": "mlbb",
+}
+
+# Leagues whose game we could NOT infer, logged once each (surfaced, not silent).
+_UNMAPPED_LEAGUES: Set[str] = set()
+
+
+def infer_game(league_name: Optional[str]) -> Optional[str]:
+    """Canonical game token from a PinnOdds ``league_name`` prefix, or None.
+
+    Correct-or-absent: an unrecognized prefix returns None (the join then falls
+    back to team+day for that line and logs the league once) rather than
+    guessing a game — a wrong game would drop the right result."""
+    s = str(league_name or "").strip()
+    if not s:
+        return None
+    prefix = s.split(" - ", 1)[0].strip().lower()
+    return _GAME_PREFIX.get(prefix)
+
+
+@dataclass
+class ResultRecord:
+    """One finished match from a free results source."""
+
+    match_id: str
+    game: str
+    team_a: str
+    team_b: str
+    winner: Optional[str]      # winning team NAME (not 'a'/'b')
+    day: str                   # match day, "YYYY-MM-DD" (UTC)
+    source: str
+
+
+@dataclass
+class JoinedRecord:
+    """A closing line joined to its realized outcome (backtest-ready)."""
+
+    match_key: str
+    home: str                  # line 'A' side (odds_a)
+    away: str                  # line 'B' side (odds_b)
+    starts: str
+    day: str
+    odds_a: float
+    odds_b: float
+    open_odds_a: float
+    open_odds_b: float
+    winner: str                # winning team NAME from the result
+    home_won: bool             # True iff the odds_a/home team won
+    game: str
+    source: str
+    result_match_id: str
+    # GAP B: matched Polymarket ref carried from the closing line (None if the
+    # collector captured no PM price at close). Enables the sharp-vs-PM edge
+    # backtest via ``sharp_eval.edge_backtest_from_joined``.
+    condition_id: Optional[str] = None
+    yes_token_id: Optional[str] = None
+    yes_outcome: Optional[str] = None
+    market_price: Optional[float] = None
+    # GAP C: executable touch from the closing snapshot's CLOB book. Threaded so
+    # the edge backtest can grade the realized FILL at the executable price
+    # (market_price is the unfillable MID by construction). None pre-GAP-C or
+    # when the book fetch was empty at close.
+    best_bid: Optional[float] = None
+    best_ask: Optional[float] = None
+    bid_size: Optional[float] = None
+    ask_size: Optional[float] = None
+
+
+# ── team-equality primitives now live in esports_v2/model/team_match.py ──────
+# (imported above under their original private names so callers/tests are
+# unchanged; pm_market_index reuses the SAME matcher for PM↔odds matching.)
+
+
+# ── result loaders (free corpora) ────────────────────────────────────────────
+
+
+def load_bulk_results(path: str | Path) -> List[ResultRecord]:
+    """Load ``esports_matches_bulk.jsonl`` (Oracle's Elixir + GRID) rows.
+
+    NOTE: Oracle LoL rows are per-GAME (``..._game_1``/``_game_2``), so a single
+    Bo-series shows as multiple rows that the join's ambiguity guard will drop
+    when their winners differ — intentional (a game result is not a match-winner
+    outcome). PandaScore/GRID CS2 rows are match-level.
+    """
+    out: List[ResultRecord] = []
+    p = Path(path)
+    if not p.exists():
+        return out
+    with open(p, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ta, tb = str(d.get("team_a") or ""), str(d.get("team_b") or "")
+            if not ta or not tb:
+                continue
+            day_dt = parse_ts(d.get("match_date"))
+            if day_dt is None:
+                continue
+            out.append(ResultRecord(
+                match_id=str(d.get("match_id") or ""),
+                game=str(d.get("game") or ""),
+                team_a=ta, team_b=tb,
+                winner=(str(d["winner"]) if d.get("winner") else None),
+                day=day_dt.strftime("%Y-%m-%d"),
+                source=str(d.get("source") or "bulk"),
+            ))
+    return out
+
+
+def load_pandascore_cs2(path: str | Path) -> List[ResultRecord]:
+    """Load ``data/cs2/pandascore_cs2.json`` (match-level CS2 results)."""
+    out: List[ResultRecord] = []
+    p = Path(path)
+    if not p.exists():
+        return out
+    try:
+        data = json.load(open(p, "r", encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return out
+    if not isinstance(data, list):
+        return out
+    for m in data:
+        if not isinstance(m, dict):
+            continue
+        teams = m.get("teams") or []
+        if len(teams) < 2:
+            continue
+        ta = str((teams[0] or {}).get("name") or "")
+        tb = str((teams[1] or {}).get("name") or "")
+        if not ta or not tb:
+            continue
+        day_dt = parse_ts(m.get("startedAt"))
+        if day_dt is None:
+            continue
+        out.append(ResultRecord(
+            match_id=str(m.get("id") or ""),
+            game="cs2",
+            team_a=ta, team_b=tb,
+            winner=(str(m["winner"]) if m.get("winner") else None),
+            day=day_dt.strftime("%Y-%m-%d"),
+            source=str(m.get("source") or "pandascore"),
+        ))
+    return out
+
+
+# ── the join ─────────────────────────────────────────────────────────────────
+
+
+def _index_by_day(results: Iterable[ResultRecord]) -> Dict[str, List[ResultRecord]]:
+    idx: Dict[str, List[ResultRecord]] = {}
+    for r in results:
+        idx.setdefault(r.day, []).append(r)
+    return idx
+
+
+def _days_in_window(day: str, window: int) -> List[str]:
+    from datetime import timedelta
+    base = parse_ts(day)
+    if base is None:
+        return [day]
+    return [(base + timedelta(days=off)).strftime("%Y-%m-%d")
+            for off in range(-window, window + 1)]
+
+
+@dataclass
+class JoinStats:
+    """Coverage accounting for a join run (surfaced, never silently dropped)."""
+
+    n_lines: int = 0
+    joined: int = 0
+    no_result_match: int = 0
+    ambiguous_multi_winner: int = 0
+    winner_not_a_team: int = 0
+
+
+def join_closing_lines_to_results(
+    closing: Dict[str, ClosingLine],
+    results: Iterable[ResultRecord],
+    *,
+    alias_expand: Optional[Callable[[str], Iterable[str]]] = None,
+    day_window: int = 0,
+) -> Tuple[List[JoinedRecord], JoinStats]:
+    """Join closing lines to finished-match results; return (records, stats).
+
+    ``day_window`` widens the day match to +/- N days (default 0 = same UTC day).
+    Correct-or-absent: a line joins only on an unambiguous team bijection to a
+    finished match whose winner is one of the two teams; same-day+teams matches
+    with conflicting winners are dropped as ambiguous. Every drop is counted in
+    ``JoinStats`` so coverage is explicit.
+    """
+    by_day = _index_by_day(results)
+    records: List[JoinedRecord] = []
+    stats = JoinStats(n_lines=len(closing))
+
+    for key, cl in closing.items():
+        day = ""
+        starts_dt = parse_ts(cl.starts)
+        if starts_dt is not None:
+            day = starts_dt.strftime("%Y-%m-%d")
+
+        # Game gate (2026-07-14): a candidate result must be the SAME game as the
+        # line, so a same-day team-name collision across games (Fnatic in LoL and
+        # CS2 the same day) can't wrong-attach. Inferred from the PinnOdds
+        # league_name prefix; an unmappable league logs once and falls back to
+        # team+day (no coverage regression — correct-or-absent, never a guessed
+        # game). A result with no game field is not gated.
+        line_game = infer_game(cl.league_name)
+        if line_game is None and cl.league_name and cl.league_name not in _UNMAPPED_LEAGUES:
+            _UNMAPPED_LEAGUES.add(cl.league_name)
+            logger.warning(
+                f"results_join_unmapped_league {cl.league_name!r} — game gate "
+                f"skipped (team+day only); add its prefix to _GAME_PREFIX")
+
+        # Candidate results across the day window that bijectively match teams.
+        candidates: List[Tuple[ResultRecord, bool]] = []
+        seen_days = _days_in_window(day, day_window) if day else []
+        for d in seen_days:
+            for r in by_day.get(d, []):
+                if line_game is not None and r.game and r.game != line_game:
+                    continue  # cross-game namesake -> refuse the attach
+                orient = _match_teams(cl.home, cl.away, r.team_a, r.team_b, alias_expand)
+                if orient is None:
+                    continue
+                candidates.append((r, orient))
+
+        if not candidates:
+            stats.no_result_match += 1
+            continue
+
+        # Resolve each candidate's outcome relative to the line's home team.
+        outcomes = []  # (result, home_won: Optional[bool])
+        for r, orient in candidates:
+            if not r.winner:
+                continue
+            # winner matched to result's a/b, then mapped to line home/away.
+            win_is_res_a = _same_team(r.winner, r.team_a, alias_expand)
+            win_is_res_b = _same_team(r.winner, r.team_b, alias_expand)
+            if win_is_res_a == win_is_res_b:  # winner ambiguous vs the two teams
+                continue
+            # orient True: home==res_a. home_won iff winner is the team home maps to.
+            if orient:
+                home_won = win_is_res_a
+            else:
+                home_won = win_is_res_b
+            outcomes.append((r, home_won))
+
+        if not outcomes:
+            stats.winner_not_a_team += 1
+            continue
+
+        distinct = {ow for _, ow in outcomes}
+        if len(distinct) > 1:
+            stats.ambiguous_multi_winner += 1
+            continue  # conflicting winners for the same match-winner line — drop
+
+        r0, home_won = outcomes[0]
+        records.append(JoinedRecord(
+            match_key=key, home=cl.home, away=cl.away, starts=cl.starts, day=day,
+            odds_a=cl.odds_a, odds_b=cl.odds_b,
+            open_odds_a=cl.open_odds_a, open_odds_b=cl.open_odds_b,
+            winner=r0.winner, home_won=home_won,
+            game=r0.game, source=r0.source, result_match_id=r0.match_id,
+            condition_id=cl.condition_id, yes_token_id=cl.yes_token_id,
+            yes_outcome=cl.yes_outcome, market_price=cl.market_price,
+            best_bid=cl.best_bid, best_ask=cl.best_ask,
+            bid_size=cl.bid_size, ask_size=cl.ask_size,
+        ))
+        stats.joined += 1
+
+    return records, stats

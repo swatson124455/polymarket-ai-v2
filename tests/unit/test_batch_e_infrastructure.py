@@ -655,3 +655,57 @@ class TestSignalIngestionTimeoutWrapping:
         assert "_spike_detection_loop" in src
         assert "wait_for" in src
         assert "10.0" in src
+# ─────────────────────────────────────────────────────────────────────────────
+# S233  _publish_signal must skip a market-agnostic signal (no market_id)
+#       cleanly instead of KeyError-ing on signal["market_id"].
+#       (court_monitor federal_register macro signals carry categories_matched
+#        but no market_id; observed live as a caught+logged traceback on restart.)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSignalIngestionMarketIdGuard:
+    @staticmethod
+    def _bare_service():
+        # Bypass the heavy __init__ (many aggregator clients) — the market_id
+        # guard runs before any db/cache/dedup access, so a bare instance is
+        # sufficient to exercise it.
+        from base_engine.signals.signal_ingestion import SignalIngestionService
+        return object.__new__(SignalIngestionService)
+
+    async def test_market_agnostic_signal_skipped_before_dedup(self):
+        from unittest.mock import AsyncMock
+        svc = self._bare_service()
+        svc._is_duplicate_signal = AsyncMock(return_value=False)
+        # federal_register-shaped: categories_matched present, NO market_id.
+        signal = {
+            "source_type": "executive",
+            "source_name": "federal_register:2026-14654",
+            "direction": "NEUTRAL",
+            "confidence": 0.7,
+            "raw_text": "[Presidential Document] Action by the United States ...",
+            "categories_matched": ["crypto", "finance"],
+            "time_sensitivity": "hours",
+        }
+        # Must NOT raise (previously raised KeyError, caught + logged as a
+        # full traceback at error level, then the signal was dropped anyway).
+        result = await svc._publish_signal(signal)
+        assert result is None
+        # The guard returns BEFORE dedup/db/cache — prove it short-circuited.
+        svc._is_duplicate_signal.assert_not_awaited()
+
+    async def test_signal_with_market_id_passes_guard(self):
+        from unittest.mock import AsyncMock
+        svc = self._bare_service()
+        # dedup True → _publish_signal returns right after the guard, so no
+        # db/cache is needed to prove the guard let a valid signal through.
+        svc._is_duplicate_signal = AsyncMock(return_value=True)
+        signal = {
+            "market_id": "0xabc123",
+            "source_type": "international_election",
+            "source_name": "intl_election:US",
+            "direction": "NEUTRAL",
+            "confidence": 0.4,
+        }
+        result = await svc._publish_signal(signal)
+        assert result is None
+        # Guard passed for a market-bearing signal → dedup WAS consulted.
+        svc._is_duplicate_signal.assert_awaited_once()

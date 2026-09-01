@@ -55,7 +55,19 @@ class RedisCache:
             logger.info("Continuing without Redis cache - some features may be slower")
             self.redis = None
     
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str, raise_on_error: bool = False) -> Optional[Any]:
+        """Read a JSON value from Redis.
+
+        S232 root fix (operator-authorized 2026-07-19, cross-bot): historically
+        this swallowed EVERY exception to None, making a genuine Redis ERROR
+        indistinguishable from a real cache MISS — so any correctness-critical
+        caller that treats None as "no data" fails OPEN on a Redis outage (the
+        WB nowcast $/window cap over-spent this way). BACKWARD-COMPATIBLE: the
+        default (raise_on_error=False) is byte-identical legacy behavior — every
+        existing caller is unaffected. Correctness-critical callers pass
+        raise_on_error=True so an error RAISES (fail closed / handle it) while a
+        real miss still returns None.
+        """
         if not self.redis:
             return None
         try:
@@ -65,12 +77,15 @@ class RedisCache:
             return None
         except Exception as e:
             logger.warning(f"Redis get error for key {key}", error=str(e))
+            if raise_on_error:
+                raise
             return None
     
-    async def set(self, key: str, value: Any, ttl: Optional[int] = None):
+    async def set(self, key: str, value: Any, ttl: Optional[int] = None,
+                  raise_on_error: bool = False):
         """
         Set a value in Redis cache with optional TTL.
-        
+
         Args:
             key: Cache key
             value: Value to cache
@@ -79,6 +94,10 @@ class RedisCache:
                  - prices:* -> 60s (1 min)
                  - trades:* -> 600s (10 min)
                  - default -> 3600s (1 hour)
+            raise_on_error: S232 root fix — default False is byte-identical
+                 legacy behavior (write errors swallowed). Pass True from a
+                 correctness-critical writer so a failed write RAISES instead of
+                 silently no-op'ing (e.g. an unrecorded spend-counter charge).
         """
         if not self.redis:
             return
@@ -100,6 +119,8 @@ class RedisCache:
             await self.redis.set(key, serialized, ex=ttl)
         except Exception as e:
             logger.warning(f"Redis set error for key {key}", error=str(e))
+            if raise_on_error:
+                raise
     
     async def delete(self, key: str):
         if not self.redis:

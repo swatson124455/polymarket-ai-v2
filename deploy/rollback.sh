@@ -32,18 +32,23 @@ echo "Rollback : $PREV_DIR"
 echo ""
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-# Service list MUST match deploy.sh's restart set (currently weather + mirror
-# + esports + ingestion). Drift here means rollback leaves the missing
+# Service list MUST match deploy.sh's restart set (currently weather +
+# esports + ingestion). Drift here means rollback leaves the missing
 # service(s) running on the pre-rollback code while the symlink points
 # elsewhere — the §S180 rollback-list-drift class. If deploy.sh adds a
 # service, mirror it here.
+# 2026-09-01 operator ruling ("Deploy, keep mirror down"): polymarket-mirror
+# (legacy live MirrorBot, deliberately stopped+disabled 2026-08-25) is
+# EXCLUDED here exactly as in deploy.sh step 6 and healthcheck_probe.sh —
+# the 13:19Z rollback proved this list resurrects it otherwise. Re-add in
+# ALL THREE places only on explicit operator instruction.
 ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
 set -euo pipefail
 SWAP_TMP="${CURRENT}_rollback_$TIMESTAMP"
 sudo ln -s "$PREV_DIR" "\$SWAP_TMP"
 sudo mv -T "\$SWAP_TMP" "$CURRENT"
 echo "Symlink: $CURRENT -> $PREV_DIR"
-sudo systemctl restart polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion
+sudo systemctl restart polymarket-weather polymarket-esports polymarket-ingestion
 REMOTE
 
 echo ""

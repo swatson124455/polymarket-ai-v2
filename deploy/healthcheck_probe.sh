@@ -35,8 +35,13 @@ set -euo pipefail
 NO_WAIT=false
 [ "${1:-}" = "--no-wait" ] && NO_WAIT=true
 
-BOT_SERVICES=(polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion)
-SCAN_SERVICES=(polymarket-weather polymarket-mirror polymarket-esports)  # bots that emit scan_ms
+# 2026-09-01 operator ruling ("Deploy, keep mirror down"): polymarket-mirror
+# (legacy live MirrorBot) deliberately stopped+disabled 2026-08-25 — excluded
+# from the health gates so a deploy neither starts nor requires it. Mirrors
+# the exclusion in deploy.sh step 6; re-add in BOTH places only on explicit
+# operator instruction.
+BOT_SERVICES=(polymarket-weather polymarket-esports polymarket-ingestion)
+SCAN_SERVICES=(polymarket-weather polymarket-esports)  # bots that emit scan_ms
 
 # ── Gate 1: T+30s services active ─────────────────────────────────────────────
 echo "[Gate 1] Checking services active..."

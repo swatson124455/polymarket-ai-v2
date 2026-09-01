@@ -23,7 +23,14 @@ StartLimitBurst=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/opt/pa2-shared/data /opt/pa2-shared/saved_models /var/log/polymarket
+# /opt/pa2-maker-feeds: WeatherBot appends its per-market forecast to the
+# Maker-owned drop /opt/pa2-maker-feeds/wb_forecasts.jsonl (S231). It was added
+# to the LIVE unit on the VPS then but never to this committed copy, so every
+# deploy.sh run (which cp's this file over /etc/systemd/system/) silently
+# reverted it — ProtectSystem=strict then makes the path read-only and the
+# export fails invisibly, because _export_forecast_for_maker swallows all
+# errors by design so it can never touch the trading path.
+ReadWritePaths=/opt/pa2-shared/data /opt/pa2-shared/saved_models /var/log/polymarket /opt/pa2-maker-feeds
 PrivateTmp=true
 
 # Resource limits

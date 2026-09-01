@@ -140,6 +140,32 @@ def _safe_log_str(s: str) -> str:
     return (s.encode("ascii", "replace").decode("ascii"))
 
 
+def _best_bid_ask(bids, asks) -> Optional[Tuple[float, float]]:
+    """Best (highest) bid and best (lowest) ask from raw CLOB /book levels.
+
+    The raw /book response sorts bids ASCENDING and asks DESCENDING by price
+    (verified live 2026-07-14: gamma bestBid/bestAsk == bids[-1]/asks[-1]), so
+    positional [0] access reads the WORST level — the bug that made this
+    ingestion path write ~0.5 "midpoints" regardless of the real price. Select
+    defensively via max/min over valid prices instead of trusting feed order;
+    entries with a non-numeric price or price outside (0, 1) are ignored.
+    Returns None unless both sides have at least one valid level."""
+    def _prices(levels):
+        out = []
+        for lv in levels if isinstance(levels, list) else []:
+            try:
+                p = float(lv.get("price"))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if 0.0 < p < 1.0:
+                out.append(p)
+        return out
+    b, a = _prices(bids), _prices(asks)
+    if not b or not a:
+        return None
+    return max(b), min(a)
+
+
 async def _fetch_price_history_chunked(
     client: PolymarketClient,
     token_id: str,
@@ -3056,10 +3082,12 @@ class DataIngestionService:
                                             
                                             if bids and asks:
                                                 try:
-                                                    best_bid = float(bids[0].get("price", 0))
-                                                    best_ask = float(asks[0].get("price", 0))
+                                                    _ba = _best_bid_ask(bids, asks)
+                                                    if _ba is None:
+                                                        raise ValueError("no valid orderbook levels on both sides")
+                                                    best_bid, best_ask = _ba
                                                     midpoint_price = (best_bid + best_ask) / 2.0
-                                                    
+
                                                     if 0 <= midpoint_price <= 1:
                                                         await self.db.save_market_price(
                                                             market_id=str(market_id),

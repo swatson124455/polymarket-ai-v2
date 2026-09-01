@@ -3124,6 +3124,7 @@ class Database:
                     FROM (
                         SELECT id, was_correct FROM prediction_log
                         WHERE resolution IN ('YES', 'NO') AND was_correct IS NOT NULL
+                          AND COALESCE(model_name, '') NOT LIKE '%nowcast%'  -- c12
                         ORDER BY resolved_at DESC NULLS LAST, id DESC
                         LIMIT :n
                     ) sub
@@ -3150,6 +3151,7 @@ class Database:
                     FROM (
                         SELECT id, predicted_prob, resolution, was_correct FROM prediction_log
                         WHERE resolution IN ('YES', 'NO') AND was_correct IS NOT NULL
+                          AND COALESCE(model_name, '') NOT LIKE '%nowcast%'  -- c12
                         ORDER BY resolved_at DESC NULLS LAST, id DESC
                         LIMIT :n
                     ) pl
@@ -3174,6 +3176,7 @@ class Database:
                     SELECT market_id, predicted_prob, resolution, resolved_at
                     FROM prediction_log
                     WHERE resolution IN ('YES', 'NO') AND was_correct IS NOT NULL AND resolved_at > :since
+                      AND COALESCE(model_name, '') NOT LIKE '%nowcast%'  -- c12
                     ORDER BY resolved_at ASC
                 """), {"since": since_naive})
                 rows = r.fetchall()
@@ -3194,6 +3197,7 @@ class Database:
                            AVG(realized_edge) as avg_edge
                     FROM prediction_log pl
                     WHERE pl.resolution IN ('YES', 'NO') AND pl.was_correct IS NOT NULL
+                    AND COALESCE(pl.model_name, '') NOT LIKE '%nowcast%'  -- c12
                     AND pl.resolved_at >= :since
                 """), {"since": _naive_utc(datetime.now(timezone.utc) - timedelta(days=lookback_days))})
                 row = r.one_or_none()
@@ -3494,6 +3498,7 @@ class Database:
                     SELECT predicted_prob, resolution, ensemble_pred, learning_conf
                     FROM prediction_log
                     WHERE resolution IN ('YES', 'NO') AND was_correct IS NOT NULL
+                      AND COALESCE(model_name, '') NOT LIKE '%nowcast%'  -- c12
                     ORDER BY resolved_at DESC NULLS LAST, id DESC
                     LIMIT :n
                 """), {"n": n})
