@@ -96,11 +96,10 @@ funnel's group map predated sweep2. Fixed (`sweep2-admit` rows now TRIAL,
 address-list group defined in the grader that the funnel does not consult
 turns the self-test RED naming the group.
 
-## 5. Open operator decisions
+## 5. Operator decisions — ALL RESOLVED 2026-09-01 ("1 ok")
 
-1. `kelly_mult` (e.g. 0.25 / 0.5 â€” risk appetite, yours).
-2. `bankroll` basis (the ruled $500 pilot is the natural candidate).
-3. `concurrency` source until Sept-2: the 14-day sim's measured peak, or a
-   deliberately tighter budget.
-4. `min_viable` (venue minimum order).
-5. RESOLVED 2026-09-01: foursome ruled (500 / 0.25 / floor 1 / $1) and cron-sourced from /opt/pa2-shared/mb_sizer.env; concurrency divisor = per-trader measured peak (env value is a global floor).
+kelly_mult 0.25 · bankroll $500 · min_viable $1 · concurrency divisor =
+each trader's OWN measured peak (14d: med 6 / p90 64 / max 134), with the
+env value as a global FLOOR (set 1 = no-op; the global peak 459 would zero
+every stake at $500 — refinement flagged to operator). Cron sources
+`/opt/pa2-shared/mb_sizer.env` (the ONE place to change these).
