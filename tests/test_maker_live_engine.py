@@ -2393,3 +2393,48 @@ def test_run_wires_prune_with_universe_and_ledger():
     assert "prune_state(" in src
     call = src.split("prune_state(", 1)[1][:160]
     assert "universe" in call and "ledger_write" in call
+
+
+# ── S8-D2: discovery truncation alarms ──────────────────────────────────────
+def test_discover_full_page_cap_logs_truncation(tmp_path, monkeypatch, capsys):
+    """41 full pages of distinct markets => the cap itself ended the walk;
+    the loud line must fire (the Kalshi silent limit=1000 trap, ours)."""
+    def pages(url, timeout=15):
+        import urllib.parse as up
+        off = int(up.parse_qs(up.urlparse(url).query)["offset"][0])
+        return [_gamma_market(f"m{off+i}", "politics") for i in range(100)]
+    monkeypatch.setattr(mle, "get", pages)
+    mle.discover(str(tmp_path), cfg_over())
+    assert "page cap reached with a FULL final page" in capsys.readouterr().out
+
+
+def test_discover_short_page_no_truncation_alarm(tmp_path, monkeypatch, capsys):
+    """A naturally-short final page is a COMPLETE walk — no alarm."""
+    def pages(url, timeout=15):
+        import urllib.parse as up
+        off = int(up.parse_qs(up.urlparse(url).query)["offset"][0])
+        if off >= 100:
+            return [_gamma_market(f"m{off+i}", "politics") for i in range(50)]
+        return [_gamma_market(f"m{off+i}", "politics") for i in range(100)]
+    monkeypatch.setattr(mle, "get", pages)
+    mle.discover(str(tmp_path), cfg_over())
+    out = capsys.readouterr().out
+    assert "TRUNCATED" not in out
+
+
+def test_discover_budget_trip_logs_loudly(tmp_path, monkeypatch, capsys):
+    """get()->None with the budget exhausted must say TRUNCATED, never pose
+    as end-of-pages (S8 review: the two were indistinguishable)."""
+    monkeypatch.setattr(mle, "get", lambda url, timeout=15: None)
+    monkeypatch.setattr(mle, "http_ok", lambda: False)
+    mle.discover(str(tmp_path), cfg_over())
+    assert "HTTP budget exhausted" in capsys.readouterr().out
+
+
+def test_discover_none_with_budget_ok_is_quiet(tmp_path, monkeypatch, capsys):
+    """A None from a transient error with budget headroom keeps the old
+    silent-break behavior (no false truncation alarm)."""
+    monkeypatch.setattr(mle, "get", lambda url, timeout=15: None)
+    monkeypatch.setattr(mle, "http_ok", lambda: True)
+    mle.discover(str(tmp_path), cfg_over())
+    assert "TRUNCATED" not in capsys.readouterr().out

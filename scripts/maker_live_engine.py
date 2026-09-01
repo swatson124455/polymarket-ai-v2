@@ -555,12 +555,27 @@ def discover(base, cfg):
     dropped_clock = 0
     allow = cfg.get("sector_allowlist") or set()
     now_disc = time.time()
-    for page in range(21):
+    # S8-D2: 21 -> 41 pages. The walk is volume24hr-ordered over ALL active
+    # markets with rewarded rows filtered AFTER fetch, so the page cap is a
+    # hard visibility horizon: any rewarded market below the volume-rank
+    # horizon is invisible to selection. 2026-09-01 read: 714 rewarded within
+    # the first 21 pages — 41 doubles the horizon and the loop still exits
+    # early on the first short page.
+    pages_full = 0
+    budget_trunc = False
+    for page in range(41):
         q = urllib.parse.urlencode({"active": "true", "closed": "false", "limit": 100,
                                     "offset": page * 100, "order": "volume24hr",
                                     "ascending": "false"})
         data = get(f"{GAMMA}?{q}", timeout=15)
         if not data:
+            # S8-D2: a budget trip and end-of-pages look identical here
+            # (get() returns None for both) — tell them apart LOUDLY, or a
+            # starved walk reads as a complete one.
+            if not http_ok():
+                budget_trunc = True
+                print(f"discovery: HTTP budget exhausted at page {page} — "
+                      f"universe TRUNCATED, not complete", flush=True)
             break
         new = 0
         for m in data:
@@ -615,6 +630,14 @@ def discover(base, cfg):
                          "game_start": parse_iso(m.get("gameStartTime"))})
         if new == 0 or len(data) < 100:
             break
+        pages_full += 1
+    if pages_full >= 41 and not budget_trunc:
+        # S8-D2: the loop exhausted its page cap on a FULL page — there ARE
+        # more active markets past the horizon, and any rewarded ones among
+        # them are invisible (silent truncation, the Kalshi limit=1000 trap).
+        print("discovery: page cap reached with a FULL final page — "
+              "rewarded universe may be TRUNCATED below volume rank ~4100; "
+              "raise the page cap or add a rewarded-aware fetch", flush=True)
     by = defaultdict(list)
     for r in rows:
         by[r["sector"]].append(r)
