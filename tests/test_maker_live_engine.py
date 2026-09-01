@@ -2438,3 +2438,16 @@ def test_discover_none_with_budget_ok_is_quiet(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(mle, "http_ok", lambda: True)
     mle.discover(str(tmp_path), cfg_over())
     assert "TRUNCATED" not in capsys.readouterr().out
+
+
+def test_discover_short_final_page_at_cap_boundary_no_alarm(tmp_path, monkeypatch, capsys):
+    """40 full pages then a SHORT page 41: the walk COMPLETED — a mutant
+    counting short pages into pages_full would false-alarm here."""
+    def pages(url, timeout=15):
+        import urllib.parse as up
+        off = int(up.parse_qs(up.urlparse(url).query)["offset"][0])
+        n = 100 if off < 4000 else 50
+        return [_gamma_market(f"m{off+i}", "politics") for i in range(n)]
+    monkeypatch.setattr(mle, "get", pages)
+    mle.discover(str(tmp_path), cfg_over())
+    assert "TRUNCATED" not in capsys.readouterr().out
