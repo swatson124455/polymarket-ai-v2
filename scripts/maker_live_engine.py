@@ -1208,8 +1208,10 @@ def collect_owned_assets(state, base):
     key typo here silently unscopes every kill, and injecting _owned_assets
     directly in tests can never catch that.
 
-      state.json    -> tok_y/tok_n, kept even for departed markets (departure
-                       is a flag, never a delete), so it is the full history
+      state.json    -> tok_y/tok_n, kept even for departed markets (the
+                       hourly prune removes only INERT entries — no zombies,
+                       no standing order records — and archives their
+                       tok_y/tok_n to the settlements ledger first)
       universe.json -> current generation only; readable even when state.json
                        is the thing that failed to load
     """
@@ -1366,7 +1368,8 @@ class ExecCore:
         """Register the token ids this engine may have orders on. Seeded from
         persisted state at boot (BEFORE the first cancel) and refreshed at
         every discovery. Rotated-out markets keep their entry in state
-        (departure is a flag, never a delete), so a token never silently
+        (the prune removes only entries with no zombies and no standing
+        order records, archiving their tokens), so a token never silently
         leaves this set while an order could still rest on it. Add-only: the
         monotonicity IS the safety property.
 
@@ -1690,6 +1693,12 @@ def prune_state(state, universe_ids, now, ledger_fn=None):
           quote rows): zero financial content, deletion is free.
     Departed-with-value entries are NEVER touched — they are the
     resolution sweep's queue. Returns entries removed."""
+    if not universe_ids:
+        # S8-F4: an empty universe (boot-time discovery outage) makes EVERY
+        # entry look departed — refuse to prune rather than mass-delete
+        # husks of genuinely active markets. No timer consumed; a later
+        # good discovery prunes normally.
+        return 0
     meta = state.setdefault("meta", {})
     if now - meta.get("prune_t", 0) < PRUNE_SWEEP_S:
         return 0
@@ -1700,16 +1709,38 @@ def prune_state(state, universe_ids, now, ledger_fn=None):
         if k == "meta" or not isinstance(st, dict) or k in universe_ids:
             continue
         y, n, sp = st.get("y", 0.0), st.get("n", 0.0), st.get("spent", 0.0)
-        if st.get("settled") and not y and not n:
+        # S8-F3: BOTH branches refuse entries carrying zombies or standing
+        # order records (a market that departed while the engine was down
+        # keeps its saved ob/oa — deleting them would lose the order-id
+        # records and shrink the scoped-cancel token seed).
+        # S8-F6 (accepted risk): the archive row is written BEFORE the
+        # delete; a crash between them replays as a duplicate prune row on
+        # restart — dedupe by (mkt, act="prune"), latest wins.
+        inert = (not st.get("zombies")
+                 and st.get("ob") is None and st.get("oa") is None)
+        acc = st.get("acc", 0.0)
+        if st.get("settled") and not y and not n and inert:
             if ledger_fn is not None:
                 ledger_fn("settlements",
                           {"t": round(now), "act": "prune", "mkt": k,
-                           "resid_spent": round(sp, 4)})
+                           "resid_spent": round(sp, 4),
+                           "acc": round(acc, 4),
+                           "tok_y": st.get("tok_y"),
+                           "tok_n": st.get("tok_n")})
             meta["day_anchor"] = meta.get("day_anchor", 0.0) + sp
             del state[k]
             removed += 1
-        elif (not y and not n and not sp and not st.get("zombies")
-              and st.get("ob") is None and st.get("oa") is None):
+        elif not y and not n and not sp and inert:
+            # S8-F5: a husk that accrued model rewards (or carries token
+            # ids) is archived before deletion — `acc` feeds the CAPTURE
+            # measurement and tok_y/tok_n feed recon chain coverage.
+            if ((acc or st.get("tok_y") or st.get("tok_n"))
+                    and ledger_fn is not None):
+                ledger_fn("settlements",
+                          {"t": round(now), "act": "prune", "mkt": k,
+                           "resid_spent": 0.0, "acc": round(acc, 4),
+                           "tok_y": st.get("tok_y"),
+                           "tok_n": st.get("tok_n")})
             del state[k]
             removed += 1
     if removed:

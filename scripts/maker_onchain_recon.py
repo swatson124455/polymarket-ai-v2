@@ -142,6 +142,15 @@ def _is_settle_row(row):
             and row.get("payout") is not None)
 
 
+def _is_prune_row(row):
+    """S8: the engine's hourly prune deletes inert settled/husk entries from
+    state and archives {mkt, resid_spent, acc, tok_y, tok_n} here. The replay
+    must consume these or every pruned market reads as ledger_without_state
+    DRIFT forever (review S8-F1)."""
+    return (isinstance(row, dict) and row.get("act") == "prune"
+            and row.get("mkt") is not None)
+
+
 def ledger_paths(base):
     """Ledger files, with mid-rotation duplicates removed.
 
@@ -196,7 +205,10 @@ def load_events(base):
                         t = float(t)
                     except (TypeError, ValueError):
                         t = 0.0
-                    if _is_delta_row(row):
+                    if _is_prune_row(row):
+                        ev = ("prune", str(row["mkt"]), row.get("resid_spent"),
+                              row.get("tok_y"), row.get("tok_n"))
+                    elif _is_delta_row(row):
                         ev = ("delta", str(row["mkt"]), row.get("leg"),
                               row.get("px"), row.get("sz"))
                     elif _is_settle_row(row):
@@ -237,12 +249,40 @@ def replay_events(events):
     gross, net = {}, {}
     paper_tainted, ambiguous = set(), set()
     last_t, last_settle_t = {}, {}
-    stats = {"delta": 0, "snapshot": 0, "settle": 0, "skip": 0}
+    prune_drift, prune_tokens = [], set()
+    stats = {"delta": 0, "snapshot": 0, "settle": 0, "skip": 0, "prune": 0}
 
     for t, _fi, _li, kind, key, a, b, c in events:
         stats[kind] = stats.get(kind, 0) + 1
         if kind == "skip":
             continue
+        if kind == "prune":
+            # The engine forgot this entry ON PURPOSE. Verify the archived
+            # residual matches the replayed net, then drop the key so the
+            # state-vs-ledger union check does not flag a healthy prune.
+            # gross/chain expectations are NOT dropped — the chain still
+            # holds the tokens; their ids ride along for chain coverage.
+            cur = net.get(key)
+            try:
+                resid = float(a) if a is not None else 0.0
+            except (TypeError, ValueError):
+                resid = 0.0
+            ok = ((cur is None and abs(resid) <= DUST_USD) or
+                  (cur is not None
+                   and abs(cur["spent"] - resid) <= DUST_USD
+                   and abs(cur["y"]) <= DUST_SHARES
+                   and abs(cur["n"]) <= DUST_SHARES))
+            if not ok:
+                prune_drift.append({"market": key, "kind": "prune_mismatch",
+                                    "ledger": cur,
+                                    "resid_spent": resid})
+            net.pop(key, None)
+            for tok in (b, c):
+                if tok:
+                    prune_tokens.add(str(tok))
+            last_t[key] = t
+            continue
+
         d = net.setdefault(key, {"y": 0.0, "n": 0.0, "spent": 0.0, "merged": 0.0})
 
         if kind == "delta":
@@ -292,7 +332,9 @@ def replay_events(events):
         last_t[key] = t
 
     return gross, net, {"paper_tainted": paper_tainted,
-                        "ambiguous": ambiguous, "stats": stats}
+                        "ambiguous": ambiguous, "stats": stats,
+                        "prune_drift": prune_drift,
+                        "prune_tokens": prune_tokens}
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ chain reads â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -608,6 +650,9 @@ def main(argv=None):
     # â”€â”€ check 1: state vs ledgers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     drift_a, amb_a = check_state_vs_ledger(state, net, meta["ambiguous"],
                                            meta["paper_tainted"])
+    # S8-F1: a prune row disagreeing with the replayed net is the same
+    # severity class as any other state/ledger disagreement
+    drift_a = drift_a + meta.get("prune_drift", [])
     report["state_vs_ledger"] = {"drift": drift_a, "ambiguous": amb_a}
     if not net:
         rep.add("STATE vs LEDGER", SKIP,
@@ -649,6 +694,10 @@ def main(argv=None):
             for f in ("tok_y", "tok_n"):
                 if s.get(f):
                     tokens.append(str(s[f]))
+        # S8-F1: pruned markets left state but their tokens may still hold
+        # chain balances (live mode: real, unredeemed) — archived ids keep
+        # them inside chain coverage
+        tokens.extend(str(t2) for t2 in meta.get("prune_tokens", ()))
         tokens = sorted(set(tokens))
         if not tokens:
             # a capture run that writes nothing must NOT look like a capture

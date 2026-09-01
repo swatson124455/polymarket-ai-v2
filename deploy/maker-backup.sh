@@ -11,7 +11,8 @@ DEST=/opt/pa2-maker-backups
 DAY=$(date -u +%Y%m%d)
 OUT="$DEST/maker-data-$DAY.tar.gz"
 cd / || exit 1
-FILES=$(ls opt/pa2-maker-sim/state.json opt/pa2-maker-sim/samples-* \
+FILES=$(ls opt/pa2-maker-live/state.json opt/pa2-maker-live/universe.json opt/pa2-maker-live/ledgers/* \
+           opt/pa2-maker-sim/state.json opt/pa2-maker-sim/samples-* \
            opt/pa2-maker-sim-v2/state.json opt/pa2-maker-sim-v2/samples-* \
            opt/pa2-maker-sim-v3/state.json opt/pa2-maker-sim-v3/universe.json opt/pa2-maker-sim-v3/samples-* \
            opt/pa2-maker-sim-v4/state.json opt/pa2-maker-sim-v4/universe.json opt/pa2-maker-sim-v4/samples-* \

@@ -28,7 +28,7 @@ ReadOnlyPaths=-/opt/pa2-maker-feeds
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectHome=true
-MemoryMax=384M
+MemoryMax=768M
 CPUQuota=30%
 
 [Install]

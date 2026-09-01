@@ -695,3 +695,51 @@ def test_main_still_reports_real_drift_on_a_paper_base(tmp_path, capsys):
     rc = rec.main(["--base", str(base), "--no-chain"])
     assert "DRIFT" in capsys.readouterr().out
     assert rc == 2
+
+
+# ── S8-F1: prune-row support (review 2026-09-01) ────────────────────────────
+def _ev(t, kind, key, a=None, b=None, c=None):
+    return (t, 0, 0, kind, key, a, b, c)
+
+
+def test_replay_prune_absolves_settled_market():
+    """fill -> settle -> prune with matching residual: the key leaves net,
+    no drift is recorded, and the union check stays clean against a state
+    that no longer holds the entry."""
+    events = [_ev(100, "delta", "m1", "yes", 0.45, 2.0),
+              _ev(200, "settle", "m1", 2.0),           # payout 2.0
+              _ev(300, "prune", "m1", -1.1, "TY1", "TN1")]
+    gross, net, meta = rec.replay_events(events)
+    assert "m1" not in net
+    assert meta["prune_drift"] == []
+    assert meta["prune_tokens"] == {"TY1", "TN1"}
+    drift, amb = rec.check_state_vs_ledger({"meta": {}}, net, set(), set())
+    assert drift == []
+
+
+def test_replay_prune_mismatch_is_drift():
+    """A prune row whose archived residual disagrees with the replayed net
+    is a real disagreement, same severity as any drift."""
+    events = [_ev(100, "delta", "m1", "yes", 0.45, 2.0),
+              _ev(200, "settle", "m1", 2.0),
+              _ev(300, "prune", "m1", -9.9)]           # replay says -1.1
+    _g, net, meta = rec.replay_events(events)
+    assert len(meta["prune_drift"]) == 1
+    assert meta["prune_drift"][0]["kind"] == "prune_mismatch"
+    assert "m1" not in net                              # still dropped
+
+
+def test_replay_prune_of_unknown_husk_is_clean_only_at_zero():
+    """Husk prune rows (no ledger history) carry resid 0.0 => clean;
+    a nonzero residual with no history is a mismatch."""
+    _g, _n, meta = rec.replay_events([_ev(10, "prune", "hx", 0.0)])
+    assert meta["prune_drift"] == []
+    _g, _n, meta = rec.replay_events([_ev(10, "prune", "hy", -5.0)])
+    assert len(meta["prune_drift"]) == 1
+
+
+def test_prune_row_classifier():
+    row = {"t": 1, "act": "prune", "mkt": "m", "resid_spent": -1.0}
+    assert rec._is_prune_row(row)
+    assert not rec._is_settle_row(row)      # no payout => never a settle
+    assert not rec._is_prune_row({"t": 1, "act": "kill", "mkt": "m"})

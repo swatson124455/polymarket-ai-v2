@@ -2271,7 +2271,8 @@ def _prune_state_fixture():
         "meta": {"day_anchor": 100.0, "prune_t": 0},
         "in_uni": {"y": 0.0, "n": 0.0, "spent": 0.0, "ob": None, "oa": None},
         "husk": {"y": 0.0, "n": 0.0, "spent": 0.0, "ob": None, "oa": None},
-        "settled_flat": {"y": 0.0, "n": 0.0, "spent": -7.5, "settled": True},
+        "settled_flat": {"y": 0.0, "n": 0.0, "spent": -7.5, "settled": True,
+                         "acc": 1.25, "tok_y": "TY", "tok_n": "TN"},
         "departed_value": {"y": 10.0, "n": 0.0, "spent": 4.0, "departed": True},
         "zombie_husk": {"y": 0.0, "n": 0.0, "spent": 0.0, "zombies": ["oid"],
                         "ob": None, "oa": None},
@@ -2290,10 +2291,55 @@ def test_prune_removes_only_inert_departed_entries():
     # NEVER pruned: in-universe, departed-with-value, zombies, standing quote
     for keep in ("in_uni", "departed_value", "zombie_husk", "quoted_husk"):
         assert keep in st, keep
-    # settled residue archived, exactly once
+    # settled residue archived, exactly once, with acc + token ids
+    # (S8-F5: acc feeds CAPTURE; S8-F1/F3: toks feed recon chain coverage)
     assert rows == [("settlements",
                      {"t": 5000, "act": "prune", "mkt": "settled_flat",
-                      "resid_spent": -7.5})]
+                      "resid_spent": -7.5, "acc": 1.25,
+                      "tok_y": "TY", "tok_n": "TN"})]
+
+
+def test_prune_keeps_settled_entries_with_zombies_or_quotes():
+    """S8-F3: a market that departed while the engine was DOWN keeps its
+    saved order records; settling it must not make it prunable — deleting
+    the entry would lose the order-id records and the scoped-cancel seed."""
+    st = {"meta": {"day_anchor": 0.0, "prune_t": 0},
+          "z": {"y": 0.0, "n": 0.0, "spent": -1.0, "settled": True,
+                "zombies": ["oid1"]},
+          "q": {"y": 0.0, "n": 0.0, "spent": -1.0, "settled": True,
+                "ob": [0.4, 20.0], "oa": None}}
+    assert mle.prune_state(st, {"other"}, 5000.0, lambda *a: None) == 0
+    assert "z" in st and "q" in st
+
+
+def test_prune_refuses_empty_universe():
+    """S8-F4: discovery outage => universe empty => everything looks
+    departed; the prune must refuse wholesale, not mass-delete husks."""
+    st = _prune_state_fixture()
+    n0 = len(st)
+    assert mle.prune_state(st, set(), 5000.0, lambda *a: None) == 0
+    assert len(st) == n0
+    # and it must not consume the hourly timer slot
+    assert st["meta"].get("prune_t", 0) == 0
+
+
+def test_prune_archives_husk_with_acc_or_tokens():
+    """S8-F5: husks that accrued model rewards or carry token ids are
+    archived before deletion; bare husks are deleted without a row."""
+    st = {"meta": {"day_anchor": 0.0, "prune_t": 0},
+          "acc_husk": {"y": 0.0, "n": 0.0, "spent": 0.0, "acc": 3.5,
+                       "ob": None, "oa": None},
+          "tok_husk": {"y": 0.0, "n": 0.0, "spent": 0.0, "tok_y": "T1",
+                       "ob": None, "oa": None},
+          "bare_husk": {"y": 0.0, "n": 0.0, "spent": 0.0,
+                        "ob": None, "oa": None}}
+    rows = []
+    assert mle.prune_state(st, {"other"}, 5000.0,
+                           lambda strm, row: rows.append(row)) == 3
+    mkts = sorted(r["mkt"] for r in rows)
+    assert mkts == ["acc_husk", "tok_husk"]
+    accrow = next(r for r in rows if r["mkt"] == "acc_husk")
+    assert accrow["acc"] == 3.5 and accrow["resid_spent"] == 0.0
 
 
 def test_prune_keeps_day_pnl_invariant():
@@ -2309,11 +2355,11 @@ def test_prune_keeps_day_pnl_invariant():
 
 def test_prune_hourly_gate_and_counter():
     st = _prune_state_fixture()
-    # empty universe set => in_uni is departed too, so 3 inert entries go
-    assert mle.prune_state(st, set(), 5000.0, lambda *a: None) == 3
+    # non-matching universe => in_uni is departed too, so 3 inert entries go
+    assert mle.prune_state(st, {"other"}, 5000.0, lambda *a: None) == 3
     # second call inside the hour: gated off, removes nothing more
     st["husk2"] = {"y": 0.0, "n": 0.0, "spent": 0.0, "ob": None, "oa": None}
-    assert mle.prune_state(st, set(), 5100.0, lambda *a: None) == 0
+    assert mle.prune_state(st, {"other"}, 5100.0, lambda *a: None) == 0
     assert "husk2" in st
     assert st["meta"]["pruned_total"] == 3
 
@@ -2335,7 +2381,7 @@ def test_prune_never_removes_settled_entry_holding_inventory():
     must keep it — deleting live tokens is unrecoverable."""
     st = {"meta": {"day_anchor": 0.0, "prune_t": 0},
           "corrupt": {"y": 5.0, "n": 0.0, "spent": 2.0, "settled": True}}
-    assert mle.prune_state(st, set(), 5000.0, lambda *a: None) == 0
+    assert mle.prune_state(st, {"other"}, 5000.0, lambda *a: None) == 0
     assert "corrupt" in st
 
 
