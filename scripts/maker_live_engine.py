@@ -1660,6 +1660,21 @@ RESOLUTION_LOOKUPS_PER_SWEEP = 120  # gamma lookups per sweep (budgeted; 30->120
 PRUNE_SWEEP_S = 3600
 
 
+def split_spent(state):
+    """(committed, resid): spent over unsettled vs settled entries. The old
+    single "gross" gauge summed both and went negative on settlement residue
+    (-488 reconciled to the cent, 2026-09-01)."""
+    committed = resid = 0.0
+    for k, s2 in state.items():
+        if k == "meta" or not isinstance(s2, dict):
+            continue
+        if s2.get("settled"):
+            resid += s2.get("spent", 0.0)
+        else:
+            committed += s2.get("spent", 0.0)
+    return committed, resid
+
+
 def prune_state(state, universe_ids, now, ledger_fn=None):
     """Hourly state prune (S8 OOM fix): the state dict accreted one entry per
     market EVER discovered (measured 2026-09-01: 8,921 entries, 64 settled,
@@ -2624,16 +2639,7 @@ def run(base, cfg):
                 quoting = sum(1 for k, s2 in state.items()
                               if k != "meta" and isinstance(s2, dict)
                               and (s2.get("ob") or s2.get("oa")))
-                # S8 gauge fix: "gross" summed spent over ALL entries, but
-                # settled entries keep spent = -(realized net) forever, so
-                # the gauge went negative (-488 reconciled 2026-09-01).
-                # committed = live capital; resid = settled accounting residue.
-                committed = sum(s2.get("spent", 0.0) for k, s2 in state.items()
-                                if k != "meta" and isinstance(s2, dict)
-                                and not s2.get("settled"))
-                resid = sum(s2.get("spent", 0.0) for k, s2 in state.items()
-                            if k != "meta" and isinstance(s2, dict)
-                            and s2.get("settled"))
+                committed, resid = split_spent(state)
                 nzomb = sum(len(s2.get("zombies") or []) for k, s2 in state.items()
                             if k != "meta" and isinstance(s2, dict))
                 # LIVE departed-unsettled count — meta["res_pending"] is only

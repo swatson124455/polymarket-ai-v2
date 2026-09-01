@@ -2319,16 +2319,24 @@ def test_prune_hourly_gate_and_counter():
 
 
 def test_committed_resid_split_semantics():
-    """The hb gauge split: committed sums only UNSETTLED spent; settled
-    residue is separate (the -488 == -671 settled + 184 live reconciliation,
-    2026-09-01)."""
+    """The hb gauge split (ENGINE helper, not a re-derivation): committed
+    sums only UNSETTLED spent; settled residue is separate (the
+    -488 == -671 settled + 184 live reconciliation, 2026-09-01)."""
     st = _prune_state_fixture()
-    committed = sum(v.get("spent", 0.0) for k, v in st.items()
-                    if k != "meta" and isinstance(v, dict)
-                    and not v.get("settled"))
-    resid = sum(v.get("spent", 0.0) for k, v in st.items()
-                if k != "meta" and isinstance(v, dict) and v.get("settled"))
+    committed, resid = mle.split_spent(st)
     assert committed == 4.0 and resid == -7.5
+    src = __import__("inspect").getsource(mle.run)
+    assert "split_spent(" in src      # caller pin: hb uses the helper
+
+
+def test_prune_never_removes_settled_entry_holding_inventory():
+    """Corrupt-state defense: settled should imply flat (try_settle zeroes
+    y/n), but if an entry ever carries settled=True WITH inventory the prune
+    must keep it — deleting live tokens is unrecoverable."""
+    st = {"meta": {"day_anchor": 0.0, "prune_t": 0},
+          "corrupt": {"y": 5.0, "n": 0.0, "spent": 2.0, "settled": True}}
+    assert mle.prune_state(st, set(), 5000.0, lambda *a: None) == 0
+    assert "corrupt" in st
 
 
 def test_run_wires_prune_with_universe_and_ledger():
