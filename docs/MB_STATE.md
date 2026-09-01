@@ -18,6 +18,28 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-01 (~13:10Z) — [grader] ALARM LIVE (operator "build it") +
+> ## SHARED-FIX DEPLOY IN FLIGHT (mirror kept down by ruling)
+>
+> **[grader] heartbeat alarm SHIPPED (`3a5b44c`):** grader writes atomic
+> heartbeat at both clean run() exits; scoreboard prints [grader] OK /
+> !! STALE (26h bar = ratified band guard) / !! NO HEARTBEAT / !!
+> UNREADABLE — all failure states alarm. Self-tests PASS both scripts,
+> 5/5 mutants killed, deployed (.pre-graderhb-20260901), LIVE negative
+> control fired pre-first-run, then [grader] OK ts=2026-09-01T13:06:25Z
+> groups=5 locks_written=0; locks md5 unchanged.
+> **Docs-sync PR #7 OPENED** (operator ask): full steward branch -> master.
+> **3-shared-fix DEPLOY (operator "deploy 3 items"):** attempt 1 died at
+> upload (scp timeout; VPS untouched, release still 20260721_232241).
+> Found during retry-prep: **legacy polymarket-mirror was deliberately
+> stopped+disabled 2026-08-25T20:05:55Z**, but deploy.sh + health probe
+> would have resurrected/required it. Operator RULED "Deploy, keep mirror
+> down" -> master commit `5e2642a` excludes mirror from enable/start +
+> BOT_SERVICES/SCAN_SERVICES (unit-file install kept; mirror3 watcher
+> unaffected). Retry launched ~13:12Z — VERIFY the deploy result + the
+> three services + next 11:40Z cron before trusting the shared fixes live.
+> PR #6 (Owls) still awaits explicit "merge 6".
+
 > ## 2026-09-01 (~12:50Z) — GRADER WAS DEAD 7 DAYS (frm NameError) — FIXED,
 > ## VERIFIED LIVE; all other session-start checks GREEN
 >
