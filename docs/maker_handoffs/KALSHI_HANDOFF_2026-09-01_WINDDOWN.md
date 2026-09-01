@@ -1,5 +1,12 @@
 # KALSHI HANDOFF 2026-09-01 — WOUND DOWN FLAT ON OPERATOR ORDER; READ THIS SESSION'S FAILURES FIRST
 
+**OPERATOR'S VERDICT, ON RECORD: the prior sessions (including the 08-25..09-01 one
+writing this) fucked the bot up royally — weeks aimed at markets that pay $0 by
+public rule, pennies of accrual, zero credited dollars since 08-16, live changes made
+without numbers-level approval. THE MISSION FOR THIS SESSION IS TO FIX IT AND MAKE
+MONEY. Listen to the operator. Nothing goes live without their explicit yes on the
+specific values.**
+
 ## STATE (verified 2026-09-01T12:40:03Z)
 - **FLAT: 0 resting orders, 0 positions, balance $314.5736.** Wind-down cost $0
   (2 post-only orders cancelled free). polymarket-maker-kalshi-ws is **STOPPED and
