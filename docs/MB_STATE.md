@@ -18,6 +18,39 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-01 (~12:30Z) — RULINGS "1 ok 2 ok" EXECUTED (sizer armed w/
+> ## values + cracks in); PR #6 ruling VOIDED by my misdescription
+>
+> **1 (sizer foursome) LIVE:** `/opt/pa2-shared/mb_sizer.env` =
+> BANKROLL 500 / KELLY_MULT 0.25 / CONCURRENCY 1 (global FLOOR) /
+> MIN_VIABLE 1; cron sources it (backup .pre-sizerenv-20260901).
+> **Refinement flagged to operator (unobjected):** divisor = each
+> trader's own MEASURED peak concurrency (14d: min 1 / med 6 / p90 64 /
+> max 134 across the 27-with-entries of 52 trials; global peak 459 would
+> zero every stake at $500), env value is a floor only.
+> **2 (cracks) LIVE:** census re-derived from verdict files — exactly 10
+> (9 deep_dive INSUFFICIENT-EVIDENCE + 0xa16a1302 in deep_dive_scout;
+> REJECTs are deliberate exclusions). Roster 59->69 (backup
+> chain_audit.json.pre-cracks-20260901), CRACK_ADMITS group epoch
+> **2026-09-01T13:00Z** (execution-time, moved from the 08-30 draft —
+> never back-date), funnel `crack-admit` rows + standing `[cracks]` line
+> (ALARM if any reviewed non-REJECT address is untracked; reads 0 now).
+> Group-completeness self-test auto-covers the new group (4 found).
+> **Watcher:** killed old PID for roster reload — **systemd auto-restarted
+> it** (polymarket-mirror3.service is ACTIVE; the "no watchdog" note was
+> STALE). Journal 12:24:23Z: rtds_watch roster=69; bidsim rehydrated 9.
+> My manual relaunch attempt died on the env guard (correct behavior;
+> traceback in /opt/pa2-shared/mirror3_watcher.log is that, harmless).
+> Live funnel 2026-09-01T12:26Z: roster 69 | TRIAL 62 | PASSED 0 |
+> FAILED 5 | [cracks] 0 | sizer header active, stakes still dash (nobody
+> proven — correct).
+> **3 (PR #6): NOT MERGED — ruling void.** I had described it as the
+> RedisCache shared fixes; API read shows PR #6 = "Owls Insight backdata
+> lane" (sports). The 3 shared fixes are already ON master (deploy-gated,
+> no merge exists to do). Awaiting explicit "merge 6" if the Owls PR is
+> wanted merged. 4 (S3 creds) + 5 (ledger sign-offs, kill-criteria,
+> archive pull) = operator "later".
+
 > ## 2026-08-30 (~21:35Z) — SIZER BUILT (adversarially reviewed, armed idle)
 >
 > Operator: "how the fuck do we not have a sizing tool" -> "adversarial

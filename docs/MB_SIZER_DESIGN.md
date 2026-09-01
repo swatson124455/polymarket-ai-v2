@@ -103,4 +103,4 @@ turns the self-test RED naming the group.
 3. `concurrency` source until Sept-2: the 14-day sim's measured peak, or a
    deliberately tighter budget.
 4. `min_viable` (venue minimum order).
-5. Whether the funnel cron should carry the env foursome once chosen.
+5. RESOLVED 2026-09-01: foursome ruled (500 / 0.25 / floor 1 / $1) and cron-sourced from /opt/pa2-shared/mb_sizer.env; concurrency divisor = per-trader measured peak (env value is a global floor).
