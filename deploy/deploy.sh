@@ -49,6 +49,15 @@ python -m pytest tests/unit/ --tb=short -q 2>&1 || {
 }
 # Verify SSH key exists
 [ -f "$KEY" ] || { echo "ABORT: SSH key not found at $KEY"; exit 1; }
+# CRLF guard (2026-09-01): a Windows-side edit CRLF'd healthcheck_probe.sh
+# and the VPS bash died on \r AFTER the symlink swap — failing the health
+# gate and triggering rollback for a non-code reason. Catch it before upload.
+_crlf_hits=$(grep -rlU $'\r' "$LOCAL_DIR/deploy/"*.sh 2>/dev/null || true)
+if [ -n "$_crlf_hits" ]; then
+    echo "ABORT: CRLF line endings in deploy scripts (VPS bash will choke):"
+    echo "$_crlf_hits"
+    exit 1
+fi
 # Bug-class pattern check (P0.0) — enforced on full codebase regardless of hook bypass
 _bcp_violations=0
 _bcp_hits=$(grep -rn --include="*.py" 'place_order.*event_type=' \
