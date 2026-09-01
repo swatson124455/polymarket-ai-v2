@@ -81,3 +81,8 @@ MAKER_DAY_REALIZED_FLOOR_USD=10
 # expiring-cluster trap) or >30d to end (capital locked to resolution).
 MAKER_MIN_HOURS_TO_END=24
 MAKER_MAX_DAYS_TO_END=30
+
+# ── OPERATIONAL RULE (adopted 2026-09-01, item D4) ────────────────────────
+# NO engine restarts within +/-60 minutes of 00:00Z while live: the reward
+# window and the day-anchor both roll there; a restart during an open loss
+# re-anchors the drawdown away (the Kalshi lane's measured 08-10 incident).

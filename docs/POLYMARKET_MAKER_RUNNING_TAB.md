@@ -115,6 +115,18 @@ usually SIZING, not hedging.
 
 ## C. STANDING CAVEATS
 
+0. **LANE RULES (operator-adopted 2026-09-01, from the Kalshi lane's shutdown
+   cause + this session's worktree incident):**
+   (a) ANY live change requires the operator's explicit yes ON THE SPECIFIC
+       VALUES — a broad directive is never approval of specific numbers.
+   (b) Report ABSOLUTE credited dollars only; never relative-to-baseline
+       framing ("Nx the old baseline" is banned).
+   (c) NO ENGINE RESTARTS within ±60 min of 00:00Z once live (the day-anchor
+       re-baseline at day-change boot re-anchors an open drawdown — the
+       Kalshi 08-10 governor-corruption shape).
+   (d) Never `git add` from an aged temp worktree; fresh checkout each
+       session; verify a file exists on disk before staging it.
+
 1. Every return-shaped figure anywhere in this lane is MODEL until the first
    receipt; the receipt-vs-model divergence check is the promotion gate.
 2. The paper arm's dayPnL/marks are NOISE-tier — never quote as points.
