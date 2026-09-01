@@ -10,13 +10,48 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-08-21 (bidsim AMENDMENT 1 deployed + scout sweep #1 CLOSED; read the 2026-08-21 block first) · *(prior: 2026-08-20 session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first)* · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-09-01 (grader frm fix + checks; prior: 2026-08-21) (bidsim AMENDMENT 1 deployed + scout sweep #1 CLOSED; read the 2026-08-21 block first) · *(prior: 2026-08-20 session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first)* · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
 ## 0. IMMEDIATE RESUME (read this block first)
+
+> ## 2026-09-01 (~12:50Z) — GRADER WAS DEAD 7 DAYS (frm NameError) — FIXED,
+> ## VERIFIED LIVE; all other session-start checks GREEN
+>
+> **DEFECT FOUND in session-start checks:** cohort5_qualification.py crashed
+> `NameError: name 'frm'` at the FIRST eproc_grade call on EVERY daily cron
+> run 2026-08-26..09-01 (7/7, grep of label_fee_refresh.log). Introduced by
+> `55b96a5` (C1 amendment): the call moved to the canon
+> `mc.per_market_edges(.., frm, ..)` signature + `--fee-rate-map` arg was
+> added, but run() never bound `frm` (the funnel binds it,
+> trader_funnel.py:196; the grader didn't — the closure compiled it as a
+> global load). **Impact: zero e-process gradings/locks for 7 days; NO
+> verdict was actually missed** (funnel max e=1.62, max TRIAL n=94 — far
+> from e>=20 and futility 300; the 5 FAILED locks all pre-date 08-26). The
+> funnel computes its numbers independently, so monitoring never lied — but
+> the cron's `tail -30` clipped the traceback story and nothing alarms on a
+> grader crash (standing-alarm gap, see proposal below).
+> **FIX `0d0ef2e`:** bind frm in run() mirroring the fee_map corrupt/empty
+> FATAL guard; self-test gains `[names]` regression (frm bound in run());
+> mutant with the binding removed = RED, real file PASS (local + VPS venv).
+> **Deployed** to /opt/pa2-shared/mb_readout (backup
+> cohort5_qualification.py.pre-frmfix-20260901); live run under EXACT cron
+> env (PYTHONPATH=$D, DB URL sourced): all 5 groups grade, everyone
+> ACCRUING, locks md5 UNCHANGED (7372d31d…), numbers match the funnel.
+> Note: manual runs need cron's env — bare invocation dies on base_engine
+> import (mb_readout checkout provides it via PYTHONPATH).
+> **Other checks 09-01T12:38-12:47Z:** canon 8/8|8/8|6/6 ALARMS=0 (11:42Z
+> cron); band n=102 e=0.437 (futility 600); watcher polymarket-mirror3
+> ACTIVE since 12:24:19Z, roster=69 both sinks; firehose daily gz through
+> today (grows at 12:46Z), guard.log EMPTY since 08-26 (alarm-only file).
+> Cron 11:42Z funnel printed roster 59 (pre-cracks deploy; the 12:26Z
+> manual run = 69 — tomorrow's cron is the first with cracks + fixed
+> grader). **PROPOSAL (additive, not done):** a standing [grader] OK/CRASH
+> line in the scoreboard so a grading-path traceback can't sit unnoticed
+> again — operator say-so.
 
 > ## 2026-09-01 (~12:30Z) — RULINGS "1 ok 2 ok" EXECUTED (sizer armed w/
 > ## values + cracks in); PR #6 ruling VOIDED by my misdescription
