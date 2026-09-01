@@ -1,3 +1,16 @@
+# !! OVERHAUL PROGRAM IN FORCE (2026-08-25) - READ BEFORE THE BRIEF BELOW !!
+Every new MB session starts by reading, in order:
+1. docs/MB_OVERHAUL_REVIEW_AGENDA.md  (the tiered review agenda, 87 verified
+   findings; evidence pack docs/mb_overhaul_review_findings.json)
+2. docs/MEASUREMENT_CANON.md          (the normative measurement rulebook -
+   bare "edge" means the canonical per-market mean, nothing else)
+3. the latest [canon] line in deep_dive/label_fee_refresh.log - ALARMS must
+   be 0; any alarm means the recorded data disagrees with the chain and NO
+   number is quotable until it is explained.
+The C1 group is graded ANYTIME-VALID (docs/COHORT1_UNTESTED_AMENDMENT.md);
+the original cohort5 twenty keep their 07-30 charter. Evidence is backed up
+nightly (VPS 03:30Z bundle + Windows 05:00 pull - check pull.log is fresh).
+
 # MB STEWARD — NEXT SESSION KICKOFF (copy-trader / shadow lane)
 
 **Written 2026-08-20. Supersedes the 07-22 version.** You are the local MB

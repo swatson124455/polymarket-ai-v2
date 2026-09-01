@@ -50,3 +50,15 @@ Band accrual measured ~4 resolved markets/day on the 30-trader roster
 weeks depending on realized flow; roster growth (probe additions, scout
 admits) and the RTDS fixes raise flow and shorten this. It CAN reject much
 earlier if the realized edge runs hot; it cannot be forced by the calendar.
+
+## AMENDMENT (2026-08-25, operator-approved hygiene batch) - estimand-RESTORING bug-fix
+The live watcher has gated ask > 0.98 as PRICE_NO_UPSIDE since 2026-08-19
+17:33Z - BEFORE this test's 18:00Z epoch - so the registered estimand
+("gating stays on /price exactly as deployed") always excluded those fills.
+analyze_shadow.repair_record, which re-derives verdicts for ladder-armed
+records, LACKED that branch and silently re-admitted deterministic-loser
+fills up to $1.00 into every readout including this test's. Fixed
+2026-08-25 with gate-order parity to evaluate_gates. Direction of the
+error while it stood: dragged the measured band edge DOWN (conservative).
+This amendment documents a repair-to-charter, not a change of the frozen
+estimand; the e-process recomputes over the corrected forward sequence.

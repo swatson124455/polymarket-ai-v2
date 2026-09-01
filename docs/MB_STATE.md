@@ -10,7 +10,7 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-08-21 (bidsim AMENDMENT 1 deployed + scout sweep #1 CLOSED; read the 2026-08-21 block first) · *(prior: 2026-08-20 session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first)* · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-09-01 (grader frm fix + checks; prior: 2026-08-21) (bidsim AMENDMENT 1 deployed + scout sweep #1 CLOSED; read the 2026-08-21 block first) · *(prior: 2026-08-20 session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first)* · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
@@ -18,6 +18,534 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-01 (~13:55Z) — SHARED-FIX DEPLOY LANDED (attempt 4, release
+> ## 20260901_093301); mirror stayed down; deploy-tooling hardened
+>
+> **DEPLOY SUCCESSFUL** after 3 failed attempts, each root-fixed:
+> A1 scp timeout mid-upload (VPS untouched) -> A2 my python edit CRLF'd
+> healthcheck_probe.sh, VPS bash died on \r POST-swap, auto-rollback fired
+> AND **resurrected legacy polymarket-mirror** (rollback.sh had its own
+> 4-service list — adjacent-shape miss; stopped+disabled ~13:24Z, journal
+> = startup/restore only, ZERO order submissions) -> A3 aborted by my own
+> new CRLF guard FALSE-POSITIVING via MSYS grep (byte-audit: 0 CR bytes in
+> all 11 scripts; flagged files had Apr/Jul mtimes) -> A4 SUCCESS.
+> Master commits (pushed): `5e2642a` deploy.sh+probe mirror exclusion,
+> `434d634` rollback.sh mirror exclusion (ruling now covers ALL THREE
+> sites), `b99237c` LF normalization (+.gitattributes already pinned
+> eol=lf; index was LF everywhere), `ecd1982` CR guard -> python
+> byte-check (grep is env-dependent on MSYS — never trust it for CR).
+> **Verified live 13:51Z:** symlink 20260901_093301; weather/esports/
+> ingestion active, scan_ms flowing (WB 377.5/1913.3ms cycles, EB first
+> scan 147.5s cold-start slow-scan warning), 0 err-priority entries;
+> legacy mirror inactive+disabled (ruling held); mirror3 active
+> throughout. Health gate 3 = documented cold-start HEALTH_WARN;
+> PgBouncer pool 60. **The 3 shared fixes (RedisCache raise_on_error,
+> _publish_signal guard, c12 nowcast exclusion) are LIVE.**
+> **PR #6 (Owls sports backdata) MERGED** on explicit operator "merge 6"
+> at 2026-09-01T13:54:21Z — on master, NOT deployed (Owls collectors run
+> from home-dir crontabs, not the release; no deploy action taken).
+> Remaining operator items: PR #7 merge (docs-sync), the "later" queue.
+
+> ## 2026-09-01 (~13:10Z) — [grader] ALARM LIVE (operator "build it") +
+> ## SHARED-FIX DEPLOY IN FLIGHT (mirror kept down by ruling)
+>
+> **[grader] heartbeat alarm SHIPPED (`3a5b44c`):** grader writes atomic
+> heartbeat at both clean run() exits; scoreboard prints [grader] OK /
+> !! STALE (26h bar = ratified band guard) / !! NO HEARTBEAT / !!
+> UNREADABLE — all failure states alarm. Self-tests PASS both scripts,
+> 5/5 mutants killed, deployed (.pre-graderhb-20260901), LIVE negative
+> control fired pre-first-run, then [grader] OK ts=2026-09-01T13:06:25Z
+> groups=5 locks_written=0; locks md5 unchanged.
+> **Docs-sync PR #7 OPENED** (operator ask): full steward branch -> master.
+> **3-shared-fix DEPLOY (operator "deploy 3 items"):** attempt 1 died at
+> upload (scp timeout; VPS untouched, release still 20260721_232241).
+> Found during retry-prep: **legacy polymarket-mirror was deliberately
+> stopped+disabled 2026-08-25T20:05:55Z**, but deploy.sh + health probe
+> would have resurrected/required it. Operator RULED "Deploy, keep mirror
+> down" -> master commit `5e2642a` excludes mirror from enable/start +
+> BOT_SERVICES/SCAN_SERVICES (unit-file install kept; mirror3 watcher
+> unaffected). Retry launched ~13:12Z — VERIFY the deploy result + the
+> three services + next 11:40Z cron before trusting the shared fixes live.
+> PR #6 (Owls) still awaits explicit "merge 6".
+
+> ## 2026-09-01 (~12:50Z) — GRADER WAS DEAD 7 DAYS (frm NameError) — FIXED,
+> ## VERIFIED LIVE; all other session-start checks GREEN
+>
+> **DEFECT FOUND in session-start checks:** cohort5_qualification.py crashed
+> `NameError: name 'frm'` at the FIRST eproc_grade call on EVERY daily cron
+> run 2026-08-26..09-01 (7/7, grep of label_fee_refresh.log). Introduced by
+> `55b96a5` (C1 amendment): the call moved to the canon
+> `mc.per_market_edges(.., frm, ..)` signature + `--fee-rate-map` arg was
+> added, but run() never bound `frm` (the funnel binds it,
+> trader_funnel.py:196; the grader didn't — the closure compiled it as a
+> global load). **Impact: zero e-process gradings/locks for 7 days; NO
+> verdict was actually missed** (funnel max e=1.62, max TRIAL n=94 — far
+> from e>=20 and futility 300; the 5 FAILED locks all pre-date 08-26). The
+> funnel computes its numbers independently, so monitoring never lied — but
+> the cron's `tail -30` clipped the traceback story and nothing alarms on a
+> grader crash (standing-alarm gap, see proposal below).
+> **FIX `0d0ef2e`:** bind frm in run() mirroring the fee_map corrupt/empty
+> FATAL guard; self-test gains `[names]` regression (frm bound in run());
+> mutant with the binding removed = RED, real file PASS (local + VPS venv).
+> **Deployed** to /opt/pa2-shared/mb_readout (backup
+> cohort5_qualification.py.pre-frmfix-20260901); live run under EXACT cron
+> env (PYTHONPATH=$D, DB URL sourced): all 5 groups grade, everyone
+> ACCRUING, locks md5 UNCHANGED (7372d31d…), numbers match the funnel.
+> Note: manual runs need cron's env — bare invocation dies on base_engine
+> import (mb_readout checkout provides it via PYTHONPATH).
+> **Other checks 09-01T12:38-12:47Z:** canon 8/8|8/8|6/6 ALARMS=0 (11:42Z
+> cron); band n=102 e=0.437 (futility 600); watcher polymarket-mirror3
+> ACTIVE since 12:24:19Z, roster=69 both sinks; firehose daily gz through
+> today (grows at 12:46Z), guard.log EMPTY since 08-26 (alarm-only file).
+> Cron 11:42Z funnel printed roster 59 (pre-cracks deploy; the 12:26Z
+> manual run = 69 — tomorrow's cron is the first with cracks + fixed
+> grader). **PROPOSAL (additive, not done):** a standing [grader] OK/CRASH
+> line in the scoreboard so a grading-path traceback can't sit unnoticed
+> again — operator say-so.
+
+> ## 2026-09-01 (~12:30Z) — RULINGS "1 ok 2 ok" EXECUTED (sizer armed w/
+> ## values + cracks in); PR #6 ruling VOIDED by my misdescription
+>
+> **1 (sizer foursome) LIVE:** `/opt/pa2-shared/mb_sizer.env` =
+> BANKROLL 500 / KELLY_MULT 0.25 / CONCURRENCY 1 (global FLOOR) /
+> MIN_VIABLE 1; cron sources it (backup .pre-sizerenv-20260901).
+> **Refinement flagged to operator (unobjected):** divisor = each
+> trader's own MEASURED peak concurrency (14d: min 1 / med 6 / p90 64 /
+> max 134 across the 27-with-entries of 52 trials; global peak 459 would
+> zero every stake at $500), env value is a floor only.
+> **2 (cracks) LIVE:** census re-derived from verdict files — exactly 10
+> (9 deep_dive INSUFFICIENT-EVIDENCE + 0xa16a1302 in deep_dive_scout;
+> REJECTs are deliberate exclusions). Roster 59->69 (backup
+> chain_audit.json.pre-cracks-20260901), CRACK_ADMITS group epoch
+> **2026-09-01T13:00Z** (execution-time, moved from the 08-30 draft —
+> never back-date), funnel `crack-admit` rows + standing `[cracks]` line
+> (ALARM if any reviewed non-REJECT address is untracked; reads 0 now).
+> Group-completeness self-test auto-covers the new group (4 found).
+> **Watcher:** killed old PID for roster reload — **systemd auto-restarted
+> it** (polymarket-mirror3.service is ACTIVE; the "no watchdog" note was
+> STALE). Journal 12:24:23Z: rtds_watch roster=69; bidsim rehydrated 9.
+> My manual relaunch attempt died on the env guard (correct behavior;
+> traceback in /opt/pa2-shared/mirror3_watcher.log is that, harmless).
+> Live funnel 2026-09-01T12:26Z: roster 69 | TRIAL 62 | PASSED 0 |
+> FAILED 5 | [cracks] 0 | sizer header active, stakes still dash (nobody
+> proven — correct).
+> **3 (PR #6): NOT MERGED — ruling void.** I had described it as the
+> RedisCache shared fixes; API read shows PR #6 = "Owls Insight backdata
+> lane" (sports). The 3 shared fixes are already ON master (deploy-gated,
+> no merge exists to do). Awaiting explicit "merge 6" if the Owls PR is
+> wanted merged. 4 (S3 creds) + 5 (ledger sign-offs, kill-criteria,
+> archive pull) = operator "later".
+
+> ## 2026-08-30 (~21:35Z) — SIZER BUILT (adversarially reviewed, armed idle)
+>
+> Operator: "how the fuck do we not have a sizing tool" -> "adversarial
+> review report then build check in on each step" -> "proceed".
+> **`scripts/mb_sizer.py` + `docs/MB_SIZER_DESIGN.md`** (the review IS the
+> pre-registration): LCB by INVERSION of the grader's own e-process at the
+> ruled e>=20 bar (no invented shrinkage), exact binary Kelly
+> `LCB/(1-fill-fee)`, bankroll pre-divided by MEASURED concurrency, rails
+> down-only (book depth, $300 canon, below-min -> $0 NEVER clamped up).
+> Unproven trader -> $0 structurally. 16 unit tests + **10/10 mutants
+> killed** (1 initial blind spot closed: borderline-LCB gate case).
+> Funnel gains `lcb`/`$stake` columns, env-gated on the operator foursome
+> `MB_SIZER_BANKROLL/KELLY_MULT/CONCURRENCY/MIN_VIABLE` (NO defaults in
+> code) — live 2026-08-30T21:30Z: roster 59, TRIAL 52, PASSED 0, stakes
+> correctly unset. **Live run caught a real funnel defect:** sweep2 admits
+> fell to OBS "no test registered" — fixed (TRIAL 36->52) + negative-
+> controlled group-completeness self-test (a grader group the funnel
+> ignores turns the self-test RED by name). Deployed to mb_readout
+> (backup trader_funnel.py.pre-sizer-20260830); commits `fa5d351`,
+> `a9715cf`. **OPERATOR DECISIONS OPEN (sizer §5):** kelly_mult, bankroll
+> basis ($500 pilot?), concurrency source pre-Sept-2, min_viable, and
+> whether the cron carries the foursome once chosen.
+
+> ## 2026-08-30 (~20:35Z) — RECS 1-5 EXECUTED ("go with recs 1-2-3-4-5")
+>
+> **1 DONE — the 16 sweep-2 ADMITs are IN:** roster 43->59 (probe group 29;
+> backup chain_audit.json.pre-sweep2-20260830), SWEEP2_ADMITS group in the
+> grader (e-process, fresh epoch 2026-08-30T20:30:00Z, self-test extended),
+> watcher restarted and CONFIRMED roster=59, dedup seeded, 0 errors. They
+> appear in the funnel from tomorrow's 11:41Z run.
+> **2 RATIFIED — CHASE:** the chase-vs-post question is CLOSED by the ruled
+> both-brackets rule (strict 40/177 = 22.6% vs 74%; stable vs n=72
+> interim). Bot behavior unchanged (already chases). Bidsim CONTINUES
+> passively (operator choice (a)) — its data feeds zero-based
+> followability; wind-down would be a future sign-off.
+> **3 SCHEDULED — the 57 sweep-2 INSUFFICIENTs** fold into the zero-based
+> sluice watch-first AFTER the 2026-09-02 population study (no dives —
+> ~125 dive-hours avoided; forward data grades them free).
+> **4 RATIFIED — band runs to its charter** (n=76 e=0.491; futility 600;
+> no early stop — optional-stopping discipline).
+> **5 SCHEDULED — population study 2026-09-02** when the capture closes 7
+> full days: distributions out, thresholds derived-only (incl. re-deriving
+> the 08-24 filter numbers), followability from measured latency, then the
+> two-sided sluice thresholds. THE week''s main event.
+>
+> ## 2026-08-30 (~19:40Z) — TWO TRIPWIRES FIRED: bidsim PROPOSAL (CHASE) +
+> sweep #2 delivers 16 ADMITs
+>
+> **GAUGE FIRST: canon 5/5 daily runs since 08-26, ALARMS=0** — numbers
+> below are quotable.
+>
+> **BIDSIM TRIPWIRE (177 resolved >= ~100) — THE CHASE-VS-POST PROPOSAL:**
+> chain-truth classification of ALL 156 fills (156/156 classified, 0
+> errors): strict taker-SELL fill rate **40/177 = 22.6%**; charter
+> any-print rate 156/177 = 88.1%. Under the RULED decision rule (Amendment
+> 2: maker wins only if BOTH clear 74%): strict fails decisively (22.6% vs
+> 74%), and is STABLE vs the n=72 interim (23.6%). **PROPOSAL: chase-vs-
+> post = CHASE (taker). No bot change needed — chasing is current
+> behavior.** Stage-2 cond-edge remains label-thin as forecast; it cannot
+> overturn stage 1 under the both-brackets rule. Operator options on the
+> instrument itself: (a) ratify verdict + keep collecting passively,
+> (b) ratify + wind the bidsim down (a disposition, needs sign-off).
+>
+> **SWEEP #2 COMPLETE (82/82): 16 ADMIT / 57 INSUFFICIENT / 9 REJECT** —
+> the first human-scale ADMITs ever from the fixed filter (sweep #1 was
+> 0/9). PROPOSAL: add the 16 chain-ADMITs to the sluice as watch-only
+> trials (roster 43->59, fresh epoch on add; ADMIT = integrity screen
+> passed, NOT profitability — the e-process decides that). Also 57 new
+> INSUFFICIENTs = the zero-based sifter's exact customer class (watch-
+> first). Awaiting operator go on the 16.
+>
+> **FUNNEL (08-30T11:41Z):** TRIAL 36 / PASSED 0 / FAILED 5; early accrual
+> on the fresh epochs — top e=1.54 (0xecb14ac6, n=3, +0.4084), several
+> small-n positives incl. two of the 12 insuff-probes already producing.
+> Meaningless n's; the table is doing its job.
+>
+> **BAND:** n=76, pooled −0.0009, e=0.491 — dead-flat at growing n, no
+> tripwire (reject 20 / futility 600).
+>
+> **FIREHOSE:** day 5 of 7 (~977MB over 5 daily files); recorder
+> reconnects=1,533 (~14/h — venue cycling faster than the watcher's ~6/h;
+> capture continuous, gap-rate unmeasured — flag for the population
+> study). Population study unlocks 2026-09-02.
+>
+> ## 2026-08-26 (~02:45Z) — ZERO-BASED SIFTER LAUNCHED (operator: "redo
+> sifter with assumption all prior info is wrong")
+>
+> **Charter `docs/ZERO_BASED_SIFTER.md`:** nothing strategic inherited —
+> voided for the NEW pipeline: copy-skilled-whales premise, winners-only
+> orientation, first-buy/hold-only estimand, the band, all scout-filter
+> numbers, the 1,000/day bot line, all bars, the one-afternoon universe.
+> Retained: only ground-truth-proven mechanics (venue protocol, canon,
+> fees, labels, e-process math). Stages: 7-day full capture → population
+> study (distributions out, no thresholds in; every cut = a percentile
+> with sensitivity) → mechanical followability (measured latency vs
+> wallet tempo) → TWO-SIDED sluice (copy-score AND fade-score, multiple
+> pre-registered estimands) → assay last, on the few. Old-pipeline live
+> tests continue untouched.
+>
+> **ORE FEED LIVE:** `scripts/firehose_recorder.py` deployed + running
+> (launched 2026-08-26T02:40:24Z; 8,000 trades in the first ~2 min; daily
+> gz rotation, 14-file retention, 20GB disk guards) + hourly ensure-running
+> guard cron (17 * * * * root). Population study unlocks at 7 full days:
+> **2026-09-02**.
+>
+> **BULK-WATCH CAPACITY MEASURED:** eth_getLogs owner-topic filter vs
+> tenderly: 43/150/300/600 addresses all OK (<=0.5s); 1,200 = "exceed max
+> topics" error. ⇒ one chain query watches up to ~600 wallets; beyond =
+> split calls; RTDS side is client-side (any n). The sluice can watch
+> hundreds.
+>
+> ## 2026-08-25 (~20:10Z) — ALL NINE RULINGS EXECUTED ("go with rec 1-9")
+>
+> **1 LEGACY WOUND DOWN:** final canonical P&L (bot_pnl 2160h) +
+> mirror_rejected_signals archived (1.1GB pg_dump) to
+> /opt/pa2-backups/mb_evidence/ (NOTE: the 1.1GB archive is same-box only -
+> the nightly bundle carries the small tier; a one-time manual pull of the
+> big dump is open); `systemctl stop + disable polymarket-mirror` at
+> ~20:04Z; mirror3/weather/esports/ingestion all verified active. The 8
+> ~$1 legacy paper positions freeze in the DB as-is. Legacy code
+> disposition (removal/archive) proceeds via the ledger sign-offs.
+> **2 ITEM #21 DONE:** shadow_fills excluded from prune_old_data (retention
+> map + DELETE query + CLI choice together - a partial removal would have
+> KeyError'd the nightly run); deployed into the live release
+> (.pre-item21 backup), dry-run verified: 'all' = 3 tables, count 9,519
+> and protected.
+> **3 FILL-SIDE RULED** (BIDSIM_DESIGN Amendment 2): strict chain-truth
+> taker-SELL headline + any-print bracket; maker wins only if BOTH clear
+> 74%; default chase.
+> **4+5 RE-REGISTRATION LIVE** (docs/COHORT5_REREG_AND_PROBES_AMENDMENT.md):
+> the 15 unconsumed original looks + the 12 INSUFFICIENT probes graded by
+> the unified e-process (fresh epoch 2026-08-25T18:00:00Z - fresh because
+> their diagnostics were visible; the 9 C1 keep 08-24T17:00Z; 5 consumed
+> locks immutable). ROSTER 31->43 (probe group 13; backup
+> chain_audit.json.pre-probes12-20260825); watcher restarted 20:01:01Z,
+> 0 errors, dedup-seeded (restarts no longer corrupt first_buy).
+> **6 SCOUT SWEEP #2 RUNNING:** 82 human-scale candidates (fixed band),
+> launched 20:05:56Z (`/tmp/scout_sweep2_main.log`, out
+> deep_dive_scout2/); serial ETA days. Repo copy scripts/vps_jobs/
+> scout_queue3.sh. Hit the /tmp protected_regular landmine AGAIN - fresh
+> filename roster2 is the fix (recorded).
+> **7 CLOUD LEG DORMANT-READY:** mb_evidence_s3_sync.sh chained into the
+> nightly backup; activates when the operator creates /root/.mb_backup_s3
+> (steps in the script header) + installs awscli. Until then the Windows
+> pull remains the off-box leg.
+> **8 PR #5 MERGED to master** (docs sync). PR #6 remains open pending the
+> operator's eyeball of the shared RedisCache commit. NOTE: master's MB
+> docs are the 08-21 snapshot - a fresh sync PR is the next session-close
+> duty.
+> **INCIDENT (disclosed): the rec-9 retire CRASH-LOOPED the watcher
+> 20:01-20:10Z** - a surviving `mult` reference in the record log line
+> NameError'd at every first roster signal (~9 boot-die cycles; records in
+> that window lost at first-signal per boot - a ~9min detection gap in the
+> canonical sink). ROOT CAUSE OF THE MISS: my AST no-live-reference check
+> listed 3 names, not ALL names the retired blocks bound. Hotfixed
+> 20:10:17Z (3fb9777d); recheck now walks all 7 bound names; VERIFIED
+> SURVIVING past a real signal (SPREAD record at 20:1xZ, restarts_delta=0,
+> DIED=0, and `first=False` on a seeded repeat pair = dedup persistence
+> confirmed live). Lesson appended to the standing list: a partial-removal
+> check must enumerate the removed binding set COMPLETELY, and the only
+> proof for untested paths is surviving live traffic.
+>
+> **9 CONVICTION RETIRED** from the watcher (both paths + median seeding;
+> sizing.py kept as tested library; ledger #30 EXECUTED). AST-level
+> no-live-reference check performed because the network loops are
+> untested - it caught my own first patch attempt failing to write.
+>
+> ## 2026-08-25 (~17:05Z) — HYGIENE FIX BATCHES A/B/C/E EXECUTED + D RATIFIED
+> (operator "proceed with recs"; commits d95027e, e335d9b, 72448ab, 2086513)
+>
+> **A canon-alignment (verdict pipeline):** repair_record gains
+> PRICE_NO_UPSIDE parity in evaluate_gates' exact order (charter-RESTORING;
+> amendment in BAND_PREREGISTRATION; error direction while it stood =
+> conservative); merge_outcomes now routes through mb_canon.merge_labels
+> (conflicts EXCLUDED + printed, silent DB-wins retired at the live joins);
+> cohort5 eligibility: re-review verdict VETOES base dir + unreadable files
+> warn loudly (post-fix eligible count unchanged at 20 = the defect was
+> latent); fee-map loads refuse corrupt/empty; fee-source counters printed.
+> **B ops:** scoreboard band line >26h old now reads STALE (never served as
+> current); cron band stage keeps tracebacks (grep filter removed).
+> **C watcher recording integrity (deployed 17:03:19Z, backup
+> copy_watcher.py.pre-batchc-20260825):** quote_book -> (bid, ask,
+> quote_err); records carry quote_error + one_sided_book; block_ts fallback
+> stamps block_ts_est; cursor-init RPC wrapped; **first-buy dedup persists:
+> seeded 4,724 pairs (chain) + 3,660 (rtds) from the sinks at boot — the
+> 16.4% restart artifact is CLOSED forward.** 0 errors since restart;
+> cohort5 + scoreboard verified end-to-end as cron user.
+> **D RATIFIED:** v3 verdict field satisfies the Decision-5 rejection-
+> logging precondition — legacy wind-down ELIGIBLE, execution awaits the
+> explicit sign-off (#1 on the ledger); legacy defect fixes stay frozen
+> until that ruling. **E:** ledger items 29-35 appended.
+> NOTE: bidsim at 83 resolved of ~100 — the chase-vs-post tripwire is
+> ~1 day out; fill-side ruling still OPEN ahead of it.
+>
+> ## 2026-08-25 (~16:45Z) — HYGIENE REVIEW: MEASUREMENT BATTERY + ADVERSARIAL
+> RE-VERIFICATION + OPERATOR RULINGS ("ok to all recs")
+>
+> **HEADLINE CORRECTION (the review catching itself):** the interim finding
+> "the spread gate rejects +0.0587 edge" was an ARTIFACT of grading rejects
+> at the whale price (unattainable by construction). Re-graded at the
+> RECORDED best_ask (the real crossing price at detection): SPREAD_TOO_WIDE
+> = **-0.1096, P(>0)=0.000 (253 labeled mkts)**; PRICE_RAN_AWAY = -0.0188.
+> The finding was ALSO 50%-concentrated in 0x216509be (LOO all-negative).
+> **The gates are doing their jobs. Withdrawn on the record.**
+>
+> **VERIFIED SURVIVORS of the battery (canon-graded, denominators inline):**
+> * OK first-buys, whole roster: edge **-0.0024** on 2,411 labeled mkts of
+>   4,550 OK first-buy records (label-timing selection caveat applies).
+> * PRICE_NO_UPSIDE (0.98 cap): blocked buys graded -0.0265 despite 0.971
+>   win rate (35 labeled mkts) - the cap makes money sense. KEEP (ruled).
+> * Conviction/confidence carries no measurable signal in EITHER bot:
+>   v3 conviction_r vs edge r=-0.013 (2,939 labeled fills; band-only
+>   r=+0.055 n=234) - measured on restart-corrupted annotations, so verdict
+>   = UNPROVEN not dead; legacy confidence split >=0.60 did WORSE than <0.60
+>   (33.7%% vs 32.3%% WR, scripts/bot_pnl.py MirrorBot 168h). RULED: no
+>   sizing built on conviction until measured clean.
+> * Legacy funnel: ~1.57M rejections vs 794 trades / 7d
+>   (mirror_rejected_signals counts); book = eight ~$1 positions (bot_pnl).
+> * Stuck-position reframe: the ~678h position is in profit at the MARK
+>   (entry .55, marked .68) but the real bid is .31 - the slippage guard
+>   correctly refuses the fill; the defects are the forever-retry and the
+>   misleading current_price mark.
+> * Detect-lag tail (p99 27.5s) = recorder burst-queueing (lag>10s records
+>   sit in 5s-windows with median 14 siblings vs 2 overall), NOT chain
+>   slowness. RULED: no speed infra; record quote staleness instead.
+>
+> **"SECOND DEDUP BUG" RESOLVED - NOT A BUG:** journal retention starts
+> 08-09 while the sink starts 07-13; the 347 "unexplained" dup first-buy
+> flags cluster in the pre-journal era, 0 of 924 dup pairs have gap<60s,
+> sink is pure chain records. The ONE known defect (memory-only dedup reset
+> at restart) explains all 924. Dup rate remains real: 16.4%% of first-buy
+> records (924 excess / 560 pairs) - the restart artifact is material to the
+> estimand and dedup persistence is the fix path (still report-only).
+>
+> **RULINGS EXECUTED ("ok to all recs"):** (1) gates + 0.98 cap KEEP -
+> recorded; (2) dedup root-cause DONE (above - no code change yet, fix
+> awaits its own go); (3) conviction: no sizing on it, clean re-measure
+> needs median persistence first; (4) **quote_ts/quote_lag_s SHIPPED**
+> (both paths, recording-only, 66 pytest, deployed 2026-08-25T16:40:41Z,
+> backup copy_watcher.py.pre-quotets-20260825; NOTE the deploy restart adds
+> one more dedup-reset boundary - known artifact, disclosed).
+> Pathway-walkthrough fleet (9 auditors + 9 verifiers) still running;
+> full hygiene doc on landing.
+>
+> ## 2026-08-25 (~14:10Z) — STRESS CAMPAIGN: ALL ITEMS vs CANON DATA, BLINDLY
+> (operator: "stress test all items with canon data blindly")
+>
+> **Positive runs (fresh /dev/urandom seeds, 3x sample):** seeds 4762895 +
+> 14372946, each 25 records + 25 labels + 15 fees = **130/130 clean**;
+> cumulative with the daily-seed run: **152/152 blind checks vs chain
+> receipts / CLOB resolutions / venue fees, 0 alarms.**
+> **Negative controls (the stick must be able to FAIL):** corrupted-sink copy
+> (all 71,222 prices +0.05) -> **10/10 sampled records ALARMED**;
+> flipped-labels copy (239,828 resolutions inverted) -> **10/10 sampled
+> labels ALARMED**. 100%% detection both axes. canon_verify gained
+> --sink/--gamma override flags for exactly such audits.
+> **Fuzz:** 2,000 seeded random trials (seed 1599970607) on mb_canon +
+> e_value - 0 invariant failures (bounds, ordering, pooling, empty->None,
+> merge partition/conflict); e-process boundary hammer clean (all-positive
+> edges e=25.2 crosses 20; all-negative 0.28).
+> **Restore drills:** bundle untarred - locks/ledger md5-MATCH, sink
+> restored 71,221/71,222 lines (append-only gap = expected);
+> shadow_fills snapshot pg_restored into a scratch schema: **9,514/9,514
+> rows**, schema dropped after. Pulled Windows bundle lists 95/95 entries.
+> **Ledger blind spot-check** (seed 1712492766, 5 random claims re-grepped):
+> 5/5 held. **Full lane pytest: 105 green.**
+> **Honest notes:** (1) band_lock.json does not exist yet - CORRECT
+> (created on first crossing); my ad-hoc drill printed a false MATCH for
+> missing-vs-missing - drill flaw, not backup flaw, disclosed. (2) cohort5
+> grading deliberately NOT re-run in the stress: 0xee00ba33 sat at 23/30 at
+> 11:40Z and an unscheduled run risks consuming an original-20 single look.
+> (3) /tmp/sf.sql left postgres-owned in /tmp (wiped on reboot).
+>
+> ## 2026-08-25 (~14:00Z) — OVERHAUL PROGRAM EXECUTED (operator 7-item
+> directive; parallel agents authorized; "nothing but excellence")
+>
+> **THE CANON MEASURING STICK IS LIVE (TOP PRIORITY, item 4; 55b96a5).**
+> `scripts/mb_canon.py` = THE estimand (per-market mean per the ratified band
+> charter; venue-fee precedence chain; conflict-detecting label merge — the
+> silent DB-wins merge is retired for new code). `scripts/canon_verify.py` =
+> daily BLIND date-seeded verification of recorded data vs ground truth:
+> shadow records re-derived from Polygon receipts, labels re-checked vs CLOB,
+> fee map re-checked vs venue. **First live run 2026-08-25T13:49Z seed
+> 20260825: records 8/8, labels 8/8, fees 6/6, ALARMS=0.** Wired into the
+> 11:40Z cron; any mismatch prints a loud ALARM; all-sources-unsampleable
+> exits rc=2 (a blind verifier is never a pass). Rulebook:
+> `docs/MEASUREMENT_CANON.md` (definitions, NAMING LAW — bare "edge" =
+> canonical only — verification protocol, consumption rule: IMPORT canon,
+> never re-implement; change control). 8 canon tests, 55 pytest green.
+>
+> **REC EXECUTED (item 6; same commit):** C1_UNTESTED re-registered
+> ANYTIME-VALID before any look was consumed —
+> `docs/COHORT1_UNTESTED_AMENDMENT.md`: e-process (reject e>=20, futility
+> 300, econ gate +0.02 at crossing, OK-rate 0.75), CANON venue fees, epoch
+> 2026-08-24T17:00Z UNMOVED. Legitimacy: only count-only "0/30" lines had
+> ever printed for the 9. Original 20 keep their 07-30 charter (flat 2%,
+> single look) + per-run fee-divergence disclosure. End-to-end verified as
+> cron user (9 x ACCRUING e=n/a; 1,515 forward records in window).
+> **PROPOSED, operator ruling pending: re-register the 15 unconsumed
+> original-cohort5 looks the same way.**
+>
+> **EVIDENCE BACKUP LIVE (item 5; 84c0407).** Nightly VPS bundle 03:30Z
+> (`/opt/pa2-backups/mb_evidence/`, tier1 full + shadow sinks gzipped, 14d
+> retention, gamma weekly): first bundle 20M / 95 entries. OFF-BOX leg:
+> Windows schtasks `MB_Evidence_Pull` daily 05:00 local pulls to
+> `C:\lockes-picks\mb-evidence-backup\` — tested, **md5 verified identical**
+> (e82df0bf..). Cloud bucket = upgrade path, needs operator creds (no
+> aws/rclone on the box).
+>
+> **EVERY-SESSION SURFACING (item 7):** banners atop
+> `MB_DEEP_DIVE_NEXT_PROMPT.md` + `docs/MB_SESSION_STARTUP.md`; memory
+> `project_mb_overhaul_program.md` indexed top of MEMORY.md. Read order:
+> agenda -> canon -> [canon] line (ALARMS must be 0 before quoting numbers).
+>
+> **ITEM 1 (disposition ledger):** drafted by agent; finalization + the
+> one-word sign-off sheet land next block. NOTHING retired/stopped yet —
+> every disposition is operator-gated. Measurement-canon doc (items 2+3) =
+> `docs/MEASUREMENT_CANON.md`, finalized from agent draft.
+>
+> ## 2026-08-24 (~17:15Z) — CHAIN-TRUTH FILL CLASSIFICATION (operator: "it's
+> blockchain, isn't there a record?" — YES, and it resolves the feed gap)
+>
+> The RTDS feed hides who started each trade, but every fill_tx settles on
+> Polygon and the receipt names the aggressor: the OrderFilled whose
+> counterparty field is the exchange itself is the TAKER's order (validated
+> pattern, decode_fill_v2); the taker's side for our token comes from the
+> receipt transfer-log rule (side_from_receipt_logs). Retro-classified ALL 65
+> epoch-2 fills via raw eth_getTransactionReceipt (tenderly, 30s timeouts):
+> **65/65 classified, 0 errors, 0 unknowns** (`scripts/bidsim_classify_fills.py`).
+>
+> **RESULT (ESTABLISHED, 72 resolved bids at read time):**
+> * taker-SELL aggression (would hit a resting bid): **17/65 = 26.2%** of fills
+> * **chain-truth strict fill rate: 17/72 = 23.6%** vs the 74% break-even bar
+> * charter-rule (any print): 65/72 = 90.3%
+> * RTDS's own side field said 8 SELL — the chain found 17: the feed's side
+>   field is confirmed unreliable (perspective-dependent), never use it for
+>   this again; classify via receipts.
+>
+> **Honest caveat (microstructure, stated not assumed):** taker-BUY prints at
+> <= our bid imply ASKS were resting at/below our bid — in the counterfactual
+> where our bid exists, those incoming asks would have matched US first. So
+> strict taker-SELL-only likely UNDERCOUNTS the true maker fill rate; the
+> truth lies in [23.6%, 90.3%] and prints alone cannot pin it further. The
+> bracket is now measured from chain truth instead of an unreliable feed
+> field. Fill-side ruling remains OPEN — but the operator now has real
+> numbers: strict reading is FAR below 74%, loose reading far above.
+>
+> ## 2026-08-24 (~16:45Z) — OPERATOR RULINGS ON THE 6 RECS + TWO EXECUTED
+>
+> **RULINGS (operator, verbatim intent):**
+> * **FUNDING RULED: start ~$500 once a test passes; grow to ~$5,000 as it
+>   proves out live.** (The long-open "conditional funding number" is now
+>   SET. Band pass => $500 pilot; scaling to $5k on live proof.)
+> * "Don't fund yet" — RATIFIED.
+> * Scout filter fix — GO. **EXECUTED (b8deacf):** discovery — the old floor
+>   (>=500 trades/6h = 2,000/day) sat ABOVE the dive's 1,000/day UNCOPYABLE
+>   ceiling: the filter could only EVER select machines; sweep #1's 9/9 bots
+>   was structural. New band notional>=$25k / markets>=5 / 10<=n<250 per 6h.
+>   Dry-run on the real 07-30 capture (26,123 wallets): **82 human-scale
+>   candidates, 89 machines dropped.** No sweep launched — cadence still open.
+> * The 9 untested cohort1 traders — GO, "if they pass the test."
+>   **EXECUTED (3c76580):** cohort1-untested group added to the daily
+>   qualification cron; own fresh epoch **2026-08-24T17:00:00Z**, same bars,
+>   same locks file, source tag `cohort1_untested single-look`. End-to-end
+>   verified as the cron user (9 x ACCRUING 0/30, existing locks untouched).
+>   Deployed via mb_readout checkout sync.
+> * The 13 INSUFFICIENTs — ruled "positive EV -> add, negative -> remove."
+>   **FINDING: their dive verdicts contain NO edge measurement at all** (that
+>   is what INSUFFICIENT means; verified across all 13 JSONs — no
+>   edge_mean/n_labeled fields). One of the 13 is `0x44886115` = cohort4,
+>   ALREADY on the roster — the real set is 12. Forward EV requires WATCHING
+>   them: the concrete plan is 12 observation-only probes (roster 31->43,
+>   ledger + watcher restart, fresh epoch, single-look bar as above).
+>   **AWAITING explicit confirm — roster changes stay operator-gated and the
+>   ruling did not name a 12-probe roster expansion.**
+> * Fill-side ruling — still OPEN; operator asked for a simpler explanation
+>   of the bracket proposal before ruling (given in chat 2026-08-24).
+>
+> ## 2026-08-24 (~16:05Z) — FIX VERIFIED LIVE + INTERIM chase-vs-post (operator "proceed")
+>
+> **AMENDMENT 1/1b VERIFIED ON LIVE DATA:** 74 posts on the epoch-2 sink —
+> **0 missing trigger_tx, 0 self-fills** (scoreboard alarm 0 across 3 daily
+> runs). Median wait moved 0.6s (pre-fix) → 30.3s: the instrument measures a
+> different, credible quantity now. Pending-verification item CLOSED.
+>
+> **INTERIM chase-vs-post at 71 resolved bids (NOT the ~100 proposal; both
+> fill-side interpretations, no ruling made):**
+> * A (charter rule, all prints fill): fill_rate 64/71 = 0.901; cond edge
+>   **−0.2520 on only 14 LABELED fills of 64 (22% coverage — the other 50
+>   markets are simply unresolved after ≤3 days)**. HEADLINE = THE BLINDNESS:
+>   the 14 fast-resolvers are a horizon-biased subset; the −0.25 must not be
+>   quoted as the maker edge.
+> * B (SELL-prints only): fill_rate 8/71 = 0.113; **0 of 8 labeled — cond
+>   edge unavailable.**
+> * Fill sides on record: 55 BUY / 8 SELL prints (the fill-side ruling now has
+>   forward data accruing; OPERATOR DECISION still open).
+> * **STRUCTURAL NOTE for the tripwire:** "~100 resolved bids" gives the
+>   FILL-RATE arm, but the cond-edge arm needs those markets to RESOLVE —
+>   which lags days–weeks behind bid resolution. The proposal at ~100 will be
+>   fill-rate-firm and cond-edge-thin; expect a two-stage read.
+> * Method: labels = daily-supplemented gamma_resolutions.json (refreshed
+>   2026-08-24T11:42Z); venue fee = rate·p·(1−p), unmapped flat 2%; read-only.
+>
+> **Other movement (source: 08-24T11:42Z scoreboard + locks file):** band
+> n=31 pooled −0.0685 e=0.417 (trajectory 0.717→0.885→0.683→0.501→0.417 — no
+> tripwire, descriptive); **cohort5 lock #5:** `0xc660ae71` DOES NOT QUALIFY
+> 08-23T11:43Z (edge −0.0623, P 0.235, n=30) — 5 of 20 graded, 5 failed.
+> Watcher 3d uptime, 0 restarts. PRs: #5 (docs sync), #6 (sports lane,
+> operator-commanded) — both opened, merge = operator.
+>
 > ## 2026-08-21 (~14:49Z) — BIDSIM SELF-FILL DEFECT FIXED + SCOUT SWEEP #1 CLOSED
 > (operator: "delete duplicate, resolve sim now then get proper data")
 >

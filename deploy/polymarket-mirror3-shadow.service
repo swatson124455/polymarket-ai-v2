@@ -1,0 +1,25 @@
+# MirrorBot v3 — SHADOW-phase unit (2026-07-11).
+# Same clean-silo rules as polymarket-mirror3.service, with one difference:
+# code runs from /opt/mirror3 (a persistent clone of the investigation
+# branch carrying mirror_v3/copy_watcher.py) instead of the deployed v2
+# tree, which does not have the watcher. The venv is shared (packages only;
+# no code import crosses trees). Replace with the canonical unit when the
+# branch merges to master and the deployed tree carries mirror_v3.
+[Unit]
+Description=Polymarket MirrorBot v3 (SHADOW watcher — no orders, paper silo)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polymarket
+WorkingDirectory=/opt/mirror3
+Environment="PYTHONPATH=/opt/mirror3"
+Environment="PYTHONWARNINGS=ignore::UserWarning:sklearn,ignore::FutureWarning:sklearn"
+EnvironmentFile=/opt/pa2-shared/.env.mirror3
+ExecStart=/opt/polymarket-ai-v2/venv/bin/python -m mirror_v3.run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
