@@ -15,6 +15,19 @@ logger = get_logger()
 
 MIN_RESOLVED_FOR_CALIBRATION = 50
 
+# c12 — SHARED-CALIBRATOR NOWCAST EXCLUSION (2026-07-21).
+# Every fit below pools `prediction_log` across ALL bots. WeatherBot's
+# `weather_nowcast_peak` rows are a shadow signal with a near-constant ~0.44
+# prior that resolves rarely and in bursts; WB already excludes them from its
+# OWN calibration paths (c9 weather_bot.py `_update_city_brier`, c11
+# scripts/calibration_check.py x3). Left in the shared pool they skew the
+# curves the prediction engine and MirrorBot consume — worst at the recent-N
+# readers in database.py, where a burst can dominate a 20/50/100-row window.
+# Predicate is `NOT LIKE '%nowcast%'` (NOT `= weather_temperature`, which would
+# also drop precip/snow/wind) and COALESCE-wrapped so a future NULL model_name
+# is KEPT rather than silently dropped by NULL-propagating NOT LIKE.
+# There are 0 NULL model_name rows today (measured 2026-07-21, 3,606,154 rows).
+
 
 class FavoriteLongshotCalibrator:
     """Calibrate raw predictions using isotonic regression on resolved outcomes."""
@@ -39,6 +52,7 @@ class FavoriteLongshotCalibrator:
                     SELECT predicted_prob, resolution
                     FROM prediction_log
                     WHERE resolution IS NOT NULL
+                      AND COALESCE(model_name, '') NOT LIKE '%nowcast%'
                       AND prediction_time > NOW() - INTERVAL ':days days'
                     ORDER BY prediction_time DESC
                     LIMIT 5000
@@ -130,6 +144,7 @@ class DomainCalibrator:
                     FROM prediction_log pl
                     JOIN markets m ON pl.market_id = m.id
                     WHERE pl.resolution IS NOT NULL
+                      AND COALESCE(pl.model_name, '') NOT LIKE '%nowcast%'
                       AND LOWER(m.market_category) = :category
                       AND pl.prediction_time > NOW() - INTERVAL '1 day' * :n_days
                     ORDER BY pl.prediction_time DESC
@@ -244,6 +259,7 @@ class FocalTemperatureCalibrator:
                     "SELECT predicted_prob, resolution"
                     " FROM prediction_log"
                     " WHERE resolution IS NOT NULL"
+                    " AND COALESCE(model_name, '') NOT LIKE '%nowcast%'"
                     " AND prediction_time > NOW() - INTERVAL '1 day' * :interval_days"
                     " ORDER BY prediction_time DESC"
                     " LIMIT 5000"
