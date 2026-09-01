@@ -1,4 +1,8 @@
-# KALSHI RELIGHT SHEET — approved values, NOT applied (2026-09-01 ~13:4xZ)
+# KALSHI RELIGHT SHEET — approved values (2026-09-01 ~13:4xZ)
+
+> **APPLIED 2026-09-01T13:45:28Z on operator order "apply all changes do not go live"** —
+> live.env updated (backup `live.env.bak-RELIGHT-20260901_134528`, diff verified = exactly
+> the 5 lines below), service left inactive+disabled. GO procedure below still pending.
 
 **Operator rulings (2026-09-01, verbatim ordering of the 5-decision list):**
 1. Turn on: **"not now" — bot stays OFF. Nothing below touches the box until an explicit GO.**
