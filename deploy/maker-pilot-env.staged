@@ -71,7 +71,7 @@ MAKER_QUOTE_STYLE=wide
 # ── session-8 elevations (2026-07-29, Kalshi-audit ports; operator reviews at cutover)
 # Two-arm halt: the single mark-fed floor tripped the paper arm twice on mark
 # noise (07-25: pnl=-76.20, settle_realized=-0.57). REALIZED arm catches real
-# settlement bleed; the $15 MARK floor above stays as the wallet-protection arm.
+# settlement bleed; the MARK floor above is the wallet-protection arm.
 MAKER_DAY_REALIZED_FLOOR_USD=10
 # OPERATOR RULING 2026-09-01: "lose max 10 in 24 hours" — the MARK floor above
 # is set to $10 (it sees every loss, marks included, so it enforces the ruling
