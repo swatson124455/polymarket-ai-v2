@@ -317,3 +317,17 @@ Known residuals: ~$0.71 fill-price/fee variance in the 06-01→06-02 window (nee
 ## DB resolution-backfill drift (separate concern)
 
 As of 2026-05-26, the `markets` table in the local DB shows `resolved=false` for all 4 condition_ids, but `CTF.payoutDenominator()` returns 1 (resolved) for all 4 on-chain. The bot's resolution backfill (`base_engine.data.database.py` Phase 4b) has not picked up these resolutions yet — separate from the wallet-ledger concern, but worth flagging for next code session. The 4 positions also show `status='closed'` in `positions` table because of Bug 12 paper-simulation, which incidentally matches outcome for the 3 losers but mis-reports the Guardians position by an amount equal to the payout differential.
+
+## 2026-09-01 — 5.0 POL system EOA -> Maker pilot wallet (operator-ordered)
+- Operator instruction: "7 you do it" + "do it you have prior" (fund the Maker
+  pilot wallet from existing holdings).
+- FROM `0xd6a5E2D75Fae67739749Af380C54b0544878627F` (shared system EOA; held
+  9.3396 POL pre-send, measured 17:17:14Z) TO
+  `0x9B24D25A514eE02b44DFF20F5e835585d35CE7b4` (Maker pilot wallet, generated
+  on-box same day). AMOUNT 5.0 POL (gas for exchange approvals).
+- tx `0xf9635eee265695d75df6bf7a24b3d5ba40612555356b6e21359ec00da30b437d`,
+  status 1, block 93052048, confirmed 17:18:27Z. Source keeps 4.3308 POL for
+  redemption gas.
+- NOTE: the stable-coin leg (~$98) had NO on-chain source: measured across all
+  system wallets 17:17:14Z — $2.24 pUSD (deposit proxy) + $0 USDC.e/native.
+  Awaiting operator onramp.
