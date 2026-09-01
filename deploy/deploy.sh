@@ -221,11 +221,18 @@ sudo systemctl disable polymarket-ai 2>/dev/null || true
 # S145: Explicit stop before start — frees all PgBouncer slots before new code loads.
 # Without this, old processes hold connections during the restart window, causing
 # pool exhaustion if the new processes also try to connect simultaneously.
-sudo systemctl enable polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion
-sudo systemctl stop polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion 2>/dev/null || true
+# 2026-09-01 operator ruling ("Deploy, keep mirror down"): polymarket-mirror
+# (the LEGACY live MirrorBot service) was deliberately stopped+disabled on
+# 2026-08-25 (MB overhaul / legacy wind-down track) — a deploy must NOT
+# resurrect it. It is excluded here AND in deploy/healthcheck_probe.sh
+# (BOT_SERVICES/SCAN_SERVICES); re-add to BOTH places only on explicit
+# operator instruction. The mirror3 shadow watcher is a separate unit and
+# is not managed by this script.
+sudo systemctl enable polymarket-weather polymarket-esports polymarket-ingestion
+sudo systemctl stop polymarket-weather polymarket-esports polymarket-ingestion 2>/dev/null || true
 sleep 2  # Let PgBouncer reclaim slots
-sudo systemctl start polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion
-echo "  polymarket-weather, polymarket-mirror, polymarket-esports, polymarket-ingestion started (clean)"
+sudo systemctl start polymarket-weather polymarket-esports polymarket-ingestion
+echo "  polymarket-weather, polymarket-esports, polymarket-ingestion started (clean); polymarket-mirror left stopped+disabled (2026-09-01 ruling)"
 REMOTE
 echo "  Restarting..."
 
