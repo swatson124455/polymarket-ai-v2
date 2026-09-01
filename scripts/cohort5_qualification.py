@@ -235,6 +235,18 @@ async def run(args) -> int:
                              f"grade under a silently-changed fee equation")
         if not isinstance(fee_map, dict) or not fee_map:
             raise SystemExit("FATAL: fee_map empty/malformed - refusing")
+    # fee RATE map (per-token taker rate) — same canon input the funnel
+    # passes to mc.per_market_edges; was never bound here (NameError on
+    # every eproc_grade run 08-26..09-01, fixed 2026-09-01)
+    frm = None
+    if args.fee_rate_map and os.path.exists(args.fee_rate_map):
+        try:
+            frm = json.load(open(args.fee_rate_map))
+        except ValueError as e:
+            raise SystemExit(f"FATAL: fee_rate_map corrupt ({e!r}) - refusing "
+                             f"to grade under a silently-changed fee equation")
+        if not isinstance(frm, dict) or not frm:
+            raise SystemExit("FATAL: fee_rate_map empty/malformed - refusing")
     cfg = NS(max_chase=0.02, max_spread=0.05, fee=0.02, econ_floor=EDGE_BAR,
              p_min=P_BAR, min_markets=N_BAR, fee_map_data=fee_map)
     locks = sr.load_locks(args.locks)
@@ -399,6 +411,12 @@ def _self_test() -> int:
             ok4 = True
         print(f"  [guard] empty eligibility raises, never 'no candidates' : {ok4}")
         ok &= ok4
+    # regression (2026-09-01): frm must be BOUND in run() — unbound, the
+    # eproc_grade closure compiles it as a global load and every grading
+    # run dies with NameError (fired daily 08-26..09-01, unnoticed)
+    ok5 = "frm" in (run.__code__.co_varnames + run.__code__.co_cellvars)
+    print(f"  [names] fee-rate map 'frm' bound in run() grading path : {ok5}")
+    ok &= ok5
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
