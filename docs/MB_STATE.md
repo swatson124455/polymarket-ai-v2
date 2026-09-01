@@ -41,6 +41,10 @@
 > throughout. Health gate 3 = documented cold-start HEALTH_WARN;
 > PgBouncer pool 60. **The 3 shared fixes (RedisCache raise_on_error,
 > _publish_signal guard, c12 nowcast exclusion) are LIVE.**
+> **PR #6 (Owls sports backdata) MERGED** on explicit operator "merge 6"
+> at 2026-09-01T13:54:21Z — on master, NOT deployed (Owls collectors run
+> from home-dir crontabs, not the release; no deploy action taken).
+> Remaining operator items: PR #7 merge (docs-sync), the "later" queue.
 
 > ## 2026-09-01 (~13:10Z) — [grader] ALARM LIVE (operator "build it") +
 > ## SHARED-FIX DEPLOY IN FLIGHT (mirror kept down by ruling)
