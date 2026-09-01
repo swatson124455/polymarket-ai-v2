@@ -1654,7 +1654,54 @@ def kill_sequence(execc, state, base, reason):
 
 
 RESOLUTION_SWEEP_S = 3600           # departed-market outcome sweep cadence
-RESOLUTION_LOOKUPS_PER_SWEEP = 30   # gamma lookups per sweep (budgeted)
+RESOLUTION_LOOKUPS_PER_SWEEP = 120  # gamma lookups per sweep (budgeted; 30->120 S8 OOM fix — drains fossil backlogs in days not months; ~120/h is trivial vs the 36k/h HTTP budget)
+
+
+PRUNE_SWEEP_S = 3600
+
+
+def prune_state(state, universe_ids, now, ledger_fn=None):
+    """Hourly state prune (S8 OOM fix): the state dict accreted one entry per
+    market EVER discovered (measured 2026-09-01: 8,921 entries, 64 settled,
+    only 4 holding inventory) and nothing ever removed one — RAM and the
+    per-minute state.json dump grow monotonically (OOM-killed 08-26).
+    Removes ONLY two provably-inert shapes, both DEPARTED (not in the
+    current universe):
+      (a) fully-settled flat entries (y==n==0): their `spent` residue is
+          −(realized net); it is ARCHIVED to the ledger and day_anchor is
+          shifted by the same amount so day_pnl is INVARIANT across the
+          prune (portfolio_net loses the −spent contribution).
+      (b) never-valued husks (y==n==spent==0, no zombies, no standing
+          quote rows): zero financial content, deletion is free.
+    Departed-with-value entries are NEVER touched — they are the
+    resolution sweep's queue. Returns entries removed."""
+    meta = state.setdefault("meta", {})
+    if now - meta.get("prune_t", 0) < PRUNE_SWEEP_S:
+        return 0
+    meta["prune_t"] = now
+    removed = 0
+    for k in list(state):
+        st = state.get(k)
+        if k == "meta" or not isinstance(st, dict) or k in universe_ids:
+            continue
+        y, n, sp = st.get("y", 0.0), st.get("n", 0.0), st.get("spent", 0.0)
+        if st.get("settled") and not y and not n:
+            if ledger_fn is not None:
+                ledger_fn("settlements",
+                          {"t": round(now), "act": "prune", "mkt": k,
+                           "resid_spent": round(sp, 4)})
+            meta["day_anchor"] = meta.get("day_anchor", 0.0) + sp
+            del state[k]
+            removed += 1
+        elif (not y and not n and not sp and not st.get("zombies")
+              and st.get("ob") is None and st.get("oa") is None):
+            del state[k]
+            removed += 1
+    if removed:
+        meta["pruned_total"] = meta.get("pruned_total", 0) + removed
+        print(f"state prune: {removed} inert departed entries removed "
+              f"({meta['pruned_total']} lifetime)", flush=True)
+    return removed
 
 
 def try_settle(st, prices, uma_resolved=False):
@@ -2505,6 +2552,9 @@ def run(base, cfg):
             # (review finding 7)
             if resolution_sweep(state, base, now):
                 _save_state(base, state_path, state)
+            if prune_state(state, {str(m2["id"]) for m2 in universe}, now,
+                           lambda strm, row: ledger_write(base, strm, row)):
+                _save_state(base, state_path, state)
 
             # zombie cancel retries (failed cancels from the fast loop);
             # escalate to cancel_all, then kill, if they keep failing
@@ -2574,8 +2624,16 @@ def run(base, cfg):
                 quoting = sum(1 for k, s2 in state.items()
                               if k != "meta" and isinstance(s2, dict)
                               and (s2.get("ob") or s2.get("oa")))
-                gross = sum(s2.get("spent", 0.0) for k, s2 in state.items()
-                            if k != "meta" and isinstance(s2, dict))
+                # S8 gauge fix: "gross" summed spent over ALL entries, but
+                # settled entries keep spent = -(realized net) forever, so
+                # the gauge went negative (-488 reconciled 2026-09-01).
+                # committed = live capital; resid = settled accounting residue.
+                committed = sum(s2.get("spent", 0.0) for k, s2 in state.items()
+                                if k != "meta" and isinstance(s2, dict)
+                                and not s2.get("settled"))
+                resid = sum(s2.get("spent", 0.0) for k, s2 in state.items()
+                            if k != "meta" and isinstance(s2, dict)
+                            and s2.get("settled"))
                 nzomb = sum(len(s2.get("zombies") or []) for k, s2 in state.items()
                             if k != "meta" and isinstance(s2, dict))
                 # LIVE departed-unsettled count — meta["res_pending"] is only
@@ -2593,7 +2651,8 @@ def run(base, cfg):
                                  for a in (m2["yes"], m2["no"]) if a not in BOOKS)
                 dtop = sorted(guards.denials.items(), key=lambda x: -x[1])[:6]
                 print(f"hb[{cfg['mode']}]: q={quoting}/{len(universe)} "
-                      f"gross=${gross:.0f} dayPnL=${day_pnl:.2f} "
+                      f"committed=${committed:.0f} resid=${resid:.0f} "
+                      f"dayPnL=${day_pnl:.2f} "
                       f"floor=-${cfg['day_loss_floor']:.0f} "
                       f"accday=${meta.get('acc_day', 0.0):.2f} "
                       f"halted={meta.get('halted', False)} zombies={nzomb} "

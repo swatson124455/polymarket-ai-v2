@@ -2263,3 +2263,79 @@ def test_run_wires_realized_arm_to_settle_realized_day():
     assert "settle_realized_day" in call, (
         "REALIZED arm must read meta['settle_realized_day'], not day_pnl")
     assert "REALIZED arm" in src   # kill-message names the arm
+
+
+# ── session-8 OOM/gauge fixes: state prune + committed/resid split ──────────
+def _prune_state_fixture():
+    return {
+        "meta": {"day_anchor": 100.0, "prune_t": 0},
+        "in_uni": {"y": 0.0, "n": 0.0, "spent": 0.0, "ob": None, "oa": None},
+        "husk": {"y": 0.0, "n": 0.0, "spent": 0.0, "ob": None, "oa": None},
+        "settled_flat": {"y": 0.0, "n": 0.0, "spent": -7.5, "settled": True},
+        "departed_value": {"y": 10.0, "n": 0.0, "spent": 4.0, "departed": True},
+        "zombie_husk": {"y": 0.0, "n": 0.0, "spent": 0.0, "zombies": ["oid"],
+                        "ob": None, "oa": None},
+        "quoted_husk": {"y": 0.0, "n": 0.0, "spent": 0.0,
+                        "ob": [0.4, 20.0], "oa": None},
+    }
+
+
+def test_prune_removes_only_inert_departed_entries():
+    st = _prune_state_fixture()
+    rows = []
+    n = mle.prune_state(st, {"in_uni"}, 5000.0,
+                        lambda strm, row: rows.append((strm, row)))
+    assert n == 2
+    assert "husk" not in st and "settled_flat" not in st
+    # NEVER pruned: in-universe, departed-with-value, zombies, standing quote
+    for keep in ("in_uni", "departed_value", "zombie_husk", "quoted_husk"):
+        assert keep in st, keep
+    # settled residue archived, exactly once
+    assert rows == [("settlements",
+                     {"t": 5000, "act": "prune", "mkt": "settled_flat",
+                      "resid_spent": -7.5})]
+
+
+def test_prune_keeps_day_pnl_invariant():
+    """Removing a settled entry removes its -spent contribution from
+    portfolio_net; day_anchor must shift identically or the prune fakes a
+    P&L jump (and could trip a floor)."""
+    st = _prune_state_fixture()
+    before = mle.portfolio_net(st) - st["meta"]["day_anchor"]
+    mle.prune_state(st, {"in_uni"}, 5000.0, lambda *a: None)
+    after = mle.portfolio_net(st) - st["meta"]["day_anchor"]
+    assert abs(before - after) < 1e-9
+
+
+def test_prune_hourly_gate_and_counter():
+    st = _prune_state_fixture()
+    # empty universe set => in_uni is departed too, so 3 inert entries go
+    assert mle.prune_state(st, set(), 5000.0, lambda *a: None) == 3
+    # second call inside the hour: gated off, removes nothing more
+    st["husk2"] = {"y": 0.0, "n": 0.0, "spent": 0.0, "ob": None, "oa": None}
+    assert mle.prune_state(st, set(), 5100.0, lambda *a: None) == 0
+    assert "husk2" in st
+    assert st["meta"]["pruned_total"] == 3
+
+
+def test_committed_resid_split_semantics():
+    """The hb gauge split: committed sums only UNSETTLED spent; settled
+    residue is separate (the -488 == -671 settled + 184 live reconciliation,
+    2026-09-01)."""
+    st = _prune_state_fixture()
+    committed = sum(v.get("spent", 0.0) for k, v in st.items()
+                    if k != "meta" and isinstance(v, dict)
+                    and not v.get("settled"))
+    resid = sum(v.get("spent", 0.0) for k, v in st.items()
+                if k != "meta" and isinstance(v, dict) and v.get("settled"))
+    assert committed == 4.0 and resid == -7.5
+
+
+def test_run_wires_prune_with_universe_and_ledger():
+    """Caller pin (the S8-F1 lesson applied forward): run() must call
+    prune_state with the CURRENT universe ids and the real ledger writer."""
+    import inspect
+    src = inspect.getsource(mle.run)
+    assert "prune_state(" in src
+    call = src.split("prune_state(", 1)[1][:160]
+    assert "universe" in call and "ledger_write" in call
