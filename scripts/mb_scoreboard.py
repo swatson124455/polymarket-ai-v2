@@ -60,6 +60,38 @@ def band_line(log_path):
     return last, None
 
 
+# same 26h bar as the [band] staleness guard above (2026-08-25 hygiene
+# review, batch B e335d9b) — one day of cron plus slack, no new constant
+GRADER_STALE_H = 26.0
+
+
+def grader_line(hb, now_utc):
+    """[grader] health line from the cohort5 heartbeat (2026-09-01 alarm,
+    operator 'build it'; born from the frm NameError that killed the grader
+    on 7/7 daily runs 08-26..09-01 with nothing on this board). Pure:
+    hb = parsed heartbeat dict or None. Returns (line, alarm).
+    Every unreadable/absent/old state ALARMS — fail-toward-alarm."""
+    if not isinstance(hb, dict) or not hb.get("ts"):
+        return ("  [grader] !! NO HEARTBEAT - the qualification grader has "
+                "never completed cleanly since this alarm deployed - read "
+                "the cohort5 section of the cron log", True)
+    try:
+        t = datetime.strptime(str(hb["ts"]), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+    except ValueError:
+        return ("  [grader] !! HEARTBEAT UNREADABLE (ts=%r) - treat the "
+                "grader as DOWN" % (hb.get("ts"),), True)
+    age_h = (now_utc - t).total_seconds() / 3600.0
+    if age_h > GRADER_STALE_H:
+        return ("  [grader] !! STALE - last clean grader run %s (%.0fh ago, "
+                "bar %.0fh) - the grader is crashing or absent; read the "
+                "cohort5 section of the cron log" %
+                (hb["ts"], age_h, GRADER_STALE_H), True)
+    return ("  [grader] OK %s groups=%s locks_written=%s" %
+            (hb["ts"], hb.get("groups_graded", "?"),
+             hb.get("locks_written", "?")), False)
+
+
 def cohort5(base):
     """Locks file is authoritative for consumed single looks."""
     p = os.path.join(base, "deep_dive", "cohort5_qual_locks.json")
@@ -114,7 +146,13 @@ def main():
     ap.add_argument("--log", default=DEF_LOG)
     ap.add_argument("--base", default=DEF_BASE)
     ap.add_argument("--bidsim", default=DEF_BIDSIM)
+    ap.add_argument("--heartbeat",
+                    default=DEF_BASE + "/deep_dive/"
+                                       "cohort5_grader_heartbeat.json")
+    ap.add_argument("--self-test", action="store_true", dest="self_test")
     a = ap.parse_args()
+    if a.self_test:
+        return _self_test()
 
     out = ["===== %s MB SCOREBOARD (4 forward instruments) =====" % _now()]
     missing = 0
@@ -174,11 +212,53 @@ def main():
         out.append("  [4/4 scout ] %d verdicts: %s | ADMITs=%d"
                    % (tot, parts, c.get("ADMIT", 0)))
 
+    hb = None
+    try:
+        hb = json.load(open(a.heartbeat))
+    except (ValueError, OSError):
+        pass  # grader_line alarms on None/malformed — fail-toward-alarm
+    ln, _alarm = grader_line(hb, datetime.now(timezone.utc))
+    out.append(ln)
+
     if missing:
         out.append("  !! %d of 4 instruments UNAVAILABLE - investigate before "
                    "reading this scoreboard as 'nothing happening'" % missing)
     print("\n".join(out))
     return 0
+
+
+def _self_test() -> int:
+    print("SELF-TEST — mb_scoreboard grader alarm (offline)\n")
+    from datetime import timedelta
+    now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    fresh = {"ts": (now - timedelta(hours=1)).strftime(fmt),
+             "groups_graded": 5, "locks_written": 0}
+    old = {"ts": (now - timedelta(hours=27)).strftime(fmt),
+           "groups_graded": 5, "locks_written": 0}
+    ln1, a1 = grader_line(fresh, now)
+    ok1 = (not a1) and ln1.startswith("  [grader] OK") and "groups=5" in ln1
+    print(f"  [ok] fresh heartbeat -> OK line, no alarm : {ok1}")
+    ln2, a2 = grader_line(old, now)
+    ok2 = a2 and "STALE" in ln2 and "27h ago" in ln2
+    print(f"  [stale] 27h-old heartbeat -> STALE alarm (bar 26h) : {ok2}")
+    ln3, a3 = grader_line(None, now)
+    ok3 = a3 and "NO HEARTBEAT" in ln3
+    print(f"  [never] missing heartbeat -> alarm, never OK : {ok3}")
+    ln4, a4 = grader_line({"ts": "garbage"}, now)
+    ok4 = a4 and "UNREADABLE" in ln4
+    print(f"  [garbage] unparseable ts -> alarm, never OK : {ok4}")
+    # negative control: a just-inside-the-bar heartbeat must NOT alarm —
+    # an alarm that always fires is as blind as one that never does
+    ln5, a5 = grader_line({"ts": (now - timedelta(hours=25)).strftime(fmt)},
+                          now)
+    ok5 = not a5 and ln5.startswith("  [grader] OK")
+    print(f"  [negctl] 25h-old (inside bar) -> OK, alarm stays quiet : {ok5}")
+    ok6 = GRADER_STALE_H == 26.0
+    print(f"  [const] bar equals the ratified [band] 26h guard : {ok6}")
+    ok = ok1 and ok2 and ok3 and ok4 and ok5 and ok6
+    print("\n  RESULT:", "PASS" if ok else "FAIL")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

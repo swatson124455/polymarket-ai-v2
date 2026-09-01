@@ -209,6 +209,27 @@ def bar_status(res: dict) -> tuple[bool, str]:
     return (edge_ok and p_ok and ok_ok), "; ".join(parts)
 
 
+def write_heartbeat(path: str, groups_graded: int, locks_written: int) -> None:
+    """Monitoring channel ONLY (2026-09-01 grader alarm, operator 'build it').
+    Written at the END of a clean run() — a crash leaves no fresh heartbeat,
+    so the scoreboard [grader] line goes STALE (fail-toward-alarm; born from
+    the frm NameError that killed 7/7 daily runs 08-26..09-01 unnoticed).
+    A write failure must NOT fail the grading run: grading and locks are
+    already committed, and swallowing here degrades to the same STALE alarm,
+    which is the safe direction."""
+    try:
+        rec = {"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+               "groups_graded": groups_graded,
+               "locks_written": locks_written}
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(rec, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"  [heartbeat] WARN: could not write {path}: {e!r} - the "
+              f"scoreboard [grader] line will go STALE (alarm direction)")
+
+
 async def run(args) -> int:
     from types import SimpleNamespace as NS
     cands = eligible_admits(args.deep_dive, args.rereview)
@@ -222,6 +243,7 @@ async def run(args) -> int:
     if not tokens:
         print("no forward tokens yet — window just opened; nothing to grade "
               "(NOT a failure; re-run after fills accrue)")
+        write_heartbeat(args.heartbeat, 0, 0)
         return 0
     db = await sr.fresh_outcomes(tokens)
     supp = sr.supplement_outcomes(args.supplement, tokens) if tokens else {}
@@ -250,10 +272,13 @@ async def run(args) -> int:
     cfg = NS(max_chase=0.02, max_spread=0.05, fee=0.02, econ_floor=EDGE_BAR,
              p_min=P_BAR, min_markets=N_BAR, fee_map_data=fee_map)
     locks = sr.load_locks(args.locks)
+    n_locks_start = len(locks)
+    graded_groups = 0
     proposals = []
 
     def eproc_grade(group, epoch, lock_source):
-        nonlocal locks
+        nonlocal locks, graded_groups
+        graded_groups += 1
         gfwd = forward_records(recs, epoch)
         for a in group:
             if a in locks:
@@ -333,6 +358,7 @@ async def run(args) -> int:
     if proposals:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
+    write_heartbeat(args.heartbeat, graded_groups, len(locks) - n_locks_start)
     return 0
 
 
@@ -417,6 +443,30 @@ def _self_test() -> int:
     ok5 = "frm" in (run.__code__.co_varnames + run.__code__.co_cellvars)
     print(f"  [names] fee-rate map 'frm' bound in run() grading path : {ok5}")
     ok &= ok5
+    # grader heartbeat (2026-09-01 alarm build, operator 'build it')
+    with tempfile.TemporaryDirectory() as d:
+        hbp = os.path.join(d, "hb.json")
+        write_heartbeat(hbp, 5, 2)
+        try:
+            hb = json.load(open(hbp))
+        except (ValueError, OSError):
+            hb = {}
+        ok6 = (set(hb) == {"ts", "groups_graded", "locks_written"}
+               and hb.get("groups_graded") == 5 and hb.get("locks_written") == 2
+               and not os.path.exists(hbp + ".tmp"))
+        try:
+            datetime.strptime(hb.get("ts", ""), "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            ok6 = False
+    print(f"  [heartbeat] atomic write, full schema, scoreboard-parseable ts"
+          f" : {ok6}")
+    ok &= ok6
+    import inspect
+    ok7 = ("write_heartbeat" in run.__code__.co_names
+           and inspect.getsource(run).count("write_heartbeat(") == 2)
+    print(f"  [heartbeat] run() writes at BOTH clean exits (early no-tokens"
+          f" + full grade) : {ok7}")
+    ok &= ok7
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -441,6 +491,9 @@ if __name__ == "__main__":
     ap.add_argument("--locks",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
                             "cohort5_qual_locks.json")
+    ap.add_argument("--heartbeat",
+                    default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
+                            "cohort5_grader_heartbeat.json")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     raise SystemExit(_self_test() if a.self_test else asyncio.run(run(a)))
