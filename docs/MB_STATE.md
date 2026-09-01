@@ -18,6 +18,30 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-01 (~13:55Z) — SHARED-FIX DEPLOY LANDED (attempt 4, release
+> ## 20260901_093301); mirror stayed down; deploy-tooling hardened
+>
+> **DEPLOY SUCCESSFUL** after 3 failed attempts, each root-fixed:
+> A1 scp timeout mid-upload (VPS untouched) -> A2 my python edit CRLF'd
+> healthcheck_probe.sh, VPS bash died on \r POST-swap, auto-rollback fired
+> AND **resurrected legacy polymarket-mirror** (rollback.sh had its own
+> 4-service list — adjacent-shape miss; stopped+disabled ~13:24Z, journal
+> = startup/restore only, ZERO order submissions) -> A3 aborted by my own
+> new CRLF guard FALSE-POSITIVING via MSYS grep (byte-audit: 0 CR bytes in
+> all 11 scripts; flagged files had Apr/Jul mtimes) -> A4 SUCCESS.
+> Master commits (pushed): `5e2642a` deploy.sh+probe mirror exclusion,
+> `434d634` rollback.sh mirror exclusion (ruling now covers ALL THREE
+> sites), `b99237c` LF normalization (+.gitattributes already pinned
+> eol=lf; index was LF everywhere), `ecd1982` CR guard -> python
+> byte-check (grep is env-dependent on MSYS — never trust it for CR).
+> **Verified live 13:51Z:** symlink 20260901_093301; weather/esports/
+> ingestion active, scan_ms flowing (WB 377.5/1913.3ms cycles, EB first
+> scan 147.5s cold-start slow-scan warning), 0 err-priority entries;
+> legacy mirror inactive+disabled (ruling held); mirror3 active
+> throughout. Health gate 3 = documented cold-start HEALTH_WARN;
+> PgBouncer pool 60. **The 3 shared fixes (RedisCache raise_on_error,
+> _publish_signal guard, c12 nowcast exclusion) are LIVE.**
+
 > ## 2026-09-01 (~13:10Z) — [grader] ALARM LIVE (operator "build it") +
 > ## SHARED-FIX DEPLOY IN FLIGHT (mirror kept down by ruling)
 >
