@@ -116,14 +116,15 @@ def stage_sanity(args):
         "L2 creds derived for %s" % c.get_address())
     ok = c.get_ok()
     say("server", bool(ok), "clob reachable: %s" % str(ok)[:60])
-    try:
-        from py_clob_client_v2.clob_types import BalanceAllowanceParams
-        bal = c.get_balance_allowance(BalanceAllowanceParams())
-    except Exception:
-        bal = c.get_balance_allowance()
+    # the venue now REQUIRES an explicit asset_type (empty params -> 400
+    # "Invalid asset type"; caught live at first sanity 2026-09-01 on the
+    # fresh wallet — the exact shape drift this stage exists to surface)
+    from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+    bal = c.get_balance_allowance(
+        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
     say("balance", bal is not None, str(bal)[:160])
     print("sanity complete — operator: verify the balance above matches the "
-          "provisioned pUSD amount before continuing")
+          "provisioned collateral before continuing")
 
 
 def stage_scoring(args):
