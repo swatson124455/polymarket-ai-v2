@@ -128,6 +128,72 @@ SWEEP2_ADMITS = [
     "0xdf804b17329a461425116c9e0f599e248b443259",
 ]
 
+INSUFF57_EPOCH = datetime(2026, 9, 2, 15, 30, 0,
+                          tzinfo=timezone.utc).timestamp()
+# sweep-2 INSUFFICIENT-EVIDENCE fold-in (operator rec 3, 2026-08-30 "go with
+# recs 1-2-3-4-5", scheduled AFTER the 09-02 population study; executed
+# 2026-09-02 on "run the follow ups"). 57 verdicts minus the 2 already
+# graded as crack-admits (0xabb89972b2.., 0xdf17f4a8dd.. — earlier epoch
+# wins, no double-grouping). Observation-only watch-first: INSUFFICIENT
+# under the VOIDED zero-based metrics is not evidence; forward data grades
+# them free. Epoch = registration time, never back-dated.
+SWEEP2_INSUFF = [
+    "0x198fa74120438fb7cabccb61aa824c6720dfc419",
+    "0x1b20a00709dfe648afd26b326394b5e031f83ab0",
+    "0x219c6e3d15e85dc10e6ec9292f2a90ea2494fed6",
+    "0x2d395d11014415644fe9a8599fe050e7f3a06053",
+    "0x2eaa693ca8a7bf512f98958db6379855d0a17d1a",
+    "0x2ec5ac52dcb5537f1fe8b47ee3cfd34bd666fd53",
+    "0x30c16e063c3be66d93acf14c06e2741e348f9f91",
+    "0x317149007acf6c4ac806df15ad95b2fa41aeb991",
+    "0x33ab58e55895f39619815d31dfc92d90d65f9523",
+    "0x3471a897e56a8d3621ca79af87dae4325977f17e",
+    "0x3b63b79d5d00a254ff0105792e04984f64654acd",
+    "0x46992d0e547e3822a9c28723f51bfa804ae4e03c",
+    "0x4d514c19b3dd6284c11a92dd6b1d151fb4c54946",
+    "0x51ad675fcb07c4b690501aea44605f798ede5e56",
+    "0x56acab44cfca2e88bb9b3406890aea7bfa0cd77e",
+    "0x56f4f054e92ced8fa7accfebcad73251afe49ec5",
+    "0x6049761986af66cd8e78997c940766bd69c7f14f",
+    "0x6a88c5ecd262e2c42e78bad8e6db7ab3c4e4b859",
+    "0x6d20c35f65d9899b6d6b74f8466e824580f9a165",
+    "0x73b18f50526851ac8e52f07ae0f3cc665bfdbd8b",
+    "0x751a2b86cab503496efd325c8344e10159349ea1",
+    "0x790e44a5056151c832ae0cbac71b249f0b6b55d6",
+    "0x7e5e420a5cde8a322f3b5b93a12a164827f47315",
+    "0x8201c74931d47ca0151715d43406a5eebe208a41",
+    "0x880b1fc5d3beb01c237f0848b249fd72b48fc98b",
+    "0x8b4bca1d794779e66e023d44391b2a86c5ab541b",
+    "0x8e52216607ebb117b498b689bcdc6d778cd32320",
+    "0x9279251b5c5e13535750a71beebbc4288e3e4748",
+    "0x95dcb3d91f4c83b09fbc5a8b6f52a4a45d134b45",
+    "0x9703676286b93c2eca71ca96e8757104519a69c2",
+    "0x9e8077593bf0a6fd63f988dcf589f7558897f694",
+    "0x9fcfbb4a9b536e5ba8cb0abe812f7fd9abbee455",
+    "0xa2a020a382c90b292331ef36e62a2680e3df7e90",
+    "0xa9ceceeba134abc87e5c2ecc35f08e0181133117",
+    "0xaa3ccfe85303804f4471baebdbb19a8e1c0c5607",
+    "0xb272505077cc2c6bde5acca133ea6364152e5030",
+    "0xb4d250f58c26840e09723a83ce9c8149aa32ce99",
+    "0xba8c5fbcc5f58b0e4ae0c1413e0413f8c803e77d",
+    "0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705",
+    "0xbca0b22982273b3c6590c363e78cf61f357dd7a0",
+    "0xbf1af4eaa64ecc3aafff7a64d32fce6136ba83ea",
+    "0xc23dc0eca9e1c2e293de8911b9ac254f0bcd82c8",
+    "0xcd30f4698c6f5f3829893e68e183a8e5ea18f316",
+    "0xcd71fd5370880f3d92bb941e628c05840fe0d127",
+    "0xcdc16095643e158c407da40f9a9a8da24f80bdd8",
+    "0xcf3a757bedfc4567bbfb6ec784f1bdd725f5fbfd",
+    "0xcf6c5492124794394dd9eac46498a8babbe47e66",
+    "0xd27cc742d023d06ef633a4c880cf1ff1836ec081",
+    "0xd487f513cfead22d76b6db4567c756b3cf25053e",
+    "0xe3611dada6c5ea53af7bf22e80e07c005f48ae44",
+    "0xec981ed70ae69c5cbcac08c1ba063e734f6bafcd",
+    "0xed8b0c9b88efb12391f7f2aa8f6060772cfb7954",
+    "0xf070207d315d47fd07870e464d3ded9151f5ac55",
+    "0xf377b9fb12a4b7507a4f997461a73eb30b564159",
+    "0xf8371076fb3df0fcfcdb4d9f16bbe98bb241bd42",
+]
 # CRACK-ADMITS (2026-08-30, operator "2 ok" on the crack proposals): the 10
 # reviewed-but-never-tracked addresses found by the crack census - latest
 # verdict INSUFFICIENT-EVIDENCE (9 in deep_dive + 1 in deep_dive_scout),
@@ -355,6 +421,12 @@ async def run(args) -> int:
           f"crack, not evidence):")
     eproc_grade(CRACK_ADMITS, CRACK_EPOCH,
                 "crack_admit e-process (2026-08-30)")
+    print(f"sweep2-insufficients ({len(SWEEP2_INSUFF)}) - epoch "
+          f"{datetime.fromtimestamp(INSUFF57_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
+          f" (rec-3 fold-in post-population-study; observation-only - "
+          f"INSUFFICIENT under voided metrics is not evidence):")
+    eproc_grade(SWEEP2_INSUFF, INSUFF57_EPOCH,
+                "sweep2_insufficient e-process (2026-09-02)")
     if proposals:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
@@ -417,6 +489,19 @@ def _self_test() -> int:
     print(f"  [group3] 10 unique crack addresses, disjoint : {ok3g}")
     ok &= ok3f
     ok &= ok3g
+    ok3h = (INSUFF57_EPOCH == datetime(2026, 9, 2, 15, 30, 0,
+                                       tzinfo=timezone.utc).timestamp()
+            and INSUFF57_EPOCH > CRACK_EPOCH
+            and len(SWEEP2_INSUFF) == 55 and len(set(SWEEP2_INSUFF)) == 55
+            and all(a == a.lower() and a.startswith("0x") and len(a) == 42
+                    for a in SWEEP2_INSUFF)
+            and not (set(SWEEP2_INSUFF) & (set(C1_UNTESTED)
+                                           | set(INSUFF_PROBES)
+                                           | set(SWEEP2_ADMITS)
+                                           | set(CRACK_ADMITS))))
+    print(f"  [group4] 55 unique insuff57 addresses (57 minus 2 crack "
+          f"overlaps), disjoint from ALL groups : {ok3h}")
+    ok &= ok3h
     ok3e = (len(INSUFF_PROBES) == 12 and len(set(INSUFF_PROBES)) == 12
             and all(a == a.lower() and a.startswith("0x") and len(a) == 42
                     for a in INSUFF_PROBES)

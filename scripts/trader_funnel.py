@@ -212,6 +212,7 @@ async def run(args) -> int:
     probes12 = set(cq.INSUFF_PROBES)
     sweep2 = set(cq.SWEEP2_ADMITS)
     cracks_grp = set(cq.CRACK_ADMITS)
+    insuff57 = set(cq.SWEEP2_INSUFF)
     rows = []
     for a in clean:
         if a in locks:
@@ -233,6 +234,8 @@ async def run(args) -> int:
             epoch, grp = cq.SWEEP2_EPOCH, "sweep2-admit"
         elif a in cracks_grp:
             epoch, grp = cq.CRACK_EPOCH, "crack-admit"
+        elif a in insuff57:
+            epoch, grp = cq.INSUFF57_EPOCH, "insuff57"
         else:
             # watched, no registered per-trader test (e.g. cohort4, fbfd
             # probe) - diagnostic only, honestly labeled
