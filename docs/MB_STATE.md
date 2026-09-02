@@ -18,6 +18,38 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-02 (~15:25Z) — ALL 5 FOLLOW-UPS RUN ("run the follow ups");
+> ## roster 69->124 (insuff57 fold-in LIVE)
+>
+> **(1) GAP CENSUS (full pass, gaps>=60s):** 10 gaps in the 7-day study
+> window totaling 43,188s = 12.00h of the 165.3h window = **7.26%
+> downtime** (top: 08-31 06:31Z +249m, 08-26 04:02Z +235m, 08-31 23:12Z
+> +112m, 09-01 22:43Z +54m; plus 09-02 01:31Z +205m outside the window).
+> trades_per_capture_day denominators are ~7% generous; distributions
+> otherwise stand.
+> **(2) CATEGORY MIX (DB join, 254,875 capture tokens vs markets table):**
+> matched coverage = 41.38% of trades / 71.54% of notional (58.62% of
+> trades UNMATCHED — tokens outside our ingestion DB; small-market skew).
+> Of ALL capture trades: crypto 15.38%, sports 13.95% (39.64% of
+> notional), esports 4.35%, weather 3.66%. Denominator = whole capture.
+> **(3) PEAK OPEN-POSITION CONCURRENCY (net-long lens, resolutions
+> invisible -> upper bound; n=130,747 ever-open wallets):** p50=3 p75=14
+> p90=58 p95=144 p99=758 max=50,648. Artifact /tmp/peak_conc.jsonl (move
+> to durable storage!). THE sizer concurrency source per trader.
+> **(4) FOLLOWABILITY PHYSICS (measured):** quote_lag p50=0.14s p90=0.16s
+> (n=18,456); detect_lag p50=1.11s p90=4.51s (n=73,025); total p90=4.67s.
+> 91.3% of 98,815 spacing-defined wallets have median spacing > our p90
+> latency; 72.1% > 10x. Price-half-life estimator = remaining stage-2
+> component (named, not built).
+> **(5) STAGE-3 GROUNDWORK + INSUFF57 FOLD-IN EXECUTED (rec 3):** observed
+> live e-distribution (09-02 funnel, 62 trials, 16 e-bearing): 0.47..2.09,
+> top e=2.09. The 57 INSUFFs: 45/57 traded in capture — heavy (med 913
+> trades / $608.7k notional / 17.8s med gap). Fold-in LIVE: SWEEP2_INSUFF
+> group (55 = 57 minus 2 crack-admit overlaps), epoch 2026-09-02T15:30Z,
+> roster 69->124, watcher restarted roster=124 both sinks, self-tests
+> PASS (funnel auto-completeness 5 groups). Fade-side e-process = the
+> stage-3 build, still to come.
+
 > ## 2026-09-02 (~15:05Z) — STAGE-1 POPULATION STUDY DELIVERED (the week's
 > ## main event); capture verified; day-1 instruments all GREEN
 >
