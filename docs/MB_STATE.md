@@ -18,6 +18,40 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-02 (~15:05Z) — STAGE-1 POPULATION STUDY DELIVERED (the week's
+> ## main event); capture verified; day-1 instruments all GREEN
+>
+> **STUDY RUN 2026-09-02T14:57:44Z** (`scripts/population_study.py`
+> `e0e3b1c`, self-tested + deployed to mb_readout): 7 complete capture
+> days 08-26T02:40Z..09-01T23:59Z (partial 09-02 gz EXCLUDED by pinned
+> globs), **27,193,448 rows, 0 unparseable, 137,372 wallets**. Artifacts:
+> `firehose/population_study_stage1.txt` (percentile tables + trades x
+> breadth joint grid) + `.wallets.jsonl` (137,372 per-wallet metric rows —
+> the stage-2/3 input). Headlines (per-wallet, week): median 4 trades /
+> 1 active day / 3 tokens / $48.85 notional; p90 = 131 trades / 57 tokens
+> / $3,066; buy-only >= half the population (median buy_share 1.000);
+> median-of-median spacing 354.8s; 1,008 wallets in the 1000+ trades x
+> 1000+ tokens cell (MM/bot-shaped tail). NO thresholds derived — that is
+> downstream work that must name percentiles + sensitivity per charter.
+> **Capture integrity:** row counts healthy all 8 files (29.36M gz rows
+> total measured 09-02 ~14:48Z incl. partial 09-02); ZERO parse failures
+> anywhere; day-boundary continuity confirmed. **3 capture holes found
+> (maxgap per file): 08-26 14,092s, 08-31 14,964s (+ 6,722s spillover
+> shown in 09-01), 09-02 12,289s** — recorder's 15s silence-watchdog
+> reconnect loop evidently can fail for hours; per-gap census + total
+> downtime quantification = named follow-up (affects trades_per_
+> capture_day denominators slightly; distributions otherwise sound).
+> **Day-1 of new instruments (11:41Z cron): ALL GREEN** — grader clean
+> with first cron heartbeat `[grader] OK groups=5 locks_written=0`; canon
+> 8/8|8/8|6/6 ALARMS=0 seed=20260902; band n=106 e=0.423; funnel roster
+> 69 | TRIAL 62 | PASSED 0 | FAILED 5 | [cracks] 0.
+> **Follow-ups named (additive, none started):** (1) per-gap census;
+> (2) category-mix pass (token->category join); (3) open-position
+> concurrency pass (entry/exit pairing) = the sizer's standing
+> concurrency source; (4) stage-2 followability (quote_lag_s vs spacing);
+> (5) stage-3 two-sided sluice thresholds FROM these distributions incl.
+> the 57 sweep-2 INSUFFICIENTs fold-in.
+
 > ## 2026-09-01 (~13:55Z) — SHARED-FIX DEPLOY LANDED (attempt 4, release
 > ## 20260901_093301); mirror stayed down; deploy-tooling hardened
 >
