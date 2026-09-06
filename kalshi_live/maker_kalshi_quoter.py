@@ -1740,6 +1740,20 @@ WIDEBOOK_MODE = _envi("KALSHI_WIDEBOOK_MODE", 0)                # 0 = today's ex
 WIDEBOOK_MIN_SPREAD_TICKS = _envi("KALSHI_WIDEBOOK_MIN_SPREAD_TICKS", 20)
 WIDEBOOK_TICKS_INSIDE = _envi("KALSHI_WIDEBOOK_TICKS_INSIDE", 2)  # rest this far behind each touch (DF=0.5 halves share per tick)
 WIDEBOOK_MAX_CT = _envi("KALSHI_WIDEBOOK_MAX_CT", 40)           # per-side contract cap in this mode
+# N4 RAIL — NEAR-MONEY DAILY CLAMP (blind-review N4, operator "proceed with recs"
+# 2026-09-06). The 2026-09-01 GO-window halt leg was one 100ct fill on a
+# widebook-admitted near-money DAILY (KXAAAGASDCA-...-5.7050, D3 ramp 5->100ct,
+# -$11.91 of the -$19.95 window, venue-fills recon). The D3 new-series clamp
+# (D3_NEWSERIES_MAX_RUNG) exempts any series with credits_n>0 in the credit-feedback
+# table — KXAAAGASD (national dailies) is "paid" there from July credits — so the
+# SHAPE, not the series, must carry the rail: a widebook-admitted market whose
+# program window is short (life_min <= NEARMONEY_DAILY_LIFE_H) caps accumulating
+# size at NEARMONEY_DAILY_MAX_CT regardless of series history. The test is window
+# LENGTH, never time-left, so weeklies/monthlies are untouched including their final
+# (cliff-clearing) day. JOIN/widebook branch only: reduce-only, unwind, and exits are
+# never size-gated (house doctrine). 0 = OFF, provable no-op.
+NEARMONEY_DAILY_MAX_CT = _envi("KALSHI_NEARMONEY_DAILY_MAX_CT", 0)
+NEARMONEY_DAILY_LIFE_H = _envf("KALSHI_NEARMONEY_DAILY_LIFE_H", 24.0)
 # S1 UPTIME RANK (operator-approved 2026-08-30): order the candidate pool by
 # pool$ x MEASURED qualifying-uptime (kalshi_uptime_census.py over the D4 tape) —
 # a book that never holds Target both sides pays $0 whatever its pool (R3 canon;
@@ -3590,6 +3604,18 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
             n_price = round(best_n - _kwb * TICK, 4)
             y_cnt = min(y_cnt, int(WIDEBOOK_MAX_CT))
             n_cnt = min(n_cnt, int(WIDEBOOK_MAX_CT))
+            # N4 rail (see knob block): short-window (daily) programs cap harder here —
+            # the near-money shape only reaches a flat book through this admission, so
+            # this one site covers the class. Unknown/missing life_min stays unclamped
+            # (a weekly with a lost field must not be squeezed; the D3 ramp still binds).
+            if NEARMONEY_DAILY_MAX_CT > 0:
+                _life_h = float(m.get("life_min") or 0.0) / 60.0
+                if 0.0 < _life_h <= NEARMONEY_DAILY_LIFE_H:
+                    y_cnt = min(y_cnt, int(NEARMONEY_DAILY_MAX_CT))
+                    n_cnt = min(n_cnt, int(NEARMONEY_DAILY_MAX_CT))
+                    if stats is not None:
+                        stats["nearmoney_daily_clamped"] = (
+                            stats.get("nearmoney_daily_clamped", 0) + 1)
             _dfwb = m.get("df") or CAPTURE_DF_DEFAULT
             _own_wb = own_orders or {}
             _rywb, _qywb = _qualifying_score(yl, y_price, y_cnt, target, _dfwb,
