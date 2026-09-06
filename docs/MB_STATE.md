@@ -18,6 +18,27 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-06 (~22:20Z live-verified) — BAND CONVERTED + RETRIALS-R1
+> ## LIVE; every instrument now on the ruled ROI basis
+>
+> Final two rulings executed (commits thru `b4e709d`+deploys, pushed):
+> - **BAND** re-registered on band-fill wager ROIs (epoch 22:30Z, lock
+>   key band_0.65_0.85_roi, $100/wk floor, futility 1wk); OLD
+>   registration retired UNLOCKED — final read n=488 e=0.415 recorded
+>   in band_tracker's constants block (.pre-roiconv-20260906 backup).
+> - **RETRIALS-R1**: the 7 old-basis FAILED locks (frozen list, live
+>   locks read 22:15:44Z) re-enter at BASIS_EPOCH; verdicts lock under
+>   "<addr>#r1"; ORIGINALS IMMUTABLE. Funnel live 22:20Z: TRIAL 122 |
+>   FAILED 0; envelope $0.41 x 122 confirming. Pins: band epoch/floor
+>   == grader's (import-cycle duplicate), exact lkey binding + 3 keyed
+>   write sites (a survived mutant closed by pinning the binding, and
+>   note: a global sed mutant corrupted its own pin — indentation-
+>   anchored re-run proved the kill).
+> **The 09-13 resolution wave now covers all 122 trials + the band.**
+> Remaining named gate: adversarial review of the ROI machinery
+> (lambda-subgrid inversion, haircut realism, label-coverage
+> survivorship) before any real-money composition.
+
 > ## 2026-09-06 (~21:36Z live-verified) — BASIS HARDCODE + LIVE GRADER
 > ## CONVERSION EXECUTED (evening operator session, 5 more rulings)
 >
