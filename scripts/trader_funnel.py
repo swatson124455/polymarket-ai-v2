@@ -137,6 +137,17 @@ def tier_of(a: str, locks: dict, groups_all: set) -> str:
     return "confirming" if a in groups_all else "untiered"
 
 
+def alloc_params(a: str, sz, envelopes):
+    """Sizer params for one trader under the envelope layer. envelopes
+    None (env unset) -> full-bankroll legacy params; $0 envelope -> None
+    (display shows no stake; the sizer's bankroll>0 guard would refuse).
+    Pure - the run loop calls this verbatim."""
+    if envelopes is None or sz is None:
+        return sz
+    env_a = envelopes[a]["envelope"]
+    return dict(sz, bankroll=env_a) if env_a > 0.0 else None
+
+
 def sizer_params_from_env():
     """All four operator parameters or None - the sizer has NO defaults and
     the funnel does not invent them (zero-base rule)."""
@@ -272,13 +283,7 @@ async def run(args) -> int:
                                  "diagnostic only"})
             continue
         r = trader_row(a, epoch, recs, outcomes, frm, fee_map, cfg, res_at)
-        sz_a = sz
-        if envelopes is not None and sz is not None:
-            env_a = envelopes[a]["envelope"]
-            # $0 envelope (untiered/empty fraction): skip the sizer call
-            # (its bankroll>0 guard refuses) - stake is structurally $0
-            sz_a = dict(sz, bankroll=env_a) if env_a > 0.0 else None
-        srec = display_stake(r, sz_a, frm, fee_map)
+        srec = display_stake(r, alloc_params(a, sz, envelopes), frm, fee_map)
         days = days_since(epoch)
         # OPERATOR HARDCODE 2026-09-06 ($/day is the test): LCB dollars/day
         # at the $100/market REFERENCE stake = lcb x 100 x resolved-rate.
@@ -459,8 +464,12 @@ def _self_test() -> int:
               "min_viable": 1.0}
     r_pos = {"med_fill": (0.50, "tok_x"), "lcb": 0.10, "peak_conc": 1}
     s_full = display_stake(r_pos, p_full, {}, {})
-    s_env = display_stake(r_pos, dict(p_full, bankroll=50.0), {}, {})
-    ok8b = ok8b and s_env["stake"] <= s_full["stake"] + 1e-12
+    p_t = alloc_params("0xt", p_full, env_t)      # $50 envelope applied
+    s_env = display_stake(r_pos, p_t, {}, {})
+    ok8b = (ok8b and p_t["bankroll"] == 50.0
+            and s_env["stake"] < s_full["stake"]
+            and alloc_params("0xt", p_full, None) is p_full   # env unset
+            and alloc_params("0xf", p_full, env_t) is None)   # $0 envelope
     print(f"  [alloc] tier map + envelope split + down-only display : "
           f"{ok8b}")
     ok &= ok8b

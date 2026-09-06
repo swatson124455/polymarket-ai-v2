@@ -239,16 +239,17 @@ def test_w0_side_check_matrix():
     assert "MISMATCH" in cw.w0_side_check(0, "SELL")
 
 
-def test_w0_never_leaks_into_records():
-    """The loop pops _w0 before writing; these pins catch a re-leak:
-    sell_record's schema has no _w0, and shadow_record only carries it
-    if a caller forgets the pop (assert the popped path is clean)."""
+def test_internal_keys_never_leak_into_records():
+    """Underscore-prefixed sig keys (_block, _w0, future internals) are
+    stripped STRUCTURALLY by shadow_record — not left to the caller's
+    pop discipline. sell_record's explicit schema has no leak path."""
     sig = {"trader": "0xabc", "token_id": "123", "whale_price": 2.0,
-           "whale_size_usd": 10.0, "tx": "0xdead", "_w0": 1}
-    sig.pop("_w0", None)                    # the loop's pop
+           "whale_size_usd": 10.0, "tx": "0xdead", "_w0": 1,
+           "_block": 99}
+    rec = cw.shadow_record(dict(sig), "OK", 0.5, 0.4, 0.5, 100, 101.0,
+                           "0xdead")
+    assert not any(k.startswith("_") for k in rec)
     assert "_w0" not in cw.sell_record(sig, 1.0)
-    rec = cw.shadow_record(sig, "OK", 0.5, 0.4, 0.5, 100, 101.0, "0xdead")
-    assert "_w0" not in rec
 
 
 def test_decode_fill_v2_taker_summary_and_rejects():

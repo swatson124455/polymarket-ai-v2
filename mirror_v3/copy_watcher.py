@@ -443,6 +443,10 @@ def shadow_record(sig: dict, verdict: str, fill: Optional[float],
                   block_ts: int, now_ts: float, tx: str,
                   book: Optional[dict] = None,
                   quote_ts: Optional[float] = None) -> dict:
+    # underscore-prefixed sig keys are INTERNAL (loop-local payloads like
+    # _block/_w0) and must never reach the recorded schema - stripped
+    # structurally here, not left to caller discipline (2026-09-06)
+    sig = {k: v for k, v in sig.items() if not k.startswith("_")}
     # quote_ts (2026-08-25, operator-approved rec): the moment the /price
     # quote was actually taken. detect_ts is stamped BEFORE the per-signal
     # receipt/block RPC work, so quote_ts - detect_ts measures the fill
