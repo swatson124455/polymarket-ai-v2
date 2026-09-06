@@ -38,22 +38,28 @@ def test_daily_replay_no_lookahead():
 
 
 def test_daily_replay_money_floor():
-    """e-pass at tiny throughput must fail the ruled $100/wk floor
-    (a percentage on a handful of bets is never a pass)."""
-    recs = [_rec(f"s{i}", T0 + i * 10 * DAY) for i in range(30)]
-    outc = {f"s{i}": 1 for i in range(30)}
-    r_at = {f"s{i}": T0 + 299 * DAY for i in range(30)}
-    rep = mbt.daily_replay(recs, outc, r_at, {}, {}, T0, T0 + 400 * DAY)
+    """A MARGINAL e-pass (lcb ~ 0) must fail the ruled $100/wk floor —
+    under 1-week futility that is the reachable below-floor case
+    (calibrated 2026-09-06: 33 wagers of ROI +0.2 -> e=32.6,
+    roi_lcb=0.0242, ~$93/wk)."""
+    recs = [_rec(f"s{i}", T0 + i, fill=0.5) for i in range(33)]
+    outc = {f"s{i}": 0.61 for i in range(33)}   # ROI exactly +0.2 each
+    r_at = {f"s{i}": T0 + 5.5 * DAY for i in range(33)}
+    rep = mbt.daily_replay(recs, outc, r_at, {}, {}, T0, T0 + 10 * DAY)
     assert rep["verdict"] == "E-PASS BELOW MONEY FLOOR"
 
 
-def test_daily_replay_futility():
+def test_daily_replay_futility_time_based():
+    """Operator ruling 2026-09-06: futility is 1 WEEK without e>=20 —
+    fires at the first day boundary past 7 days, never before."""
     recs = [_rec(f"n{i}", T0 + i, fill=0.50) for i in range(300)]
     outc = {f"n{i}": (1 if i % 2 == 0 else 0) for i in range(300)}
     r_at = {f"n{i}": T0 + DAY / 2 for i in range(300)}
     rep = mbt.daily_replay(recs, outc, r_at, {}, {}, T0, T0 + 10 * DAY)
-    assert rep["verdict"] == "NOT DEMONSTRATED (futility)"
-    assert rep["n"] == cq.C1_FUTILITY_N
+    assert rep["verdict"] == "NOT DEMONSTRATED (futility 1wk)"
+    assert rep["verdict_ts"] - T0 >= mbt.FUTILITY_DAYS * DAY
+    young = mbt.daily_replay(recs, outc, r_at, {}, {}, T0, T0 + 6 * DAY)
+    assert young["verdict"] == "ACCRUING"
 
 
 def test_daily_replay_unplaceable_counted():

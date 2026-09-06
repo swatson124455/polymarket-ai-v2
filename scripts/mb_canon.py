@@ -153,6 +153,70 @@ def wager_rois(records: list[dict], outcomes: dict, fee_rate_map: dict,
     return out
 
 
+def roi_e_value(ys: list, m: float) -> float | None:
+    """E-process for H0: true mean ROI <= m, with the lambda-subgrid
+    valid at shift m (operator "ceiling review go", 2026-09-06). A bet
+    lambda is admissible at m iff its wealth factor stays positive for
+    ANY physically possible atom: 1 + lam*(ROI_Y_MIN - m) > 0, i.e.
+    lam < 1/(m - ROI_Y_MIN). Selection uses the PHYSICAL floor, never
+    the observed minimum — observed-min selection would be choosing bets
+    with hindsight and void the anytime validity. None when no bet is
+    admissible (m beyond 1/min(LAMBDAS) - 1.10 ~= 18.9: untestable)."""
+    valid = [lam for lam in LAMBDAS if 1.0 + lam * (ROI_Y_MIN - m) > 0.0]
+    if not valid:
+        return None
+    wealth = [1.0] * len(valid)
+    for y in ys:
+        if y < ROI_Y_MIN - 1e-9:
+            raise ValueError(f"atom {y} below physical ROI floor")
+        for j, lam in enumerate(valid):
+            wealth[j] *= (1.0 + lam * (y - m))
+    return sum(wealth) / len(valid)
+
+
+def roi_lcb(rois: list, e_bar: float = 20.0, tol: float = 1e-6):
+    """Anytime-valid LCB on mean ROI by inverting roi_e_value: LCB =
+    sup{m : e(m) >= e_bar}. Validity needs only the test AT the true
+    mean (level 1/e_bar by Ville) — no multiplicity across m. The
+    subgrid changes at boundaries m_k = 1/lam_k - |ROI_Y_MIN|; WITHIN an
+    interval every factor is strictly decreasing in m, so e is monotone
+    there and bisection is sound; across a boundary the mixture loses
+    its largest bet and e can jump, so the search walks intervals from
+    the bottom and bisects inside the highest interval whose lower edge
+    still rejects. None when even m=-1 is not rejected."""
+    if not rois:
+        return None
+    if e_bar <= 1.0:
+        raise ValueError("e_bar must exceed 1 (Ville)")
+
+    def rejects(m: float) -> bool:
+        ev = roi_e_value(rois, m)
+        return ev is not None and ev >= e_bar
+
+    if not rejects(-1.0):
+        return None
+    # subgrid-change boundaries above -1, ascending; top = untestable edge
+    bounds = sorted(1.0 / lam - abs(ROI_Y_MIN) for lam in LAMBDAS)
+    edges = [-1.0] + [b for b in bounds if b > -1.0]
+    lo = -1.0
+    hi = None
+    for i, a in enumerate(edges):
+        if not rejects(a + (tol if a > -1.0 else 0.0)):
+            hi = a
+            break
+        lo = a
+        hi = edges[i + 1] if i + 1 < len(edges) else edges[-1]
+    if hi is None or hi <= lo:
+        return lo
+    while hi - lo > tol:
+        mid = (lo + hi) / 2.0
+        if rejects(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def mixture_e_value(ys: list, y_min: float = MIX_POSITIVITY_FLOOR) -> float:
     """Uniform-mixture betting e-process for H0: mean <= 0 — the same
     mixture as band_tracker.e_value (grid pinned equal by test),

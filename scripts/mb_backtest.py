@@ -12,12 +12,15 @@ split pins holdout to 2026-09-02T00:00Z onward). Copy lens ONLY (operator
 $100/market reference basis (feedback_dollars_per_day_is_the_test),
 HYPOTHETICAL by standing rule — real money only via docs/MB_GO_CHECKLIST.
 
-CANON CONSUMPTION (MEASUREMENT_CANON rule — no re-implementation):
-  edge atoms / per-market means / pooling  -> mb_canon.per_market_edges
+CANON CONSUMPTION (MEASUREMENT_CANON rule — no re-implementation);
+BASIS = ROI + NET WINNINGS, LADDER-AWARE (operator hardcode 2026-09-06):
+  wager ROI atoms (ladder-aware)           -> mb_canon.wager_rois
   fee precedence                           -> mb_canon.canon_fee (inside)
-  e-process + Y_MIN                        -> band_tracker.e_value
-  LCB inversion at the ruled e>=20 bar     -> mb_sizer.lcb_edge
-  bars (e>=20, futility 300, $100/wk)      -> cohort5_qualification consts
+  e-process (per-shift subgrid)            -> mb_canon.roi_e_value
+  LCB inversion at the ruled e>=20 bar     -> mb_canon.roi_lcb
+  e>=20 bar + $100/wk floor                -> cohort5_qualification consts
+  futility                                 -> TIME-BASED 1 week (ruled
+                                              2026-09-06; replaces 300)
   token -> outcome mapping                 -> shadow_readout.supplement_outcomes
 
 TWO TRADER CLASSES, one engine:
@@ -200,10 +203,15 @@ def peak_concurrency_replay(records: list[dict], exits: dict[str, float],
     return peak
 
 
+FUTILITY_DAYS = 7.0  # operator ruling 2026-09-06: "futility bar time
+#                      based 1 week go" — replaces the 300-wager count
+#                      in the discovery replay (live grader unconverted)
+
+
 def daily_replay(records: list[dict], outcomes: dict, res_at: dict,
                  frm: dict, fee_map: dict, epoch: float, end_ts: float,
                  e_bar: float = cq.C1_E_REJECT,
-                 futility_n: int = cq.C1_FUTILITY_N,
+                 futility_days: float = FUTILITY_DAYS,
                  floor_wk: float = cq.WEEKLY_FLOOR_USD) -> dict:
     """Replay the anytime-valid qualification DAY-BY-DAY with no
     lookahead, on the RULED BASIS (operator hardcode 2026-09-06: ROI +
@@ -212,8 +220,9 @@ def daily_replay(records: list[dict], outcomes: dict, res_at: dict,
     mixture grid as the band tracker, ROI support bound); FIRST crossing
     of e_bar locks, with the money floor on NET WINNINGS at the $100/
     wager reference: LCB-ROI x $100 x wagers/elapsed_day x 7 >= floor_wk.
-    Futility at futility_n wagers (the ruled 300, applied per-wager —
-    disclosed). NOTE: the LIVE grader still runs the superseded first-buy
+    Futility is TIME-BASED: 1 week from the trial's first wager —
+    without e>=e_bar (operator ruling 2026-09-06, replaces the
+    300-count). NOTE: the LIVE grader still runs the superseded first-buy
     per-market basis pending its conversion/re-registration — replay
     verdicts here follow the RULING, and may differ from live locks.
     Tokens with an outcome but NO res_at cannot be placed in time ->
@@ -232,8 +241,7 @@ def daily_replay(records: list[dict], outcomes: dict, res_at: dict,
         n = len(rois)
         if n:
             ev = mc.mixture_e_value(rois)
-            lcb = msz.lcb_edge(rois, mc.mixture_e_value,
-                               mc.MIX_POSITIVITY_FLOOR, m_cap=None)
+            lcb = mc.roi_lcb(rois, e_bar=e_bar)
             last = {"n": n, "e": ev, "roi": sum(rois) / n, "lcb": lcb}
             if ev >= e_bar:
                 el_days = max((d - epoch) / DAY_S, 1e-9)
@@ -243,10 +251,10 @@ def daily_replay(records: list[dict], outcomes: dict, res_at: dict,
                            else "E-PASS BELOW MONEY FLOOR")
                 verdict_ts = d
                 break
-            if n >= futility_n:
-                verdict = "NOT DEMONSTRATED (futility)"
-                verdict_ts = d
-                break
+        if (d - epoch) >= futility_days * DAY_S:
+            verdict = "NOT DEMONSTRATED (futility 1wk)"
+            verdict_ts = d
+            break
         d += DAY_S
     return {"verdict": verdict, "verdict_ts": verdict_ts,
             "unplaceable_resolved": n_unplaceable, **last}
@@ -279,8 +287,7 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
            "wk_net_lcb": None, "wk_net_real": None}
     if not n:
         return out
-    lcb = msz.lcb_edge(rois, mc.mixture_e_value,
-                               mc.MIX_POSITIVITY_FLOOR, m_cap=None)
+    lcb = mc.roi_lcb(rois)
     mean_roi = sum(rois) / n
     out["roi_lcb"] = lcb
     out["roi_realized"] = mean_roi
@@ -716,17 +723,22 @@ def _self_test() -> int:
            and rep["n"] == 30)
     print(f"  [replay] locks on first day labels EXIST, not before : {ok5}")
     ok &= ok5
-    # [replay] money floor: same signal but tiny throughput fails the floor.
-    # 30 markets over 300 days -> rate 0.1/day; even lcb=1 gives $70/wk < 100.
-    recs_slow = [{"trader": "0xw", "token_id": f"s{i}",
-                  "detect_ts": t0 + i * 10 * DAY_S, "first_buy": True,
-                  "verdict": "OK", "shadow_fill": 0.48} for i in range(30)]
-    outc_s = {f"s{i}": 1 for i in range(30)}
-    r_at_s = {f"s{i}": t0 + 299 * DAY_S for i in range(30)}
-    rep2 = daily_replay(recs_slow, outc_s, r_at_s, {}, {}, t0,
-                        t0 + 400 * DAY_S)
+    # [replay] money floor: under 1-week futility an e-pass implies
+    # throughput, so the below-floor branch fires only for MARGINAL
+    # crossings (lcb ~ 0). Calibrated live 2026-09-06: 33 wagers of ROI
+    # +0.2 -> e=32.6 crosses, roi_lcb=0.0242, wk = 0.0242*100*(33/6)*7
+    # ~= $93 < $100 floor.
+    recs_marg = [{"trader": "0xw", "token_id": f"s{i}",
+                  "detect_ts": t0 + i, "first_buy": True,
+                  "verdict": "OK", "shadow_fill": 0.5} for i in range(33)]
+    # outcome 0.6103 makes each ROI exactly +0.2 at flat 2% fee:
+    # (o - 0.5 - 0.01)/0.5 = 0.2 => o = 0.61
+    outc_s = {f"s{i}": 0.61 for i in range(33)}
+    r_at_s = {f"s{i}": t0 + 5.5 * DAY_S for i in range(33)}
+    rep2 = daily_replay(recs_marg, outc_s, r_at_s, {}, {}, t0,
+                        t0 + 10 * DAY_S)
     ok6 = rep2["verdict"] == "E-PASS BELOW MONEY FLOOR"
-    print(f"  [replay] e-pass at low throughput fails $100/wk floor : {ok6}")
+    print(f"  [replay] marginal e-pass fails $100/wk floor : {ok6}")
     ok &= ok6
     # [replay] futility: 300 resolved null-edge markets -> NOT DEMONSTRATED
     recs_null = [{"trader": "0xw", "token_id": f"n{i}", "detect_ts": t0 + i,
@@ -736,9 +748,17 @@ def _self_test() -> int:
     r_at_n = {f"n{i}": t0 + DAY_S / 2 for i in range(300)}
     rep3 = daily_replay(recs_null, outc_n, r_at_n, {}, {}, t0,
                         t0 + 10 * DAY_S)
-    ok7 = rep3["verdict"] == "NOT DEMONSTRATED (futility)" \
-        and rep3["n"] == 300
-    print(f"  [replay] futility at {cq.C1_FUTILITY_N} : {ok7}")
+    exp_fut_day = (int(t0 // DAY_S) + 1) * DAY_S
+    while exp_fut_day - t0 < FUTILITY_DAYS * DAY_S:
+        exp_fut_day += DAY_S
+    ok7 = (rep3["verdict"] == "NOT DEMONSTRATED (futility 1wk)"
+           and rep3["verdict_ts"] == exp_fut_day and rep3["n"] == 300)
+    # a trial younger than a week with e<20 must NOT be futilitied
+    rep3b = daily_replay(recs_null, outc_n, r_at_n, {}, {}, t0,
+                         t0 + 6 * DAY_S)
+    ok7 = ok7 and rep3b["verdict"] == "ACCRUING"
+    print(f"  [replay] TIME futility: locks at 1wk, never before "
+          f"(ruled 2026-09-06) : {ok7}")
     ok &= ok7
     # [replay] unplaceable resolved tokens counted, excluded
     rep4 = daily_replay(recs30[:1], {"m0": 1}, {}, {}, {}, t0,

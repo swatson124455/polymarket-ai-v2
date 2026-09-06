@@ -75,6 +75,43 @@ def test_lcb_not_truncated_at_support_offset():
     assert lcb is not None and lcb > 0.08 + 1e-6
 
 
+def test_roi_e_value_subgrid_by_physical_floor():
+    """Ceiling review (operator 'go', 2026-09-06): the lambda subgrid at
+    shift m is chosen by the PHYSICAL floor, never the data. At m=0 the
+    full grid applies (identical to the fixed mixture); at m=0.2 the 0.8
+    bet is dropped (1 + 0.8*(-1.30) < 0); beyond ~18.9 nothing is
+    admissible and the hypothesis is untestable (None)."""
+    ys = [0.5] * 30
+    assert mc.roi_e_value(ys, 0.0) == mc.mixture_e_value(ys)
+    assert mc.roi_e_value(ys, 0.2) != mc.mixture_e_value(
+        [y - 0.2 for y in ys])            # subgrid smaller than full
+    assert mc.roi_e_value(ys, 19.0) is None
+    with pytest.raises(ValueError):
+        mc.roi_e_value([-1.15], 0.0)      # below physical floor: corrupt
+
+
+def test_roi_lcb_clears_old_ceilings():
+    """The subgrid inversion must clear BOTH old ceilings: the +0.23
+    positivity ceiling with a -1.02 loss present, and 1.0-scale values
+    for never-lost wallets — while agreeing with the fixed-grid method
+    in the full-grid regime (lcb < 0.15)."""
+    lcb_loss = mc.roi_lcb([-1.02] + [2.0] * 120)
+    assert lcb_loss is not None and lcb_loss > 0.23
+    lcb_win = mc.roi_lcb([4.0] * 60)
+    assert lcb_win is not None and lcb_win > 1.0
+    # full-grid regime parity with the previous method
+    import mb_sizer as msz
+    small = [0.2] * 33
+    a = mc.roi_lcb(small)
+    b = msz.lcb_edge(small, mc.mixture_e_value, mc.MIX_POSITIVITY_FLOOR,
+                     m_cap=None)
+    assert a is not None and b is not None and abs(a - b) < 1e-4
+    assert mc.roi_lcb([]) is None
+    neg = mc.roi_lcb([-0.5] * 50)
+    assert neg is not None and neg < 0.0      # informative but negative
+    assert mc.roi_lcb([-0.5]) is None         # one weak atom: uninformative
+
+
 def test_wager_rois_ladder_and_formula():
     """Every OK buy is a wager (first_buy NOT required — the ladder
     ruling); roi = (outcome - fill - fee)/fill exactly; unresolved and
