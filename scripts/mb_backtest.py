@@ -386,6 +386,115 @@ def cmd_extract(args) -> int:
     return 0
 
 
+def files_to_process(all_files: list[str], processed: set[str],
+                     today_yyyymmdd: str) -> list[str]:
+    """Complete, unprocessed firehose day files. A file whose name date is
+    >= today is still being written — excluded. Pure."""
+    import re
+    out = []
+    for p in sorted(all_files):
+        base = os.path.basename(p)
+        m = re.search(r"firehose_(\d{8})\.jsonl\.gz$", base)
+        if not m or m.group(1) >= today_yyyymmdd or base in processed:
+            continue
+        out.append(p)
+    return out
+
+
+def cmd_daily_extract(args) -> int:
+    """Incremental daily extraction (cron stage, operator GO 2026-09-06).
+    Mondays (or --rescreen): re-run the screen against the CURRENT study
+    files (frozen Sept-2 inputs today — a fresh study is picked up
+    automatically when those files change) and rebuild rows from scratch.
+    Other days: append rows from newly-completed day files only; emit the
+    NEW tokens for the label supplement. 0 new files is a normal no-op."""
+    os.makedirs(args.outdir, exist_ok=True)
+    state_path = os.path.join(args.outdir, "daily_state.json")
+    rows_path = os.path.join(args.outdir, "candidate_rows.jsonl")
+    cand_path = os.path.join(args.outdir, "candidates.jsonl")
+    tokens_path = os.path.join(args.outdir, "sweep_tokens.jsonl")
+    newtok_path = os.path.join(args.outdir, "sweep_tokens_new.jsonl")
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y%m%d")
+    state = json.load(open(state_path)) if os.path.exists(state_path) \
+        else {"processed": [], "last_rescreen": ""}
+    rescreen = args.rescreen or not os.path.exists(cand_path) or (
+        now.weekday() == 0 and state.get("last_rescreen") != today)
+    if rescreen:
+        from types import SimpleNamespace as NS
+        rc = cmd_screen(NS(wallets=args.wallets, conc=args.conc,
+                           min_trades=args.min_trades,
+                           max_conc=args.max_conc, out=cand_path))
+        if rc:
+            return rc
+        state = {"processed": [], "last_rescreen": today}
+        for p in (rows_path, tokens_path):
+            if os.path.exists(p):
+                os.remove(p)   # full rebuild under the fresh screen
+    files = files_to_process(args.files, set(state["processed"]), today)
+    keep = {str(c["w"]) for c in _load_jsonl(cand_path)}
+    assert keep, "EMPTY candidate list - ABORT"
+    known = {str(r["token_id"]) for r in _load_jsonl(tokens_path)} \
+        if os.path.exists(tokens_path) else set()
+    n_in = n_kept = 0
+    new_toks: set[str] = set()
+    with open(rows_path, "a") as out:
+        for path in files:
+            opener = gzip.open if path.endswith(".gz") else open
+            with opener(path, "rt") as f:
+                for ln in f:
+                    n_in += 1
+                    try:
+                        r = json.loads(ln)
+                    except ValueError:
+                        continue
+                    if str(r.get("w")) in keep:
+                        out.write(ln if ln.endswith("\n") else ln + "\n")
+                        n_kept += 1
+                        t = str(r.get("tok") or "")
+                        if t and t not in known:
+                            new_toks.add(t)
+    for path, mode in ((newtok_path, "w"), (tokens_path, "a")):
+        with open(path, mode) as f:
+            for t in sorted(new_toks):
+                f.write(json.dumps({"token_id": t}) + "\n")
+    state["processed"] = sorted(set(state["processed"])
+                                | {os.path.basename(p) for p in files})
+    tmp = state_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, state_path)
+    print(f"[daily] {'RESCREEN(max_conc=' + str(args.max_conc) + ') + ' if rescreen else ''}"
+          f"{len(files)} new file(s) ({n_in} rows read), {n_kept} rows "
+          f"appended, {len(new_toks)} new tokens -> {newtok_path}")
+    return 0
+
+
+def cmd_daily_replay(args) -> int:
+    """Daily leaderboard refresh: measure the follow-cost haircut from the
+    live shadow sink (no hardcode — printed), then run BOTH boards."""
+    from types import SimpleNamespace as NS
+    recs = az.load_records(args.log)
+    assert recs, "EMPTY shadow log - ABORT"
+    h = measure_haircut(recs)
+    assert h is not None, "no measurable haircut pairs - ABORT"
+    print(f"[daily] measured haircut med {h['med']:+.4f} p90 "
+          f"{h['p90']:+.4f} (n={h['n']}) - med used for firehose pricing")
+    common = dict(resolutions=args.resolutions,
+                  fee_rate_map=args.fee_rate_map, fee_map=args.fee_map,
+                  split=args.split, end=None, top=args.top)
+    rc1 = cmd_replay(NS(source="roster", rows=args.log, haircut=None,
+                        out=os.path.join(args.outdir,
+                                         "leaderboard_roster.jsonl"),
+                        **common))
+    rc2 = cmd_replay(NS(source="firehose", rows=args.rows,
+                        haircut=h["med"],
+                        out=os.path.join(args.outdir,
+                                         "leaderboard_firehose.jsonl"),
+                        **common))
+    return rc1 or rc2
+
+
 def cmd_replay(args) -> int:
     split_ts = parse_iso_z(args.split)
     end_ts = parse_iso_z(args.end) if args.end else \
@@ -677,11 +786,39 @@ if __name__ == "__main__":
     p.add_argument("--top", type=int, default=40)
     p.add_argument("--out", required=True)
 
+    p = sub.add_parser("daily-extract",
+                       help="cron: append newly-complete day files")
+    p.add_argument("--files", nargs="+", required=True)
+    p.add_argument("--outdir", required=True)
+    p.add_argument("--wallets", default=os.path.join(
+        FIREHOSE_DIR, "population_study_stage1.txt.wallets.jsonl"))
+    p.add_argument("--conc", default=os.path.join(FIREHOSE_DIR,
+                                                  "peak_conc.jsonl"))
+    p.add_argument("--min-trades", type=int, default=ELIGIBILITY_MIN_TRADES)
+    p.add_argument("--max-conc", type=int, required=True,
+                   help="tailability bar (operator-ruled 20, 2026-09-06)")
+    p.add_argument("--rescreen", action="store_true")
+
+    p = sub.add_parser("daily-replay",
+                       help="cron: measure haircut + both leaderboards")
+    p.add_argument("--rows", required=True)
+    p.add_argument("--outdir", required=True)
+    p.add_argument("--log", default="/opt/pa2-shared/mirror3_shadow.jsonl")
+    p.add_argument("--resolutions", default=os.path.join(
+        CACHE_DIR, "gamma_resolutions.json"))
+    p.add_argument("--fee-rate-map", dest="fee_rate_map",
+                   default=os.path.join(CACHE_DIR, "fee_rate_map.json"))
+    p.add_argument("--fee-map", dest="fee_map",
+                   default=os.path.join(CACHE_DIR, "fee_map.json"))
+    p.add_argument("--split", default=SPLIT_DEFAULT)
+    p.add_argument("--top", type=int, default=10)
+
     sub.add_parser("self-test", help="offline self-test")
 
     args = ap.parse_args()
     if args.cmd == "self-test":
         raise SystemExit(_self_test())
     raise SystemExit({"haircut": cmd_haircut, "screen": cmd_screen,
-                      "extract": cmd_extract, "replay": cmd_replay}[args.cmd](
-                          args))
+                      "extract": cmd_extract, "replay": cmd_replay,
+                      "daily-extract": cmd_daily_extract,
+                      "daily-replay": cmd_daily_replay}[args.cmd](args))

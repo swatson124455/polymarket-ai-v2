@@ -48,5 +48,36 @@ cd /opt/polymarket-ai-v2
   MB_SIZER_KELLY_MULT="$MB_SIZER_KELLY_MULT" \
   MB_SIZER_CONCURRENCY="$MB_SIZER_CONCURRENCY" \
   MB_SIZER_MIN_VIABLE="$MB_SIZER_MIN_VIABLE" \
+  MB_ALLOC_TIER_FRACS="${MB_ALLOC_TIER_FRACS:-}" \
     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/trader_funnel.py" 2>&1
+} >> "$LOG"
+{
+  echo "===== $(date -u +%FT%TZ) hypothetical dollar ledger (paper) ====="
+  [ -f /opt/pa2-shared/mb_sizer.env ] && . /opt/pa2-shared/mb_sizer.env
+  DATABASE_URL="$DBURL" PYTHONPATH="$D"   MB_SIZER_BANKROLL="$MB_SIZER_BANKROLL"   MB_SIZER_KELLY_MULT="$MB_SIZER_KELLY_MULT"   MB_SIZER_CONCURRENCY="$MB_SIZER_CONCURRENCY"   MB_SIZER_MIN_VIABLE="$MB_SIZER_MIN_VIABLE"     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_hypo_ledger.py" 2>&1 | grep -vE "^[0-9]{4}-"
+} >> "$LOG"
+{
+  # backtest daily stage (operator GO 2026-09-06): incremental extract of
+  # newly-complete firehose days -> label the new tokens -> both
+  # leaderboards. Tailability bar 20 = operator ruling 2026-09-06.
+  echo "===== $(date -u +%FT%TZ) backtest daily leaderboard ====="
+  BT=/opt/pa2-shared/mb_copyable_data/backtest
+  DATABASE_URL="$DBURL" PYTHONPATH="$D" \
+    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_backtest.py" daily-extract \
+      --files /opt/pa2-shared/mb_copyable_data/firehose/firehose_*.jsonl.gz \
+      --max-conc 20 --outdir "$BT" 2>&1 | grep -vE "^[0-9]{4}-"
+  if [ -s "$BT/sweep_tokens_new.jsonl" ]; then
+    DATABASE_URL="$DBURL" PYTHONPATH=/opt/polymarket-ai-v2 \
+      /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/shadow_label_supplement.py" \
+        --shadow "$BT/sweep_tokens_new.jsonl" --write 2>&1 | tail -4
+  else
+    echo "[daily] 0 new tokens - label step skipped"
+  fi
+  DATABASE_URL="$DBURL" PYTHONPATH="$D" \
+    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_backtest.py" daily-replay \
+      --rows "$BT/candidate_rows.jsonl" --outdir "$BT" --top 10 2>&1 \
+      | grep -vE "^[0-9]{4}-|\[info|\[debug"
+} >> "$LOG"
+{
+  /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_chain_watch.py" 2>&1
 } >> "$LOG"

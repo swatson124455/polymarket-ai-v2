@@ -128,6 +128,17 @@ def test_conc_replay_sell_exit_beats_resolution():
     assert mbt.peak_concurrency_replay(recs, {"t1": 150.0}, {}, 1000.0) == 2
 
 
+def test_files_to_process_excludes_today_and_processed():
+    """Today's file is still being written — never processed; processed
+    files never re-read; non-matching names ignored."""
+    files = ["/x/firehose_20260904.jsonl.gz", "/x/firehose_20260905.jsonl.gz",
+             "/x/firehose_20260906.jsonl.gz", "/x/guard.log"]
+    got = mbt.files_to_process(files, {"firehose_20260904.jsonl.gz"},
+                               "20260906")
+    assert got == ["/x/firehose_20260905.jsonl.gz"]
+    assert mbt.files_to_process(files, set(), "20260904") == []
+
+
 def test_canon_consumed_not_reimplemented():
     src = inspect.getsource(mbt)
     for name in ("e_value", "per_market_edges", "lcb_edge", "canon_fee"):

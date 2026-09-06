@@ -33,6 +33,7 @@ EXPECTED = [
     ("canon", "canon verification"),
     ("funnel", "trader funnel"),
     ("hypo", "hypothetical dollar ledger"),
+    ("backtest", "backtest daily leaderboard"),
 ]
 
 
@@ -131,9 +132,9 @@ def _self_test() -> int:
     ok4 = bad == len(EXPECTED) and line.startswith("[chain] !!")
     print(f"  [stale] yesterday's sections do NOT count for today : {ok4}")
     ok &= ok4
-    ok5 = len(EXPECTED) == 8
-    print(f"  [pin] watchlist covers the 8 cron stages (update BOTH on cron"
-          f" change) : {ok5}")
+    ok5 = len(EXPECTED) == 9
+    print(f"  [pin] watchlist covers the 9 cron stages (update BOTH on cron"
+          f" change; backtest joined 2026-09-06) : {ok5}")
     ok &= ok5
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
