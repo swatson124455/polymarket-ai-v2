@@ -617,7 +617,9 @@ def _self_test() -> int:
     import inspect as _i
     esrc = _i.getsource(run)
     okb = ("wager_rois" in esrc and "roi_e_value" in esrc
-           and "roi_lcb" in esrc and "per_market_edges" not in esrc
+           and "roi_lcb" in esrc
+           and "per_market_edges(" not in esrc  # call form; a history
+           # comment at the frm-fix site may NAME the old estimand
            and "epoch = BASIS_EPOCH" in esrc
            and FUTILITY_DAYS == 7.0
            and BASIS_EPOCH == datetime(2026, 9, 6, 22, 30, 0,
