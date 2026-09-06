@@ -18,6 +18,36 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-06 (session close ~02:10Z) — GRADING REDESIGN RULED + BUILD
+> ## MANDATE ISSUED (backtest-as-discovery); handoff to fresh session
+>
+> **OPERATOR RULINGS (all binding, recorded in memory
+> feedback_dollars_per_day_is_the_test.md):**
+> 1. THE TEST IS MONEY: PASS = LCB-confident net winnings >= $100/week
+>    (WEEKLY_FLOOR_USD, deployed). $lcb/day column + sort live in funnel.
+> 2. FADE IS DEAD ("do not follow bad money") — copy-only.
+> 3. TAILABILITY: hyper-concurrent whales are NOT copyable — exclude from
+>    the universe (the sizing-around-them debate was a "false question").
+> 4. ELIGIBILITY: >= 1 month history AND >= 25 trades. QUALIFICATION
+>    CURVE presented (computed from deployed LCB machinery, total-trades
+>    basis): 25 trades -> ~$42/trade per $100; 100 -> $19; 300 -> $10.
+> 5. e>=20 stays. Backtest replaces the 4-week forward wait as the GATE
+>    and becomes the DISCOVERY engine (walk-forward, out-of-sample only,
+>    train/holdout split — screen params were tuned on this history).
+> 6. APPROVED BUILDS in order: (i) walk-forward backtest harness;
+>    (ii) cross-trader ALLOCATOR + graduated trust (VERIFIED GAP: funnel
+>    line 207 hands the full $500 to every trader independently — no
+>    cross-trader split exists; safe today, all stakes $0, no executor);
+>    (iii) Bayes head start on confirm track. Executor after, per
+>    docs/MB_GO_CHECKLIST.md (still the binding real-money gate).
+> **Session also shipped:** $100/wk floor grader (pre-100wk backups),
+> hypo ledger tuple-bug fix (reseeds on cron), window study (HOT screen
+> anti-predictive: 40%/-$38 next-wk; COLD persistence was 77% ONE wallet
+> - concentration trap caught, fade killed by operator anyway).
+> **Instruments all live:** roster 124, [chain] watchdog, [grader]
+> heartbeat, hypo ledger, SELL sink (awaiting first record), canon
+> ALARMS=0 throughout.
+
 > ## 2026-09-06 (~00:55Z) — ALL 5 GO-PRECONDITIONS BUILT (operator "build
 > ## all 5"); GO CHECKLIST is now the binding composition gate
 >
