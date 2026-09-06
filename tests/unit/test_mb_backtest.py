@@ -74,6 +74,22 @@ def test_holdout_excludes_train():
     assert hm["holdout_days"] == 7.0
 
 
+def test_holdout_label_lookahead_guard():
+    """A market with a KNOWN resolved_at AFTER end_ts must not count —
+    its label did not exist at judge time. Unknown res_at passes (the
+    disclosed DB-label asymmetry)."""
+    split = T0
+    end = T0 + 4 * DAY
+    recs = [_rec("early", split + 1), _rec("late", split + 2),
+            _rec("norat", split + 3)]
+    outc = {"early": 1, "late": 1, "norat": 1}
+    r_at = {"early": end - DAY, "late": end + DAY}   # "late" leaks w/o guard
+    hm = mbt.holdout_metrics(recs, outc, {}, {}, split, end, res_at=r_at)
+    assert hm["n_holdout"] == 2      # early + norat; late excluded
+    hm2 = mbt.holdout_metrics(recs, outc, {}, {}, split, end)  # no res_at
+    assert hm2["n_holdout"] == 3     # legacy behavior unchanged
+
+
 def test_synth_applies_haircut_and_gates():
     rows = [{"s": "BUY", "tok": "t1", "p": 0.50, "t": 100.0},
             {"s": "BUY", "tok": "t1", "p": 0.52, "t": 200.0},   # dup

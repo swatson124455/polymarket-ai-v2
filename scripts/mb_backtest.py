@@ -223,11 +223,20 @@ def daily_replay(records: list[dict], outcomes: dict, res_at: dict,
 
 
 def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
-                    fee_map: dict, split_ts: float, end_ts: float) -> dict:
+                    fee_map: dict, split_ts: float, end_ts: float,
+                    res_at: dict | None = None) -> dict:
     """Judged ONLY out-of-sample: canon edges over markets whose first
     detect_ts >= split_ts; LCB over those edges alone (train never touches
     the ranking number); $/wk = lcb x $100/mkt ref x resolved-rate x 7 —
-    the grader's own formula on the holdout window. HYPOTHETICAL."""
+    the grader's own formula on the holdout window. HYPOTHETICAL.
+
+    Label-lookahead guard: a market whose KNOWN resolved_at is after
+    end_ts was not resolved at judge time — excluded. Tokens without a
+    res_at (DB-sourced labels) cannot be time-gated and pass through —
+    the disclosed asymmetry from cmd_replay's merge note."""
+    if res_at:
+        outcomes = {t: o for t, o in outcomes.items()
+                    if res_at.get(t) is None or res_at[t] <= end_ts}
     seq = mc.per_market_edges(records, outcomes, frm or {}, fee_map or {},
                               epoch=split_ts)
     edges = [e for _, _, e in seq]
@@ -447,7 +456,8 @@ def cmd_replay(args) -> int:
         recs.sort(key=lambda r: float(r.get("detect_ts") or 0))
         epoch = float(recs[0].get("detect_ts") or 0)
         rep = daily_replay(recs, outcomes, r_at, frm, fee_map, epoch, end_ts)
-        hold = holdout_metrics(recs, outcomes, frm, fee_map, split_ts, end_ts)
+        hold = holdout_metrics(recs, outcomes, frm, fee_map, split_ts,
+                               end_ts, res_at=r_at)
         pc = peak_concurrency_replay(recs, exits_by_w.get(w, {}), r_at,
                                      end_ts)
         obs_days = (float(recs[-1]["detect_ts"]) - epoch) / DAY_S
