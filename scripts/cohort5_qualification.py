@@ -659,7 +659,10 @@ def _self_test() -> int:
     okb2 = (bt.ROI_EPOCH == BASIS_EPOCH
             and bt.ROI_FLOOR_WK == WEEKLY_FLOOR_USD
             and len(RETRIAL_R1) == 7
-            and "lkey" in esrc and 'lock_suffix="#r1"' in esrc)
+            and "lkey = a + lock_suffix" in esrc   # exact binding: a
+            # dropped suffix would read/overwrite the immutable originals
+            and esrc.count("locks, lkey, {") == 3  # every write keyed
+            and 'lock_suffix="#r1"' in esrc)
     print(f"  [basis] band epoch/floor pinned to grader; retrial #r1 keys"
           f" : {okb2}")
     ok &= okb2
