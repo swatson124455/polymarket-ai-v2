@@ -275,8 +275,8 @@ async def run(args) -> int:
     n_fail = sum(1 for x in rows if x["state"] == "FAILED")
     print(f"===== {now:%Y-%m-%dT%H:%MZ} TRADER FUNNEL - roster {len(clean)} "
           f"| TRIAL {n_trial} | PASSED {n_pass} | FAILED {n_fail} "
-          f"(PASS = confident positive money floor, e>={cq.C1_E_REJECT:.0f}"
-          f" == \\$lcb/day>0 [operator ruling 2026-09-06]; futility "
+          f"(PASS = LCB net winnings >= ${cq.WEEKLY_FLOOR_USD:.0f}/week @ "
+          f"$100/mkt ref [operator ruling 2026-09-06]; futility "
           f"{cq.C1_FUTILITY_N}) =====")
     if sz is None:
         print("[sizer] stakes unset - set MB_SIZER_BANKROLL / "

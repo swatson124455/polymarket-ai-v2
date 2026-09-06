@@ -29,7 +29,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze_shadow as az  # noqa: E402
 import band_tracker as bt  # noqa: E402  (anytime-valid e-process, C1 group)
 import mb_canon as mc  # noqa: E402  (canonical estimand, 2026-08-25)
+import mb_sizer as msz  # noqa: E402  (LCB inversion, 2026-08-30)
 import shadow_readout as sr  # noqa: E402
+
+# OPERATOR RULING 2026-09-06: the pass floor is MONEY PER WEEK, not a
+# percentage - LCB-confident net winnings >= $100/week at the $100/market
+# reference stake. Operator-supplied number; do not tune.
+WEEKLY_FLOOR_USD = 100.0
 
 # The approved forward-window epoch — 2026-07-30T17:00:00Z, fixed by the
 # ratified pre-registration. NEVER move it: records before it were visible
@@ -368,17 +374,25 @@ async def run(args) -> int:
             line = (f"  {a[:12]}..  n={n} e={ev:.3f} pooled={pooled:+.4f} "
                     f"ok_rate={okr if okr is None else round(okr, 2)}")
             if ev >= C1_E_REJECT:
-                # OPERATOR RULING 2026-09-06 ("a consistent floor of any
-                # positive money is good, stop making rules up"): e>=20
-                # IS the pass - it is exactly LCB>0, a confident positive
-                # money floor. The former extra gates (edge>=EDGE_BAR
-                # econ floor, ok-rate>=OKRATE_BAR) are REPORTED as info
-                # but no longer block QUALIFIES.
-                econ_ok = pooled is not None and pooled >= EDGE_BAR
-                ok_ok = isinstance(okr, float) and okr >= OKRATE_BAR
-                verdict = ("QUALIFIES"
-                           + ("" if (econ_ok and ok_ok) else
-                              f" [info: econ_ok={econ_ok} ok_ok={ok_ok}]"))
+                # OPERATOR RULING 2026-09-06 (supersedes the same-day
+                # floor-only ruling per "remove anything you just did"):
+                # PASS = LCB-confident net winnings averaging >=
+                # WEEKLY_FLOOR_USD per week at the $100/market reference
+                # stake. "Some people barely bet" - a percentage on a
+                # handful of bets is not a pass; money per week is.
+                # LCB confidence level = the ratified e>=20 inversion
+                # (machinery, unchanged). Basis disclosed: $100/mkt ref;
+                # real stakes remain the sizer's.
+                lcb = msz.lcb_edge(edges, bt.e_value, bt.Y_MIN)
+                el_days = max((datetime.now(timezone.utc).timestamp()
+                               - epoch) / 86400.0, 1e-9)
+                wk = (lcb * 100.0 * (n / el_days) * 7.0
+                      if lcb is not None else None)
+                money_ok = wk is not None and wk >= WEEKLY_FLOOR_USD
+                verdict = ("QUALIFIES" if money_ok else
+                           f"E-PASS BUT BELOW MONEY FLOOR "
+                           f"(lcb ${0 if wk is None else wk:.0f}/wk vs "
+                           f"${WEEKLY_FLOOR_USD:.0f}/wk ruled floor)")
                 locks = sr.write_lock(args.locks, locks, a, {
                     "locked_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%MZ"),
