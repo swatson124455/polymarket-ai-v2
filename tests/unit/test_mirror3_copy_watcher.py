@@ -225,6 +225,30 @@ def test_decode_fill_v2_roster_order():
     assert abs(sig["whale_price"] - 0.972) < 1e-4      # ground-truth trade
     assert abs(sig["whale_size_usd"] - 23141.92032) < 1e-6
     assert sig["was_taker"] is False
+    assert "_w0" in sig                     # internal cross-check payload
+
+
+def test_w0_side_check_matrix():
+    """Receipt stays authority (operator 2026-09-06): agreement and
+    unknowns are silent; ONLY a disagreement alarms."""
+    assert cw.w0_side_check(0, "BUY") is None
+    assert cw.w0_side_check(1, "SELL") is None
+    assert cw.w0_side_check(None, "BUY") is None       # v1/decode w/o w0
+    assert cw.w0_side_check(1, None) is None           # receipt failed
+    assert "MISMATCH" in cw.w0_side_check(1, "BUY")
+    assert "MISMATCH" in cw.w0_side_check(0, "SELL")
+
+
+def test_w0_never_leaks_into_records():
+    """The loop pops _w0 before writing; these pins catch a re-leak:
+    sell_record's schema has no _w0, and shadow_record only carries it
+    if a caller forgets the pop (assert the popped path is clean)."""
+    sig = {"trader": "0xabc", "token_id": "123", "whale_price": 2.0,
+           "whale_size_usd": 10.0, "tx": "0xdead", "_w0": 1}
+    sig.pop("_w0", None)                    # the loop's pop
+    assert "_w0" not in cw.sell_record(sig, 1.0)
+    rec = cw.shadow_record(sig, "OK", 0.5, 0.4, 0.5, 100, 101.0, "0xdead")
+    assert "_w0" not in rec
 
 
 def test_decode_fill_v2_taker_summary_and_rejects():

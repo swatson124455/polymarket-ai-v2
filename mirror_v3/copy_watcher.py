@@ -209,6 +209,11 @@ def decode_fill_v2(lg: dict, roster: set[str]) -> Optional[dict]:
         "whale_price": (usdc / SCALE) / (tok / SCALE),
         "whale_size_usd": usdc / SCALE,
         "was_taker": was_taker,
+        # w[0] = the order's side flag per the 2026-09-06 backfill
+        # measurement (809/809 receipt concordance). INTERNAL cross-check
+        # only - the watch loop pops it before any record write; receipts
+        # remain the side authority (operator ruling 2026-09-06).
+        "_w0": w[0],
     }
 
 
@@ -396,6 +401,20 @@ class WatcherConfig:
             sell_sink=env.get("MIRROR3_SELL_SINK",
                               "/opt/pa2-shared/mirror3_shadow_sells.jsonl"),
         )
+
+
+def w0_side_check(w0, side) -> Optional[str]:
+    """Alarm message if the event's w[0] side flag disagrees with the
+    receipt-derived side, else None. Operator ruling 2026-09-06: receipts
+    STAY the authority; w[0] (measured 809/809 concordant on the backfill
+    window) accrues evidence passively - any disagreement is loud."""
+    if w0 is None or side not in ("BUY", "SELL"):
+        return None
+    expected = 1 if side == "SELL" else 0
+    if w0 == expected:
+        return None
+    return (f"W0-SIDE MISMATCH: receipt={side} but event w0={w0} - "
+            f"receipts remain authority; investigate before trusting w0")
 
 
 def sell_record(sig: dict, now: float) -> dict:
@@ -699,6 +718,12 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                         log(f"[copy_watcher] receipt error {sig['tx'][:18]}…: "
                             f"{e!r}")
                         side = None
+                    # pop BEFORE any record write (shadow_record spreads
+                    # sig); check after - receipts stay authority
+                    _w0 = sig.pop("_w0", None)
+                    _w0_msg = w0_side_check(_w0, side)
+                    if _w0_msg:
+                        log(f"[copy_watcher] {_w0_msg} tx={sig['tx'][:18]}…")
                     if side != "BUY":
                         if side is None:
                             log(f"[copy_watcher] SIDE UNKNOWN (skipped) "

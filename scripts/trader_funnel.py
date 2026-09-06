@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze_shadow as az  # noqa: E402
 import band_tracker as bt  # noqa: E402
 import cohort5_qualification as cq  # noqa: E402  (groups/epochs/bars: theirs)
+import mb_allocator as mal  # noqa: E402  (envelope layer, operator fracs)
 import mb_canon as mc  # noqa: E402
 import mb_sizer as msz  # noqa: E402  (pre-registered sizing rule, read-only)
 import shadow_readout as sr  # noqa: E402
@@ -124,6 +125,18 @@ def trader_row(a: str, epoch: float, recs: list, outcomes: dict,
     }
 
 
+def tier_of(a: str, locks: dict, groups_all: set) -> str:
+    """Allocator tier for one roster address (operator ruling 2026-09-06:
+    fractions proven:0.50 confirming:0.10, reserve uncommitted).
+    proven = locked QUALIFIES; confirming = unlocked with a registered
+    per-trader test; everything else (OBS, FAILED locks) = 'untiered' —
+    the allocator gives unknown tiers $0 + a flag by design."""
+    if a in locks:
+        v = str(locks[a].get("verdict", ""))
+        return "proven" if v.startswith("QUALIFIES") else "untiered"
+    return "confirming" if a in groups_all else "untiered"
+
+
 def sizer_params_from_env():
     """All four operator parameters or None - the sizer has NO defaults and
     the funnel does not invent them (zero-base rule)."""
@@ -213,6 +226,18 @@ async def run(args) -> int:
     sweep2 = set(cq.SWEEP2_ADMITS)
     cracks_grp = set(cq.CRACK_ADMITS)
     insuff57 = set(cq.SWEEP2_INSUFF)
+    # cross-trader envelopes (operator ruling 2026-09-06: MB_ALLOC_TIER_FRACS
+    # proven:0.50,confirming:0.10). Unset env = legacy full-bankroll display,
+    # disclosed. One implementation: mb_allocator does the split.
+    groups_all = c1 | probes12 | originals | sweep2 | cracks_grp | insuff57
+    alloc_spec = os.environ.get("MB_ALLOC_TIER_FRACS", "").strip()
+    envelopes = None
+    if alloc_spec and sz is not None:
+        fracs = mal.parse_tier_fracs(alloc_spec)
+        envelopes = mal.allocate_envelopes(
+            sz["bankroll"],
+            [{"key": a, "tier": tier_of(a, locks, groups_all)}
+             for a in clean], fracs)
     rows = []
     for a in clean:
         if a in locks:
@@ -247,7 +272,13 @@ async def run(args) -> int:
                                  "diagnostic only"})
             continue
         r = trader_row(a, epoch, recs, outcomes, frm, fee_map, cfg, res_at)
-        srec = display_stake(r, sz, frm, fee_map)
+        sz_a = sz
+        if envelopes is not None and sz is not None:
+            env_a = envelopes[a]["envelope"]
+            # $0 envelope (untiered/empty fraction): skip the sizer call
+            # (its bankroll>0 guard refuses) - stake is structurally $0
+            sz_a = dict(sz, bankroll=env_a) if env_a > 0.0 else None
+        srec = display_stake(r, sz_a, frm, fee_map)
         days = days_since(epoch)
         # OPERATOR HARDCODE 2026-09-06 ($/day is the test): LCB dollars/day
         # at the $100/market REFERENCE stake = lcb x 100 x resolved-rate.
@@ -287,6 +318,19 @@ async def run(args) -> int:
               f"{sz['kelly_mult']} / conc = max(trader's measured peak, "
               f"floor {sz['concurrency']}) @ each trader's median recorded "
               f"fill; book depth is trade-time, not applied here")
+    if envelopes is not None and sz is not None:
+        n_prov = sum(1 for e in envelopes.values() if e["tier"] == "proven")
+        n_conf = sum(1 for e in envelopes.values()
+                     if e["tier"] == "confirming")
+        e_conf = next((e["envelope"] for e in envelopes.values()
+                       if e["tier"] == "confirming"), 0.0)
+        print(f"[alloc] {alloc_spec} (operator 2026-09-06; remainder = "
+              f"uncommitted reserve) | proven {n_prov} trader(s), "
+              f"confirming {n_conf} -> ${e_conf:.2f} envelope each "
+              f"(down-only; stakes above use envelope, not full bankroll)")
+    elif sz is not None:
+        print("[alloc] MB_ALLOC_TIER_FRACS unset - stakes shown at FULL "
+              "bankroll per trader (allocator built, env not sourced)")
     cr = crack_census([args.deep_dive, args.rereview, args.scout_dir],
                       set(clean), set(locks))
     if cr:
@@ -396,6 +440,31 @@ def _self_test() -> int:
     print(f"  [cracks] census: INSUFF+corrupt in, REJECT/rostered out : "
           f"{ok7}")
     ok &= ok7
+    locks_t = {"0xq": {"verdict": "QUALIFIES"},
+               "0xf": {"verdict": "NOT DEMONSTRATED (futility)"}}
+    grp = {"0xt"}
+    ok8b = (tier_of("0xq", locks_t, grp) == "proven"
+            and tier_of("0xf", locks_t, grp) == "untiered"
+            and tier_of("0xt", locks_t, grp) == "confirming"
+            and tier_of("0xo", locks_t, grp) == "untiered")
+    env_t = mal.allocate_envelopes(
+        500.0, [{"key": k, "tier": tier_of(k, locks_t, grp)}
+                for k in ("0xq", "0xf", "0xt", "0xo")],
+        mal.parse_tier_fracs("proven:0.50,confirming:0.10"))
+    ok8b = (ok8b and abs(env_t["0xq"]["envelope"] - 250.0) < 1e-9
+            and abs(env_t["0xt"]["envelope"] - 50.0) < 1e-9
+            and env_t["0xf"]["envelope"] == 0.0
+            and env_t["0xo"]["envelope"] == 0.0)
+    p_full = {"bankroll": 500.0, "kelly_mult": 0.25, "concurrency": 20,
+              "min_viable": 1.0}
+    r_pos = {"med_fill": (0.50, "tok_x"), "lcb": 0.10, "peak_conc": 1}
+    s_full = display_stake(r_pos, p_full, {}, {})
+    s_env = display_stake(r_pos, dict(p_full, bankroll=50.0), {}, {})
+    ok8b = ok8b and s_env["stake"] <= s_full["stake"] + 1e-12
+    print(f"  [alloc] tier map + envelope split + down-only display : "
+          f"{ok8b}")
+    ok &= ok8b
+
     def _fr(tok, ts):
         return {"first_buy": True, "verdict": "OK", "token_id": tok,
                 "detect_ts": ts}
