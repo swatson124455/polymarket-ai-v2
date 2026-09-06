@@ -18,6 +18,51 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-06 (session close, VPS-verified ~16:3xZ) — ALL SIX OPERATOR
+> ## RULINGS EXECUTED; DAILY BACKTEST STAGE LIVE IN CRON (9 chain stages)
+>
+> **RULINGS (operator, this session — recorded in
+> feedback_dollars_per_day_is_the_test.md):** (1) tailability bar = 20
+> concurrent (physical-capacity line, headroom for scale/ladder — not a
+> quality claim); (2) tier fractions proven:0.50/confirming:0.10, 0.40
+> reserve; (3) Bayes = adversarial review before deploy; (4) daily
+> leaderboard cron stage GO; (5) w[0] = logged cross-check only,
+> receipts stay authority; (6) promotion checks GO for the find.
+> **EXECUTED + VERIFIED LIVE (commits thru `145e815` + this docs
+> commit):**
+> - [alloc] LIVE in funnel: envelopes via mb_allocator (proven 0,
+>   confirming 115 -> $0.43 each at $500 — correctly zeroes all display
+>   stakes until a PASS); MB_ALLOC_TIER_FRACS in mb_sizer.env
+>   (.pre-alloc backup). 4/4 funnel/watcher mutants killed after two
+>   survivor fixes (pure alloc_params; structural underscore-strip in
+>   shadow_record).
+> - w[0] cross-check LIVE in watcher (restart 16:17:58Z clean,
+>   roster=124, canary 1,961): logs W0-SIDE MISMATCH on any receipt
+>   disagreement; zero so far.
+> - DAILY BACKTEST STAGE in the 11:40Z cron (stage 9; chain-watch
+>   pinned to 9 — first graded run tomorrow): Monday/first-run rescreen
+>   at bar 20, incremental extract, label delta, haircut re-measured
+>   per run, both leaderboards. FULL STAGE VALIDATED under the cron
+>   identity+cwd (a first attempt from the wrong cwd hit pydantic's
+>   ./.env probe — cron's cd /opt/polymarket-ai-v2 is LOAD-BEARING).
+>   Bar-20 baseline rebuilt: 8,359 candidates, 1.2M rows; labels +314.
+> - FIND `0x12a7dd1d8e` FAILED the 1-month eligibility check (data-api
+>   16:06:59Z: zero trades before 2026-08-07 cutoff; first trade
+>   ~2026-08-26) -> NO roster add; RE-CHECK ~2026-09-26 with the fraud
+>   screen then. Profile note: 5-min BTC up/down micro-markets, ~$3.75
+>   own stakes. It stays on the board: bar-20 rerun 16:33Z again the
+>   ONLY positive holdout LCB of 8,234 wallets (+$214.97/wk_lcb, lcb
+>   +0.0206, n_ho=70, HYPOTHETICAL $100/mkt).
+> - BAYES REVIEW PREP (review still pending, NOT deployed): tau2 CLIPS
+>   TO 0 on the tailable universe too — med haircut mu=-0.0078 (448
+>   wallets n>=30), p90 mu=-0.0125 (441) — the no-detectable-spread
+>   result is NOT a whale artifact, and tailable wallets' mean edge is
+>   less negative than the <=50 universe's -0.0217. HYPOTHESIS.
+>   Artifacts: backtest/bayes_prior_conc20_{med,p90}.json.
+> **WATCH:** tomorrow's 11:40Z = first 9-stage [chain] grade + first
+> in-cron backtest stage (cron now runs ~30 min longer); band nearing
+> futility (e 0.415 @ n=488 of 600).
+
 > ## 2026-09-06 (~15:44Z) — BUILD 3 AT THE REVIEW GATE: EMPIRICAL PRIOR
 > ## FITTED — tau2 CLIPS TO ZERO (population spread = sampling noise)
 >
