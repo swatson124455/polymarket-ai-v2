@@ -112,7 +112,7 @@ async def run(args) -> int:
                                         fee_map, cfg, {})
                     srec = tf.display_stake(row, params, frm, fee_map)
                     stake = 0.0 if srec is None else float(srec["stake"])
-            for tok, _side, e in seq:
+            for _first_ts, tok, e in seq:  # canon tuple = (ts, token, edge)
                 key = (a, str(tok))
                 if key in seen:
                     continue
