@@ -601,6 +601,12 @@ def _d3_ramp_ct(ticker, now_ts, first_seen, feedback, qstats=None):
             if _held < rung and qstats is not None:
                 qstats["obs_hold_bound"] = qstats.get("obs_hold_bound", 0) + 1
             rung = _held
+    # A3b ramp-floor session (see knob block): floored AFTER first-seen registration so
+    # the ramp clock keeps running underneath — when the floor lifts, age is honest.
+    if _ramp_floor_active(now_ts):
+        rung = 0
+        if qstats is not None:
+            qstats["ramp_floor_session"] = qstats.get("ramp_floor_session", 0) + 1
     return D3_RUNGS[rung]
 
 
@@ -687,6 +693,9 @@ def _d3_est_ct(ticker, now_ts):
         _est = _est_feed_cached(float(now_ts)).get(ticker)
         if _est is None or _est < OBS_HOLD_MIN_USD:
             rung = min(rung, max(int(OBS_HOLD_MAX_RUNG), 0))
+    # A3b ramp-floor session mirror (budget parity — the walk must charge floored size)
+    if _ramp_floor_active(now_ts):
+        rung = 0
     return D3_RUNGS[rung]
 
 
@@ -1754,6 +1763,28 @@ WIDEBOOK_MAX_CT = _envi("KALSHI_WIDEBOOK_MAX_CT", 40)           # per-side contr
 # never size-gated (house doctrine). 0 = OFF, provable no-op.
 NEARMONEY_DAILY_MAX_CT = _envi("KALSHI_NEARMONEY_DAILY_MAX_CT", 0)
 NEARMONEY_DAILY_LIFE_H = _envf("KALSHI_NEARMONEY_DAILY_LIFE_H", 24.0)
+# A3b RAMP-FLOOR SESSION (operator "proceed with remaining open items" 2026-09-06).
+# The "first session after a config change runs at ramp floor" duty was TEXT ONLY
+# (blind-review hole A3); this is the code. kalshi_safe_start.sh touches the marker
+# on an ACKED config change (and on a first-ever start) and removes it on the next
+# clean safe_start with no drift; a crash-restart mid-first-session keeps the floor
+# (the marker survives). While the marker exists, every ACCUMULATING quote is held
+# at D3_RUNGS[0] (5ct live). Unwind/reduce-only is never gated (house doctrine; the
+# :588x call site clamps non-unwind only). Missing marker = normal ramp (provable
+# no-op). File existence is cached 60s like the other feed reads.
+RAMP_FLOOR_FILE = os.environ.get("KALSHI_RAMP_FLOOR_FILE",
+                                 os.path.join(DATA_DIR, "RAMP_FLOOR_SESSION"))
+_RAMP_FLOOR_CACHE = {"ts": 0.0, "active": False}
+
+
+def _ramp_floor_active(now_ts, max_age_s=60.0):
+    if now_ts - _RAMP_FLOOR_CACHE["ts"] > max_age_s:
+        try:
+            _RAMP_FLOOR_CACHE["active"] = os.path.exists(RAMP_FLOOR_FILE)
+        except Exception:
+            _RAMP_FLOOR_CACHE["active"] = False
+        _RAMP_FLOOR_CACHE["ts"] = now_ts
+    return _RAMP_FLOOR_CACHE["active"]
 # S1 UPTIME RANK (operator-approved 2026-08-30): order the candidate pool by
 # pool$ x MEASURED qualifying-uptime (kalshi_uptime_census.py over the D4 tape) —
 # a book that never holds Target both sides pays $0 whatever its pool (R3 canon;
