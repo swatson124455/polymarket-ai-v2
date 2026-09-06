@@ -248,13 +248,26 @@ async def run(args) -> int:
             continue
         r = trader_row(a, epoch, recs, outcomes, frm, fee_map, cfg, res_at)
         srec = display_stake(r, sz, frm, fee_map)
+        days = days_since(epoch)
+        # OPERATOR HARDCODE 2026-09-06 ($/day is the test): LCB dollars/day
+        # at the $100/market REFERENCE stake = lcb x 100 x resolved-rate.
+        # HYPOTHETICAL by standing rule; rate denominator = resolved
+        # markets/day (lags entry rate - disclosed in the header). This is
+        # the RANKING number; the sizer $stake stays the money gate.
+        dday = None
+        if r.get("lcb") is not None and days and days > 0 and r["n"]:
+            dday = r["lcb"] * 100.0 * (r["n"] / days)
         rows.append({"a": a, "state": "TRIAL", "n": r["n"], "e": r["e"],
                      "edge": r["edge"], "ok": r["ok"], "lcb": r["lcb"],
                      "stake": None if srec is None else srec["stake"],
-                     "days": days_since(epoch), "note": grp})
+                     "dday": dday,
+                     "days": days, "note": grp})
 
     order = {"TRIAL": 0, "PASSED": 1, "OBS": 2, "FAILED": 3}
+    # primary sort = the money metric (operator hardcode); e breaks ties
     rows.sort(key=lambda x: (order[x["state"]],
+                             -(x.get("dday") if x.get("dday") is not None
+                               else -1e18),
                              -(x["e"] if x["e"] is not None else -1)))
     now = datetime.now(timezone.utc)
     n_trial = sum(1 for x in rows if x["state"] == "TRIAL")
@@ -281,10 +294,14 @@ async def run(args) -> int:
     else:
         print("[cracks] 0 - every reviewed non-REJECT address is on the "
               "roster or locked")
-    print(f"{'TRADER':<14} {'STATE':<7} {'n':>4} {'e':>7} {'edge':>8} "
-          f"{'lcb':>8} {'$stake':>7} {'ok%':>4} {'days':>4}  note")
+    print("[$/day] HYPOTHETICAL - LCB edge x $100/mkt ref x resolved-rate "
+          "(resolved/day lags entry rate); sorted by it - the operator "
+          "hardcode: money-for-us is the test, all else is inputs")
+    print(f"{'TRADER':<14} {'STATE':<7} {'$lcb/day':>9} {'n':>4} {'e':>7} "
+          f"{'edge':>8} {'lcb':>8} {'$stake':>7} {'ok%':>4} {'days':>4}  note")
     for x in rows:
         print(f"{x['a'][:12]+'..':<14} {x['state']:<7} "
+              f"{fmt(x.get('dday'), '+.2f'):>9} "
               f"{fmt(x['n'], 'd'):>4} {fmt(x['e'], '.2f'):>7} "
               f"{fmt(x['edge'], '+.4f'):>8} "
               f"{fmt(x.get('lcb'), '+.4f'):>8} "
