@@ -421,11 +421,24 @@ def cmd_replay(args) -> int:
 
     all_tokens = sorted({str(r["token_id"]) for recs in per_wallet.values()
                          for r in recs if r.get("token_id")})
-    outcomes = sr.supplement_outcomes(args.resolutions, all_tokens)
+    supp = sr.supplement_outcomes(args.resolutions, all_tokens)
+    # grader parity: the deployed pipeline merges DB outcomes + supplement
+    # (trader_funnel.run); cache-only labels would silently diverge the
+    # replayed e-values from the rules being replayed. DB tokens lack a
+    # res_at, so they count in holdout edges but stay unplaceable (counted)
+    # on the day-by-day grid — disclosed asymmetry, never guessed around.
+    if os.environ.get("DATABASE_URL"):
+        import asyncio
+        db_out = asyncio.run(sr.fresh_outcomes(all_tokens))
+        outcomes = sr.merge_outcomes(db_out, supp)
+        src_note = f"DB {len(db_out)} + cache {len(supp)} merged"
+    else:
+        outcomes = supp
+        src_note = "cache ONLY (no DATABASE_URL — grader merges DB too)"
     n_lab = len(set(all_tokens) & set(outcomes))
     print(f"[replay] label coverage: {n_lab}/{len(all_tokens)} entry tokens "
-          f"resolved by cache ({100.0 * n_lab / max(len(all_tokens), 1):.1f}%)"
-          f" — unresolved excluded from edges, never guessed")
+          f"({100.0 * n_lab / max(len(all_tokens), 1):.1f}%; {src_note}) "
+          f"— unresolved excluded from edges, never guessed")
 
     lb = []
     for w, recs in sorted(per_wallet.items()):
