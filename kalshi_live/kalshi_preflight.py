@@ -191,7 +191,11 @@ def main():
             warn("open positions at start", f"{row['n_positions']} held — operator judgment")
         cap = float(envmap.get("KALSHI_MAX_TOTAL_CAPITAL", "0"))
         if row["cash"] < cap:
-            res(False, "cash covers MAX_TOTAL_CAPITAL", f"${row['cash']:.2f} < ${cap:.0f}")
+            # acct(): WARN-only in --pre-start (operator yes 2026-09-06) — measured
+            # 09-01 18:32->18:37Z: one open 100ct fill debits cash by its cost (-$29.00
+            # with zero loss), so a crash-restart with capital deployed legitimately
+            # reads cash < cap; hard-failing it in the gate would strand resting quotes.
+            acct(False, "cash covers MAX_TOTAL_CAPITAL", f"${row['cash']:.2f} < ${cap:.0f}")
         else:
             res(True, "cash covers MAX_TOTAL_CAPITAL",
                 f"${row['cash']:.2f} vs cap ${cap:.0f} (buffer ${row['cash']-cap:.2f})")
