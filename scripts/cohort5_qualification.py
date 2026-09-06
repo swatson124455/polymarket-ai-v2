@@ -247,6 +247,22 @@ BASIS_EPOCH = datetime(2026, 9, 6, 22, 30, 0,
                        tzinfo=timezone.utc).timestamp()
 FUTILITY_DAYS = 7.0
 
+# RETRIALS (operator "old fails retrial go", 2026-09-06 ~22:15Z): the 7
+# FAILED-locked traders re-enter under the NEW basis at BASIS_EPOCH.
+# OLD LOCKS ARE IMMUTABLE and stand as the historical record; retrial
+# verdicts lock under "<addr>#r1" keys, never overwriting the original.
+# List = the live locks file at ruling time (read 22:15:44Z: 5 DNQ + 2
+# futility) — frozen here, never edited after.
+RETRIAL_R1 = [
+    "0x216509be5332c6037105b4f871966eb97240f598",
+    "0x4ad6cadefae3c28f5b2caa32a99ebba3a614464c",
+    "0x7c3db723f1d4d8cb9c550095203b686cb11e5c6b",
+    "0x9703676286b93c2eca71ca96e8757104519a69c2",
+    "0xc660ae71765d0d9eaf5fa8328c1c959841d2bd28",
+    "0xec981ed70ae69c5cbcac08c1ba063e734f6bafcd",
+    "0xf705fa045201391d9632b7f3cde06a5e24453ca7",
+]
+
 
 def eligible_admits(deep_dive_dir: str, rereview_dir: str) -> list[str]:
     """Chain-screen ADMITs on complete labels: the re-review out-dir is the
@@ -368,18 +384,22 @@ async def run(args) -> int:
     graded_groups = 0
     proposals = []
 
-    def eproc_grade(group, epoch, lock_source):
+    def eproc_grade(group, epoch, lock_source, lock_suffix=""):
         nonlocal locks, graded_groups
         graded_groups += 1
         # BASIS CONVERSION 2026-09-06: every unconsumed trial scores from
         # the ONE fresh conversion epoch — the group epoch parameter is
         # provenance only (see the BASIS_EPOCH block above).
+        # lock_suffix (retrials): all lock lookups/writes key on
+        # a+lock_suffix so a retrial neither reads nor touches the
+        # immutable original lock.
         epoch = BASIS_EPOCH
         gfwd = forward_records(recs, epoch)
         now_ts = datetime.now(timezone.utc).timestamp()
         for a in group:
-            if a in locks:
-                lk = locks[a]
+            lkey = a + lock_suffix
+            if lkey in locks:
+                lk = locks[lkey]
                 print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: "
                       f"{lk['verdict']} (consumed)")
                 continue
@@ -394,7 +414,7 @@ async def run(args) -> int:
             el_days = max((now_ts - epoch) / 86400.0, 1e-9)
             if n == 0:
                 if el_days >= FUTILITY_DAYS:
-                    locks = sr.write_lock(args.locks, locks, a, {
+                    locks = sr.write_lock(args.locks, locks, lkey, {
                         "locked_at": datetime.now(timezone.utc).strftime(
                             "%Y-%m-%dT%H:%MZ"),
                         "resolved": 0, "roi": None, "p": None,
@@ -422,7 +442,7 @@ async def run(args) -> int:
                            f"E-PASS BUT BELOW MONEY FLOOR "
                            f"(lcb ${0 if wk is None else wk:.0f}/wk vs "
                            f"${WEEKLY_FLOOR_USD:.0f}/wk ruled floor)")
-                locks = sr.write_lock(args.locks, locks, a, {
+                locks = sr.write_lock(args.locks, locks, lkey, {
                     "locked_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%MZ"),
                     "resolved": n, "roi": round(mean_roi, 6), "p": ev,
@@ -434,7 +454,7 @@ async def run(args) -> int:
             elif el_days >= FUTILITY_DAYS:
                 # TIME-BASED futility (operator ruling 2026-09-06):
                 # 1 week from the conversion epoch without e>=20.
-                locks = sr.write_lock(args.locks, locks, a, {
+                locks = sr.write_lock(args.locks, locks, lkey, {
                     "locked_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%MZ"),
                     "resolved": n, "roi": round(mean_roi, 6), "p": ev,
@@ -486,6 +506,12 @@ async def run(args) -> int:
           f"INSUFFICIENT under voided metrics is not evidence):")
     eproc_grade(SWEEP2_INSUFF, INSUFF57_EPOCH,
                 "sweep2_insufficient e-process (2026-09-02)")
+    print(f"retrials-r1 ({len(RETRIAL_R1)}) - the 7 old-basis FAILED locks "
+          f"re-entered under the NEW basis (operator go 2026-09-06; "
+          f"originals immutable, verdicts lock under #r1):")
+    eproc_grade(RETRIAL_R1, BASIS_EPOCH,
+                "retrial r1 e-process (basis conversion 2026-09-06)",
+                lock_suffix="#r1")
     if proposals:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
@@ -627,6 +653,16 @@ def _self_test() -> int:
     print(f"  [basis] ROI atoms + conversion epoch + 1wk futility pinned"
           f" : {okb}")
     ok &= okb
+    # cross-module pins: band_tracker duplicates the conversion epoch and
+    # floor (import cycle) — they may never drift; retrials use #r1 keys
+    # and never touch base locks.
+    okb2 = (bt.ROI_EPOCH == BASIS_EPOCH
+            and bt.ROI_FLOOR_WK == WEEKLY_FLOOR_USD
+            and len(RETRIAL_R1) == 7
+            and "lkey" in esrc and 'lock_suffix="#r1"' in esrc)
+    print(f"  [basis] band epoch/floor pinned to grader; retrial #r1 keys"
+          f" : {okb2}")
+    ok &= okb2
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

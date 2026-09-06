@@ -133,8 +133,15 @@ def tier_of(a: str, locks: dict, groups_all: set) -> str:
     """Allocator tier for one roster address (operator ruling 2026-09-06:
     fractions proven:0.50 confirming:0.10, reserve uncommitted).
     proven = locked QUALIFIES; confirming = unlocked with a registered
-    per-trader test; everything else (OBS, FAILED locks) = 'untiered' —
-    the allocator gives unknown tiers $0 + a flag by design."""
+    per-trader test (incl. an ACTIVE retrial); everything else (OBS,
+    FAILED locks) = 'untiered' — the allocator gives unknown tiers $0 +
+    a flag by design. Retrial verdicts under #r1 outrank the immutable
+    original lock for TIER purposes only (operator go 2026-09-06)."""
+    if a + "#r1" in locks:
+        v = str(locks[a + "#r1"].get("verdict", ""))
+        return "proven" if v.startswith("QUALIFIES") else "untiered"
+    if a in getattr(cq, "RETRIAL_R1", ()) and a in locks:
+        return "confirming"          # active retrial
     if a in locks:
         v = str(locks[a].get("verdict", ""))
         return "proven" if v.startswith("QUALIFIES") else "untiered"
@@ -259,7 +266,34 @@ async def run(args) -> int:
             [{"key": a, "tier": tier_of(a, locks, groups_all)}
              for a in clean], fracs)
     rows = []
+    retrials = set(cq.RETRIAL_R1)
     for a in clean:
+        # RETRIALS (operator go 2026-09-06): a FAILED-locked trader with a
+        # registered retrial shows as an ACTIVE trial until the #r1 lock
+        # lands; the original lock is immutable and stays in the note.
+        if a in retrials and (a + "#r1") in locks:
+            lk = locks[a + "#r1"]
+            v = str(lk.get("verdict", ""))
+            state = "PASSED" if v.startswith("QUALIFIES") else "FAILED"
+            rows.append({"a": a, "state": state, "n": lk.get("resolved"),
+                         "e": None, "edge": lk.get("roi"), "ok": None,
+                         "days": None,
+                         "note": f"r1 locked {lk.get('locked_at')}: {v[:26]}"})
+            continue
+        if a in retrials and a in locks:
+            r = trader_row(a, cq.BASIS_EPOCH, recs, outcomes, frm, fee_map,
+                           cfg, res_at)
+            srec = display_stake(r, alloc_params(a, sz, envelopes), frm,
+                                 fee_map)
+            days = days_since(cq.BASIS_EPOCH)
+            dday = None
+            if r.get("lcb") is not None and days and days > 0 and r["n"]:
+                dday = r["lcb"] * 100.0 * (r["n"] / days)
+            rows.append({"a": a, "state": "TRIAL", "n": r["n"], "e": r["e"],
+                         "edge": r["edge"], "ok": r["ok"], "lcb": r["lcb"],
+                         "stake": None if srec is None else srec["stake"],
+                         "dday": dday, "days": days, "note": "retrial-r1"})
+            continue
         if a in locks:
             lk = locks[a]
             v = str(lk.get("verdict", ""))
