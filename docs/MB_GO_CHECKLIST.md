@@ -33,7 +33,15 @@ PASS does not override this checklist; composition sign-off consumes it.
 4. **SELL recording — RECORDER LIVE 2026-09-06** (watcher writes roster
    SELLs to `/opt/pa2-shared/mirror3_shadow_sells.jsonl`, own sink, BUY
    pipeline untouched, 65/65 mirror3 tests green, deployed
-   .pre-sellsink-20260906). REMAINING before this line is fully green:
+   .pre-sellsink-20260906). **LAYOUT DEFECT FIXED 2026-09-06T03:14Z**
+   (`8e9c989`, deployed .pre-sellfix-20260906): the V2 fill event's amount
+   words are maker-perspective, so the first night's records carried
+   whale_price = tokens/usdc (inverted) and whale_size_usd = token count.
+   Chain-verified on tx 0x0f422cdb (Exchange V2) + 0x31f7d3b9 (NegRisk
+   V2); sell_record now inverts; all 79 pre-fix records migrated exactly
+   (marker `layout_fix_20260906`, backup .pre-sellfix-migration-20260906).
+   BUY pipeline unaffected (owner BUY events genuinely have usdc at w[2]).
+   REMAINING before this line is fully green:
    the with-exits estimand (pre-registered per ZERO_BASED_SIFTER stage 3)
    once the sink holds enough data. GO on entries-only copying is
    permitted with this line marked PARTIAL **only if the operator strikes

@@ -18,6 +18,27 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-06 (~03:25Z) — SELL-SINK LAYOUT DEFECT FOUND IN SESSION-START
+> ## CHECKS; FIXED + DEPLOYED + RECORDS MIGRATED
+>
+> The handoff's "verify records look sane" check FAILED: every SELL sink
+> record had whale_price > 1 (first record 12.5 on a binary market).
+> Chain replay of two record txs (0x0f422cdb Exchange V2, 0x31f7d3b9
+> NegRiskExchange V2) proved the V2 fill event's amount words are
+> MAKER-perspective: for a SELL order w[2]=tokens given / w[3]=usdc
+> received, so decode_fill_v2's BUY-layout arithmetic recorded
+> price=tokens/usdc (inverted) and size=token count. The BUY pipeline is
+> UNAFFECTED (owner BUY events genuinely have usdc at w[2]; the 7-wk BUY
+> dataset stands). Fix: sell_record() inverts (1/p, size/p — exact
+> through merge_same_tx algebra); commit `8e9c989`, mirror3+sizing
+> battery 116/116, 3/3 mutants killed, deployed to /opt/mirror3
+> (.pre-sellfix-20260906), service restarted 03:14:23Z, startup verified
+> (roster=124, canary 2509 fills, 0 tracebacks). All 79 pre-fix records
+> migrated exactly (backup .pre-sellfix-migration-20260906, marker
+> layout_fix_20260906); post-migration scan: 79/79 in (0,1]. Chain-watch
+> + hypo ledger wiring verified present in the cron script; their first
+> full in-cron run = today's 11:40Z (still pending at fix time).
+
 > ## 2026-09-06 (session close ~02:10Z) — GRADING REDESIGN RULED + BUILD
 > ## MANDATE ISSUED (backtest-as-discovery); handoff to fresh session
 >
