@@ -29,12 +29,50 @@ def test_mixture_matches_band_e_value_on_shared_support():
 
 def test_roi_support_wider_than_band():
     """A venue-fee ROI atom (-1.07) is inside ROI support but would
-    assert in the band tracker — the reason the generalization exists."""
+    assert in the band tracker; the mixture accepts down to the wealth-
+    positivity bound (-1.25) so LCB shifts are never artificially cut."""
     assert mc.mixture_e_value([-1.07]) > 0.0
+    assert mc.mixture_e_value([-1.24]) > 0.0     # shifted atom, valid
     with pytest.raises(AssertionError):
         bt.e_value([-1.07])
     with pytest.raises(AssertionError):
-        mc.mixture_e_value([-1.2])          # below ROI floor: refuse
+        mc.mixture_e_value([-1.26])              # would zero a wealth factor
+
+
+def test_wager_rois_raises_on_corrupt_atom():
+    """Raw-atom sanity moved to the data layer: a physically impossible
+    ROI (below -1.10) is corruption and must raise loudly."""
+    bad = [{"detect_ts": 1.0, "verdict": "OK", "shadow_fill": 0.5,
+            "token_id": "x"}]
+    with pytest.raises(ValueError):
+        mc.wager_rois(bad, {"x": -0.2}, {}, {})   # impossible outcome
+
+
+def test_lcb_not_truncated_at_one():
+    """Truncation A (2026-09-06 first ROI run): never-lost wallets showed
+    roi_lcb = exactly +1.000 — the edge-era 1.0 domain cap. With
+    m_cap=None the LCB must exceed 1 on overwhelming cheap-share wins."""
+    import mb_sizer as msz
+    rois = [4.0] * 60
+    lcb = msz.lcb_edge(rois, mc.mixture_e_value, mc.MIX_POSITIVITY_FLOOR,
+                       m_cap=None)
+    assert lcb is not None and lcb > 1.0
+    # edge callers keep the historical cap (backward compatibility)
+    capped = msz.lcb_edge(rois, mc.mixture_e_value,
+                          mc.MIX_POSITIVITY_FLOOR)
+    assert capped == pytest.approx(1.0)
+
+
+def test_lcb_not_truncated_at_support_offset():
+    """Truncation B: one full flat-fee loss (ROI exactly -1.02) capped
+    every LCB at -1.02+1.10 = +0.08 when the raw-atom floor was misused
+    as the search bound. With the positivity floor the search reaches
+    -1.02+1.25, so strong evidence must clear +0.08."""
+    import mb_sizer as msz
+    rois = [-1.02] + [2.0] * 80
+    lcb = msz.lcb_edge(rois, mc.mixture_e_value, mc.MIX_POSITIVITY_FLOOR,
+                       m_cap=None)
+    assert lcb is not None and lcb > 0.08 + 1e-6
 
 
 def test_wager_rois_ladder_and_formula():

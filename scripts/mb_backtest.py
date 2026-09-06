@@ -232,7 +232,8 @@ def daily_replay(records: list[dict], outcomes: dict, res_at: dict,
         n = len(rois)
         if n:
             ev = mc.mixture_e_value(rois)
-            lcb = msz.lcb_edge(rois, mc.mixture_e_value, mc.ROI_Y_MIN)
+            lcb = msz.lcb_edge(rois, mc.mixture_e_value,
+                               mc.MIX_POSITIVITY_FLOOR, m_cap=None)
             last = {"n": n, "e": ev, "roi": sum(rois) / n, "lcb": lcb}
             if ev >= e_bar:
                 el_days = max((d - epoch) / DAY_S, 1e-9)
@@ -278,7 +279,8 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
            "wk_net_lcb": None, "wk_net_real": None}
     if not n:
         return out
-    lcb = msz.lcb_edge(rois, mc.mixture_e_value, mc.ROI_Y_MIN)
+    lcb = msz.lcb_edge(rois, mc.mixture_e_value,
+                               mc.MIX_POSITIVITY_FLOOR, m_cap=None)
     mean_roi = sum(rois) / n
     out["roi_lcb"] = lcb
     out["roi_realized"] = mean_roi

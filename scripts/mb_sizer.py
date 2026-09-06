@@ -45,17 +45,25 @@ PER_BET_CAP_CANON = 300.0  # BotBankrollManager max_bet_usd (Mirror), canon
 
 
 def lcb_edge(edges: list, e_value_fn, y_min: float,
-             e_bar: float = E_BAR_RULED, tol: float = 1e-6):
+             e_bar: float = E_BAR_RULED, tol: float = 1e-6,
+             m_cap: float | None = 1.0):
     """Anytime-valid lower confidence bound on the mean edge by e-process
     inversion. Returns None when there is no data. May be negative (edge
     not demonstrated). Search domain is capped so shifted edges never
     violate the e-process's y >= y_min support bound (shifting DOWN by m
-    moves edges toward the bound; m_max keeps min(edges)-m >= y_min)."""
+    moves edges toward the bound; m_max keeps min(edges)-m >= y_min).
+
+    m_cap (2026-09-06 ROI amendment): the historical 1.0 ceiling is
+    correct for per-share edges (bounded by ~1) but TRUNCATED per-dollar
+    ROI LCBs (first ROI run: exact +1.000 rows). Edge callers keep the
+    default; ROI callers pass m_cap=None (support bound alone governs)."""
     if not edges:
         return None
     if e_bar <= 1.0:
         raise ValueError("e_bar must exceed 1 (Ville)")
-    m_max = min(min(edges) - y_min, 1.0)
+    m_max = min(edges) - y_min
+    if m_cap is not None:
+        m_max = min(m_max, m_cap)
     m_lo = -1.0  # shifting UP is always inside support; -1 floors the report
 
     def rejects(m: float) -> bool:

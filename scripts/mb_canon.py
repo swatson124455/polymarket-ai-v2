@@ -107,13 +107,21 @@ def pooled_edge(market_edges: list[tuple[float, str, float]]) -> float | None:
 #   * NET WINNINGS = ROI × stake, at the ruled $100 reference per wager
 #     for hypothetical bases, sizer stake for money.
 ROI_Y_MIN = -1.10
-# ROI support floor: worst wager ROI = -(1 + fee/fill); venue fee =
-# rate*fill*(1-fill) with rate <= 0.07 => fee/fill <= 0.07 => ROI >=
-# -1.07; flat-2% fallback fee = 0.02*fill => ROI >= -1.02. Margin to -1.10.
+# RAW-ATOM sanity floor: worst possible wager ROI = -(1 + fee/fill);
+# venue fee = rate*fill*(1-fill) with rate <= 0.07 => fee/fill <= 0.07
+# => ROI >= -1.07; flat-2% fallback => ROI >= -1.02. A raw atom below
+# -1.10 is data corruption — wager_rois raises loudly (never used as an
+# e-process bound; that conflation TRUNCATED LCBs at min_roi+1.10 in the
+# 2026-09-06 first ROI run — the exactly-+0.080 rows).
 LAMBDAS = (0.05, 0.1, 0.2, 0.4, 0.6, 0.8)
 # = band_tracker.LAMBDAS verbatim (pinned equal by test so the mixture
-# grids can never drift apart); positivity at the floor:
-# 1 + 0.8*(-1.10) = 0.12 > 0.
+# grids can never drift apart).
+MIX_POSITIVITY_FLOOR = -1.0 / max(LAMBDAS) + 1e-4
+# The mixture's TRUE support bound: every wealth factor 1 + lam*y must
+# stay positive, so y > -1/max(LAMBDAS) = -1.25. This (not the raw-atom
+# floor) is what limits how far the LCB bisection may shift atoms down;
+# the e-process stays a valid supermartingale under H0 for any shift
+# keeping all observed factors positive.
 
 
 def wager_rois(records: list[dict], outcomes: dict, fee_rate_map: dict,
@@ -135,16 +143,22 @@ def wager_rois(records: list[dict], outcomes: dict, fee_rate_map: dict,
         if o is None:
             continue
         fee, _src = canon_fee(tok, f, fee_rate_map, fee_map)
-        out.append((ts, tok, (o - f - fee) / f))
+        roi = (o - f - fee) / f
+        if roi < ROI_Y_MIN:
+            raise ValueError(
+                f"wager ROI {roi:.4f} below the physical floor "
+                f"{ROI_Y_MIN} (token {tok}) — data corruption, refusing")
+        out.append((ts, tok, roi))
     out.sort()
     return out
 
 
-def mixture_e_value(ys: list, y_min: float = ROI_Y_MIN) -> float:
+def mixture_e_value(ys: list, y_min: float = MIX_POSITIVITY_FLOOR) -> float:
     """Uniform-mixture betting e-process for H0: mean <= 0 — the same
     mixture as band_tracker.e_value (grid pinned equal by test),
-    generalized to a caller-stated support bound: ROI atoms can reach
-    -1.07 with venue fees, below the band tracker's -1.02 assertion."""
+    generalized to the wealth-positivity support bound so shifted ROI
+    atoms (LCB bisection) are accepted all the way to the mathematical
+    limit; raw-atom sanity lives in wager_rois, not here."""
     assert all(y >= y_min - 1e-9 for y in ys), "atom below support bound"
     wealth = [1.0] * len(LAMBDAS)
     for y in ys:
