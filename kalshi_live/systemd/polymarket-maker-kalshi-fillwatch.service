@@ -1,0 +1,28 @@
+# A4ii CONTINUOUS FILL-WATCH (operator "proceed with remaining open items" 2026-09-06).
+# Companion unit to the maker daemon: starts with it (WantedBy), stops with it (PartOf),
+# and systemd self-heals a dead watcher (Restart=always) — closing the "aliveness checked
+# at arm-time only" residual of hole A1/A4ii. Runs kalshi_fill_watch.py FOREVER
+# (--hours 0) with the A4i auto-STOP armed on the TRUE-loss gauge (realized_est =
+# equity-at-cost delta; raw balance/fills gauges never write STOP — a benign 100ct open
+# fill moves balance ~-$29, measured 2026-09-01 18:32->18:37Z).
+# since/baseline files persist across watcher restarts so the window and loss baseline
+# never silently re-base; kalshi_safe_start.sh resets both at each sanctioned start.
+# Install: /etc/systemd/system/polymarket-maker-kalshi-fillwatch.service
+#          systemctl daemon-reload && systemctl enable polymarket-maker-kalshi-fillwatch
+[Unit]
+Description=Kalshi maker continuous fill-watch (read-only + STOP-on-true-loss)
+PartOf=polymarket-maker-kalshi-ws.service
+After=polymarket-maker-kalshi-ws.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+WorkingDirectory=/opt/pa2-maker-kalshi-live
+EnvironmentFile=/opt/pa2-maker-kalshi-live/live.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/pa2-maker-kalshi-live/venv/bin/python /opt/pa2-maker-kalshi-live/kalshi_fill_watch.py --since-file /opt/pa2-maker-kalshi-live/fillwatch.since --baseline-file /opt/pa2-maker-kalshi-live/fillwatch.baseline --hours 0 --interval 60 --stop-file-on-alarm
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=polymarket-maker-kalshi-ws.service
