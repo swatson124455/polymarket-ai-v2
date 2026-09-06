@@ -183,7 +183,12 @@ def decode_fill_v2(lg: dict, roster: set[str]) -> Optional[dict]:
       topics[2] = order owner (server-side filtered to the roster)
       data[1]   = ctf token id; data[2] = usdc*1e6; data[3] = tokens*1e6
       price = usdc/tokens (matched API ground truth to 4 decimals)
-    Direction is NOT here — side_from_receipt_logs() supplies it."""
+    Direction is NOT here — side_from_receipt_logs() supplies it.
+    CAVEAT (chain-verified 2026-09-06): the amount words are MAKER-
+    perspective — the layout above holds for the owner's BUY orders only.
+    For a SELL order data[2]=tokens given, data[3]=usdc received, so the
+    fields below come out inverted; sell_record() corrects them. The BUY
+    pipeline (side gated before use) is unaffected."""
     topics = lg.get("topics") or []
     if len(topics) < 3 or _hex(topics[0]).lower() != FILL_TOPIC_V2:
         return None
@@ -397,10 +402,20 @@ def sell_record(sig: dict, now: float) -> dict:
     """Minimal SELL record (GO-precondition #4, 2026-09-06). Pure - the
     watch loop serializes it to cfg.sell_sink. No quotes, no gates: this
     is raw material for the pre-registered with-exits estimand, not a
-    graded signal."""
+    graded signal.
+
+    SELL-layout correction (2026-09-06, chain-verified on tx 0x0f422cdb
+    [Exchange V2] + 0x31f7d3b9 [NegRiskExchange V2]): the V2 fill event's
+    amount words are maker-perspective, so for a SELL order decode_fill_v2
+    hands this function whale_price = tokens/usdc (the true price's
+    inverse) and whale_size_usd = the TOKEN count. Invert here — the sig
+    is receipt-verified SELL before this is called. Exact through
+    merge_same_tx: merged price = sum(tok)/sum(usdc), merged size =
+    sum(tok), so 1/p and size/p recover the true VWAP and total USD."""
+    p = float(sig["whale_price"])
     return {"trader": sig["trader"], "token_id": sig["token_id"],
-            "side": "SELL", "whale_price": sig["whale_price"],
-            "whale_size_usd": sig["whale_size_usd"],
+            "side": "SELL", "whale_price": 1.0 / p,
+            "whale_size_usd": sig["whale_size_usd"] / p,
             "tx": sig.get("tx", ""), "detect_ts": now}
 
 

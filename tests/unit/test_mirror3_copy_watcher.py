@@ -714,16 +714,45 @@ def test_bidsim_config_gating():
 
 # ---- GO-precondition #4: SELL recording (operator "build all 5", 2026-09-06)
 
-def test_sell_record_schema_and_purity():
+def test_sell_record_schema_purity_and_layout_inversion():
+    """sell_record inverts the BUY-layout arithmetic decode_fill_v2 hands
+    it for SELL orders (maker-perspective amount words; chain-verified
+    2026-09-06). Fixture = the real first sink record's tx 0x0f422cdb:
+    sold 642.5 tokens for $51.40 gross (price $0.08); the defective
+    passthrough recorded price 12.5 / size 642.5."""
     from mirror_v3 import copy_watcher as cw
-    sig = {"trader": "0xabc", "token_id": "123", "whale_price": 0.42,
-           "whale_size_usd": 7.5, "tx": "0xdead"}
+    sig = {"trader": "0xabc", "token_id": "123",
+           "whale_price": 642.5 / 51.4,     # tokens/usdc = 12.5 (inverted)
+           "whale_size_usd": 642.5,         # token count, not USD
+           "tx": "0xdead"}
     r = cw.sell_record(sig, 1788000000.0)
-    assert r == {"trader": "0xabc", "token_id": "123", "side": "SELL",
-                 "whale_price": 0.42, "whale_size_usd": 7.5,
-                 "tx": "0xdead", "detect_ts": 1788000000.0}
-    assert sig == {"trader": "0xabc", "token_id": "123", "whale_price": 0.42,
-                   "whale_size_usd": 7.5, "tx": "0xdead"}  # input untouched
+    assert r["trader"] == "0xabc" and r["token_id"] == "123"
+    assert r["side"] == "SELL" and r["tx"] == "0xdead"
+    assert r["detect_ts"] == 1788000000.0
+    assert abs(r["whale_price"] - 0.08) < 1e-9       # true price = usdc/tok
+    assert abs(r["whale_size_usd"] - 51.4) < 1e-9    # true USD received
+    assert 0.0 < r["whale_price"] < 1.0              # binary-market bound
+    assert sig == {"trader": "0xabc", "token_id": "123",
+                   "whale_price": 642.5 / 51.4, "whale_size_usd": 642.5,
+                   "tx": "0xdead"}  # input untouched
+
+
+def test_sell_record_inversion_exact_through_merge():
+    """merge_same_tx over inverted sell fills yields price=sum(tok)/sum(usdc)
+    and size=sum(tok); sell_record must recover total USD and true VWAP.
+    Two clips: 100 tok @ $0.25 ($25) + 300 tok @ $0.20 ($60) ->
+    VWAP 85/400 = 0.2125, USD 85."""
+    from mirror_v3 import copy_watcher as cw
+    from mirror_v3.sizing import merge_same_tx
+    clips = [{"tx": "0xt", "trader": "0xabc", "token_id": "9",
+              "whale_price": 100 / 25.0, "whale_size_usd": 100.0},
+             {"tx": "0xt", "trader": "0xabc", "token_id": "9",
+              "whale_price": 300 / 60.0, "whale_size_usd": 300.0}]
+    merged = merge_same_tx(clips)
+    assert len(merged) == 1
+    r = cw.sell_record(merged[0], 1.0)
+    assert abs(r["whale_size_usd"] - 85.0) < 1e-9
+    assert abs(r["whale_price"] - 85.0 / 400.0) < 1e-9
 
 
 def test_sell_sink_is_separate_from_shadow_path():
