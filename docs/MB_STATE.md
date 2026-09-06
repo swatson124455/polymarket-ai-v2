@@ -18,6 +18,28 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-06 (~00:55Z) — ALL 5 GO-PRECONDITIONS BUILT (operator "build
+> ## all 5"); GO CHECKLIST is now the binding composition gate
+>
+> **docs/MB_GO_CHECKLIST.md** = the gate: no dollar moves until its five
+> lines are green or operator-struck; first PASS does not override.
+> Status: (1) verbatim-echo-at-GO codified; (2) [chain] watchdog LIVE in
+> cron (8 stages OK/CRASHED/MISSING; first run true-positived
+> hypo=MISSING for 09-05); (3) sizer depth_frac rail BUILT (slippage
+> measurement = pilot-day, spec in checklist); (4) SELL recorder LIVE —
+> watcher writes roster SELLs to mirror3_shadow_sells.jsonl (own sink,
+> BUY pipeline untouched, .pre-sellsink-20260906; sink file appears on
+> first roster SELL — none yet at 00:52Z; with-exits estimand = next
+> build once data accrues); (5) cap_per_event rail BUILT (per-event
+> proportional down-scale, sizing layer, never a market block).
+> Verification: sizer 23/23 + 5/5 mutants; mirror3 battery 65/65;
+> chain-watch self-test 5/5; watcher restarted roster=124, 0 tracebacks,
+> BUY record at 00:49:59Z post-restart. Also this session: hypo $ ledger
+> LIVE in cron (seeded 1,860 rows; $ref100 +1,139.19 HYPOTHETICAL,
+> $sizer 0.00); tailed-cohort own-P&L measured (+$263,827 resolved gross
+> vs $67.5M open basis, 95/124 wallets); verbatim-first reporting rule
+> codified. Memory: project_mb_go_preconditions.md.
+
 > ## 2026-09-02 (~15:25Z) — ALL 5 FOLLOW-UPS RUN ("run the follow ups");
 > ## roster 69->124 (insuff57 fold-in LIVE)
 >
