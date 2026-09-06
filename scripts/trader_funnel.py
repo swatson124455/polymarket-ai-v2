@@ -503,6 +503,17 @@ def _self_test() -> int:
     print(f"  [conc] per-trader peak: overlap 2, all-open 3, empty 0 : "
           f"{ok8}")
     ok &= ok8
+    # BASIS-CONVERSION pins (2026-09-06)
+    import inspect as _i2
+    tsrc = _i2.getsource(trader_row) + _i2.getsource(display_stake)
+    src_run2 = _i2.getsource(run)
+    okc = ("wager_rois" in tsrc and "roi_lcb" in tsrc
+           and "per_market_edges" not in tsrc
+           and 'lcb=r["lcb"] * fill' in tsrc
+           and "epoch = cq.BASIS_EPOCH" in src_run2)
+    print(f"  [basis] funnel on ROI atoms + conversion epoch + sizer "
+          f"roi->share map : {okc}")
+    ok &= okc
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

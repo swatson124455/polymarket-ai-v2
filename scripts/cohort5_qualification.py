@@ -611,6 +611,20 @@ def _self_test() -> int:
     print(f"  [heartbeat] run() writes at BOTH clean exits (early no-tokens"
           f" + full grade) : {ok7}")
     ok &= ok7
+    # BASIS-CONVERSION pins (2026-09-06): the grading closure must score
+    # ROI wagers from the ONE conversion epoch — a regression to the old
+    # estimand or the old epochs turns these RED.
+    import inspect as _i
+    esrc = _i.getsource(run)
+    okb = ("wager_rois" in esrc and "roi_e_value" in esrc
+           and "roi_lcb" in esrc and "per_market_edges" not in esrc
+           and "epoch = BASIS_EPOCH" in esrc
+           and FUTILITY_DAYS == 7.0
+           and BASIS_EPOCH == datetime(2026, 9, 6, 22, 30, 0,
+                                       tzinfo=timezone.utc).timestamp())
+    print(f"  [basis] ROI atoms + conversion epoch + 1wk futility pinned"
+          f" : {okb}")
+    ok &= okb
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
