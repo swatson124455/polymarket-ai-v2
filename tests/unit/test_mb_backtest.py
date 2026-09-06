@@ -139,6 +139,16 @@ def test_files_to_process_excludes_today_and_processed():
     assert mbt.files_to_process(files, set(), "20260904") == []
 
 
+def test_should_rescreen():
+    """Monday once/day, first run, or forced — nothing else."""
+    assert mbt.should_rescreen(True, True, 3, "x", "y")        # forced
+    assert mbt.should_rescreen(False, False, 3, "x", "y")      # first run
+    assert mbt.should_rescreen(False, True, 0, "", "20260907")  # Monday
+    assert not mbt.should_rescreen(False, True, 0, "20260907",
+                                   "20260907")                 # already done
+    assert not mbt.should_rescreen(False, True, 2, "", "20260908")  # weekday
+
+
 def test_canon_consumed_not_reimplemented():
     src = inspect.getsource(mbt)
     for name in ("e_value", "per_market_edges", "lcb_edge", "canon_fee"):

@@ -124,7 +124,8 @@ def _self_test() -> int:
           f" loud : {ok2}")
     ok &= ok2
     line, bad = grade_chain(_mk_log(day, EXPECTED[:-1]), day)
-    ok3 = bad == 1 and "hypo=MISSING" in line and line.startswith("[chain] !!")
+    ok3 = bad == 1 and "backtest=MISSING" in line \
+        and line.startswith("[chain] !!")
     print(f"  [missing] absent stage reported MISSING, never silently OK :"
           f" {ok3}")
     ok &= ok3

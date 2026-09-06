@@ -401,6 +401,13 @@ def files_to_process(all_files: list[str], processed: set[str],
     return out
 
 
+def should_rescreen(force: bool, cand_exists: bool, weekday: int,
+                    last_rescreen: str, today: str) -> bool:
+    """Monday (UTC) once per day, first run ever, or --rescreen. Pure."""
+    return force or not cand_exists or (weekday == 0
+                                        and last_rescreen != today)
+
+
 def cmd_daily_extract(args) -> int:
     """Incremental daily extraction (cron stage, operator GO 2026-09-06).
     Mondays (or --rescreen): re-run the screen against the CURRENT study
@@ -418,8 +425,9 @@ def cmd_daily_extract(args) -> int:
     today = now.strftime("%Y%m%d")
     state = json.load(open(state_path)) if os.path.exists(state_path) \
         else {"processed": [], "last_rescreen": ""}
-    rescreen = args.rescreen or not os.path.exists(cand_path) or (
-        now.weekday() == 0 and state.get("last_rescreen") != today)
+    rescreen = should_rescreen(args.rescreen, os.path.exists(cand_path),
+                               now.weekday(),
+                               state.get("last_rescreen", ""), today)
     if rescreen:
         from types import SimpleNamespace as NS
         rc = cmd_screen(NS(wallets=args.wallets, conc=args.conc,
