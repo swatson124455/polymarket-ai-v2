@@ -18,7 +18,7 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
-> ## 2026-09-06 (~15:55Z) — BUILD 3 AT THE REVIEW GATE: EMPIRICAL PRIOR
+> ## 2026-09-06 (~15:44Z) — BUILD 3 AT THE REVIEW GATE: EMPIRICAL PRIOR
 > ## FITTED — tau2 CLIPS TO ZERO (population spread = sampling noise)
 >
 > **`scripts/mb_bayes.py`** (commit `1ea96fe`; self-test 6/6, pytest
@@ -27,7 +27,7 @@
 > gate (e>=20 + $100/wk floor untouched); outputs HYPOTHESIS-labeled.
 > Deployed to mb_readout as an ANALYSIS TOOL ONLY — no cron/gate wiring
 > until adversarial review + operator sign-off (mandate order).
-> **MEASURED PRIOR (fit 2026-09-06 ~15:5xZ, sweep rows, haircut
+> **MEASURED PRIOR (fit 2026-09-06 ~15:41Z, sweep rows, haircut
 > +0.0100, min_n=30):** over 4,106 wallets with n>=30 resolved
 > (15,124 had >=2): **mu = -0.0217, tau2_raw = -0.000214 -> CLIPPED
 > to 0** (between-wallet var 0.004267 < avg sampling noise 0.004481).
