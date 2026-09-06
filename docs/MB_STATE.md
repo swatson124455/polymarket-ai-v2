@@ -60,9 +60,20 @@
 > build option); replay conc = upper bound under sparse labels (study
 > conc is the screen number); ranking 17k wallets on a 4-day holdout
 > is a SCREEN with selection effects — forward confirm stays the proof.
-> **NEXT (mandate order):** build 2 cross-trader allocator + graduated
-> trust; build 3 Bayes head start; daily leaderboard refresh in cron =
-> additive proposal for operator.
+> **BUILD 2 ALSO SHIPPED (~04:15Z): `scripts/mb_allocator.py` LIVE in
+> mb_readout** (commit `a387d17`; self-test 6/6, pytest 7/7, 5/5
+> mutants killed incl. over-commit-guard removal and 10x-bankroll
+> inflation). Envelope layer: bankroll -> operator tier fractions
+> (MB_ALLOC_TIER_FRACS, NO defaults, sum<=1 enforced) -> equal
+> per-trader envelopes within tier -> mb_sizer inside the envelope.
+> Down-only property-tested; unknown tier = $0 + flagged. **AWAITING
+> OPERATOR: the tier names + fractions** (e.g. proven/confirming
+> splits) — funnel/executor wiring follows those numbers; until an
+> executor exists the gap remains harmless (all stakes $0).
+> **NEXT (mandate order):** build 3 Bayes head start (empirical prior
+> from the population study, adversarial review BEFORE deploy — not
+> rushed at session end); funnel/executor allocator wiring on operator
+> tier numbers; daily leaderboard refresh in cron = additive proposal.
 
 > ## 2026-09-06 (~03:25Z) — SELL-SINK LAYOUT DEFECT FOUND IN SESSION-START
 > ## CHECKS; FIXED + DEPLOYED + RECORDS MIGRATED
