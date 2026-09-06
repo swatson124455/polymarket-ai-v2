@@ -18,6 +18,35 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-06 (~15:45Z) — SELL-SINK PERMISSION OUTAGE (my defect) FOUND,
+> ## FIXED, FULLY BACKFILLED; 11:40Z cron VERIFIED ([chain] first run OK)
+>
+> **OUTAGE:** the 03:16Z sell-sink migration's os.replace (run as root)
+> left the sink root-owned; the polymarket-user watcher failed every
+> SELL append with PermissionError 03:16:15Z..15:33Z (806 logged; found
+> at ~15:33Z after the steward box resumed from an ~11h suspend). BUY
+> pipeline unaffected throughout (11,890 verdicts in window). Fixed:
+> chown polymarket + append-probe verified; live records resumed on
+> their own (8 by 15:39Z). **BACKFILLED from chain** (`f3aa0c3`
+> scripts/mirror3_sell_backfill.py, watcher primitives imported):
+> 8,689 merged roster wagers in window -> 809 SELLs, receipt-confirmed
+> 809/809, appended with backfill marker (detect_ts = block time,
+> disclosed). Sink = 896 records, ALL prices in (0,1]. LESSON (deploy
+> trap class): root-run file REPLACEMENT changes ownership under a
+> service writer — migrations must chown back or append-only.
+> **MEASURED BONUS:** V2 fill event data word[0] is the order side flag
+> (0=BUY/1=SELL) — concordance vs receipts 809/809 agree, 0 disagree
+> on this window; could spare the per-signal receipt RPC (OPTIMIZATION
+> PROPOSAL, operator gate — receipts stay authority until ruled).
+> **11:40Z CRON (09-06) VERIFIED:** [chain] all 8 stages OK (first full
+> in-cron run), [canon] ALARMS=0, [grader] OK locks_written=2 (first
+> futility locks — FAILED 5->7, as handoff predicted), [hypo] in-cron
+> first run: 3,209 rows rebuilt, $ref100=-2,501.50 $sizer=+0.00
+> HYPOTHETICAL (reseed-on-cron per tuple-fix; supersedes the 1,860-row
+> +1,139.19 pre-fix seed — different row set). Band moved sharply:
+> n 259->488, e 1.827->0.415, pooled +0.0089 (futility 600 nearing —
+> watch item).
+
 > ## 2026-09-06 (~04:05Z) — BUILD 1 SHIPPED + FIRST DISCOVERY SWEEP RUN
 > ## (walk-forward backtest harness; one positive-LCB find)
 >
@@ -60,7 +89,9 @@
 > build option); replay conc = upper bound under sparse labels (study
 > conc is the screen number); ranking 17k wallets on a 4-day holdout
 > is a SCREEN with selection effects — forward confirm stays the proof.
-> **BUILD 2 ALSO SHIPPED (~04:15Z): `scripts/mb_allocator.py` LIVE in
+> **BUILD 2 ALSO SHIPPED (VPS deploy verified 2026-09-06 ~15:31Z — the
+> steward box SUSPENDED ~04:00Z->15:30Z mid-session; earlier stages
+> carry their own log stamps): `scripts/mb_allocator.py` LIVE in
 > mb_readout** (commit `a387d17`; self-test 6/6, pytest 7/7, 5/5
 > mutants killed incl. over-commit-guard removal and 10x-bankroll
 > inflation). Envelope layer: bankroll -> operator tier fractions
