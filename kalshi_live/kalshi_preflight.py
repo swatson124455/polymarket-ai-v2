@@ -9,6 +9,8 @@ Checks (each prints PASS/FAIL/WARN; exit 0 only if zero FAILs):
   1  live dir readable (sudo present)
   2  no STOP sentinel
   3  live.env matches the operator-approved rails manifest (every key)
+  3b config-change guard: drift since last clean start (or a first start with no
+     baseline) is a hard FAIL unless acked (--ack-config-change / CONFIG_CHANGE_ACK)
   4  service not already active (pre-start expectation)
   5  venue account: fresh cash-feed row (<=6 min old), 0 resting (FAIL if not),
      positions printed (WARN if held), cash >= MAX_TOTAL_CAPITAL sanity
@@ -27,11 +29,19 @@ from datetime import datetime, timezone
 
 LIVE = "/opt/pa2-maker-kalshi-live"
 MANIFEST = os.path.join(LIVE, "kalshi_rails_manifest.json")
+# Ack can come as a flag (manual runs) or as this file (the systemd ExecStartPre gate
+# cannot take per-invocation flags; kalshi_safe_start.sh materializes the flag into the
+# file before start and removes it after the baseline snapshot).
+ACK_FILE = os.path.join(LIVE, "CONFIG_CHANGE_ACK")
 FAILS, WARNS = [], []
 
 
 class _Args:
     ack_config_change = "--ack-config-change" in sys.argv
+    # --pre-start: the systemd ExecStartPre gate mode — runs checks 1-5 (all hard gates)
+    # and SKIPS the advisory dry-selection print (venue GETs, slow, and A5-different-instant
+    # anyway). The full run remains the kalshi_safe_start.sh path.
+    pre_start = "--pre-start" in sys.argv
 
 
 ARGS = _Args()
@@ -89,14 +99,24 @@ def main():
         res(True, f"rails manifest ({len(manifest)} keys)", "all approved values in place")
 
     # 3b — CONFIG-CHANGE GUARD (safeguard 3): any rail changed since the last actual start
-    # must run its first session at the ramp FLOOR + fill-watch. Preflight WARNs and prints
-    # the changed keys; the caller must acknowledge with --ack-config-change to proceed at
-    # size, else honor the ramp-floor-first discipline. Snapshot 'live.env.last_started' is
-    # written by the start wrapper AFTER a clean start (see check note).
+    # must run its first session at the ramp FLOOR + fill-watch. Blind-review hole A3
+    # (2026-09-06): this used to WARN only, and the ack flag changed nothing but the text.
+    # Now: drift (or a missing snapshot = first start) is a hard FAIL unless explicitly
+    # acknowledged via --ack-config-change or the CONFIG_CHANGE_ACK file. The ack is an
+    # operator statement "I know the config changed; first session runs ramp-floor +
+    # fill-watch" — the ramp-floor itself is still NOT code-enforced (held item A3b).
+    # Snapshot 'live.env.last_started' is written by kalshi_safe_start.sh AFTER a clean
+    # gated start (blind-review hole N1: it must never be written by an ungated path).
     snap = os.path.join(LIVE, "live.env.last_started")
+    ack = ARGS.ack_config_change or os.path.exists(ACK_FILE)
     if not os.path.exists(snap):
-        warn("config-change guard", "no last-started snapshot yet — treat this as a "
-             "FIRST start: run at ramp floor + fill-watch for the first session")
+        if ack:
+            warn("config-change guard", "no last-started snapshot (FIRST start) — "
+                 "ACKNOWLEDGED: run this first session at ramp floor + fill-watch")
+        else:
+            res(False, "config-change guard",
+                "no last-started snapshot — a FIRST start needs an explicit ack: "
+                f"--ack-config-change (safe_start) or touch {ACK_FILE}")
     else:
         prev = {}
         for line in open(snap):
@@ -107,10 +127,15 @@ def main():
         changed = [f"{k}: {prev.get(k)!r}->{envmap.get(k)!r}"
                    for k in set(prev) | set(envmap) if prev.get(k) != envmap.get(k)]
         if changed:
-            warn("config-change guard",
-                 f"{len(changed)} key(s) changed since last start: " + "; ".join(changed)
-                 + " — first session must run ramp-floor + fill-watch"
-                 + ("" if ARGS.ack_config_change else " (pass --ack-config-change to confirm)"))
+            if ack:
+                warn("config-change guard",
+                     f"{len(changed)} key(s) changed since last start — ACKNOWLEDGED "
+                     "(first session = ramp floor + fill-watch): " + "; ".join(changed))
+            else:
+                res(False, "config-change guard",
+                    f"{len(changed)} key(s) changed since last start, UNACKED: "
+                    + "; ".join(changed)
+                    + f" — ack via --ack-config-change or touch {ACK_FILE}")
         else:
             res(True, "config-change guard", "live.env unchanged since last clean start")
 
@@ -158,8 +183,16 @@ def main():
             res(True, "cash covers MAX_TOTAL_CAPITAL",
                 f"${row['cash']:.2f} vs cap ${cap:.0f} (buffer ${row['cash']-cap:.2f})")
 
-    # 6 — dry selection print (no order client is EVER constructed)
-    print("--- DRY SELECTION (what the bot would quote right now; read-only) ---")
+    # 6 — dry selection print (no order client is EVER constructed).
+    # NOTE (quoter module import): this imports maker_kalshi_quoter, whose module-level
+    # code reads env/state files but constructs no client (blind-review N5: side effects
+    # not exhaustively audited — kept out of the systemd gate path for that reason too).
+    if ARGS.pre_start:
+        print("--- pre-start mode: dry-selection print skipped (advisory only; "
+              "run kalshi_preflight.py without --pre-start for it) ---")
+        return finish()
+    print("--- DRY SELECTION (ADVISORY — snapshot at the preflight instant; the real "
+          "first cycle re-reads books and may differ [hole A5]; read-only) ---")
     try:
         sys.path.insert(0, LIVE)
         import maker_kalshi_quoter as q
