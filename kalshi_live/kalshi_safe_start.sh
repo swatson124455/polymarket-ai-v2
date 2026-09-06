@@ -34,6 +34,22 @@ if ! "$PY" "$LIVE/kalshi_preflight.py" $ACK; then
   exit 1
 fi
 
+# 1b) A3b RAMP-FLOOR SESSION marker: an acked config change (or first-ever start)
+#     runs its first session at the ramp floor — now CODE-ENFORCED (quoter reads the
+#     marker; accumulating quotes held at D3_RUNGS[0]). A clean start with no drift
+#     removes it. Crash-restarts mid-first-session keep the floor (marker survives).
+if [ "$ACK" = "--ack-config-change" ]; then
+  touch "$LIVE/RAMP_FLOOR_SESSION"
+  echo "ramp-floor session ARMED (config change acked) -> $LIVE/RAMP_FLOOR_SESSION"
+else
+  rm -f "$LIVE/RAMP_FLOOR_SESSION"
+fi
+
+# 1c) fresh watch window + loss baseline for the continuous fill-watch (A4ii): the
+#     files persist across watcher crash-restarts; each sanctioned start re-bases them.
+date -u +%Y-%m-%dT%H:%M > "$LIVE/fillwatch.since"
+rm -f "$LIVE/fillwatch.baseline"
+
 # 2) start (the unit's ExecStartPre re-runs preflight --pre-start as a belt)
 systemctl enable --now "$SVC"
 sleep 6
@@ -50,21 +66,18 @@ cp "$LIVE/live.env" "$LIVE/live.env.last_started"
 rm -f "$LIVE/CONFIG_CHANGE_ACK"
 echo "config baseline snapshotted -> live.env.last_started"
 
-# 4) arm the first-hours fill-watch in the background (read-only) and VERIFY it
-SINCE=$(date -u +%Y-%m-%dT%H:%M)
-nohup "$PY" "$LIVE/kalshi_fill_watch.py" --since "$SINCE" --hours 2 --interval 60 \
-  >> "$LIVE/fill_watch.log" 2>&1 &
-WPID=$!
+# 4) the CONTINUOUS fill-watch (A4ii) is a systemd companion unit — enable + start it,
+#    then VERIFY it is actually active (fail-closed if not). systemd self-heals a
+#    later watcher death (Restart=always), closing the arm-time-only residual.
+WSVC=polymarket-maker-kalshi-fillwatch
+systemctl enable --now "$WSVC"
 sleep 5
-if ! kill -0 "$WPID" 2>/dev/null; then
-  echo ">>> FILL-WATCH DIED AT ARM (PID $WPID gone) — fail-closed: stopping $SVC."
-  echo ">>> last fill_watch.log lines:"
-  tail -n 20 "$LIVE/fill_watch.log" || true
+if [ "$(systemctl is-active "$WSVC")" != "active" ]; then
+  echo ">>> FILL-WATCH UNIT NOT ACTIVE — fail-closed: stopping $SVC."
+  journalctl -u "$WSVC" -n 20 --no-pager || true
   systemctl stop "$SVC"
   echo ">>> service stopped; fix the watcher, then rerun safe_start."
   exit 1
 fi
-echo "fill-watch armed and ALIVE (PID $WPID, 2h, 60s) -> $LIVE/fill_watch.log  (since $SINCE)"
-echo "NOTE: aliveness is verified at arm time only; a later watcher death is not"
-echo "      auto-detected (A4ii continuous-watch remains an open operator item)."
+echo "continuous fill-watch ACTIVE ($WSVC; since $(cat "$LIVE/fillwatch.since"); auto-STOP on realized_est <= -\$5)"
 echo "=== SAFE START done; service active, watch running ==="

@@ -201,9 +201,12 @@ def main():
                 f"${row['cash']:.2f} vs cap ${cap:.0f} (buffer ${row['cash']-cap:.2f})")
 
     # 6 — dry selection print (no order client is EVER constructed).
-    # NOTE (quoter module import): this imports maker_kalshi_quoter, whose module-level
-    # code reads env/state files but constructs no client (blind-review N5: side effects
-    # not exhaustively audited — kept out of the systemd gate path for that reason too).
+    # N5 AUDIT CLOSED (2026-09-06, AST scan of all 376 module-level nodes): importing
+    # maker_kalshi_quoter executes only env reads (_envi/_envf/_envb), local JSON table
+    # loads that fail-open to {} (_load_scores/_load_presence_table/_load_netev_table),
+    # two WARNING prints, and sys.path.insert. No network, no client construction, no
+    # file writes. run_once()/report() live behind the __main__ guard. Import is
+    # read-only-safe; it stays out of the --pre-start gate purely for speed (A5).
     if ARGS.pre_start:
         print("--- pre-start mode: dry-selection print skipped (advisory only; "
               "run kalshi_preflight.py without --pre-start for it) ---")
