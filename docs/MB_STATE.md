@@ -18,6 +18,49 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-06 (~21:36Z live-verified) — BASIS HARDCODE + LIVE GRADER
+> ## CONVERSION EXECUTED (evening operator session, 5 more rulings)
+>
+> **RULINGS (memory feedback_dollars_per_day_is_the_test, TOP block —
+> "top of the list to be read on anything"):** (1) MEASUREMENT BASIS =
+> ROI *and* NET WINNINGS, LADDER-AWARE — first-buy-only scoring is
+> FLAWED; roi=(o-f-fee)/f per wager; edge/e/ok are inputs only.
+> (2) Futility = TIME-BASED 1 WEEK. (3) Ceiling review GO — executed.
+> (4) LIVE GRADERS CONVERTED (operator go).
+> **EXECUTED (commits thru `bbeeb78`+pins, all pushed, all deployed,
+> all mutation-passed):**
+> - mb_canon: wager_rois + roi_e_value (per-shift lambda-subgrid by the
+>   PHYSICAL floor -1.10 — data-independent, anytime-valid) + roi_lcb
+>   (interval-walk inversion). TWO LCB truncation defects found in the
+>   first ROI boards and root-fixed (edge-era 1.0 cap; raw-floor misused
+>   as search bound -> exact +0.080 rows); then the +0.23 positivity
+>   ceiling lifted by the subgrid (loss-fixture LCB 0.08->0.23->1.80).
+> - Backtest boards on the ruled basis (21:19/21:22Z, artifacts in
+>   backtest/): discovery top $wk_net_lcb +$123.6k (0x62ca7dc910, 565
+>   holdout wagers, roi_lcb +1.527) — HYPOTHETICAL $100/wager, 36.3%
+>   label coverage, no 1mo/fraud checks; 6/10 top rows show "futility
+>   1wk" from label-sparse FIRST weeks under left-censored capture
+>   (holdout columns unaffected — read both lenses).
+> - LIVE GRADERS CONVERTED + deployed (.pre-basisconv-20260906):
+>   cohort5 (fresh epoch BASIS_EPOCH=2026-09-06T22:30Z for ALL
+>   unconsumed trials, groups=provenance; PASS = e>=20 + $100/wk
+>   net-winnings LCB @ $100/wager; futility 1wk; locks carry
+>   basis=roi-netwin-20260906), funnel (roi column, sizer fed
+>   roi x fill per-share equivalent), hypo ledger (per-wager rows,
+>   exact roi x stake, FRESH file hypo_ledger_roi.jsonl). Live-verified
+>   21:36Z: conversion banner prints, all trials ACCRUING 0-resolved
+>   (epoch in the future — correct), consumed locks untouched, ledger
+>   reset to 0 rows. Self-test basis PINS added (grader + funnel) —
+>   regression to old estimand/epochs turns them RED.
+> **CONSEQUENCES TO EXPECT:** tomorrow's 11:40Z funnel = tiny n (only
+> post-22:30Z wagers count); ENTIRE roster resolves to pass-or-futility
+> by 2026-09-13; hypo $ledger restarts from $0.
+> **OPEN (operator):** band tracker NOT converted (own frozen
+> pre-registration, e=0.415 @ n=488 of 600); locked traders keep
+> old-basis verdicts (re-trials grantable on request); lambda-grid /
+> estimand adversarial review of the ROI machinery remains the named
+> review step before any real-money composition.
+
 > ## 2026-09-06 (session close, VPS-verified ~16:3xZ) — ALL SIX OPERATOR
 > ## RULINGS EXECUTED; DAILY BACKTEST STAGE LIVE IN CRON (9 chain stages)
 >
