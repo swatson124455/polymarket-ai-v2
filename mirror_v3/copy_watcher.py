@@ -349,6 +349,11 @@ class WatcherConfig:
     # maker-execution measurement. OFF unless MIRROR3_BIDSIM=1.
     bidsim: bool = False
     bidsim_path: str = "/opt/pa2-shared/mirror3_bidsim.jsonl"
+    # GO-precondition #4 (operator "build all 5", 2026-09-06): roster SELLs
+    # recorded to their OWN sink for the future with-exits estimand. A
+    # separate file by design - the graded BUY pipeline and its consumers
+    # (all-BUY sink assumption) are never touched.
+    sell_sink: str = "/opt/pa2-shared/mirror3_shadow_sells.jsonl"
 
     @classmethod
     def from_env(cls, env) -> "WatcherConfig":
@@ -383,7 +388,20 @@ class WatcherConfig:
             bidsim=str(env.get("MIRROR3_BIDSIM", "")).strip() == "1",
             bidsim_path=env.get("MIRROR3_BIDSIM_PATH",
                                 "/opt/pa2-shared/mirror3_bidsim.jsonl"),
+            sell_sink=env.get("MIRROR3_SELL_SINK",
+                              "/opt/pa2-shared/mirror3_shadow_sells.jsonl"),
         )
+
+
+def sell_record(sig: dict, now: float) -> dict:
+    """Minimal SELL record (GO-precondition #4, 2026-09-06). Pure - the
+    watch loop serializes it to cfg.sell_sink. No quotes, no gates: this
+    is raw material for the pre-registered with-exits estimand, not a
+    graded signal."""
+    return {"trader": sig["trader"], "token_id": sig["token_id"],
+            "side": "SELL", "whale_price": sig["whale_price"],
+            "whale_size_usd": sig["whale_size_usd"],
+            "tx": sig.get("tx", ""), "detect_ts": now}
 
 
 def shadow_record(sig: dict, verdict: str, fill: Optional[float],
@@ -671,7 +689,18 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                             log(f"[copy_watcher] SIDE UNKNOWN (skipped) "
                                 f"{sig['trader'][:10]}… tok="
                                 f"{sig['token_id'][:10]}… tx={sig['tx'][:18]}…")
-                        continue  # estimand is first BUY; SELLs are ignored
+                        elif side == "SELL":
+                            # GO-precondition #4: record to the SEPARATE
+                            # sell sink; a sink failure must never break
+                            # BUY detection (fail-toward-missing-data,
+                            # alarmed by the sink's own staleness later)
+                            try:
+                                with open(cfg.sell_sink, "a") as _sf:
+                                    _sf.write(json.dumps(
+                                        sell_record(sig, now)) + "\n")
+                            except Exception as e:
+                                log(f"[copy_watcher] sell-sink error: {e!r}")
+                        continue  # graded estimand is first BUY - unchanged
                     sig["side"] = "BUY"
                     try:
                         blk = await rpc_call(bc.w3.eth.get_block(sig["_block"]))

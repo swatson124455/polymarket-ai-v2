@@ -157,3 +157,68 @@ def test_ruled_constants_match_grader():
     import cohort5_qualification as cq
     assert ms.E_BAR_RULED == cq.C1_E_REJECT
     assert ms.PER_BET_CAP_CANON == 300.0
+
+
+# ---- GO-precondition rails (operator "build all 5", 2026-09-06) ----
+
+def kw_lcb(**over):
+    base = kw(**over)
+    base.pop("e_value_fn"); base.pop("y_min")
+    return base
+
+
+
+def test_depth_frac_shrinks_usable_depth_downward_only():
+    # proven LCB, big raw stake; depth 100 -> frac 0.25 binds at 25
+    r_off = ms.recommend_stake_from_lcb(0.30, 0.5, 0.0, **kw_lcb(
+        bankroll=20000.0, book_depth_usd=100.0))
+    r_on = ms.recommend_stake_from_lcb(0.30, 0.5, 0.0, **kw_lcb(
+        bankroll=20000.0, book_depth_usd=100.0), depth_frac=0.25)
+    assert r_off["stake"] == 100.0 and "book_depth" in r_off["caps_applied"]
+    assert r_on["stake"] == 25.0 and "book_depth" in r_on["caps_applied"]
+    assert r_on["stake"] < r_off["stake"]  # strictly downward
+
+
+def test_depth_frac_none_is_exact_parity_with_old_behavior():
+    a = ms.recommend_stake_from_lcb(0.10, 0.5, 0.01, **kw_lcb())
+    b = ms.recommend_stake_from_lcb(0.10, 0.5, 0.01, **kw_lcb(), depth_frac=None)
+    assert a == b
+
+
+def test_depth_frac_validation():
+    import pytest
+    for bad in (0.0, -0.5, 1.5):
+        with pytest.raises(ValueError):
+            ms.recommend_stake_from_lcb(0.10, 0.5, 0.01, **kw_lcb(),
+                                        depth_frac=bad)
+
+
+def test_event_cap_scales_siblings_proportionally():
+    props = [("a", "EV1", 200.0), ("b", "EV1", 100.0), ("c", "EV2", 50.0)]
+    out = ms.cap_per_event(props, 150.0)
+    by = {r["key"]: r for r in out}
+    # EV1 total 300 > 150 -> scale by 0.5; EV2 total 50 <= 150 untouched
+    assert abs(by["a"]["stake"] - 100.0) < 1e-9 and by["a"]["capped"]
+    assert abs(by["b"]["stake"] - 50.0) < 1e-9 and by["b"]["capped"]
+    assert by["c"]["stake"] == 50.0 and not by["c"]["capped"]
+    assert abs(by["a"]["stake"] + by["b"]["stake"] - 150.0) < 1e-9
+
+
+def test_event_cap_never_raises_a_stake():
+    props = [("a", "EV1", 10.0), ("b", "EV1", 10.0)]
+    out = ms.cap_per_event(props, 1000.0)
+    assert all(r["stake"] == 10.0 and not r["capped"] for r in out)
+
+
+def test_event_cap_ungrouped_passes_through_flagged():
+    out = ms.cap_per_event([("a", None, 500.0)], 100.0)
+    assert out[0]["stake"] == 500.0 and out[0]["event_id"] is None \
+        and not out[0]["capped"] and out[0]["event_total"] is None
+
+
+def test_event_cap_validation():
+    import pytest
+    with pytest.raises(ValueError):
+        ms.cap_per_event([("a", "EV1", 1.0)], 0.0)
+    with pytest.raises(ValueError):
+        ms.cap_per_event([("a", "EV1", -1.0)], 100.0)

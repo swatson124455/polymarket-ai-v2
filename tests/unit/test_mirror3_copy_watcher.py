@@ -710,3 +710,30 @@ def test_bidsim_config_gating():
     cfg = cw.WatcherConfig.from_env({**base, "MIRROR3_BIDSIM": "1"})
     assert cfg.bidsim is True and cfg.bidsim_path.endswith("mirror3_bidsim.jsonl")
     assert cw.bidsim_make(cw.WatcherConfig.from_env(dict(base))) is None
+
+
+# ---- GO-precondition #4: SELL recording (operator "build all 5", 2026-09-06)
+
+def test_sell_record_schema_and_purity():
+    from mirror_v3 import copy_watcher as cw
+    sig = {"trader": "0xabc", "token_id": "123", "whale_price": 0.42,
+           "whale_size_usd": 7.5, "tx": "0xdead"}
+    r = cw.sell_record(sig, 1788000000.0)
+    assert r == {"trader": "0xabc", "token_id": "123", "side": "SELL",
+                 "whale_price": 0.42, "whale_size_usd": 7.5,
+                 "tx": "0xdead", "detect_ts": 1788000000.0}
+    assert sig == {"trader": "0xabc", "token_id": "123", "whale_price": 0.42,
+                   "whale_size_usd": 7.5, "tx": "0xdead"}  # input untouched
+
+
+def test_sell_sink_is_separate_from_shadow_path():
+    from mirror_v3.copy_watcher import WatcherConfig
+    base = {"MIRROR3_ROSTER_PATH": "/tmp/r.json",
+            "MIRROR3_RPC_URL": "http://localhost:1"}
+    cfg = WatcherConfig.from_env(base)
+    assert cfg.sell_sink != cfg.shadow_path
+    assert cfg.sell_sink != cfg.rtds_sink
+    assert cfg.sell_sink.endswith("mirror3_shadow_sells.jsonl")
+    cfg2 = WatcherConfig.from_env(dict(base,
+                                       MIRROR3_SELL_SINK="/tmp/x.jsonl"))
+    assert cfg2.sell_sink == "/tmp/x.jsonl"

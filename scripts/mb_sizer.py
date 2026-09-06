@@ -83,7 +83,8 @@ def recommend_stake(edges: list, fill: float, fee_per_share: float, *,
                     book_depth_usd: float, min_viable: float,
                     e_value_fn, y_min: float,
                     per_bet_cap: float = PER_BET_CAP_CANON,
-                    e_bar: float = E_BAR_RULED) -> dict:
+                    e_bar: float = E_BAR_RULED,
+                    depth_frac: float = None) -> dict:
     """Recommend a USD stake for one first-buy copy. All risk parameters
     are keyword-required with NO defaults (bankroll, kelly_mult,
     concurrency, book_depth_usd, min_viable) so no constant can hide here.
@@ -107,7 +108,46 @@ def recommend_stake(edges: list, fill: float, fee_per_share: float, *,
     return recommend_stake_from_lcb(
         lcb, fill, fee_per_share, bankroll=bankroll, kelly_mult=kelly_mult,
         concurrency=concurrency, book_depth_usd=book_depth_usd,
-        min_viable=min_viable, per_bet_cap=per_bet_cap, e_bar=e_bar)
+        min_viable=min_viable, per_bet_cap=per_bet_cap, e_bar=e_bar,
+        depth_frac=depth_frac)
+
+
+def cap_per_event(proposals: list, event_cap_usd: float) -> list:
+    """GO-precondition rail #5 (operator 'build all 5', 2026-09-06): cap
+    CORRELATED exposure per EVENT. Neg-risk sibling markets (same election/
+    tournament, different condition_ids) are independent to every market-
+    level guard, so stakes on siblings can stack (CLAUDE.md documented gap;
+    the fix lives in SIZING - never a neg-risk market block, Bug 14).
+
+    proposals: [(key, event_id, stake_usd), ...]; event_id None = no known
+    event grouping -> that stake passes through UNCAPPED but is returned
+    with capped=False so the caller can surface ungrouped exposure.
+    event_cap_usd is OPERATOR-supplied (no default). Within an event whose
+    stakes sum above the cap, every stake scales down proportionally -
+    a strictly downward rail; stakes are never re-ordered or raised."""
+    if event_cap_usd <= 0.0:
+        raise ValueError("event_cap_usd must be > 0 (operator-supplied)")
+    sums: dict = {}
+    for _key, ev, stake in proposals:
+        if stake < 0.0:
+            raise ValueError("negative stake in proposals")
+        if ev is not None:
+            sums[ev] = sums.get(ev, 0.0) + stake
+    out = []
+    for key, ev, stake in proposals:
+        if ev is None:
+            out.append({"key": key, "event_id": None, "stake": stake,
+                        "capped": False, "event_total": None})
+            continue
+        tot = sums[ev]
+        if tot > event_cap_usd:
+            scaled = stake * event_cap_usd / tot
+            out.append({"key": key, "event_id": ev, "stake": scaled,
+                        "capped": True, "event_total": tot})
+        else:
+            out.append({"key": key, "event_id": ev, "stake": stake,
+                        "capped": False, "event_total": tot})
+    return out
 
 
 def recommend_stake_from_lcb(lcb, fill: float, fee_per_share: float, *,
@@ -115,7 +155,8 @@ def recommend_stake_from_lcb(lcb, fill: float, fee_per_share: float, *,
                              concurrency: int, book_depth_usd: float,
                              min_viable: float,
                              per_bet_cap: float = PER_BET_CAP_CANON,
-                             e_bar: float = E_BAR_RULED) -> dict:
+                             e_bar: float = E_BAR_RULED,
+                             depth_frac: float = None) -> dict:
     """Same rule, LCB supplied by a caller that already computed it with
     lcb_edge (e.g. the funnel) - ONE implementation, two entry points."""
     if not (0.0 < fill < 1.0):
@@ -132,6 +173,16 @@ def recommend_stake_from_lcb(lcb, fill: float, fee_per_share: float, *,
         raise ValueError("negative book depth")
     if min_viable < 0.0:
         raise ValueError("negative min_viable")
+    # GO-precondition rail #3 (2026-09-06): market-impact realism. A paper
+    # fill at the quote is optimistic when our order is a large share of
+    # displayed depth. depth_frac (OPERATOR-supplied, no default; None =
+    # rail off) shrinks usable depth to depth_frac * book_depth_usd -
+    # strictly downward. Realized-vs-paper slippage MEASUREMENT is pilot-
+    # day instrumentation (needs real orders; see docs/MB_GO_CHECKLIST.md).
+    if depth_frac is not None:
+        if not (0.0 < depth_frac <= 1.0):
+            raise ValueError("depth_frac must be in (0, 1]")
+        book_depth_usd = book_depth_usd * depth_frac
     out = {"stake": 0.0, "lcb": lcb, "k_full": 0.0, "raw_stake": 0.0,
            "caps_applied": [], "reason": ""}
     if lcb is None:
