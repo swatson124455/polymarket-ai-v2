@@ -18,6 +18,35 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-06 (~15:55Z) — BUILD 3 AT THE REVIEW GATE: EMPIRICAL PRIOR
+> ## FITTED — tau2 CLIPS TO ZERO (population spread = sampling noise)
+>
+> **`scripts/mb_bayes.py`** (commit `1ea96fe`; self-test 6/6, pytest
+> 7/7, 4/4 mutants — one symmetric-fixture blind spot found+closed):
+> normal-normal empirical Bayes on canon per-wallet edges; changes NO
+> gate (e>=20 + $100/wk floor untouched); outputs HYPOTHESIS-labeled.
+> Deployed to mb_readout as an ANALYSIS TOOL ONLY — no cron/gate wiring
+> until adversarial review + operator sign-off (mandate order).
+> **MEASURED PRIOR (fit 2026-09-06 ~15:5xZ, sweep rows, haircut
+> +0.0100, min_n=30):** over 4,106 wallets with n>=30 resolved
+> (15,124 had >=2): **mu = -0.0217, tau2_raw = -0.000214 -> CLIPPED
+> to 0** (between-wallet var 0.004267 < avg sampling noise 0.004481).
+> Reading (HYPOTHESIS, model-based): on this 11-day, 28.2%-labeled
+> window the between-wallet spread of mean edges is fully explained by
+> noise — no detectable persistent skill differentiation, and the
+> population's mean haircut-adjusted copy edge is -2.2c/market. Every
+> posterior collapses to mu. This QUANTIFIES the base rate the confirm
+> track fights; it does not override the anytime-valid LCB machinery
+> (which guards selection at e>=20 by construction).
+> **ADVERSARIAL-REVIEW AGENDA (before any deploy):** (1) label-coverage
+> selection bias — the 28.2% labeled subset skews to our ingestion
+> universe; (2) 11-day window vs >=1mo eligibility; (3) normal-normal
+> adequacy under heavy-tailed edges (tau2=0 could be a tail artifact);
+> (4) haircut sensitivity (rerun at p90 +0.0149); (5) whether the prior
+> should be fit per-category; (6) interaction with the discovery
+> find's +0.0207 LCB (winner's-curse context). Artifact:
+> /opt/pa2-shared/mb_copyable_data/backtest/bayes_prior.json.
+
 > ## 2026-09-06 (~15:45Z) — SELL-SINK PERMISSION OUTAGE (my defect) FOUND,
 > ## FIXED, FULLY BACKFILLED; 11:40Z cron VERIFIED ([chain] first run OK)
 >
