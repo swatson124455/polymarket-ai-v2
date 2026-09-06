@@ -30,6 +30,13 @@ MANIFEST = os.path.join(LIVE, "kalshi_rails_manifest.json")
 FAILS, WARNS = [], []
 
 
+class _Args:
+    ack_config_change = "--ack-config-change" in sys.argv
+
+
+ARGS = _Args()
+
+
 def res(ok, label, detail=""):
     tag = "PASS" if ok else "FAIL"
     if not ok:
@@ -80,6 +87,32 @@ def main():
         res(False, f"rails manifest ({len(manifest)} keys)", "; ".join(drift))
     else:
         res(True, f"rails manifest ({len(manifest)} keys)", "all approved values in place")
+
+    # 3b — CONFIG-CHANGE GUARD (safeguard 3): any rail changed since the last actual start
+    # must run its first session at the ramp FLOOR + fill-watch. Preflight WARNs and prints
+    # the changed keys; the caller must acknowledge with --ack-config-change to proceed at
+    # size, else honor the ramp-floor-first discipline. Snapshot 'live.env.last_started' is
+    # written by the start wrapper AFTER a clean start (see check note).
+    snap = os.path.join(LIVE, "live.env.last_started")
+    if not os.path.exists(snap):
+        warn("config-change guard", "no last-started snapshot yet — treat this as a "
+             "FIRST start: run at ramp floor + fill-watch for the first session")
+    else:
+        prev = {}
+        for line in open(snap):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                prev[k] = v
+        changed = [f"{k}: {prev.get(k)!r}->{envmap.get(k)!r}"
+                   for k in set(prev) | set(envmap) if prev.get(k) != envmap.get(k)]
+        if changed:
+            warn("config-change guard",
+                 f"{len(changed)} key(s) changed since last start: " + "; ".join(changed)
+                 + " — first session must run ramp-floor + fill-watch"
+                 + ("" if ARGS.ack_config_change else " (pass --ack-config-change to confirm)"))
+        else:
+            res(True, "config-change guard", "live.env unchanged since last clean start")
 
     # 4 — service state
     state = subprocess.run(["systemctl", "is-active", "polymarket-maker-kalshi-ws"],
