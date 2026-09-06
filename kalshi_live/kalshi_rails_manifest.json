@@ -1,0 +1,31 @@
+{
+  "_doc": "OPERATOR-APPROVED rails + caps for the Kalshi maker. kalshi_preflight.py FAILS if live.env drifts from any line. Update ONLY alongside an explicit operator approval; each entry cites its ruling.",
+  "_updated": "2026-09-02 (fix-sheet 'all' approval; rails 09-01; relight diff 09-01)",
+  "rails": {
+    "KALSHI_D3_NEWSERIES_MAX_RUNG": {"value": "2", "why": "25ct cap on zero-credit series - GO-window loss 09-01, operator 'do all recs' + rails apply"},
+    "KALSHI_MID_BAND_OUT": {"value": "0.20,0.80", "why": "coin-flip zone ban - 72c bleeder 09-01"},
+    "KALSHI_WIDEBOOK_MIN_SPREAD_TICKS": {"value": "8", "why": "F5: close price-discovery re-admission - operator 'all' 09-02"},
+    "KALSHI_EXIT_CHEAP_CROSS_USD": {"value": "0.05", "why": "F1: stop auto-crossing small fills - operator 'all' 09-02"},
+    "KALSHI_STRAND_CROSS_S": {"value": "60", "why": "F2: patient maker exits - operator 'all' 09-02"},
+    "KALSHI_MAX_TOTAL_CAPITAL": {"value": "240", "why": "F3: one-sided-stranding + cash buffer - operator 'all' 09-02"},
+    "KALSHI_MAX_PRICE_DOLLARS": {"value": "0.985", "why": "F4: never open at 0.99 where venue pays $0 - operator 'all' 09-02"},
+    "KALSHI_SERIES_MAX_USD": {"value": "200", "why": "family cap $200 flat - operator 'do all recs' 09-01"},
+    "KALSHI_SERIES_PCT": {"value": "0", "why": "static family cap governs (pct path off) - 09-01"},
+    "KALSHI_DAILY_LOSS_HALT_USD": {"value": "10", "why": "day-loss halt - standing operator ruling"},
+    "KALSHI_HELD_MAX_USD": {"value": "40", "why": "whole-book naked-cost breaker"},
+    "KALSHI_INV_SOFT_CT": {"value": "30", "why": "inventory throttle"},
+    "KALSHI_INV_HARD_CT": {"value": "100", "why": "inventory hard ceiling"},
+    "KALSHI_JOIN_SIZE": {"value": "100", "why": "max order size - relight sheet KEEP row 09-01"},
+    "KALSHI_MAX_MARKET_CAPITAL": {"value": "100", "why": "per-market dollar cap"},
+    "KALSHI_REENTRY_COOLDOWN_S": {"value": "3600", "why": "burned-market cooldown"},
+    "KALSHI_D3_RUNGS": {"value": "5,10,25,40,100", "why": "size ramp - relight sheet 09-01"},
+    "KALSHI_PRECLOSE_FLATTEN": {"value": "1", "why": "no naked ride into settlement - 07-26 fixes"},
+    "KALSHI_CAPTURE_GATE": {"value": "1", "why": "reward-model floor incl. 0.99-touch guard - 08-25 arm"},
+    "KALSHI_QUALIFIABLE_GATE": {"value": "1", "why": "both-sides-Target rule (B4 study: rule operative) - 08-25"},
+    "KALSHI_WIDEBOOK_MODE": {"value": "1", "why": "S3 wide-book parked-inside admission - 08-30 ruling"},
+    "KALSHI_MIN_RUNWAY_H": {"value": "0", "why": "dailies admitted - relight ruling 09-01"},
+    "KALSHI_UPTIME_RANK": {"value": "0", "why": "census blind on paying class - relight ruling 09-01"},
+    "KALSHI_MIN_PRICE_DOLLARS": {"value": "0.003", "why": "entry floor"},
+    "KALSHI_SERIES_ALLOW": {"value": "KXAAAGASD,KXAAAGASDCA,KXAAAGASDFL,KXAAAGASDIL,KXAAAGASDNJ,KXAAAGASDNY,KXAAAGASDTX,KXAAAGASW,KXTOPMODEL,KXCLAYTONDNI,KXDIESELW,KXCLARITYVOTE", "why": "12-series allowlist - relight ruling 09-01 (+6 state dailies)"}
+  }
+}
