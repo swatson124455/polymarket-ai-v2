@@ -2451,3 +2451,42 @@ def test_discover_short_final_page_at_cap_boundary_no_alarm(tmp_path, monkeypatc
     monkeypatch.setattr(mle, "get", pages)
     mle.discover(str(tmp_path), cfg_over())
     assert "TRUNCATED" not in capsys.readouterr().out
+
+
+# ── official Qmin combine (rules canon R3/R4, operator-adopted 09-01) ───────
+def test_q_min_combine_one_sided_scores_third_in_midrange():
+    """Canon R3: a lone side scores at 1/3 when mid in [0.10, 0.90] — the
+    strict-MIN model said ZERO (the refuted doctrine claim)."""
+    assert mle.q_min_combine(9.0, 0.0, 0.50) == 3.0
+    assert mle.q_min_combine(0.0, 9.0, 0.50) == 3.0
+
+
+def test_q_min_combine_two_sided_min_wins_when_balanced():
+    """Balanced two-sided: min(q1,q2) exceeds max/3, so MIN governs."""
+    assert mle.q_min_combine(6.0, 5.0, 0.50) == 5.0
+    # skewed two-sided: the /3 branch takes over when min < max/3
+    assert mle.q_min_combine(9.0, 1.0, 0.50) == 3.0
+
+
+def test_q_min_combine_strict_min_outside_midrange():
+    """Canon R4: outside [0.10,0.90] a lone side scores ZERO."""
+    assert mle.q_min_combine(9.0, 0.0, 0.05) == 0.0
+    assert mle.q_min_combine(9.0, 0.0, 0.95) == 0.0
+    assert mle.q_min_combine(6.0, 5.0, 0.05) == 5.0
+
+
+def test_q_min_combine_boundaries_inclusive():
+    """[0.10, 0.90] is INCLUSIVE per the canon — pin both edges."""
+    assert mle.q_min_combine(9.0, 0.0, 0.10) == 3.0
+    assert mle.q_min_combine(9.0, 0.0, 0.90) == 3.0
+    assert mle.q_min_combine(9.0, 0.0, 0.0999) == 0.0
+    assert mle.q_min_combine(9.0, 0.0, 0.9001) == 0.0
+
+
+def test_run_accrual_uses_official_combine_for_both_sides():
+    """Caller pin: the accrual computes BOTH our score and the competitor
+    score through q_min_combine — a divergence between the two would bias
+    the share model directionally."""
+    import inspect
+    src = inspect.getsource(mle.run)
+    assert src.count("q_min_combine(") >= 2

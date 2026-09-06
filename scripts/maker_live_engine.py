@@ -530,6 +530,19 @@ def fetch_tape(cid, since_ts):
     return out
 
 
+def q_min_combine(q1, q2, mid):
+    """OFFICIAL reward combine (rules canon R3/R4, docs fetch 2026-09-01,
+    operator-adopted): midpoint in [0.10, 0.90] -> a single side still
+    scores at 1/3 rate, Qmin = max(min(q1,q2), max(q1,q2)/3) with c=3.0;
+    outside that range -> strict two-sided min. The pre-canon model used
+    strict MIN everywhere, understating one-sided credit mid-range (and
+    the "de-risk leg earns ZERO" doctrine note it spawned)."""
+    base = min(q1, q2)
+    if 0.10 <= mid <= 0.90:
+        return max(base, max(q1, q2) / 3.0)
+    return base
+
+
 def clock_vetoed(end_ts, now, min_hours, max_days):
     """Market-clock selection veto (pure, testable). 0 = that veto off.
     With a veto ENABLED, an unparseable end (None) fails CLOSED: a market
@@ -2563,7 +2576,11 @@ def run(base, cfg):
                         max_ts = max(max_ts, ts_of(tr))
                     st["last_trade_ts"] = max_ts
 
-            # reward accrual model (two-sided MIN — real-program semantics)
+            # reward accrual model (OFFICIAL Qmin, canon 2026-09-01: a lone
+            # leg scores /3 when mid is in [0.10,0.90] — so one-sided
+            # de-risk periods now accrue; strict MIN outside the range).
+            # NOTE model-era break: acc/acc_day values before this change
+            # are not comparable (strict-MIN era ended 2026-09-01).
             for m in universe:
                 st = st_of(str(m["id"]))
                 mid = st.get("last_mid")
@@ -2573,9 +2590,12 @@ def run(base, cfg):
                     continue
                 books_live = (now - st.get("mid_t", 0)) < cfg["freshness_s"]
                 ob, oa = st.get("ob"), st.get("oa")
-                if ob and oa and books_live:
-                    q_mine = min(S(m["v"], max(0.0, mid - ob["px"]), ob["sz"]),
-                                 S(m["v"], max(0.0, (1.0 - oa["px"]) - mid), oa["sz"]))
+                if (ob or oa) and books_live:
+                    qb = S(m["v"], max(0.0, mid - ob["px"]),
+                           ob["sz"]) if ob else 0.0
+                    qa = S(m["v"], max(0.0, (1.0 - oa["px"]) - mid),
+                           oa["sz"]) if oa else 0.0
+                    q_mine = q_min_combine(qb, qa, mid)
                     if q_mine > 0:
                         q1, q2 = cached_scores(m, mid)
                         if execc.live:
@@ -2585,13 +2605,15 @@ def run(base, cfg):
                             # underestimated vs paper (review finding 21):
                             # YES bid sits in q1's yes-bids leg; NO bid sits
                             # in q2's no-bids leg (center 1-mid)
-                            q1 = max(0.0, q1 - S(m["v"], abs(mid - ob["px"]),
-                                                 ob["sz"]))
-                            q2 = max(0.0, q2 - S(m["v"],
-                                                 abs(oa["px"] - (1.0 - mid)),
-                                                 oa["sz"]))
-                        q_comp = max(min(q1, q2), max(q1, q2) / 3.0) \
-                            if 0.10 <= mid <= 0.90 else min(q1, q2)
+                            if ob:
+                                q1 = max(0.0, q1 - S(m["v"],
+                                                     abs(mid - ob["px"]),
+                                                     ob["sz"]))
+                            if oa:
+                                q2 = max(0.0, q2 - S(m["v"],
+                                                     abs(oa["px"] - (1.0 - mid)),
+                                                     oa["sz"]))
+                        q_comp = q_min_combine(q1, q2, mid)
                         share = q_mine / (q_mine + q_comp) if q_comp >= 0 else 0.0
                         inc = share * m["pool"] * dt / 86400.0
                         st["acc"] = round(st.get("acc", 0.0) + inc, 6)
