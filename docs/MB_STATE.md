@@ -18,6 +18,52 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-06 (~04:05Z) — BUILD 1 SHIPPED + FIRST DISCOVERY SWEEP RUN
+> ## (walk-forward backtest harness; one positive-LCB find)
+>
+> **`scripts/mb_backtest.py` LIVE in mb_readout** (commits `60be359` +
+> DB-parity `and lookahead-guard fixes, branch head pushed): replays any
+> trader through the DEPLOYED rules day-by-day, no lookahead (canon
+> primitives imported — a self-test probe rejects re-implementation);
+> judged ONLY out-of-sample (split 2026-09-02 = first day never used to
+> tune anything); copy lens only. Ship discipline: self-test 12/12,
+> pytest 11/11, 6/6 mutants killed (incl. lookahead + train-leakage +
+> label-lookahead mutants). Two parity fixes found by running it:
+> (1) replay now merges DB outcomes like the funnel (cache-only had
+> 39.4% coverage and silently diverged e-values); (2) holdout judge
+> excludes labels resolved after end_ts (0xbca08c1bc2 n_ho 74->44 —
+> real leak caught).
+> **MEASURED (all from tonight's runs, artifacts in
+> /opt/pa2-shared/mb_copyable_data/backtest/):**
+> - Follow-cost haircut med +$0.0100/share (n=9,889 roster OK
+>   first-buys; p90 +0.0149) — the sweep's non-roster pricing penalty.
+> - Screen: 17,846 candidates (>=25 trades + study peak_conc <=50
+>   superset; sensitivity <=3:785 <=5:1,490 <=10:3,614 <=20:8,359);
+>   187 conc-UNKNOWN excluded+counted. Tailability bar = operator
+>   decision, board slices by stored per-wallet conc.
+> - Labels: +14,737 markets added to gamma_resolutions (23,220/23,479
+>   cids fetched, 0 conflicts; cache 256,995 keys, backup kept).
+> - ROSTER board (holdout 09-02..09-06): all $wk_lcb negative (honest
+>   e>=20 LCB on 4 days — matures daily); best realized
+>   0x3471a897e5 +$603/wk (n_ho=50). Replay futility verdict on
+>   0x216509be53 matches the live grader's 08-08 lock (parity check).
+> - FIREHOSE DISCOVERY board (17,404 wallets replayed, 2.89M rows,
+>   11 capture days): **ONE positive out-of-sample LCB:
+>   0x12a7dd1d8e3bea0b5b7bac1d2d6135f5698c4ce3, +$253.49/wk_lcb
+>   (lcb +0.0207, n_ho=70), study peak_conc 12 (tailable at any
+>   bar >=12), 77 trades/$605 notional study week.** HYPOTHETICAL
+>   $100/mkt ref. NOT proposed for roster yet — needs 1-month-history
+>   data-api check + chain fraud screen + operator gate; tiny own
+>   stakes flag a depth question for $100/mkt copying.
+> **DISCLOSED LIMITS:** label coverage 28.2% of 92,539 firehose entry
+> tokens (~80k outside ingestion DB — gamma-by-token fetch = named
+> build option); replay conc = upper bound under sparse labels (study
+> conc is the screen number); ranking 17k wallets on a 4-day holdout
+> is a SCREEN with selection effects — forward confirm stays the proof.
+> **NEXT (mandate order):** build 2 cross-trader allocator + graduated
+> trust; build 3 Bayes head start; daily leaderboard refresh in cron =
+> additive proposal for operator.
+
 > ## 2026-09-06 (~03:25Z) — SELL-SINK LAYOUT DEFECT FOUND IN SESSION-START
 > ## CHECKS; FIXED + DEPLOYED + RECORDS MIGRATED
 >
