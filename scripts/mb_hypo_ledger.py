@@ -39,7 +39,11 @@ import band_tracker as bt              # noqa: E402
 import shadow_readout as sr            # noqa: E402
 import trader_funnel as tf             # noqa: E402  (sizer env + peak conc)
 
-REF_NOTIONAL = 100.0  # fixed disclosed reference stake, $ per market
+REF_NOTIONAL = 100.0  # fixed disclosed reference stake, $ per WAGER
+# BASIS CONVERSION 2026-09-06 (operator "convert live graders to new
+# basis go"): rows are per-WAGER (ladder-aware, mc.wager_rois) and the
+# dollars are EXACT per-dollar math: profit = roi x stake. Fresh ledger
+# file (old per-market ledger retained as history, never mixed).
 
 
 def load_ledger(path: str) -> tuple[list, set]:
@@ -51,7 +55,7 @@ def load_ledger(path: str) -> tuple[list, set]:
                 continue
             r = json.loads(ln)
             rows.append(r)
-            seen.add((r["trader"], r["token"]))
+            seen.add((r["trader"], r["token"], r.get("wts")))
     return rows, seen
 
 
@@ -61,10 +65,11 @@ def append_rows(path: str, new_rows: list) -> None:
             f.write(json.dumps(r) + "\n")
 
 
-def ledger_math(edge: float, stake: float) -> tuple[float, float]:
-    """d_ref100 and d_sizer for one resolved market. Stake below zero is
+def ledger_math(roi: float, stake: float) -> tuple[float, float]:
+    """d_ref100 and d_sizer for one resolved WAGER — exact per-dollar
+    math on the ROI basis (profit = roi x stake). Stake below zero is
     impossible by sizer contract; guard anyway (never a negative stake)."""
-    return edge * REF_NOTIONAL, edge * max(stake, 0.0)
+    return roi * REF_NOTIONAL, roi * max(stake, 0.0)
 
 
 async def run(args) -> int:
@@ -89,18 +94,20 @@ async def run(args) -> int:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_rows = []
     for group, epoch in groups:
+        # BASIS CONVERSION 2026-09-06: one fresh epoch for all groups
+        epoch = cq.BASIS_EPOCH
         gfwd = cq.forward_records(recs, epoch)
         for a in group:
             t_recs = [r for r in gfwd
                       if str(r.get("trader", "")).lower() == a]
             if not t_recs:
                 continue
-            seq = mc.per_market_edges(t_recs, outcomes, frm or {},
-                                      fee_map or {}, epoch=epoch)
-            edges = [e for _, _, e in seq]
+            seq = mc.wager_rois(t_recs, outcomes, frm or {},
+                                fee_map or {}, epoch=epoch)
+            rois = [x for _, _, x in seq]
             stake = 0.0
-            if params is not None and edges:
-                lcb = msz.lcb_edge(edges, bt.e_value, bt.Y_MIN)
+            if params is not None and rois:
+                lcb = mc.roi_lcb(rois)
                 if lcb is not None and lcb > 0:
                     # median recorded OK first-buy fill = same display
                     # reference the funnel uses; depth is trade-time only
@@ -112,14 +119,15 @@ async def run(args) -> int:
                                         fee_map, cfg, {})
                     srec = tf.display_stake(row, params, frm, fee_map)
                     stake = 0.0 if srec is None else float(srec["stake"])
-            for _first_ts, tok, e in seq:  # canon tuple = (ts, token, edge)
-                key = (a, str(tok))
+            for wts, tok, roi in seq:  # canon tuple = (ts, token, roi)
+                key = (a, str(tok), wts)   # per-WAGER: ladders repeat tokens
                 if key in seen:
                     continue
                 seen.add(key)
-                d100, dsz = ledger_math(e, stake)
+                d100, dsz = ledger_math(roi, stake)
                 new_rows.append({"ts": now, "trader": a, "token": str(tok),
-                                 "edge": round(e, 6), "stake": round(stake, 2),
+                                 "wts": wts, "roi": round(roi, 6),
+                                 "stake": round(stake, 2),
                                  "d_ref100": round(d100, 4),
                                  "d_sizer": round(dsz, 4)})
     append_rows(args.ledger, new_rows)
@@ -131,7 +139,7 @@ async def run(args) -> int:
         p[1] += r["d_ref100"]
         p[2] += r["d_sizer"]
     print(f"===== {now} HYPOTHETICAL $ LEDGER (paper; no orders placed; "
-          f"$ref100 = canon edge x fixed $100/market; $sizer = edge x "
+          f"$ref100 = wager ROI x $100/wager [basis conv 2026-09-06]; $sizer = roi x "
           f"sizer stake, $0 until proven) =====")
     print(f"[hypo] appended {len(new_rows)} newly-resolved rows this run | "
           f"ledger total rows {len(rows)}")
@@ -165,11 +173,12 @@ def _self_test() -> int:
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         lp = os.path.join(d, "ledger.jsonl")
-        append_rows(lp, [{"trader": "a", "token": "t1", "d_ref100": 1.0,
-                          "d_sizer": 0.0}])
+        append_rows(lp, [{"trader": "a", "token": "t1", "wts": 1.0,
+                          "d_ref100": 1.0, "d_sizer": 0.0}])
         rows, seen = load_ledger(lp)
-        ok4 = len(rows) == 1 and ("a", "t1") in seen and ("a", "t2") not in seen
-        print(f"  [dedup] append-once keyed on trader+token : {ok4}")
+        ok4 = (len(rows) == 1 and ("a", "t1", 1.0) in seen
+               and ("a", "t1", 2.0) not in seen)   # ladder wager = new row
+        print(f"  [dedup] append-once keyed on trader+token+wager-ts : {ok4}")
         ok &= ok4
     import inspect
     src = inspect.getsource(run)
@@ -198,7 +207,7 @@ if __name__ == "__main__":
                             "fee_map.json")
     ap.add_argument("--ledger",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
-                            "hypo_ledger.jsonl")
+                            "hypo_ledger_roi.jsonl")
     ap.add_argument("--self-test", action="store_true", dest="self_test")
     a = ap.parse_args()
     sys.exit(_self_test() if a.self_test else asyncio.run(run(a)))

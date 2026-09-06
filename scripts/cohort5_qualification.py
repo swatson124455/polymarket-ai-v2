@@ -227,6 +227,26 @@ P_BAR = 0.95
 N_BAR = 30
 OKRATE_BAR = 0.75
 
+# ── BASIS CONVERSION 2026-09-06 (operator: "convert live graders to new
+# basis go") ─────────────────────────────────────────────────────────────
+# ALL unconsumed trials re-register on the RULED basis (memory
+# feedback_dollars_per_day_is_the_test, top block): atoms = per-WAGER ROI
+# (mb_canon.wager_rois — ladder-aware, every OK buy incl. adds; repeats
+# are wagers, first_buy is diagnostic only); e-process =
+# mb_canon.roi_e_value (per-shift subgrid by the physical floor); LCB =
+# mb_canon.roi_lcb; PASS = e >= C1_E_REJECT AND LCB net winnings >=
+# WEEKLY_FLOOR_USD at the $100/wager reference; futility = TIME-BASED
+# 1 week (operator ruling, replaces the 300-count — C1_FUTILITY_N kept
+# below for the historical record, superseded for grading).
+# FRESH EPOCH for every unconsumed trial: the 2026-09-06 backtest boards
+# made all prior data design-visible, so per the lane's re-registration
+# discipline (C1 amendment / 08-25 precedent) the old group epochs cannot
+# score the new estimand. Group lists remain for provenance/membership.
+# CONSUMED LOCKS ARE IMMUTABLE — original-basis verdicts stand.
+BASIS_EPOCH = datetime(2026, 9, 6, 22, 30, 0,
+                       tzinfo=timezone.utc).timestamp()
+FUTILITY_DAYS = 7.0
+
 
 def eligible_admits(deep_dive_dir: str, rereview_dir: str) -> list[str]:
     """Chain-screen ADMITs on complete labels: the re-review out-dir is the
@@ -351,7 +371,12 @@ async def run(args) -> int:
     def eproc_grade(group, epoch, lock_source):
         nonlocal locks, graded_groups
         graded_groups += 1
+        # BASIS CONVERSION 2026-09-06: every unconsumed trial scores from
+        # the ONE fresh conversion epoch — the group epoch parameter is
+        # provenance only (see the BASIS_EPOCH block above).
+        epoch = BASIS_EPOCH
         gfwd = forward_records(recs, epoch)
+        now_ts = datetime.now(timezone.utc).timestamp()
         for a in group:
             if a in locks:
                 lk = locks[a]
@@ -360,32 +385,36 @@ async def run(args) -> int:
                 continue
             t_recs = [r for r in gfwd
                       if str(r.get("trader", "")).lower() == a]
-            seq = mc.per_market_edges(t_recs, outcomes, frm or {},
-                                      fee_map or {}, epoch=epoch)
-            edges = [e for _, _, e in seq]
-            n = len(edges)
+            seq = mc.wager_rois(t_recs, outcomes, frm or {},
+                                fee_map or {}, epoch=epoch)
+            rois = [x for _, _, x in seq]
+            n = len(rois)
             res = sr.cohort_readout(gfwd, outcomes, epoch, a, cfg)
             okr = res.get("ok_rate")
+            el_days = max((now_ts - epoch) / 86400.0, 1e-9)
             if n == 0:
-                print(f"  {a[:12]}..  ACCRUING (0 resolved, e=n/a)")
+                if el_days >= FUTILITY_DAYS:
+                    locks = sr.write_lock(args.locks, locks, a, {
+                        "locked_at": datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%dT%H:%MZ"),
+                        "resolved": 0, "roi": None, "p": None,
+                        "verdict": "NOT DEMONSTRATED (futility 1wk)",
+                        "basis": "roi-netwin-20260906",
+                        "source": lock_source})
+                    print(f"  {a[:12]}..  <== NOT DEMONSTRATED (futility "
+                          f"1wk, 0 resolved) [LOCKED]")
+                else:
+                    print(f"  {a[:12]}..  ACCRUING (0 resolved, e=n/a)")
                 continue
-            ev = bt.e_value(edges)
-            pooled = mc.pooled_edge(seq)
-            line = (f"  {a[:12]}..  n={n} e={ev:.3f} pooled={pooled:+.4f} "
+            ev = mc.roi_e_value(rois, 0.0)
+            mean_roi = sum(rois) / n
+            line = (f"  {a[:12]}..  n={n} e={ev:.3f} roi={mean_roi:+.4f} "
                     f"ok_rate={okr if okr is None else round(okr, 2)}")
             if ev >= C1_E_REJECT:
-                # OPERATOR RULING 2026-09-06 (supersedes the same-day
-                # floor-only ruling per "remove anything you just did"):
-                # PASS = LCB-confident net winnings averaging >=
-                # WEEKLY_FLOOR_USD per week at the $100/market reference
-                # stake. "Some people barely bet" - a percentage on a
-                # handful of bets is not a pass; money per week is.
-                # LCB confidence level = the ratified e>=20 inversion
-                # (machinery, unchanged). Basis disclosed: $100/mkt ref;
-                # real stakes remain the sizer's.
-                lcb = msz.lcb_edge(edges, bt.e_value, bt.Y_MIN)
-                el_days = max((datetime.now(timezone.utc).timestamp()
-                               - epoch) / 86400.0, 1e-9)
+                # PASS = LCB net winnings >= WEEKLY_FLOOR_USD/wk at the
+                # $100/WAGER reference (ROI basis: profit per wager =
+                # roi x stake exactly). LCB = the ruled e>=20 inversion.
+                lcb = mc.roi_lcb(rois, e_bar=C1_E_REJECT)
                 wk = (lcb * 100.0 * (n / el_days) * 7.0
                       if lcb is not None else None)
                 money_ok = wk is not None and wk >= WEEKLY_FLOOR_USD
@@ -396,25 +425,35 @@ async def run(args) -> int:
                 locks = sr.write_lock(args.locks, locks, a, {
                     "locked_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%MZ"),
-                    "resolved": n, "edge": pooled, "p": ev,
-                    "verdict": verdict, "source": lock_source})
+                    "resolved": n, "roi": round(mean_roi, 6), "p": ev,
+                    "verdict": verdict,
+                    "basis": "roi-netwin-20260906", "source": lock_source})
                 print(line + f"  <== {verdict} [LOCKED THIS RUN]")
                 if verdict.startswith("QUALIFIES"):
                     proposals.append(a)
-            elif n >= C1_FUTILITY_N:
+            elif el_days >= FUTILITY_DAYS:
+                # TIME-BASED futility (operator ruling 2026-09-06):
+                # 1 week from the conversion epoch without e>=20.
                 locks = sr.write_lock(args.locks, locks, a, {
                     "locked_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%MZ"),
-                    "resolved": n, "edge": pooled, "p": ev,
-                    "verdict": "NOT DEMONSTRATED (futility)",
-                    "source": lock_source})
-                print(line + "  <== NOT DEMONSTRATED (futility) [LOCKED]")
+                    "resolved": n, "roi": round(mean_roi, 6), "p": ev,
+                    "verdict": "NOT DEMONSTRATED (futility 1wk)",
+                    "basis": "roi-netwin-20260906", "source": lock_source})
+                print(line + "  <== NOT DEMONSTRATED (futility 1wk) "
+                             "[LOCKED]")
             else:
                 print(line + "  ACCRUING")
 
     print(f"  [amendment 2026-08-25] ALL unconsumed looks are ANYTIME-VALID "
-          f"e-process (reject e>={C1_E_REJECT:.0f}, futility {C1_FUTILITY_N},"
-          f" canon venue fees); the 5 consumed single-looks stay locked")
+          f"e-process (reject e>={C1_E_REJECT:.0f}); the consumed locks "
+          f"stay locked")
+    print(f"  [BASIS CONVERSION 2026-09-06, operator go] atoms = per-WAGER "
+          f"ROI (ladder-aware), PASS = e>={C1_E_REJECT:.0f} + LCB net "
+          f"winnings >= ${WEEKLY_FLOOR_USD:.0f}/wk @ $100/wager, futility "
+          f"= {FUTILITY_DAYS:.0f} days; ONE fresh epoch "
+          f"{datetime.fromtimestamp(BASIS_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
+          f" for every unconsumed trial (group epochs = provenance only)")
     print(f"original-20 unconsumed - re-registered epoch "
           f"{datetime.fromtimestamp(REREG_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
           f" (fresh: prior diagnostics were visible):")
