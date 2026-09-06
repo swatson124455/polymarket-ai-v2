@@ -40,6 +40,16 @@ def test_fit_prior_moments_exact():
     assert pr["tau2_clipped"] is False
 
 
+def test_fit_prior_asymmetric_mu():
+    """mu must be the MEAN of wallet means, not their sum — symmetric
+    fixtures (sum 0) cannot see the difference (mutant-4 blind spot,
+    closed 2026-09-06)."""
+    pr = mb.fit_prior([{"n": 100, "mean": 0.30, "var": 1.0},
+                       {"n": 100, "mean": 0.00, "var": 1.0},
+                       {"n": 100, "mean": 0.00, "var": 1.0}], 10)
+    assert abs(pr["mu"] - 0.10) < 1e-12
+
+
 def test_fit_prior_clips_and_guards():
     pr = mb.fit_prior([{"n": 2, "mean": 0.01, "var": 1.0},
                        {"n": 2, "mean": -0.01, "var": 1.0}], 2)
