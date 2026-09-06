@@ -218,7 +218,7 @@ async def run(args) -> int:
         if a in locks:
             lk = locks[a]
             v = str(lk.get("verdict", ""))
-            state = "PASSED" if v == "QUALIFIES" else "FAILED"
+            state = "PASSED" if v.startswith("QUALIFIES") else "FAILED"
             rows.append({"a": a, "state": state, "n": lk.get("resolved"),
                          "e": None, "edge": lk.get("edge"), "ok": None,
                          "days": None,
@@ -275,8 +275,9 @@ async def run(args) -> int:
     n_fail = sum(1 for x in rows if x["state"] == "FAILED")
     print(f"===== {now:%Y-%m-%dT%H:%MZ} TRADER FUNNEL - roster {len(clean)} "
           f"| TRIAL {n_trial} | PASSED {n_pass} | FAILED {n_fail} "
-          f"(bar: e>={cq.C1_E_REJECT:.0f} + edge>=+{cq.EDGE_BAR:.02f} + "
-          f"ok>={cq.OKRATE_BAR:.02f}; futility {cq.C1_FUTILITY_N}) =====")
+          f"(PASS = confident positive money floor, e>={cq.C1_E_REJECT:.0f}"
+          f" == \\$lcb/day>0 [operator ruling 2026-09-06]; futility "
+          f"{cq.C1_FUTILITY_N}) =====")
     if sz is None:
         print("[sizer] stakes unset - set MB_SIZER_BANKROLL / "
               "MB_SIZER_KELLY_MULT / MB_SIZER_CONCURRENCY / "

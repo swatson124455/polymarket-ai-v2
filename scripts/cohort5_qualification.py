@@ -368,18 +368,24 @@ async def run(args) -> int:
             line = (f"  {a[:12]}..  n={n} e={ev:.3f} pooled={pooled:+.4f} "
                     f"ok_rate={okr if okr is None else round(okr, 2)}")
             if ev >= C1_E_REJECT:
+                # OPERATOR RULING 2026-09-06 ("a consistent floor of any
+                # positive money is good, stop making rules up"): e>=20
+                # IS the pass - it is exactly LCB>0, a confident positive
+                # money floor. The former extra gates (edge>=EDGE_BAR
+                # econ floor, ok-rate>=OKRATE_BAR) are REPORTED as info
+                # but no longer block QUALIFIES.
                 econ_ok = pooled is not None and pooled >= EDGE_BAR
                 ok_ok = isinstance(okr, float) and okr >= OKRATE_BAR
-                verdict = ("QUALIFIES" if (econ_ok and ok_ok)
-                           else "E-PASS BUT GATE FAIL "
-                                f"(econ_ok={econ_ok} ok_rate_ok={ok_ok})")
+                verdict = ("QUALIFIES"
+                           + ("" if (econ_ok and ok_ok) else
+                              f" [info: econ_ok={econ_ok} ok_ok={ok_ok}]"))
                 locks = sr.write_lock(args.locks, locks, a, {
                     "locked_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%MZ"),
                     "resolved": n, "edge": pooled, "p": ev,
                     "verdict": verdict, "source": lock_source})
                 print(line + f"  <== {verdict} [LOCKED THIS RUN]")
-                if verdict == "QUALIFIES":
+                if verdict.startswith("QUALIFIES"):
                     proposals.append(a)
             elif n >= C1_FUTILITY_N:
                 locks = sr.write_lock(args.locks, locks, a, {
