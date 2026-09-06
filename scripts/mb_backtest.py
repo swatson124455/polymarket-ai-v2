@@ -83,6 +83,10 @@ def parse_iso_z(s: str) -> float:
     return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
 
 
+def fmt_num(v, spec: str, dash: str = "-") -> str:
+    return dash if v is None else format(v, spec)
+
+
 # ── pure core ────────────────────────────────────────────────────────────────
 def measure_haircut(recs: list[dict]) -> dict | None:
     """Follow-cost distribution: (our shadow fill - whale fill) over roster
@@ -107,30 +111,50 @@ def measure_haircut(recs: list[dict]) -> dict | None:
 def synth_records(rows: list[dict], trader: str, haircut: float,
                   max_fill: float = MAX_FILL_DEPLOYED) -> tuple[list, int]:
     """Copy-lens canon-shaped records from one wallet's firehose rows
-    (time-ascending). First BUY per token -> one record priced at their
-    fill + haircut. Entries whose copy price exceeds max_fill are gated
-    out (the deployed price-only gate); book gates are not replayable
-    here (module doc). Returns (records, n_gated)."""
-    seen: set[str] = set()
-    out: list[dict] = []
-    gated = 0
+    (time-ascending). LADDER-AWARE (operator hardcode 2026-09-06: "score
+    per market can be multiple wagers if they ladder" — first-buy-only
+    was FLAWED): one WAGER per (tx, token) — same-tx fills merged at
+    their size-weighted VWAP (one order lands as several fills) — and
+    EVERY buy wager kept, adds included. Priced at their VWAP + haircut;
+    wagers above max_fill gated (the deployed price-only gate); book
+    gates not replayable here (module doc). first_buy marks the token's
+    first wager (diagnostic only). Returns (records, n_gated)."""
+    groups: dict[tuple, dict] = {}
+    order: list[tuple] = []
     for r in rows:
         if r.get("s") != "BUY":
             continue
         tok = str(r.get("tok") or "")
-        if not tok or tok in seen:
-            continue
-        seen.add(tok)
         try:
-            fill = float(r["p"]) + haircut
-            ts = float(r["t"])
+            p, z, ts = float(r["p"]), float(r["z"]), float(r["t"])
         except (KeyError, TypeError, ValueError):
             continue
+        if not tok or z <= 0:
+            continue
+        key = (str(r.get("tx") or f"~{ts}"), tok)
+        g = groups.get(key)
+        if g is None:
+            groups[key] = {"tok": tok, "cost": p * z, "z": z, "ts": ts}
+            order.append(key)
+        else:
+            g["cost"] += p * z
+            g["z"] += z
+            g["ts"] = min(g["ts"], ts)
+    out: list[dict] = []
+    gated = 0
+    seen_tok: set[str] = set()
+    for key in order:
+        g = groups[key]
+        fill = g["cost"] / g["z"] + haircut
+        first = g["tok"] not in seen_tok
+        seen_tok.add(g["tok"])
         if not (0.0 < fill < 1.0) or fill > max_fill:
             gated += 1
             continue
-        out.append({"trader": trader, "token_id": tok, "detect_ts": ts,
-                    "first_buy": True, "verdict": "OK", "shadow_fill": fill})
+        out.append({"trader": trader, "token_id": g["tok"],
+                    "detect_ts": g["ts"], "first_buy": first,
+                    "verdict": "OK", "shadow_fill": fill})
+    out.sort(key=lambda r: r["detect_ts"])
     return out, gated
 
 
@@ -181,30 +205,35 @@ def daily_replay(records: list[dict], outcomes: dict, res_at: dict,
                  e_bar: float = cq.C1_E_REJECT,
                  futility_n: int = cq.C1_FUTILITY_N,
                  floor_wk: float = cq.WEEKLY_FLOOR_USD) -> dict:
-    """Replay the deployed anytime-valid qualification DAY-BY-DAY with no
-    lookahead: on each 00:00Z day boundary d, only markets with
-    res_at[token] <= d count as resolved; canon per_market_edges + canon
-    e_value; FIRST crossing of e_bar locks, with the grader's own money
-    floor (LCB x $100 x n/elapsed_days x 7 >= floor_wk) deciding QUALIFIES
-    vs E-PASS-BELOW-FLOOR; futility at futility_n. Tokens with an outcome
-    but NO res_at cannot be placed in time -> excluded, counted."""
+    """Replay the anytime-valid qualification DAY-BY-DAY with no
+    lookahead, on the RULED BASIS (operator hardcode 2026-09-06: ROI +
+    net winnings, ladder-aware): atoms = per-WAGER ROI (mc.wager_rois,
+    all buys incl. ladder adds); e-process = mc.mixture_e_value (same
+    mixture grid as the band tracker, ROI support bound); FIRST crossing
+    of e_bar locks, with the money floor on NET WINNINGS at the $100/
+    wager reference: LCB-ROI x $100 x wagers/elapsed_day x 7 >= floor_wk.
+    Futility at futility_n wagers (the ruled 300, applied per-wager —
+    disclosed). NOTE: the LIVE grader still runs the superseded first-buy
+    per-market basis pending its conversion/re-registration — replay
+    verdicts here follow the RULING, and may differ from live locks.
+    Tokens with an outcome but NO res_at cannot be placed in time ->
+    excluded, counted."""
     tokens = {str(r["token_id"]) for r in records}
     placeable = {t: res_at[t] for t in tokens if t in res_at and t in outcomes}
     n_unplaceable = sum(1 for t in tokens if t in outcomes and t not in res_at)
     verdict, verdict_ts = "ACCRUING", None
-    last = {"n": 0, "e": None, "pooled": None, "lcb": None}
+    last = {"n": 0, "e": None, "roi": None, "lcb": None}
     d = (int(epoch // DAY_S) + 1) * DAY_S
     while d <= end_ts:
         day_out = {t: outcomes[t] for t, rt in placeable.items() if rt <= d}
-        seq = mc.per_market_edges(records, day_out, frm or {}, fee_map or {},
-                                  epoch=epoch)
-        edges = [e for _, _, e in seq]
-        n = len(edges)
+        seq = mc.wager_rois(records, day_out, frm or {}, fee_map or {},
+                            epoch=epoch)
+        rois = [x for _, _, x in seq]
+        n = len(rois)
         if n:
-            ev = bt.e_value(edges)
-            lcb = msz.lcb_edge(edges, bt.e_value, bt.Y_MIN)
-            last = {"n": n, "e": ev, "pooled": mc.pooled_edge(seq),
-                    "lcb": lcb}
+            ev = mc.mixture_e_value(rois)
+            lcb = msz.lcb_edge(rois, mc.mixture_e_value, mc.ROI_Y_MIN)
+            last = {"n": n, "e": ev, "roi": sum(rois) / n, "lcb": lcb}
             if ev >= e_bar:
                 el_days = max((d - epoch) / DAY_S, 1e-9)
                 wk = (lcb * 100.0 * (n / el_days) * 7.0
@@ -225,10 +254,12 @@ def daily_replay(records: list[dict], outcomes: dict, res_at: dict,
 def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
                     fee_map: dict, split_ts: float, end_ts: float,
                     res_at: dict | None = None) -> dict:
-    """Judged ONLY out-of-sample: canon edges over markets whose first
-    detect_ts >= split_ts; LCB over those edges alone (train never touches
-    the ranking number); $/wk = lcb x $100/mkt ref x resolved-rate x 7 —
-    the grader's own formula on the holdout window. HYPOTHETICAL.
+    """Judged ONLY out-of-sample, on the RULED BASIS (ROI + net winnings,
+    ladder-aware): per-wager ROIs over wagers with detect_ts >= split_ts;
+    LCB over those atoms alone (train never touches the ranking number).
+    Reported BOTH ways per the hardcode: roi_lcb / roi_realized (dollars
+    returned per dollar staked) and wk_net_lcb / wk_net_real (net
+    winnings per week at the $100/wager reference — HYPOTHETICAL).
 
     Label-lookahead guard: a market whose KNOWN resolved_at is after
     end_ts was not resolved at judge time — excluded. Tokens without a
@@ -237,23 +268,23 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
     if res_at:
         outcomes = {t: o for t, o in outcomes.items()
                     if res_at.get(t) is None or res_at[t] <= end_ts}
-    seq = mc.per_market_edges(records, outcomes, frm or {}, fee_map or {},
-                              epoch=split_ts)
-    edges = [e for _, _, e in seq]
-    n = len(edges)
+    seq = mc.wager_rois(records, outcomes, frm or {}, fee_map or {},
+                        epoch=split_ts)
+    rois = [x for _, _, x in seq]
+    n = len(rois)
     days = max((end_ts - split_ts) / DAY_S, 1e-9)
     out = {"n_holdout": n, "holdout_days": round(days, 2),
-           "lcb": None, "wk_lcb": None, "pooled": None, "wk_realized": None}
+           "roi_lcb": None, "roi_realized": None,
+           "wk_net_lcb": None, "wk_net_real": None}
     if not n:
         return out
-    lcb = msz.lcb_edge(edges, bt.e_value, bt.Y_MIN)
-    pooled = mc.pooled_edge(seq)
-    out["lcb"] = lcb
-    out["pooled"] = pooled
+    lcb = msz.lcb_edge(rois, mc.mixture_e_value, mc.ROI_Y_MIN)
+    mean_roi = sum(rois) / n
+    out["roi_lcb"] = lcb
+    out["roi_realized"] = mean_roi
     if lcb is not None:
-        out["wk_lcb"] = lcb * 100.0 * (n / days) * 7.0
-    if pooled is not None:
-        out["wk_realized"] = pooled * 100.0 * (n / days) * 7.0
+        out["wk_net_lcb"] = lcb * 100.0 * (n / days) * 7.0
+    out["wk_net_real"] = mean_roi * 100.0 * (n / days) * 7.0
     return out
 
 
@@ -582,32 +613,35 @@ def cmd_replay(args) -> int:
                    "observed_days": round(obs_days, 1),
                    "peak_conc_replay": pc, **rep,
                    **{f"ho_{k}": v for k, v in hold.items()}})
-    lb.sort(key=lambda x: -(x["ho_wk_lcb"] if x["ho_wk_lcb"] is not None
-                            else -1e18))
+    lb.sort(key=lambda x: -(x["ho_wk_net_lcb"]
+                            if x["ho_wk_net_lcb"] is not None else -1e18))
     with open(args.out, "w") as f:
         for row in lb:
             f.write(json.dumps(row) + "\n")
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
     print(f"===== {stamp} MB BACKTEST LEADERBOARD (source={args.source}, "
-          f"split={args.split}, HYPOTHETICAL $100/mkt ref) =====")
-    print("[judged OUT-OF-SAMPLE only: holdout entries >= split; LCB over "
-          "holdout edges alone; verdicts = day-by-day replay of the "
-          "deployed rules; >=1mo-history check = promotion-time data-api]")
-    print(f"{'WALLET':<14} {'$wk_lcb':>9} {'$wk_real':>9} {'n_ho':>5} "
-          f"{'lcb':>8} {'conc':>5} {'entries':>7} {'verdict(replay)'}")
+          f"split={args.split}, basis=ROI+NET-WINNINGS ladder-aware "
+          f"[operator hardcode 2026-09-06], HYPOTHETICAL $100/wager ref) "
+          f"=====")
+    print("[judged OUT-OF-SAMPLE only: holdout wagers >= split; LCB over "
+          "holdout ROI atoms alone; verdicts = day-by-day replay on the "
+          "ruled basis (live grader still on superseded basis pending "
+          "conversion); >=1mo-history check = promotion-time data-api]")
+    print(f"{'WALLET':<14} {'$wk_net_lcb':>11} {'$wk_net_real':>12} "
+          f"{'roi_lcb':>8} {'roi_real':>8} {'n_ho':>5} {'conc':>5} "
+          f"{'wagers':>6} {'verdict(replay)'}")
     shown = 0
     for row in lb:
         if shown >= args.top:
             break
         shown += 1
-        wl = (row["ho_wk_lcb"], row["ho_wk_realized"])
         print(f"{row['w'][:12] + '..':<14} "
-              f"{'-' if wl[0] is None else format(wl[0], '+.2f'):>9} "
-              f"{'-' if wl[1] is None else format(wl[1], '+.2f'):>9} "
-              f"{row['ho_n_holdout']:>5} "
-              f"{'-' if row['ho_lcb'] is None else format(row['ho_lcb'], '+.4f'):>8} "
-              f"{row['peak_conc_replay']:>5} {row['entries']:>7} "
-              f"{row['verdict']}")
+              f"{fmt_num(row['ho_wk_net_lcb'], '+.2f'):>11} "
+              f"{fmt_num(row['ho_wk_net_real'], '+.2f'):>12} "
+              f"{fmt_num(row['ho_roi_lcb'], '+.3f'):>8} "
+              f"{fmt_num(row['ho_roi_realized'], '+.3f'):>8} "
+              f"{row['ho_n_holdout']:>5} {row['peak_conc_replay']:>5} "
+              f"{row['entries']:>6} {row['verdict']}")
     print(f"[replay] full leaderboard ({len(lb)} wallets) -> {args.out}")
     return 0
 
@@ -630,18 +664,27 @@ def _self_test() -> int:
         and measure_haircut([]) is None
     print(f"  [haircut] OK-first-buy pairs only; empty -> None : {ok1}")
     ok &= ok1
-    # [synth] first-BUY dedup, SELLs ignored, max_fill gate, haircut applied
-    rows = [{"s": "BUY", "tok": "t1", "p": 0.50, "t": 100.0},
-            {"s": "SELL", "tok": "t1", "p": 0.55, "t": 150.0},
-            {"s": "BUY", "tok": "t1", "p": 0.52, "t": 200.0},  # dup token
-            {"s": "BUY", "tok": "t2", "p": 0.975, "t": 300.0},  # gated @0.98
-            {"s": "BUY", "tok": "t3", "p": 0.30, "t": 400.0}]
+    # [synth] LADDER-AWARE (hardcode 2026-09-06): same-tx fills merge to
+    # one wager at VWAP; adds in new txs are SEPARATE wagers; SELLs
+    # ignored; max_fill gate; haircut applied
+    rows = [{"s": "BUY", "tok": "t1", "p": 0.50, "z": 10.0, "t": 100.0,
+             "tx": "0xa"},
+            {"s": "BUY", "tok": "t1", "p": 0.60, "z": 30.0, "t": 101.0,
+             "tx": "0xa"},   # same tx: merges -> VWAP 0.575
+            {"s": "SELL", "tok": "t1", "p": 0.55, "z": 5.0, "t": 150.0,
+             "tx": "0xs"},
+            {"s": "BUY", "tok": "t1", "p": 0.52, "z": 5.0, "t": 200.0,
+             "tx": "0xb"},   # LADDER ADD: separate wager, kept
+            {"s": "BUY", "tok": "t2", "p": 0.975, "z": 5.0, "t": 300.0,
+             "tx": "0xc"}]   # gated @0.98
     sy, gated = synth_records(rows, "0xw", 0.02)
     ok2 = (len(sy) == 2 and gated == 1
-           and abs(sy[0]["shadow_fill"] - 0.52) < 1e-12
-           and sy[0]["token_id"] == "t1" and sy[1]["token_id"] == "t3"
-           and all(r["first_buy"] and r["verdict"] == "OK" for r in sy))
-    print(f"  [synth] dedup+gate+haircut exact : {ok2}")
+           and abs(sy[0]["shadow_fill"] - 0.595) < 1e-12  # VWAP+haircut
+           and abs(sy[1]["shadow_fill"] - 0.54) < 1e-12   # add wager
+           and sy[0]["first_buy"] is True
+           and sy[1]["first_buy"] is False               # add, not first
+           and all(r["verdict"] == "OK" for r in sy))
+    print(f"  [synth] tx-merge VWAP + ladder adds kept + gate : {ok2}")
     ok &= ok2
     # [exits] first SELL at/after first BUY only
     ex = wallet_exits(rows)
@@ -712,10 +755,26 @@ def _self_test() -> int:
                    for i in range(5)])
     outc_m = {f"tr{i}": 1 for i in range(10)} | {f"ho{i}": 1 for i in range(5)}
     hm = holdout_metrics(recs_mix, outc_m, {}, {}, split, split + 7 * DAY_S)
-    ok9 = hm["n_holdout"] == 5 and hm["holdout_days"] == 7.0 \
-        and hm["pooled"] is not None
-    print(f"  [holdout] train markets excluded from the judge : {ok9}")
+    # ROI basis exact: (1 - 0.48 - 0.02*0.48)/0.48 per winning wager
+    roi_exp = (1.0 - 0.48 - 0.02 * 0.48) / 0.48
+    ok9 = (hm["n_holdout"] == 5 and hm["holdout_days"] == 7.0
+           and abs(hm["roi_realized"] - roi_exp) < 1e-12
+           and abs(hm["wk_net_real"] - roi_exp * 100 * (5 / 7.0) * 7) < 1e-9)
+    print(f"  [holdout] train excluded; ROI + $net exact : {ok9}")
     ok &= ok9
+    # [canon-roi] ladder atoms: repeats count (first_buy NOT required);
+    # ROI support bound honored by the generalized mixture
+    lad = [{"detect_ts": 1.0, "first_buy": True, "verdict": "OK",
+            "shadow_fill": 0.5, "token_id": "L"},
+           {"detect_ts": 2.0, "first_buy": False, "verdict": "OK",
+            "shadow_fill": 0.25, "token_id": "L"}]
+    seq_l = mc.wager_rois(lad, {"L": 1}, {}, {})
+    ok9b = (len(seq_l) == 2
+            and abs(seq_l[0][2] - (1 - 0.5 - 0.01) / 0.5) < 1e-12
+            and abs(seq_l[1][2] - (1 - 0.25 - 0.005) / 0.25) < 1e-12
+            and mc.mixture_e_value([-1.06]) > 0.0)  # band bound would assert
+    print(f"  [canon-roi] ladder adds scored; ROI bound wider : {ok9b}")
+    ok &= ok9b
     # [screen] eligibility, tailability, UNKNOWN counted
     wrows = [{"w": "0xa", "n": 30, "usd_sum": 10.0},   # ok
              {"w": "0xb", "n": 10, "usd_sum": 99.0},   # too few trades

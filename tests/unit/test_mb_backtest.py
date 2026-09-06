@@ -72,6 +72,9 @@ def test_holdout_excludes_train():
     hm = mbt.holdout_metrics(recs, outc, {}, {}, split, split + 7 * DAY)
     assert hm["n_holdout"] == 5
     assert hm["holdout_days"] == 7.0
+    roi_exp = (1.0 - 0.48 - 0.02 * 0.48) / 0.48   # ruled ROI basis, exact
+    assert abs(hm["roi_realized"] - roi_exp) < 1e-12
+    assert abs(hm["wk_net_real"] - roi_exp * 100 * 5) < 1e-9
 
 
 def test_holdout_label_lookahead_guard():
@@ -90,14 +93,25 @@ def test_holdout_label_lookahead_guard():
     assert hm2["n_holdout"] == 3     # legacy behavior unchanged
 
 
-def test_synth_applies_haircut_and_gates():
-    rows = [{"s": "BUY", "tok": "t1", "p": 0.50, "t": 100.0},
-            {"s": "BUY", "tok": "t1", "p": 0.52, "t": 200.0},   # dup
-            {"s": "BUY", "tok": "t2", "p": 0.975, "t": 300.0},  # gated
-            {"s": "SELL", "tok": "t3", "p": 0.30, "t": 400.0}]  # not a BUY
+def test_synth_ladder_aware_wagers():
+    """Operator hardcode 2026-09-06: same-tx fills merge to one wager at
+    VWAP; ladder adds in new txs are SEPARATE wagers (first-buy-only was
+    flawed); SELLs ignored; max_fill gate; haircut applied."""
+    rows = [{"s": "BUY", "tok": "t1", "p": 0.50, "z": 10.0, "t": 100.0,
+             "tx": "0xa"},
+            {"s": "BUY", "tok": "t1", "p": 0.60, "z": 30.0, "t": 101.0,
+             "tx": "0xa"},   # same tx -> VWAP 0.575
+            {"s": "BUY", "tok": "t1", "p": 0.52, "z": 5.0, "t": 200.0,
+             "tx": "0xb"},   # ladder add: its own wager
+            {"s": "BUY", "tok": "t2", "p": 0.975, "z": 5.0, "t": 300.0,
+             "tx": "0xc"},   # gated at 0.98
+            {"s": "SELL", "tok": "t3", "p": 0.30, "z": 5.0, "t": 400.0,
+             "tx": "0xd"}]   # not a BUY
     sy, gated = mbt.synth_records(rows, "0xw", 0.02)
-    assert len(sy) == 1 and gated == 1
-    assert abs(sy[0]["shadow_fill"] - 0.52) < 1e-12
+    assert len(sy) == 2 and gated == 1
+    assert abs(sy[0]["shadow_fill"] - 0.595) < 1e-12
+    assert abs(sy[1]["shadow_fill"] - 0.54) < 1e-12
+    assert sy[0]["first_buy"] is True and sy[1]["first_buy"] is False
 
 
 def test_haircut_measured_from_ok_first_buys_only():

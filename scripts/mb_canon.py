@@ -94,6 +94,65 @@ def pooled_edge(market_edges: list[tuple[float, str, float]]) -> float | None:
     return sum(e for _, _, e in market_edges) / len(market_edges)
 
 
+# ── AMENDMENT 2026-09-06 (operator hardcode, verbatim: "we also need to
+# base off roi as well and net winnings hard code"; "score per market can
+# be multiple wagers if they ladder that is flawed") ─────────────────────
+# THE BASIS for trader measurement is ROI *and* NET WINNINGS, LADDER-AWARE:
+#   * a WAGER = one buy (tx-merged fills), INCLUDING ladder adds — the
+#     first-buy-only per-market estimand above remains as an INPUT/
+#     diagnostic but is superseded as a gating basis;
+#   * ROI per wager = (outcome − fill − fee) / fill — dollars returned
+#     per dollar staked (per-share edge is NOT ROI: an $0.08 share paying
+#     $1 returns +11.5x/dollar, which edge scores as +0.92/share);
+#   * NET WINNINGS = ROI × stake, at the ruled $100 reference per wager
+#     for hypothetical bases, sizer stake for money.
+ROI_Y_MIN = -1.10
+# ROI support floor: worst wager ROI = -(1 + fee/fill); venue fee =
+# rate*fill*(1-fill) with rate <= 0.07 => fee/fill <= 0.07 => ROI >=
+# -1.07; flat-2% fallback fee = 0.02*fill => ROI >= -1.02. Margin to -1.10.
+LAMBDAS = (0.05, 0.1, 0.2, 0.4, 0.6, 0.8)
+# = band_tracker.LAMBDAS verbatim (pinned equal by test so the mixture
+# grids can never drift apart); positivity at the floor:
+# 1 + 0.8*(-1.10) = 0.12 > 0.
+
+
+def wager_rois(records: list[dict], outcomes: dict, fee_rate_map: dict,
+               fee_map: dict, epoch: float = 0.0
+               ) -> list[tuple[float, str, float]]:
+    """[(detect_ts, token_id, roi)] over resolved WAGERS in the forward
+    window — ladder-aware: EVERY OK buy record is one wager (repeats and
+    adds included; first_buy is NOT required). Ordered by detect_ts."""
+    out = []
+    for r in records:
+        ts = float(r.get("detect_ts") or 0)
+        if ts < epoch or r.get("verdict") != "OK":
+            continue
+        f = r.get("shadow_fill")
+        if not isinstance(f, (int, float)) or not (0.0 < f):
+            continue
+        tok = str(r.get("token_id"))
+        o = outcomes.get(tok)
+        if o is None:
+            continue
+        fee, _src = canon_fee(tok, f, fee_rate_map, fee_map)
+        out.append((ts, tok, (o - f - fee) / f))
+    out.sort()
+    return out
+
+
+def mixture_e_value(ys: list, y_min: float = ROI_Y_MIN) -> float:
+    """Uniform-mixture betting e-process for H0: mean <= 0 — the same
+    mixture as band_tracker.e_value (grid pinned equal by test),
+    generalized to a caller-stated support bound: ROI atoms can reach
+    -1.07 with venue fees, below the band tracker's -1.02 assertion."""
+    assert all(y >= y_min - 1e-9 for y in ys), "atom below support bound"
+    wealth = [1.0] * len(LAMBDAS)
+    for y in ys:
+        for j, lam in enumerate(LAMBDAS):
+            wealth[j] *= (1.0 + lam * y)
+    return sum(wealth) / len(wealth)
+
+
 def merge_labels(db: dict, supplement: dict) -> tuple[dict, dict]:
     """(merged, conflicts). DB wins, supplement fills holes; a token present
     in BOTH with DIFFERENT outcomes goes to `conflicts` {token: (db, supp)}
