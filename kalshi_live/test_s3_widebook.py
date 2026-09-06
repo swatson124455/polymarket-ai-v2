@@ -23,7 +23,8 @@ _NL_NARROW = [[0.48, 1500.0]]
 
 def _mkt(usd_day=120.0, target=1000):
     return {"ticker": "KXWB-EV-T1", "target": target,
-            "end": "2026-09-06T03:59:00Z", "usd_day": usd_day, "df": 0.5}
+            # end NOW-RELATIVE (+7d; this file was the date-rot incident of 2026-09-06)
+            "end": (q.utcnow() + __import__("datetime").timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ"), "usd_day": usd_day, "df": 0.5}
 
 
 def _cfg(monkeypatch, mode=1):

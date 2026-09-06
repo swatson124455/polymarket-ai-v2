@@ -15,7 +15,8 @@ _NL_DEEP = [[0.01, 100000.0]]
 
 def _mkt():
     return {"ticker": "KXD3-EV-40", "target": 1000,
-            "end": "2026-08-31T03:59:00Z", "usd_day": 100.0, "df": 0.5}
+            # end NOW-RELATIVE (+7d; date-rot incident 2026-09-06)
+            "end": (q.utcnow() + __import__("datetime").timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ"), "usd_day": 100.0, "df": 0.5}
 
 
 def _cfg(monkeypatch, repair=1, dollars=0):

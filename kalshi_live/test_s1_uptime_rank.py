@@ -8,11 +8,13 @@ import time
 from test_live_hardening import q
 
 
-def _prog(t, pool_cc, end="2026-09-06T03:59:00Z"):
+def _prog(t, pool_cc, end=None):
+    # dates NOW-RELATIVE (started yesterday, ends +7d) — hardcoded dates rotted on
+    # 2026-09-06 (17-pin date-rot incident); never pin a wall-clock program window.
     return {"market_ticker": t, "incentive_type": "liquidity",
             "target_size_fp": "1000.00", "discount_factor_bps": 5000,
-            "period_reward": pool_cc, "start_date": "2026-08-30T00:00:00Z",
-            "end_date": end}
+            "period_reward": pool_cc, "start_date": (q.utcnow() - __import__("datetime").timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_date": end or (q.utcnow() + __import__("datetime").timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
 def _cfg(monkeypatch, rank=1):

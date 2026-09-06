@@ -24,7 +24,9 @@ _NL_MID = [[0.49, 920.0]]              # (120ct at ~0.50) but above the 50ct INV
 
 def _mkt(usd_day=100.0, target=1000):
     return {"ticker": "KXAAAGASW-26AUG31-3.900", "target": target,
-            "end": "2026-08-31T03:59:00Z", "usd_day": usd_day, "df": 0.5}
+            # end is NOW-RELATIVE (+7d): hardcoded dates rotted past the wind-down gate on
+            # 2026-09-06 (17-pin date-rot incident) — never pin a wall-clock end again.
+            "end": (q.utcnow() + __import__("datetime").timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ"), "usd_day": usd_day, "df": 0.5}
 
 
 def _live_cfg(monkeypatch):

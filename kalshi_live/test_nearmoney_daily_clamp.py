@@ -13,7 +13,9 @@ WEEKLY_LIFE_MIN = 7 * 1440.0      # DIESELW-class 7d window
 
 
 def _mkt(life_min, usd_day=600.0):
-    m = {"ticker": "KXNMD-EV-T1", "target": 1000, "end": "2026-09-07T03:59:00Z",
+    # end NOW-RELATIVE (+7d) — the daily/weekly classification keys on life_min, not
+    # end; a rotted end would only trip the wind-down gate (date-rot incident 09-06).
+    m = {"ticker": "KXNMD-EV-T1", "target": 1000, "end": (q.utcnow() + __import__("datetime").timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ"),
          "usd_day": usd_day, "df": 0.5}
     if life_min is not None:
         m["life_min"] = life_min
