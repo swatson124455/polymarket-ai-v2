@@ -162,16 +162,29 @@ def main():
             age_min = (now - datetime.fromisoformat(row["ts"])).total_seconds() / 60.0
         except Exception:
             row = None
+    # In --pre-start (the systemd ExecStartPre gate) the two ACCOUNT checks below are
+    # WARN, not FAIL (operator "proceed with recs" 2026-09-06): they are operator
+    # pre-start expectations, not crash-recovery conditions. Hard-failing them in the
+    # gate broke auto-restart — after a mid-session crash, resting quotes normally
+    # EXIST (the daemon manages pre-existing orders at startup; restarts with resting
+    # exits were routine, e.g. 08-26 22:55Z) and the cash row can be up to ~5 min old
+    # (recorder cadence) vs the 6-min bound — the gate would strand resting quotes
+    # with no engine. STOP / rails / config-ack stay hard FAILs on every path.
+    def acct(ok, label, detail=""):
+        if ok or not ARGS.pre_start:
+            res(ok, label, detail)
+        else:
+            warn(label + " [pre-start: WARN-only]", detail)
     if row is None or age_min is None or age_min > 6.0:
-        res(False, "fresh venue account read",
-            f"cash-feed row age={age_min if age_min is not None else 'n/a'} min (recorder down?)")
+        acct(False, "fresh venue account read",
+             f"cash-feed row age={age_min if age_min is not None else 'n/a'} min (recorder down?)")
     else:
         res(True, "fresh venue account read",
             f"${row['cash']:.4f} cash | {row['n_resting']} resting | "
             f"{row['n_positions']} positions ({row['ts']})")
         if row["n_resting"]:
-            res(False, "zero resting orders before start",
-                f"{row['n_resting']} resting while service off — stale orders, investigate")
+            acct(False, "zero resting orders before start",
+                 f"{row['n_resting']} resting while service off — stale orders, investigate")
         else:
             res(True, "zero resting orders before start")
         if row["n_positions"]:
