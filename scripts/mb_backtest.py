@@ -515,10 +515,15 @@ def files_to_process(all_files: list[str], processed: set[str],
 
 
 def should_rescreen(force: bool, cand_exists: bool, weekday: int,
-                    last_rescreen: str, today: str) -> bool:
-    """Monday (UTC) once per day, first run ever, or --rescreen. Pure."""
-    return force or not cand_exists or (weekday == 0
-                                        and last_rescreen != today)
+                    last_rescreen: str, today: str,
+                    inputs_changed: bool = False) -> bool:
+    """Monday (UTC) once per day, first run ever, --rescreen, or the
+    study inputs are newer than the candidate set (screen-gap audit
+    2026-09-07: the module doc always promised fresh-study pickup; the
+    code only honored Mondays — a regenerated wallets/conc file sat
+    unused until the next Monday). Pure."""
+    return force or not cand_exists or inputs_changed \
+        or (weekday == 0 and last_rescreen != today)
 
 
 def cmd_daily_extract(args) -> int:
@@ -538,9 +543,19 @@ def cmd_daily_extract(args) -> int:
     today = now.strftime("%Y%m%d")
     state = json.load(open(state_path)) if os.path.exists(state_path) \
         else {"processed": [], "last_rescreen": ""}
+    inputs_changed = False
+    if os.path.exists(cand_path):
+        cand_m = os.path.getmtime(cand_path)
+        inputs_changed = any(
+            os.path.exists(p) and os.path.getmtime(p) > cand_m
+            for p in (args.wallets, args.conc))
+    if inputs_changed:
+        print("[daily] study inputs newer than the candidate set -> "
+              "rescreen (fresh-study pickup, gap fix 2026-09-07)")
     rescreen = should_rescreen(args.rescreen, os.path.exists(cand_path),
                                now.weekday(),
-                               state.get("last_rescreen", ""), today)
+                               state.get("last_rescreen", ""), today,
+                               inputs_changed=inputs_changed)
     if rescreen:
         from types import SimpleNamespace as NS
         rc = cmd_screen(NS(wallets=args.wallets, conc=args.conc,
@@ -1004,6 +1019,20 @@ def _self_test() -> int:
            and (2 / 3) * 100 >= COV_FLAG_DEFAULT * 100)
     print(f"  [cov] per-wallet coverage counts + majority line : {okc}")
     ok &= okc
+    # [rescreen] fresh-study pickup (gap fix 2026-09-07): changed inputs
+    # trigger; Monday-once and force still work; quiet weekday without
+    # changes does not
+    okrs = (should_rescreen(False, True, 2, "", "20260907",
+                            inputs_changed=True) is True
+            and should_rescreen(False, True, 2, "", "20260907") is False
+            and should_rescreen(False, True, 0, "", "20260907") is True
+            and should_rescreen(False, True, 0, "20260907", "20260907")
+            is False
+            and should_rescreen(True, True, 2, "", "20260907") is True
+            and should_rescreen(False, False, 2, "", "20260907") is True)
+    print(f"  [rescreen] fresh-inputs trigger + Monday/force preserved : "
+          f"{okrs}")
+    ok &= okrs
     # [screen] eligibility, tailability, UNKNOWN counted
     wrows = [{"w": "0xa", "n": 30, "usd_sum": 10.0},   # ok
              {"w": "0xb", "n": 10, "usd_sum": 99.0},   # too few trades
