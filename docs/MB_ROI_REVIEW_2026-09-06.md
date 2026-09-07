@@ -63,7 +63,7 @@ SOUND FOR GATING after A4's fix, with the named residuals: depth
 (pilot-day), discovery-wallet haircut scope (A2), coverage column (A3),
 and the standing HYPOTHETICAL label on all reference-stake dollars.
 
-## B. Bayes head start — REVIEW COMPLETE (2026-09-07 ~00:35Z)
+## B. Bayes head start — REVIEW COMPLETE (2026-09-07, pushed 00:31:47Z measured)
 All numbers HYPOTHESIS (model-based), fit on market-position ROI atoms
 (the correlation defect would have corrupted the variance estimates;
 conversion done before any of these fits).
