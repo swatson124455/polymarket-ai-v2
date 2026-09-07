@@ -79,5 +79,19 @@ cd /opt/polymarket-ai-v2
       | grep -vE "^[0-9]{4}-|\[info|\[debug"
 } >> "$LOG"
 {
+  # gamma window crawl (operator GO 2026-09-07 "1 do it"): labels for
+  # OUTSIDE-DB tokens the DB-join supplement structurally cannot reach
+  # (mb_gamma_window_labels.py; the 09-07 full capture-era run took
+  # sweep-token coverage 33.1%->74.2%, CONFLICT=0). Rolling 72h endDate
+  # window = ~3 daily chances per market; timeout -s INT so a hang
+  # becomes a loud Traceback (chain-watch CRASHED), never a wedged cron.
+  echo "===== $(date -u +%FT%TZ) gamma window crawl ====="
+  BT=/opt/pa2-shared/mb_copyable_data/backtest
+  timeout -s INT 2400 \
+    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_gamma_window_labels.py" \
+      --tokens "$BT/sweep_tokens.jsonl" \
+      --start "$(date -u -d '72 hours ago' +%FT%TZ)" --rps 8 --write 2>&1 | tail -8
+} >> "$LOG"
+{
   /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_chain_watch.py" 2>&1
 } >> "$LOG"

@@ -34,6 +34,7 @@ EXPECTED = [
     ("funnel", "trader funnel"),
     ("hypo", "hypothetical dollar ledger"),
     ("backtest", "backtest daily leaderboard"),
+    ("crawl", "gamma window crawl"),
 ]
 
 
@@ -124,7 +125,7 @@ def _self_test() -> int:
           f" loud : {ok2}")
     ok &= ok2
     line, bad = grade_chain(_mk_log(day, EXPECTED[:-1]), day)
-    ok3 = bad == 1 and "backtest=MISSING" in line \
+    ok3 = bad == 1 and "crawl=MISSING" in line \
         and line.startswith("[chain] !!")
     print(f"  [missing] absent stage reported MISSING, never silently OK :"
           f" {ok3}")
@@ -133,9 +134,9 @@ def _self_test() -> int:
     ok4 = bad == len(EXPECTED) and line.startswith("[chain] !!")
     print(f"  [stale] yesterday's sections do NOT count for today : {ok4}")
     ok &= ok4
-    ok5 = len(EXPECTED) == 9
-    print(f"  [pin] watchlist covers the 9 cron stages (update BOTH on cron"
-          f" change; backtest joined 2026-09-06) : {ok5}")
+    ok5 = len(EXPECTED) == 10
+    print(f"  [pin] watchlist covers the 10 cron stages (update BOTH on cron"
+          f" change; backtest joined 2026-09-06, crawl 2026-09-07) : {ok5}")
     ok &= ok5
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
