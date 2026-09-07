@@ -1,15 +1,24 @@
-# !! OVERHAUL PROGRAM IN FORCE (2026-08-25) - READ BEFORE THE BRIEF BELOW !!
-Every new MB session starts by reading, in order:
+# !! BASIS HARDCODE IN FORCE (2026-09-06, operator) - READ FIRST !!
+TRADER MEASUREMENT = ROI *and* NET WINNINGS, LADDER-AWARE, with evidence
+on ONE atom per MARKET (position ROI — the correlated-atom fix). Full
+rulings: memory feedback_dollars_per_day_is_the_test (TOP block) +
+docs/MB_ROI_REVIEW_2026-09-06.md. PASS = e>=20 + LCB net winnings >=
+$100/wk @ $100/wager ref; futility = 1 week; every prior edge-basis
+number is superseded for gating. All trials run from BASIS_EPOCH
+2026-09-06T22:30Z and resolve by 2026-09-13.
+
+# !! OVERHAUL PROGRAM (2026-08-25) - still in force under the hardcode !!
+Every new MB session also reads, in order:
 1. docs/MB_OVERHAUL_REVIEW_AGENDA.md  (the tiered review agenda, 87 verified
    findings; evidence pack docs/mb_overhaul_review_findings.json)
-2. docs/MEASUREMENT_CANON.md          (the normative measurement rulebook -
-   bare "edge" means the canonical per-market mean, nothing else)
-3. the latest [canon] line in deep_dive/label_fee_refresh.log - ALARMS must
-   be 0; any alarm means the recorded data disagrees with the chain and NO
-   number is quotable until it is explained.
-The C1 group is graded ANYTIME-VALID (docs/COHORT1_UNTESTED_AMENDMENT.md);
-the original cohort5 twenty keep their 07-30 charter. Evidence is backed up
-nightly (VPS 03:30Z bundle + Windows 05:00 pull - check pull.log is fresh).
+2. docs/MEASUREMENT_CANON.md          (the normative measurement rulebook;
+   NOTE: its bare-"edge" language predates the 2026-09-06 basis hardcode —
+   the hardcode governs)
+3. the latest [canon] + [chain] lines in deep_dive/label_fee_refresh.log -
+   ALARMS must be 0 and all 9 chain stages OK; any alarm means the recorded
+   data disagrees with the chain and NO number is quotable until explained.
+Evidence is backed up nightly (VPS 03:30Z bundle + Windows 05:00 pull -
+check pull.log is fresh).
 
 # Session Startup Prompt Template (copy, fill the TASK line, paste as message 1)
 

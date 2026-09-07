@@ -18,6 +18,58 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-07 (SESSION CLOSE ~00:50Z) — MARATHON SESSION HANDOFF:
+> ## ROI BASIS RULED+LIVE END-TO-END, CORRELATED-ATOM DEFECT FIXED,
+> ## BOTH REVIEWS COMPLETE
+>
+> **READ ORDER FOR THE NEXT SESSION:** this block -> memory TOP banner
+> (feedback_dollars_per_day_is_the_test, the ROI+net-winnings ladder
+> hardcode + every ruling) -> docs/MB_ROI_REVIEW_2026-09-06.md (both
+> completed reviews incl. the correlated-atom defect record) -> the
+> blocks below in order for tonight's full arc.
+>
+> **WHERE THE PROGRAM STANDS (all live-verified, branch pushed):**
+> - MEASUREMENT: every instrument (grader, funnel, band, hypo ledger,
+>   backtest, bayes) scores per-MARKET position ROI atoms (ladder fills
+>   price the position; one atom per market resolution — the correlated-
+>   atom fix; regression-pinned <=5% null false-pass). PASS = e>=20 +
+>   LCB net winnings >= $100/wk @ $100/wager ref; futility = 1 week;
+>   money rate = markets/day (conservative).
+> - TRIALS: ALL 122 (115 + 7 retrials-r1 under #r1 keys) run from
+>   BASIS_EPOCH 2026-09-06T22:30Z; band ROI registration same epoch;
+>   EVERYTHING resolves pass-or-futility by 2026-09-13. Old locks
+>   immutable. Hypo ledger fresh (hypo_ledger_roi.jsonl from $0).
+> - DISCOVERY (corrected board 2026-09-07T00:23Z, HYPOTHETICAL
+>   $100/wager, 36.3% label coverage): 4 positive holdout LCBs of
+>   8,241; sole QUALIFIES 0x052eb5d2cc +$887/wk (32 mkts; conc 76 >
+>   bar 20 — flagged); 0x12a7dd1d8e +$639/wk (70 mkts; 1mo-eligible
+>   ~09-26 + fraud screen then). Roster: zero positive holdout LCBs on
+>   honest atoms.
+> - BAYES (reviewed, HYPOTHESIS, ranking-input-only verdict — never a
+>   gate/stake): pooled mu=-0.0081 tau=0.0544 (450 fit wallets, med
+>   haircut); spread concentrates in crypto (mu=+0.0442 tau=0.1427,
+>   55 wallets); NOT deployed to cron — needs operator go naming a use.
+> **WATCH ITEMS FOR THE NEXT SESSION:** 09-07 11:40Z cron = first run
+> with the 9-stage chain incl. the daily backtest stage AND the fully
+> converted graders (expect small n everywhere — only post-22:30Z
+> wagers count; verify [chain] 9/9 + [canon] ALARMS=0 + [alloc] line +
+> the fresh hypo header); SELL sink accruing (watch W0-SIDE MISMATCH —
+> zero so far); cron now runs ~30min longer.
+> **OPEN [operator]:** none pending tonight. Standing gates: real money
+> only via docs/MB_GO_CHECKLIST.md; Bayes deployment; conc-76 QUALIFIES
+> wallet is above the tailability bar (informational).
+> **OPEN [build], named, none started:** leaderboard coverage% column
+> (review A3); with-exits estimand once SELL sink matures (GO item 4);
+> robust-prior Bayes variant (review B4, optional); gamma-by-token
+> label fetch for outside-DB markets (~80k tokens).
+> **LANDMINES ADDED TONIGHT:** root-run os.replace on a live-appended
+> file changes ownership (sell-sink outage, 809/809 backfilled);
+> pgrep-based watchers must not match their own/peers' cmdlines
+> (six stuck watchers); pydantic probes ./.env — cron's cd is
+> load-bearing; a global sed mutant can corrupt its own test pin
+> (anchor by indentation); validity sims must model DEPENDENCE not
+> just marginals (the correlated-atom lesson).
+
 > ## 2026-09-06 (~22:20Z live-verified) — BAND CONVERTED + RETRIALS-R1
 > ## LIVE; every instrument now on the ruled ROI basis
 >
