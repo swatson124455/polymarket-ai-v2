@@ -184,13 +184,23 @@ def wallet_exits(rows: list[dict]) -> dict[str, float]:
 
 def peak_concurrency_replay(records: list[dict], exits: dict[str, float],
                             res_at: dict[str, float], end_ts: float) -> int:
-    """Peak simultaneous open copies over the replayed entries. Exit =
-    earliest of the wallet's own SELL, market resolution, else end_ts
-    (open-to-end upper bound, same lens as the population study)."""
-    events: list[tuple[float, int]] = []
+    """Peak simultaneous open POSITIONS (one per market/token — screening
+    gap audit 2026-09-07: the pre-fix version counted every ladder WAGER
+    as a separate open position, so a 1,328-wager wallet printed conc 567
+    where its distinct-market peak is 30; the operator's tailability bar
+    counts positions WITH ladder headroom, and trader_funnel's own
+    peak_concurrency was already position-level). Entry = the token's
+    earliest wager; exit = earliest of the wallet's own SELL, market
+    resolution, else end_ts (open-to-end upper bound, same lens as the
+    population study)."""
+    first_ts: dict[str, float] = {}
     for r in records:
-        ts = float(r["detect_ts"])
         tok = str(r["token_id"])
+        ts = float(r["detect_ts"])
+        if tok not in first_ts or ts < first_ts[tok]:
+            first_ts[tok] = ts
+    events: list[tuple[float, int]] = []
+    for tok, ts in first_ts.items():
         t_end = min([t for t in (exits.get(tok), res_at.get(tok))
                      if t is not None] or [end_ts])
         events.append((ts, +1))
@@ -854,7 +864,13 @@ def _self_test() -> int:
     ok4 = (peak_concurrency_replay(e_recs, {"t1": 150.0}, {}, 1000.0) == 2
            and peak_concurrency_replay(e_recs, {"t1": 110.0}, {}, 1000.0) == 1
            and peak_concurrency_replay([], {}, {}, 1000.0) == 0)
-    print(f"  [conc] SELL-exit refinement + empty=0 : {ok4}")
+    # gap fix 2026-09-07: ladder wagers on ONE market are ONE position
+    lad_recs = e_recs + [{"token_id": "t1", "detect_ts": 105.0},
+                         {"token_id": "t1", "detect_ts": 108.0}]
+    ok4 = ok4 and peak_concurrency_replay(lad_recs, {"t1": 150.0}, {},
+                                          1000.0) == 2
+    print(f"  [conc] SELL-exit refinement + ladder=1 position + empty=0 "
+          f": {ok4}")
     ok &= ok4
     # [replay] no lookahead: verdict day = first day resolutions suffice.
     # 30 markets, edges +0.5 (e_value([0.5]*30) > 20): all entered day 0,
