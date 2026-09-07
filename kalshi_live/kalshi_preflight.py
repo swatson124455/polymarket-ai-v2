@@ -250,12 +250,20 @@ def main():
         for m in picked[:8]:
             t = m["ticker"]
             try:
-                ob = api(f"/markets/{t}/orderbook").get("orderbook", {})
+                _r6 = api(f"/markets/{t}/orderbook")
             except Exception as e:
                 print(f"  {t}: book read failed ({e})")
                 continue
-            yl = [[p / 100.0, s] for p, s in (ob.get("yes") or [])]
-            nl = [[p / 100.0, s] for p, s in (ob.get("no") or [])]
+            # VENUE SHAPE (canon trap, bit this reader 2026-09-07): depth lives under
+            # orderbook_fp (yes_dollars/no_dollars, dollar-string prices); the legacy
+            # 'orderbook' key parses as EMPTY and made every dry book look one-sided.
+            ob = _r6.get("orderbook_fp") or _r6.get("orderbook") or {}
+            if "yes_dollars" in ob or "no_dollars" in ob:
+                yl = [[float(p), float(sz)] for p, sz in (ob.get("yes_dollars") or [])]
+                nl = [[float(p), float(sz)] for p, sz in (ob.get("no_dollars") or [])]
+            else:
+                yl = [[p / 100.0, sz] for p, sz in (ob.get("yes") or [])]
+                nl = [[p / 100.0, sz] for p, sz in (ob.get("no") or [])]
             stats = {}
             quotes = q.desired_quotes(m, yl, nl, now, own={"yes": 0.0, "no": 0.0},
                                       inv=0.0, event_delta=0.0, stats=stats,

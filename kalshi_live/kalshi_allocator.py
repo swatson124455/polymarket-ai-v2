@@ -386,21 +386,32 @@ def main():
     # same basis. Empty-book candidates stay in the plan tail (the quoter's own gates keep
     # refusing them until they form) so nothing is silently dropped (Rule Nine).
     import urllib.request
-    def _book_state(t):
+    def _book_state(t, target):
+        """3 = Target-QUALIFYING both sides (cum depth >= target each side — the CFTC
+        pay condition, B4-operative; the only books where accrual pays), 2 = two-sided
+        sub-Target, 1 = one-sided, 0 = empty/unreadable. Canon trap: depth is under
+        orderbook_fp (yes_dollars/no_dollars); legacy key parses empty (bit 2026-09-07)."""
         try:
             with urllib.request.urlopen(
                     "https://api.elections.kalshi.com/trade-api/v2/markets/"
                     + t + "/orderbook", timeout=10) as r:
-                ob = json.load(r).get("orderbook") or {}
-            y = len(ob.get("yes") or []); n = len(ob.get("no") or [])
-            return 2 if (y and n) else (1 if (y or n) else 0)
+                d = json.load(r)
+            ob = d.get("orderbook_fp") or d.get("orderbook") or {}
+            yl = ob.get("yes_dollars") or ob.get("yes") or []
+            nl = ob.get("no_dollars") or ob.get("no") or []
+            ycum = sum(float(sz) for _, sz in yl)
+            ncum = sum(float(sz) for _, sz in nl)
+            if yl and nl and ycum >= target and ncum >= target:
+                return 3
+            return 2 if (yl and nl) else (1 if (yl or nl) else 0)
         except Exception:
             return 0
     for c in eligible:
-        c["book_state"] = _book_state(c["ticker"])
+        c["book_state"] = _book_state(c["ticker"],
+                                      prog_meta.get(c["program_id"], {}).get("target", 1000.0))
     eligible.sort(key=lambda c: (-c.get("book_state", 0), -c["rank_key"], c["ticker"]))
     for c in eligible:
-        c["rank_key"] = c["rank_key"] + (1000.0 if c.get("book_state") == 2 else 0.0)
+        c["rank_key"] = c["rank_key"] + 1000.0 * float(c.get("book_state", 0))
     # D8: cap INHERITED-basis daily entries per run — AND one per series (2026-09-07
     # idle-fix: both slots went to adjacent IL strikes; if that one series' books never
     # form, the whole plan points at nothing. Diversity = 2 entries -> 2 series).
