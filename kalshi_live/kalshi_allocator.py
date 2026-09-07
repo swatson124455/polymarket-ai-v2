@@ -329,6 +329,14 @@ def main():
                 inherit_5ct.setdefault(meta["ticker"].split("-")[0], []).append(
                     ((win[-1][1] - win[0][1]) / dt_min) / 5.0)
     inherit = {s: sorted(v)[len(v) // 2] for s, v in inherit_5ct.items() if v}
+    # WEEKLY BASIS (2026-09-07): DIESELW measured $0.178/day sustained overnight
+    # 08-31T13:20->09-01T13:11Z at 33-40ct/side (money plan M1, ESTABLISHED) ->
+    # 0.178*10000/1440 = 1.236 cc/min at ~36ct = 0.0343 cc/min/ct. CONSERVATIVE pick:
+    # the 09-01 GO window measured ~8x higher (0.275/ct at full presence) — not used.
+    # At 100ct x 7d this projects ~$3.46/period (clears the bar); at the 25ct
+    # zero-credit clamp it projects ~$0.86 (sub-cliff) — the clamp catch-22 is then
+    # VISIBLE in coverage as EXCLUDED(cliff), operator decision pending.
+    inherit.setdefault("KXDIESELW", 0.0343)
     print(f"inheritance basis (cc/min/ct, 09-06 floored window): "
           + json.dumps({k: round(v, 4) for k, v in inherit.items()}))
 
@@ -370,11 +378,41 @@ def main():
 
     eligible = [c for c in cands if c.get("proj_usd") is not None
                 and c["proj_usd"] >= CLIFF_BAR]
-    # D8: cap INHERITED-basis daily entries per run
+    # BOOK-FORMEDNESS (spec §1 universe walk, v1 gap closed 2026-09-07 after measuring all
+    # 161 family books EMPTY at 14:56Z — a plan must never point capital at markets nobody
+    # quotes while quotable eligible ones exist). Cliff-clearing candidates get one
+    # orderbook read each (bounded: only the eligible handful); two-sided books rank ahead
+    # of unformed ones, and a formed-book candidate always beats an empty-book one of the
+    # same basis. Empty-book candidates stay in the plan tail (the quoter's own gates keep
+    # refusing them until they form) so nothing is silently dropped (Rule Nine).
+    import urllib.request
+    def _book_state(t):
+        try:
+            with urllib.request.urlopen(
+                    "https://api.elections.kalshi.com/trade-api/v2/markets/"
+                    + t + "/orderbook", timeout=10) as r:
+                ob = json.load(r).get("orderbook") or {}
+            y = len(ob.get("yes") or []); n = len(ob.get("no") or [])
+            return 2 if (y and n) else (1 if (y or n) else 0)
+        except Exception:
+            return 0
+    for c in eligible:
+        c["book_state"] = _book_state(c["ticker"])
+    eligible.sort(key=lambda c: (-c.get("book_state", 0), -c["rank_key"], c["ticker"]))
+    for c in eligible:
+        c["rank_key"] = c["rank_key"] + (1000.0 if c.get("book_state") == 2 else 0.0)
+    # D8: cap INHERITED-basis daily entries per run — AND one per series (2026-09-07
+    # idle-fix: both slots went to adjacent IL strikes; if that one series' books never
+    # form, the whole plan points at nothing. Diversity = 2 entries -> 2 series).
     inh = [c for c in eligible if c.get("rate_basis") == "INHERITED"]
-    for c in inh[DAILY_ENTRIES_MAX:]:
-        eligible.remove(c)
-        c["skip_reason"] = "daily_entry_cap"
+    seen_series, kept = set(), []
+    for c in inh:
+        if c["series"] in seen_series or len(kept) >= DAILY_ENTRIES_MAX:
+            eligible.remove(c)
+            c["skip_reason"] = ("daily_entry_cap" if len(kept) >= DAILY_ENTRIES_MAX
+                                else "series_diversity")
+        else:
+            seen_series.add(c["series"]); kept.append(c)
     sel, skipped = greedy_allocate(
         eligible, float(os.environ.get("KALSHI_MAX_TOTAL_CAPITAL", "240")),
         float(os.environ.get("KALSHI_SERIES_MAX_USD", "200")))

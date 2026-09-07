@@ -9,7 +9,7 @@ OnCalendar=*-*-* 04:10:00 UTC
 # Program-birth times measured: weekday dailies appear shortly after 04:00Z; the weekly
 # batch was published 14:02:02Z on Sunday 2026-09-07. Hourly cadence closes every gap —
 # runs are read-only + atomic-write; the plan only changes when measurements justify it.
-OnCalendar=*-*-* *:40:00 UTC
+OnCalendar=*-*-* *:10,25,40,55:00 UTC
 Persistent=true
 
 [Install]
