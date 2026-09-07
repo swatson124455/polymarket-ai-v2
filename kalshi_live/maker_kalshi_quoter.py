@@ -298,6 +298,9 @@ def _total_cap():
 # Stand-down can stay OFF; the two compose harmlessly if both are on (stand-down shrinks size,
 # this skips/reduces).
 CAPTURE_GATE = _envi("KALSHI_CAPTURE_GATE", 0)                 # 0 = today's exact behavior, byte-for-byte
+# W2 (2026-09-07): gate the capture floor at EFFECTIVE resting size (ramp/floor/widebook/
+# near-money/file clamps), not full join size — see the gate block. 0 = legacy gate.
+CAPTURE_EFFECTIVE_SIZE = _envi("KALSHI_CAPTURE_EFFECTIVE_SIZE", 0)
 CAPTURE_MIN_USD_DAY = _envf("KALSHI_CAPTURE_MIN_USD_DAY", 5.0)  # model $/day floor (see above)
 CAPTURE_DF_DEFAULT = _envf("KALSHI_CAPTURE_DF", 0.5)          # discount_factor_bps=5000 => 0.50 (live)
 
@@ -1776,6 +1779,52 @@ RAMP_FLOOR_FILE = os.environ.get("KALSHI_RAMP_FLOOR_FILE",
                                  os.path.join(DATA_DIR, "RAMP_FLOOR_SESSION"))
 _RAMP_FLOOR_CACHE = {"ts": 0.0, "active": False}
 
+# ALLOCATOR FILE MODE (v1 spec §4; operator "build the effective size gate and allocator
+# now" 2026-09-07, after the 09-06/07 floored session measured the sub-cliff shape live:
+# 9 programs accruing, none on pace for the $1 floor). When KALSHI_FOOTPRINT_FILE is set,
+# kalshi_allocator.py's output file DRIVES selection: select_footprint returns exactly the
+# file's tickers that survive the safety funnel (allowlist/deny/date/late-life/close-past/
+# activity all still apply — the file can only NARROW, never bypass a safety drop);
+# FOOTPRINT_TOP and the PIVOT/round-robin/SCORE_RANK machinery are bypassed; per-ticker
+# max_ct clamps accumulating quotes (unwind never touched); the file's priority field
+# replaces the usd_day/alloc ordering in cap_desired/bound_creates/the pivot sort.
+# FAIL-CLOSED (spec §4, ACDG C7): missing / unparseable / wrong-version / STALE
+# (> FOOTPRINT_STALE_H since generated_utc) file -> quote NOTHING new; reduce-only
+# continues via the existing strand-unwind path; a loud FP_DROPS counter marks every
+# refused cycle. It NEVER falls open to the scrapped proxy selection. Unset = byte-
+# identical legacy selection (provable no-op).
+FOOTPRINT_FILE = os.environ.get("KALSHI_FOOTPRINT_FILE", "")
+FOOTPRINT_STALE_H = _envf("KALSHI_FOOTPRINT_STALE_H", 26.0)
+_FOOTPRINT_CACHE = {"ts": 0.0, "rows": None}       # rows: None = fail-closed this minute
+_FOOTPRINT_CAPS = {}                               # {ticker: max_ct} for the sizing clamp
+_FOOTPRINT_PRIO = {}                               # {ticker: priority} (1 = highest)
+
+
+def _load_footprint_file(now_ts, max_age_s=60.0):
+    """Returns {ticker: (max_ct, priority)} or None (fail-closed). Cached 60s."""
+    global _FOOTPRINT_CAPS, _FOOTPRINT_PRIO
+    if now_ts - _FOOTPRINT_CACHE["ts"] <= max_age_s:
+        return _FOOTPRINT_CACHE["rows"]
+    rows = None
+    try:
+        with open(FOOTPRINT_FILE) as fh:
+            d = json.load(fh)
+        if int(d.get("version", 0)) == 1:
+            gen = parse_iso(d["generated_utc"]).timestamp()
+            if 0.0 <= (now_ts - gen) <= FOOTPRINT_STALE_H * 3600.0:
+                out = {}
+                for r in d["rows"]:
+                    t = str(r["ticker"])
+                    out[t] = (max(1, int(r["max_ct"])), int(r["priority"]))
+                rows = out
+    except Exception:
+        rows = None
+    _FOOTPRINT_CACHE["ts"] = now_ts
+    _FOOTPRINT_CACHE["rows"] = rows
+    _FOOTPRINT_CAPS = {t: v[0] for t, v in (rows or {}).items()}
+    _FOOTPRINT_PRIO = {t: v[1] for t, v in (rows or {}).items()}
+    return rows
+
 
 def _ramp_floor_active(now_ts, max_age_s=60.0):
     if now_ts - _RAMP_FLOOR_CACHE["ts"] > max_age_s:
@@ -2474,6 +2523,32 @@ def select_footprint(progs, now):
             else:
                 _kept.append(r)
         rows = _kept
+    # ---- ALLOCATOR FILE MODE (see FOOTPRINT_FILE knob block): the file drives selection.
+    # Placed AFTER every safety drop above (allowlist/deny/date/late-life/far-close/
+    # activity/close-past all applied to `rows`) and BEFORE all ranking/slot machinery
+    # (probe cap, SCORE_RANK, round-robin, PIVOT) — which is bypassed by design (spec §4).
+    if FOOTPRINT_FILE:
+        _fp = _load_footprint_file(now.timestamp())
+        if _fp is None:
+            # FAIL-CLOSED: no new quotes this cycle; held inventory unwinds via the
+            # strand path exactly like any selection drop. Loud, every cycle.
+            drops["footprint_file_failclosed"] = drops.get("footprint_file_failclosed", 0) + 1
+            _record_pool_shape(rows, [], FP_SHAPE)
+            return []
+        _by_t = {r["ticker"]: r for r in rows}
+        picked = []
+        for _t, (_mc, _pr) in sorted(_fp.items(), key=lambda kv: (kv[1][1], kv[0])):
+            _r = _by_t.get(_t)
+            if _r is None:
+                # file names a ticker the safety funnel refused (or venue no longer lists)
+                drops["file_ticker_ineligible"] = drops.get("file_ticker_ineligible", 0) + 1
+                continue
+            _r["file_max_ct"] = _mc
+            _r["file_priority"] = _pr
+            picked.append(_r)
+        _record_pool_shape(rows, picked, FP_SHAPE)
+        _caprank_telemetry(rows, picked, now)
+        return picked
     # PROBE SLOT CAP (moved BELOW the market-clock/activity pre-filter, review 2026-08-05:
     # capping first burned every slot on rows the pre-filter then killed). FIX P
     # (operator-ruled 2026-08-06): slots are now streak-rotated, series-diverse, and
@@ -3481,6 +3556,29 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, event_delta
     if CAPTURE_GATE and not void:
         pc = _prospective_capture(m, yl, nl, best_y, best_n, target,
                                   own_orders=own_orders)
+        # W2 EFFECTIVE-SIZE GATE (blind-review W2; operator "build the effective size gate
+        # ... now" 2026-09-07). This gate compared the FULL-join-size model $/day against
+        # the floor while the ramp/floor/clamps rest 5-25ct — so a clamped session was
+        # admitted to markets it mathematically could not clear (measured live 09-06/07:
+        # floored 5ct session, 9 accruing programs, none on pace for $1). Mirror of the
+        # F3 scaling in _expected_credit_usd, using the side-effect-free ramp mirror
+        # (_d3_est_ct never starts a ramp clock). Also min()s the widebook and near-money
+        # daily caps and the allocator file cap when they apply — the gate must see the
+        # SMALLEST size any clamp will rest. Refuse-only: can only tighten admission.
+        # Default 0 = byte-identical legacy gate.
+        if CAPTURE_EFFECTIVE_SIZE and D3_RAMP:
+            _jct = max(_capped_join(best_y, best_n), _capped_join(best_n, best_y), 0.0)
+            _ect = float(_d3_est_ct(m.get("ticker") or "", now.timestamp()))
+            if _widebook:
+                _ect = min(_ect, float(WIDEBOOK_MAX_CT))
+            if NEARMONEY_DAILY_MAX_CT > 0 and _widebook:
+                _lh = float(m.get("life_min") or 0.0) / 60.0
+                if 0.0 < _lh <= NEARMONEY_DAILY_LIFE_H:
+                    _ect = min(_ect, float(NEARMONEY_DAILY_MAX_CT))
+            if _FOOTPRINT_CAPS:
+                _ect = min(_ect, float(_FOOTPRINT_CAPS.get(m.get("ticker"), 1 << 30)))
+            if _jct > 0 and _ect < _jct:
+                pc *= _ect / _jct
         if stats is not None:
             stats["capture_min_pc"] = min(stats.get("capture_min_pc", 1e18), pc)
         if pc < CAPTURE_MIN_USD_DAY:
@@ -4162,6 +4260,11 @@ def _alloc_priority(footprint_rows, now, usd_day):
     """{ticker: priority} for capital allocation. Flag OFF -> usd_day verbatim (legacy).
     Flag ON -> cap_score from the shadowed capital-aware key, with the NEW sweeper's pcap
     (kalshi_market_scores rows, age-cutoff) merged into the prospective feed."""
+    # ALLOCATOR FILE MODE (v1 §4, ACDG B7 fix): the file's priority field IS the capital
+    # order — cap_desired, bound_creates and the pivot sort all consume this map, so the
+    # "scrapped ranking comes back at the margin" defect cannot recur. Priority 1 = first.
+    if FOOTPRINT_FILE and _FOOTPRINT_PRIO:
+        return {t: float(1_000_000 - p) for t, p in _FOOTPRINT_PRIO.items()}
     if not ALLOC_KEY:
         return usd_day
     try:
@@ -5918,6 +6021,18 @@ def run_once():
                         if _q_fullsize is None:
                             _q_fullsize = [dict(_o9) for _o9 in q]
                         _d3_apply_ramp(q, _rct, qstats)
+            # ALLOCATOR FILE CAP (v1 §4): the footprint file's per-ticker max_ct clamps
+            # ACCUMULATING quotes at the same choke point as the D3 ramp above; unwind is
+            # never touched (house doctrine). Empty caps map (file mode off/failed) = no-op.
+            if q and _FOOTPRINT_CAPS:
+                _fcap9 = _FOOTPRINT_CAPS.get(t)
+                if _fcap9 is not None and any(
+                        _o9.get("reason") != "unwind" and _o9["count"] > _fcap9 for _o9 in q):
+                    for _o9 in q:
+                        if _o9.get("reason") != "unwind" and _o9["count"] > _fcap9:
+                            _o9["count"] = max(1, int(_fcap9))
+                    qstats["footprint_file_capped"] = (
+                        qstats.get("footprint_file_capped", 0) + 1)
             # LOSS GOVERNOR ENFORCEMENT: a tripped/cooling market keeps ONLY its reducing
             # quotes; accumulating ones are stripped here and the standing diff cancels any
             # already resting. Placed at the choke point every quoted market flows through.
