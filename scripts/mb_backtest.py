@@ -301,6 +301,60 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
     return out
 
 
+# ── WITH-EXITS LENS (operator activation 2026-09-07: "with-exits D1 = b,
+# D2 fresh epoch at activation, D3 analysis lens") ───────────────────────
+WE_EPOCH_ISO = "2026-09-07T03:30:00Z"
+# D2: the lens's own fresh epoch, set at activation (clock measured
+# 03:10:39Z the same session; next clean boundary). IMMUTABLE — epochs
+# never move. Only positions ENTERED at/after this instant are graded.
+SELLS_SINK_DEFAULT = "/opt/pa2-shared/mirror3_shadow_sells.jsonl"
+
+
+def sells_to_exits(rows: list[dict]) -> dict[str, dict[str, tuple]]:
+    """trader -> {token -> (first SELL detect_ts, whale_price)} from the
+    SELL sink's records. First SELL per (trader, token) wins. Pure."""
+    out: dict[str, dict[str, tuple]] = {}
+    for r in rows:
+        if r.get("side") != "SELL":
+            continue
+        tr = str(r.get("trader") or "").lower()
+        tok = str(r.get("token_id") or "")
+        try:
+            ts, px = float(r["detect_ts"]), float(r["whale_price"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not tr or not tok:
+            continue
+        d = out.setdefault(tr, {})
+        if tok not in d or ts < d[tok][0]:
+            d[tok] = (ts, px)
+    return out
+
+
+def with_exits_metrics(records: list[dict], outcomes: dict, frm: dict,
+                       fee_map: dict, exits: dict, haircut: float,
+                       epoch: float, end_ts: float,
+                       res_at: dict | None = None) -> dict | None:
+    """Per-wallet WITH-EXITS lens numbers (D3: analysis only — reported
+    beside the registered estimand, never a gate/stake). None when the
+    wallet has no graded post-epoch positions."""
+    seq = mc.market_position_rois_with_exits(
+        records, outcomes, frm or {}, fee_map or {}, exits, haircut,
+        epoch=epoch, res_at=res_at)
+    rois = [x for _, _, x, _, _ in seq]
+    n = len(rois)
+    if not n:
+        return None
+    n_ex = sum(1 for *_, e in seq if e)
+    days = max((end_ts - epoch) / DAY_S, 1e-9)
+    mean = sum(rois) / n
+    lcb = mc.roi_lcb(rois)
+    return {"n": n, "exited": n_ex, "roi_mean": mean, "roi_lcb": lcb,
+            "wk_net_real": mean * 100.0 * (n / days) * 7.0,
+            "wk_net_lcb": (lcb * 100.0 * (n / days) * 7.0)
+            if lcb is not None else None}
+
+
 COV_FLAG_DEFAULT = 0.5  # ROI-review A3 (2026-09-06): per-wallet label
 #                         coverage on the leaderboard, sub-threshold rows
 #                         UNKNOWN-flagged. 0.5 = the majority-unknown line
@@ -550,7 +604,8 @@ def cmd_daily_replay(args) -> int:
     common = dict(resolutions=args.resolutions,
                   fee_rate_map=args.fee_rate_map, fee_map=args.fee_map,
                   split=args.split, end=None, top=args.top,
-                  cov_flag=getattr(args, "cov_flag", COV_FLAG_DEFAULT))
+                  cov_flag=getattr(args, "cov_flag", COV_FLAG_DEFAULT),
+                  sells=getattr(args, "sells", SELLS_SINK_DEFAULT))
     rc1 = cmd_replay(NS(source="roster", rows=args.log, haircut=None,
                         out=os.path.join(args.outdir,
                                          "leaderboard_roster.jsonl"),
@@ -598,6 +653,7 @@ def cmd_replay(args) -> int:
     else:
         recs = az.load_records(args.rows)
         assert recs, "EMPTY shadow log - ABORT"
+        we_hc = measure_haircut(recs)  # with-exits lens D1(b) transfer
         for r in recs:
             per_wallet.setdefault(str(r.get("trader", "")).lower(),
                                   []).append(r)
@@ -684,6 +740,51 @@ def cmd_replay(args) -> int:
               f"{row['ho_n_holdout']:>5} {row['peak_conc_replay']:>5} "
               f"{row['entries']:>6} {cov_cell:>6} {row['verdict']}")
     print(f"[replay] full leaderboard ({len(lb)} wallets) -> {args.out}")
+
+    # WITH-EXITS LENS (operator activation 2026-09-07: D1=b, D2 fresh
+    # epoch, D3 analysis lens) — roster only (exits from the SELL sink);
+    # a firehose variant from the wallets' own SELL rows is NAMED future
+    # work. Printed AFTER and BESIDE the board above; changes nothing.
+    sells_path = getattr(args, "sells", None)
+    if args.source == "roster" and sells_path and os.path.exists(sells_path):
+        we_epoch = parse_iso_z(WE_EPOCH_ISO)
+        exits_all = sells_to_exits(_load_jsonl(sells_path))
+        hc = we_hc["med"] if we_hc else None
+        if hc is None:
+            print("[with-exits] no measurable BUY follow-cost pairs — "
+                  "lens NOT computed (D1(b) needs the measured median)")
+        else:
+            rows_we = []
+            for w, wrecs in sorted(per_wallet.items()):
+                m = with_exits_metrics(wrecs, outcomes, frm, fee_map,
+                                       exits_all.get(w, {}), hc,
+                                       we_epoch, end_ts, res_at=r_at)
+                if m is not None:
+                    rows_we.append({"w": w, **m})
+            rows_we.sort(key=lambda x: -x["wk_net_real"])
+            print(f"===== WITH-EXITS LENS (activated 2026-09-07: D1=b "
+                  f"exit @ whale SELL - buy-side follow-cost med "
+                  f"{hc:+.4f} [transfer, disclosed]; D2 epoch "
+                  f"{WE_EPOCH_ISO}; D3 ANALYSIS ONLY - never a "
+                  f"gate/stake; HYPOTHETICAL $100/wager) =====")
+            if not rows_we:
+                print("[with-exits] 0 wallets with graded post-epoch "
+                      "positions yet — accruing (expected while the "
+                      "epoch is young)")
+            else:
+                print(f"{'WALLET':<14} {'$wk_net_real':>12} "
+                      f"{'$wk_net_lcb':>11} {'roi_mean':>8} "
+                      f"{'roi_lcb':>8} {'n':>4} {'exited':>6}")
+                for row in rows_we[:args.top]:
+                    print(f"{row['w'][:12] + '..':<14} "
+                          f"{row['wk_net_real']:>+12.2f} "
+                          f"{fmt_num(row['wk_net_lcb'], '+.2f'):>11} "
+                          f"{row['roi_mean']:>+8.3f} "
+                          f"{fmt_num(row['roi_lcb'], '+.3f'):>8} "
+                          f"{row['n']:>4} {row['exited']:>6}")
+                print(f"[with-exits] {len(rows_we)} wallets with graded "
+                      f"post-epoch positions ({sum(r['exited'] for r in rows_we)} "
+                      f"exited positions lens-wide)")
     return 0
 
 
@@ -829,6 +930,69 @@ def _self_test() -> int:
             and mc.mixture_e_value([-1.06]) > 0.0)  # band bound would assert
     print(f"  [canon-roi] ladder adds scored; ROI bound wider : {ok9b}")
     ok &= ok9b
+    # [with-exits] activation 2026-09-07 (D1=b, D2 fresh epoch, D3
+    # analysis lens): exit grades at clamp(sell - haircut, 0, 1) with
+    # canon fees on BOTH fills; ladder adds share the exit; pre-entry and
+    # post-resolution SELLs ignored; unexited falls back to resolution;
+    # unresolved unexited skipped; epoch filters entries.
+    we_recs = [{"token_id": "e1", "detect_ts": 10.0, "verdict": "OK",
+                "shadow_fill": 0.5, "first_buy": True},
+               {"token_id": "e1", "detect_ts": 11.0, "verdict": "OK",
+                "shadow_fill": 0.25, "first_buy": False},   # ladder add
+               {"token_id": "e2", "detect_ts": 10.0, "verdict": "OK",
+                "shadow_fill": 0.5, "first_buy": True},
+               {"token_id": "e3", "detect_ts": 10.0, "verdict": "OK",
+                "shadow_fill": 0.5, "first_buy": True},
+               {"token_id": "e4", "detect_ts": 10.0, "verdict": "OK",
+                "shadow_fill": 0.5, "first_buy": True},
+               {"token_id": "e5", "detect_ts": 1.0, "verdict": "OK",
+                "shadow_fill": 0.5, "first_buy": True}]     # pre-epoch
+    we_exits = {"e1": (50.0, 0.8),      # honored: x=0.78, both fees
+                "e2": (50.0, 0.005),    # honored, clamps to 0
+                "e3": (5.0, 0.9),       # PRE-ENTRY sell -> ignored
+                "e4": (200.0, 0.9)}     # after known res_at -> ignored
+    seq_we = mc.market_position_rois_with_exits(
+        we_recs, {"e3": 1}, {}, {}, we_exits, 0.02, epoch=5.0,
+        res_at={"e4": 150.0})
+    by_tok = {t: (roi, k, ex) for _, t, roi, k, ex in seq_we}
+    # e1: o_eff = 0.78 - 0.02*0.78 = 0.7644; rois (0.7644-0.51)/0.5 and
+    # (0.7644-0.255)/0.25 -> mean 1.2732. e2: o_eff 0 -> -1.02.
+    # e3: outcome 1 -> 0.98 unexited. e4: no outcome, sell ignored ->
+    # skipped. e5: pre-epoch -> absent.
+    okwe = (set(by_tok) == {"e1", "e2", "e3"}
+            and abs(by_tok["e1"][0] - 1.2732) < 1e-9
+            and by_tok["e1"][1] == 2 and by_tok["e1"][2] is True
+            and abs(by_tok["e2"][0] - (-1.02)) < 1e-12
+            and by_tok["e2"][2] is True
+            and abs(by_tok["e3"][0] - 0.98) < 1e-12
+            and by_tok["e3"][2] is False)
+    print(f"  [with-exits] canon lens: fees both fills, clamp, guards, "
+          f"epoch : {okwe}")
+    ok &= okwe
+    # [with-exits] sells_to_exits: first SELL per (trader, token) wins;
+    # non-SELL and malformed rows skipped
+    ex_map = sells_to_exits([
+        {"trader": "0xA", "token_id": "t", "side": "SELL",
+         "whale_price": 0.7, "detect_ts": 20.0},
+        {"trader": "0xA", "token_id": "t", "side": "SELL",
+         "whale_price": 0.6, "detect_ts": 10.0},   # earlier: wins
+        {"trader": "0xa", "token_id": "u", "side": "BUY",
+         "whale_price": 0.5, "detect_ts": 5.0},    # not a SELL
+        {"trader": "0xa", "token_id": "v", "side": "SELL",
+         "detect_ts": 5.0}])                       # no price: skipped
+    okse = ex_map == {"0xa": {"t": (10.0, 0.6)}}
+    print(f"  [with-exits] sells_to_exits first-per-token + guards : {okse}")
+    ok &= okse
+    # [with-exits] metrics: $100/wager rate math; None when nothing graded
+    wem = with_exits_metrics(we_recs, {"e3": 1}, {}, {}, we_exits, 0.02,
+                             5.0, 5.0 + 7 * DAY_S, res_at={"e4": 150.0})
+    okwm = (wem is not None and wem["n"] == 3 and wem["exited"] == 2
+            and abs(wem["wk_net_real"]
+                    - (wem["roi_mean"] * 100.0 * (3 / 7.0) * 7)) < 1e-9
+            and with_exits_metrics([], {}, {}, {}, {}, 0.02, 5.0,
+                                   5.0 + DAY_S) is None)
+    print(f"  [with-exits] metrics rate math + empty -> None : {okwm}")
+    ok &= okwm
     # [cov] per-wallet label coverage (review A3): distinct tokens (ladder
     # adds dedupe), labeled counted against outcomes; empty -> (0, 0)
     cov_recs = [{"token_id": "a"}, {"token_id": "a"},   # ladder add: 1 token
@@ -921,6 +1085,9 @@ if __name__ == "__main__":
                    help="label-coverage UNKNOWN-flag line (review A3; "
                         "default 0.5 = judged on a minority of markets; "
                         "display only, never a gate)")
+    p.add_argument("--sells", default=SELLS_SINK_DEFAULT,
+                   help="SELL sink for the with-exits ANALYSIS lens "
+                        "(roster only; activated 2026-09-07 D1=b/D2/D3)")
     p.add_argument("--out", required=True)
 
     p = sub.add_parser("daily-extract",
@@ -952,6 +1119,8 @@ if __name__ == "__main__":
     p.add_argument("--cov-flag", dest="cov_flag", type=float,
                    default=COV_FLAG_DEFAULT,
                    help="label-coverage UNKNOWN-flag line (review A3)")
+    p.add_argument("--sells", default=SELLS_SINK_DEFAULT,
+                   help="SELL sink for the with-exits ANALYSIS lens")
 
     sub.add_parser("self-test", help="offline self-test")
 
