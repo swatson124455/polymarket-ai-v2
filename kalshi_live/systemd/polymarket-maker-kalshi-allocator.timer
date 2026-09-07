@@ -3,6 +3,12 @@ Description=Nightly Kalshi allocator run (04:10Z, post daily rollover)
 
 [Timer]
 OnCalendar=*-*-* 04:10:00 UTC
+# C5 (measured live 2026-09-07T04:10:02Z: universe=0 — the new day's programs are not
+# listed yet right after the 04:00Z rollover; the spec's own cadence answer was ~06:45Z).
+# Retry ladder: first run after the venue lists the new programs writes the real plan.
+OnCalendar=*-*-* 04:40:00 UTC
+OnCalendar=*-*-* 05:40:00 UTC
+OnCalendar=*-*-* 06:45:00 UTC
 Persistent=true
 
 [Install]
