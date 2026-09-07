@@ -296,7 +296,15 @@ def main():
     except Exception:
         pass
 
-    def planned_ct(ticker, life_min, best_y=0.5):
+    def planned_ct(ticker, life_min, best_y=0.5, mid=None):
+        """Steady-state ct the quoter would rest, replicating its sizing chain at current
+        knobs. 2026-09-07 FIX: the widebook cap and near-money daily clamp fire in the
+        QUOTER only on a widebook admission, i.e. a MID-BAND (near-money) book — so the
+        allocator must apply them ONLY when mid is inside MID_BAND_OUT. The prior replica
+        clamped every daily to 25ct by life_min alone, strangling EXTREME books (mid ~0.98,
+        deep, cheap-side) that clear the capture floor 7-10x at 100ct (measured 15:1xZ).
+        Extreme books are NOT the near-money -$11.91 toxicity class; they size to the
+        normal per-side capital cap."""
         top = q.D3_RUNGS[-1]
         series = ticker.split("-")[0]
         row = fb.get(series)
@@ -305,11 +313,34 @@ def main():
             top = min(top, q.D3_RUNGS[min(q.D3_NEWSERIES_MAX_RUNG, len(q.D3_RUNGS) - 1)])
         cap_ct = int((q.MAX_MARKET_CAPITAL / 2.0) / max(best_y, 1e-6))
         eff = min(top, q.JOIN_SIZE if q.JOIN_SIZE > 0 else top, cap_ct, int(q.INV_HARD_CT))
-        if q.WIDEBOOK_MODE:
-            eff = min(eff, int(q.WIDEBOOK_MAX_CT))
-        if q.NEARMONEY_DAILY_MAX_CT > 0 and life_min and life_min <= q.NEARMONEY_DAILY_LIFE_H * 60:
-            eff = min(eff, int(q.NEARMONEY_DAILY_MAX_CT))
+        band = getattr(q, "MID_BAND_OUT", None)
+        near_money = (mid is not None and band is not None and band[0] < mid < band[1])
+        if near_money:
+            if q.WIDEBOOK_MODE:
+                eff = min(eff, int(q.WIDEBOOK_MAX_CT))
+            if (q.NEARMONEY_DAILY_MAX_CT > 0 and life_min
+                    and life_min <= q.NEARMONEY_DAILY_LIFE_H * 60):
+                eff = min(eff, int(q.NEARMONEY_DAILY_MAX_CT))
         return max(1, eff)
+
+    import urllib.request
+    def _book(t):
+        """(best_y, best_n, mid, ycum, ncum) from orderbook_fp; None mid = one/zero-sided.
+        Canon trap: depth is under orderbook_fp (yes_dollars/no_dollars), NOT 'orderbook'."""
+        try:
+            with urllib.request.urlopen(
+                    "https://api.elections.kalshi.com/trade-api/v2/markets/"
+                    + t + "/orderbook", timeout=10) as r:
+                d = json.load(r)
+            ob = d.get("orderbook_fp") or d.get("orderbook") or {}
+            yl = [(float(p), float(s)) for p, s in (ob.get("yes_dollars") or ob.get("yes") or [])]
+            nl = [(float(p), float(s)) for p, s in (ob.get("no_dollars") or ob.get("no") or [])]
+            by = max((p for p, _ in yl), default=None)
+            bn = max((p for p, _ in nl), default=None)
+            mid = ((by + (1 - bn)) / 2) if (by is not None and bn is not None) else None
+            return by, bn, mid, sum(s for _, s in yl), sum(s for _, s in nl)
+        except Exception:
+            return None, None, None, 0.0, 0.0
 
     inherit = series_rate_per_ct(hist, hist_meta, {})   # v1: per-ct via known 5ct floor runs
     # v1 note: quoted size during the measured window came from the caprank/quotes tape in
@@ -351,7 +382,20 @@ def main():
         accrued = samples[-1][1] if samples else 0
         fresh = bool(samples) and (now_ts - samples[-1][0]) <= FEED_STALE_H * 3600.0
         rate, diluting = rate_hat_cc_min(samples, now_ts) if samples else (None, False)
-        pct = planned_ct(t, life_min)
+        by, bn, mid, ycum, ncum = _book(t)
+        target = meta.get("target") or 1000.0
+        # Target-QUALIFYING both sides = the CFTC pay condition (B4-operative); the only
+        # books where resting actually earns. book_state: 3 qualifying / 2 two-sided sub-
+        # Target / 1 one-sided / 0 empty. Unformed books rank last but stay in the plan.
+        if by is not None and bn is not None and ycum >= target and ncum >= target:
+            book_state = 3
+        elif by is not None and bn is not None:
+            book_state = 2
+        elif by is not None or bn is not None:
+            book_state = 1
+        else:
+            book_state = 0
+        pct = planned_ct(t, life_min, best_y=(by if by is not None else 0.5), mid=mid)
         mode = "real"
         basis = "MEASURED"
         if rate is None:
@@ -370,7 +414,7 @@ def main():
         committed = pct * 1.0                    # both-sides reservation ~ $1/pair-ct bound
         cands.append({"ticker": t, "program_id": pid, "series": t.split("-")[0],
                       "proj_usd": proj, "rate_basis": basis, "diluting": diluting,
-                      "max_ct": pct, "committed_usd": committed,
+                      "max_ct": pct, "committed_usd": committed, "book_state": book_state,
                       "rank_key": proj / max(committed, 1e-6),
                       "accrued_usd": accrued / 10000.0,
                       "incumbent_hold": (accrued / 10000.0) >= HOLD_THRESHOLD,
@@ -378,37 +422,11 @@ def main():
 
     eligible = [c for c in cands if c.get("proj_usd") is not None
                 and c["proj_usd"] >= CLIFF_BAR]
-    # BOOK-FORMEDNESS (spec §1 universe walk, v1 gap closed 2026-09-07 after measuring all
-    # 161 family books EMPTY at 14:56Z — a plan must never point capital at markets nobody
-    # quotes while quotable eligible ones exist). Cliff-clearing candidates get one
-    # orderbook read each (bounded: only the eligible handful); two-sided books rank ahead
-    # of unformed ones, and a formed-book candidate always beats an empty-book one of the
-    # same basis. Empty-book candidates stay in the plan tail (the quoter's own gates keep
-    # refusing them until they form) so nothing is silently dropped (Rule Nine).
-    import urllib.request
-    def _book_state(t, target):
-        """3 = Target-QUALIFYING both sides (cum depth >= target each side — the CFTC
-        pay condition, B4-operative; the only books where accrual pays), 2 = two-sided
-        sub-Target, 1 = one-sided, 0 = empty/unreadable. Canon trap: depth is under
-        orderbook_fp (yes_dollars/no_dollars); legacy key parses empty (bit 2026-09-07)."""
-        try:
-            with urllib.request.urlopen(
-                    "https://api.elections.kalshi.com/trade-api/v2/markets/"
-                    + t + "/orderbook", timeout=10) as r:
-                d = json.load(r)
-            ob = d.get("orderbook_fp") or d.get("orderbook") or {}
-            yl = ob.get("yes_dollars") or ob.get("yes") or []
-            nl = ob.get("no_dollars") or ob.get("no") or []
-            ycum = sum(float(sz) for _, sz in yl)
-            ncum = sum(float(sz) for _, sz in nl)
-            if yl and nl and ycum >= target and ncum >= target:
-                return 3
-            return 2 if (yl and nl) else (1 if (yl or nl) else 0)
-        except Exception:
-            return 0
-    for c in eligible:
-        c["book_state"] = _book_state(c["ticker"],
-                                      prog_meta.get(c["program_id"], {}).get("target", 1000.0))
+    # BOOK-FORMEDNESS + Target-QUALIFICATION (spec §1 walk; book_state computed per
+    # candidate up front, 2026-09-07). Qualifying books (state 3, cum depth >= Target both
+    # sides = the CFTC pay condition) rank ahead of two-sided (2), one-sided (1), empty (0).
+    # Empty/unformed candidates stay in the plan tail (quoter gates keep refusing them until
+    # they form) so nothing is silently dropped (Rule Nine).
     eligible.sort(key=lambda c: (-c.get("book_state", 0), -c["rank_key"], c["ticker"]))
     for c in eligible:
         c["rank_key"] = c["rank_key"] + 1000.0 * float(c.get("book_state", 0))
