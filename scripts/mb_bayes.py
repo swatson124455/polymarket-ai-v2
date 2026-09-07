@@ -58,13 +58,17 @@ def wallet_moments(records: list[dict], outcomes: dict, frm: dict,
                    fee_map: dict) -> dict | None:
     """(n, mean, within-variance) of one wallet's per-market canon edges.
     None when < 2 resolved markets (variance undefined at n < 2)."""
-    seq = mc.per_market_edges(records, outcomes, frm or {}, fee_map or {})
-    edges = [e for _, _, e in seq]
-    n = len(edges)
+    # RULED BASIS (conversion + correlated-atom fix, 2026-09-06): one
+    # ROI atom per market (ladder position), restoring the independence
+    # the variance estimates assume.
+    seq = mc.market_position_rois(records, outcomes, frm or {},
+                                  fee_map or {})
+    rois = [x for _, _, x, _ in seq]
+    n = len(rois)
     if n < 2:
         return None
-    mean = sum(edges) / n
-    var = sum((e - mean) ** 2 for e in edges) / (n - 1)
+    mean = sum(rois) / n
+    var = sum((x - mean) ** 2 for x in rois) / (n - 1)
     return {"n": n, "mean": mean, "var": var}
 
 
@@ -169,10 +173,10 @@ def _self_test() -> int:
             {"trader": "w", "token_id": "b", "detect_ts": 2.0,
              "first_buy": True, "verdict": "OK", "shadow_fill": 0.4}]
     m = wallet_moments(recs, {"a": 1, "b": 0}, {}, {})
-    # edges (flat 2% fallback fee 0.008): 1-0.408=0.592, -0.408
+    # market-position ROI atoms (fix 2026-09-06): win 1.48, lose -1.02
     ok1 = (m is not None and m["n"] == 2
-           and abs(m["mean"] - 0.092) < 1e-12
-           and abs(m["var"] - 0.5) < 1e-9
+           and abs(m["mean"] - 0.23) < 1e-12
+           and abs(m["var"] - 3.125) < 1e-9
            and wallet_moments(recs[:1], {"a": 1}, {}, {}) is None)
     print(f"  [moments] canon edges, exact mean/var, n<2 -> None : {ok1}")
     ok &= ok1

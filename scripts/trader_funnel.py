@@ -105,9 +105,13 @@ def trader_row(a: str, epoch: float, recs: list, outcomes: dict,
     says roi."""
     gfwd = cq.forward_records(recs, epoch)
     t_recs = [r for r in gfwd if str(r.get("trader", "")).lower() == a]
-    seq = mc.wager_rois(t_recs, outcomes, frm or {}, fee_map or {},
-                        epoch=epoch)
-    rois = [x for _, _, x in seq]
+    # correlated-atom fix (operator "fix go" 2026-09-06): evidence =
+    # ONE atom per market (ladder position ROI); wagers shown for
+    # transparency via n_wagers.
+    seq = mc.market_position_rois(t_recs, outcomes, frm or {},
+                                  fee_map or {}, epoch=epoch)
+    rois = [x for _, _, x, _ in seq]
+    n_wagers = sum(k for _, _, _, k in seq)
     res = sr.cohort_readout(gfwd, outcomes, epoch, a, cfg)
     # median OK first-buy fill (+ its token) = the display reference point
     # for the sizer column; trade-time sizing uses the live quote instead
@@ -119,6 +123,7 @@ def trader_row(a: str, epoch: float, recs: list, outcomes: dict,
     med = fills[len(fills) // 2] if fills else None
     return {
         "n": len(rois),
+        "n_wagers": n_wagers,
         "e": mc.roi_e_value(rois, 0.0) if rois else None,
         "edge": (sum(rois) / len(rois)) if rois else None,  # mean ROI
         "ok": res.get("ok_rate"),
@@ -541,7 +546,8 @@ def _self_test() -> int:
     import inspect as _i2
     tsrc = _i2.getsource(trader_row) + _i2.getsource(display_stake)
     src_run2 = _i2.getsource(run)
-    okc = ("wager_rois" in tsrc and "roi_lcb" in tsrc
+    okc = ("market_position_rois" in tsrc and "roi_lcb" in tsrc
+           and "mc.wager_rois(" not in tsrc  # evidence = market atoms
            and "per_market_edges" not in tsrc
            and 'lcb=r["lcb"] * fill' in tsrc
            and "epoch = cq.BASIS_EPOCH" in src_run2)

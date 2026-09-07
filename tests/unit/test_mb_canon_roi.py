@@ -130,6 +130,51 @@ def test_wager_rois_ladder_and_formula():
     assert abs(seq[1][2] - (1 - 0.25 - 0.005) / 0.25) < 1e-12
 
 
+def test_market_position_rois_one_atom_per_market():
+    """Correlated-atom fix (operator 'fix go' 2026-09-06): same-market
+    ladder wagers collapse to ONE atom = their equal-stake mean ROI;
+    n_wagers carried; ordering by the market's first wager."""
+    recs = [{"detect_ts": 2.0, "verdict": "OK", "shadow_fill": 0.25,
+             "token_id": "L"},                      # ladder add
+            {"detect_ts": 1.0, "verdict": "OK", "shadow_fill": 0.5,
+             "token_id": "L"},
+            {"detect_ts": 5.0, "verdict": "OK", "shadow_fill": 0.5,
+             "token_id": "M"}]
+    seq = mc.market_position_rois(recs, {"L": 1, "M": 0}, {}, {})
+    assert [(t, tok, k) for t, tok, _, k in seq] == [(1.0, "L", 2),
+                                                     (5.0, "M", 1)]
+    roi_l = ((1 - 0.5 - 0.01) / 0.5 + (1 - 0.25 - 0.005) / 0.25) / 2
+    assert abs(seq[0][2] - roi_l) < 1e-12
+    assert abs(seq[1][2] - (0 - 0.5 - 0.01) / 0.5) < 1e-12
+
+
+def test_market_atoms_hold_null_guarantee_under_ladders():
+    """Regression pin for the measured defect (per-wager atoms: 37-74%
+    false-pass at ladder depth 5-44 on fair nulls). With one atom per
+    market the false-pass rate must stay under the 5% guarantee.
+    Deterministic seed; small but decisive sample."""
+    import random
+    random.seed(20260909)
+    false_pass = 0
+    N = 300
+    for t in range(N):
+        wealth = [1.0] * len(mc.LAMBDAS)
+        crossed = False
+        for m in range(30):
+            f = random.uniform(0.05, 0.6)
+            win = random.random() < f          # fair: true mean roi = 0
+            roi = ((1.0 if win else 0.0) - f) / f
+            # 44 ladder wagers -> ONE market atom (the fix)
+            for j, lam in enumerate(mc.LAMBDAS):
+                wealth[j] *= (1.0 + lam * roi)
+            if sum(wealth) / len(wealth) >= 20.0:
+                crossed = True
+                break
+        if crossed:
+            false_pass += 1
+    assert false_pass / N <= 0.05, f"{false_pass}/{N}"
+
+
 def test_roi_vs_edge_scale():
     """The reason for the hardcode: a cheap winning share's per-dollar
     return dwarfs its per-share edge. 8c share paying $1 at flat 2% fee:

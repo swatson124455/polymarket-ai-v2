@@ -107,7 +107,11 @@ async def run(args) -> int:
             rois = [x for _, _, x in seq]
             stake = 0.0
             if params is not None and rois:
-                lcb = mc.roi_lcb(rois)
+                # correlated-atom fix: the stake GATE uses market atoms
+                # (evidence); the ledger ROWS stay per wager (money).
+                mseq = mc.market_position_rois(t_recs, outcomes, frm or {},
+                                               fee_map or {}, epoch=epoch)
+                lcb = mc.roi_lcb([x for _, _, x, _ in mseq])
                 if lcb is not None and lcb > 0:
                     # median recorded OK first-buy fill = same display
                     # reference the funnel uses; depth is trade-time only

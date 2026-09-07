@@ -217,6 +217,31 @@ def roi_lcb(rois: list, e_bar: float = 20.0, tol: float = 1e-6):
     return lo
 
 
+def market_position_rois(records: list[dict], outcomes: dict,
+                         fee_rate_map: dict, fee_map: dict,
+                         epoch: float = 0.0
+                         ) -> list[tuple[float, str, float, int]]:
+    """[(first_ts, token_id, position_roi, n_wagers)] — ONE atom per
+    MARKET (correlated-atom fix, operator "fix go" 2026-09-06):
+    same-market ladder wagers share one outcome, so multiplying them as
+    independent e-process bets inflated evidence (measured null false-
+    pass 37%/65%/74% at 5/20/44 wagers per market vs the 5% guarantee).
+    position_roi = the equal-stake MEAN of the market's wager ROIs —
+    every ladder fill still prices the position (the ladder ruling
+    honored), but each market resolution contributes exactly one
+    e-process atom (independence restored; measured 1.6% at one atom).
+    wager_rois above remains canon for MONEY bookkeeping (dollars are
+    real per wager); THIS is canon for EVIDENCE (e-process / LCB)."""
+    seq = wager_rois(records, outcomes, fee_rate_map, fee_map, epoch=epoch)
+    per_tok: dict[str, list[float]] = {}
+    first_ts: dict[str, float] = {}
+    for ts, tok, roi in seq:
+        per_tok.setdefault(tok, []).append(roi)
+        first_ts[tok] = min(first_ts.get(tok, ts), ts)
+    return sorted((first_ts[t], t, sum(v) / len(v), len(v))
+                  for t, v in per_tok.items())
+
+
 def mixture_e_value(ys: list, y_min: float = MIX_POSITIVITY_FLOOR) -> float:
     """Uniform-mixture betting e-process for H0: mean <= 0 — the same
     mixture as band_tracker.e_value (grid pinned equal by test),

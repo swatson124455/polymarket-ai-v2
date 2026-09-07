@@ -235,9 +235,11 @@ def daily_replay(records: list[dict], outcomes: dict, res_at: dict,
     d = (int(epoch // DAY_S) + 1) * DAY_S
     while d <= end_ts:
         day_out = {t: outcomes[t] for t, rt in placeable.items() if rt <= d}
-        seq = mc.wager_rois(records, day_out, frm or {}, fee_map or {},
-                            epoch=epoch)
-        rois = [x for _, _, x in seq]
+        # correlated-atom fix (operator "fix go" 2026-09-06): one atom
+        # per market; the money rate stays conservative (markets/day).
+        seq = mc.market_position_rois(records, day_out, frm or {},
+                                      fee_map or {}, epoch=epoch)
+        rois = [x for _, _, x, _ in seq]
         n = len(rois)
         if n:
             ev = mc.mixture_e_value(rois)
@@ -277,12 +279,14 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
     if res_at:
         outcomes = {t: o for t, o in outcomes.items()
                     if res_at.get(t) is None or res_at[t] <= end_ts}
-    seq = mc.wager_rois(records, outcomes, frm or {}, fee_map or {},
-                        epoch=split_ts)
-    rois = [x for _, _, x in seq]
+    seq = mc.market_position_rois(records, outcomes, frm or {},
+                                  fee_map or {}, epoch=split_ts)
+    rois = [x for _, _, x, _ in seq]
+    n_wagers = sum(k for _, _, _, k in seq)
     n = len(rois)
     days = max((end_ts - split_ts) / DAY_S, 1e-9)
-    out = {"n_holdout": n, "holdout_days": round(days, 2),
+    out = {"n_holdout": n, "wagers": n_wagers,
+           "holdout_days": round(days, 2),
            "roi_lcb": None, "roi_realized": None,
            "wk_net_lcb": None, "wk_net_real": None}
     if not n:

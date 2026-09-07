@@ -23,8 +23,9 @@ def _rec(tok, fill=0.4):
 def test_moments_canon_and_small_n():
     m = mb.wallet_moments([_rec("a"), _rec("b")], {"a": 1, "b": 0}, {}, {})
     assert m["n"] == 2
-    assert abs(m["mean"] - 0.092) < 1e-12   # flat-2% fee edges .592/-.408
-    assert abs(m["var"] - 0.5) < 1e-9
+    # ROI atoms (fix 2026-09-06): win 1.48, lose -1.02 at fill 0.4
+    assert abs(m["mean"] - 0.23) < 1e-12
+    assert abs(m["var"] - 3.125) < 1e-9
     assert mb.wallet_moments([_rec("a")], {"a": 1}, {}, {}) is None
 
 

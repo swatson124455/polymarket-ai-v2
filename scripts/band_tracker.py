@@ -119,9 +119,13 @@ async def run(args) -> int:
     band_recs = [r for r in recs
                  if isinstance(r.get("shadow_fill"), (int, float))
                  and BAND_LO <= r["shadow_fill"] < BAND_HI]
-    seq = mc.wager_rois(band_recs, outcomes, frm, fee_map, epoch=ROI_EPOCH)
-    rois = [x for _, _, x in seq]
+    # correlated-atom fix (operator "fix go" 2026-09-06): one atom per
+    # market — ladder position ROI of band fills.
+    seq = mc.market_position_rois(band_recs, outcomes, frm, fee_map,
+                                  epoch=ROI_EPOCH)
+    rois = [x for _, _, x, _ in seq]
     n = len(rois)
+    n_wagers = sum(k for _, _, _, k in seq)
     el_days = max((datetime.now(timezone.utc).timestamp() - ROI_EPOCH)
                   / 86400.0, 1e-9)
     if n == 0:
@@ -139,7 +143,7 @@ async def run(args) -> int:
         return 0
     ev = mc.roi_e_value(rois, 0.0)
     mean_roi = sum(rois) / n
-    print(f"[band] {stamp} n={n} resolved band WAGERS | mean roi "
+    print(f"[band] {stamp} n={n}mkt/{n_wagers}wag resolved band | mean roi "
           f"{mean_roi:+.4f} | e-value {ev:.3f} (reject at {E_REJECT:.0f}) | "
           f"futility 1wk [ROI basis, conv 2026-09-06]")
     verdict = None
@@ -198,7 +202,8 @@ def _self_test() -> int:
     # the conversion epoch under the new lock key; regression turns RED.
     import inspect as _i
     rsrc = _i.getsource(run)
-    ok7 = ("wager_rois" in rsrc and "roi_e_value" in rsrc
+    ok7 = ("market_position_rois" in rsrc and "roi_e_value" in rsrc
+           and "mc.wager_rois(" not in rsrc  # evidence = market atoms
            and "roi_lcb" in rsrc and "ROI_LOCK_KEY" in rsrc
            and "band_market_edges(" not in rsrc
            and ROI_EPOCH == datetime(2026, 9, 6, 22, 30, 0,

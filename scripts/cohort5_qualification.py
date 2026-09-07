@@ -405,10 +405,14 @@ async def run(args) -> int:
                 continue
             t_recs = [r for r in gfwd
                       if str(r.get("trader", "")).lower() == a]
-            seq = mc.wager_rois(t_recs, outcomes, frm or {},
-                                fee_map or {}, epoch=epoch)
-            rois = [x for _, _, x in seq]
+            # correlated-atom fix (operator "fix go" 2026-09-06): ONE
+            # atom per MARKET (ladder position ROI); wagers counted for
+            # transparency, never for evidence.
+            seq = mc.market_position_rois(t_recs, outcomes, frm or {},
+                                          fee_map or {}, epoch=epoch)
+            rois = [x for _, _, x, _ in seq]
             n = len(rois)
+            n_wagers = sum(k for _, _, _, k in seq)
             res = sr.cohort_readout(gfwd, outcomes, epoch, a, cfg)
             okr = res.get("ok_rate")
             el_days = max((now_ts - epoch) / 86400.0, 1e-9)
@@ -428,7 +432,7 @@ async def run(args) -> int:
                 continue
             ev = mc.roi_e_value(rois, 0.0)
             mean_roi = sum(rois) / n
-            line = (f"  {a[:12]}..  n={n} e={ev:.3f} roi={mean_roi:+.4f} "
+            line = (f"  {a[:12]}..  n={n}mkt/{n_wagers}wag e={ev:.3f} roi={mean_roi:+.4f} "
                     f"ok_rate={okr if okr is None else round(okr, 2)}")
             if ev >= C1_E_REJECT:
                 # PASS = LCB net winnings >= WEEKLY_FLOOR_USD/wk at the
@@ -445,7 +449,7 @@ async def run(args) -> int:
                 locks = sr.write_lock(args.locks, locks, lkey, {
                     "locked_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%MZ"),
-                    "resolved": n, "roi": round(mean_roi, 6), "p": ev,
+                    "resolved": n, "wagers": n_wagers, "roi": round(mean_roi, 6), "p": ev,
                     "verdict": verdict,
                     "basis": "roi-netwin-20260906", "source": lock_source})
                 print(line + f"  <== {verdict} [LOCKED THIS RUN]")
@@ -457,7 +461,7 @@ async def run(args) -> int:
                 locks = sr.write_lock(args.locks, locks, lkey, {
                     "locked_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%MZ"),
-                    "resolved": n, "roi": round(mean_roi, 6), "p": ev,
+                    "resolved": n, "wagers": n_wagers, "roi": round(mean_roi, 6), "p": ev,
                     "verdict": "NOT DEMONSTRATED (futility 1wk)",
                     "basis": "roi-netwin-20260906", "source": lock_source})
                 print(line + "  <== NOT DEMONSTRATED (futility 1wk) "
@@ -642,7 +646,9 @@ def _self_test() -> int:
     # estimand or the old epochs turns these RED.
     import inspect as _i
     esrc = _i.getsource(run)
-    okb = ("wager_rois" in esrc and "roi_e_value" in esrc
+    okb = ("market_position_rois" in esrc and "roi_e_value" in esrc
+           and "mc.wager_rois(" not in esrc  # evidence = market atoms
+           # (correlated-atom fix, operator "fix go" 2026-09-06)
            and "roi_lcb" in esrc
            and "per_market_edges(" not in esrc  # call form; a history
            # comment at the frm-fix site may NAME the old estimand
