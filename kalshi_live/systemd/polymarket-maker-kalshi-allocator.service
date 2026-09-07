@@ -1,0 +1,11 @@
+# ALLOCATOR NIGHTLY RUN (operator "arm it" 2026-09-07). Oneshot: writes the footprint
+# file + coverage ledger after the 04:00Z daily-program rollover. The quoter fail-closes
+# on a stale (>26h) file, so a missed run = no new quotes, never proxy selection.
+[Unit]
+Description=Kalshi allocator v1 nightly plan (writes kalshi_footprint.json)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pa2-maker-kalshi-live
+EnvironmentFile=/opt/pa2-maker-kalshi-live/live.env
+ExecStart=/opt/pa2-maker-kalshi-live/venv/bin/python /opt/pa2-maker-kalshi-live/kalshi_allocator.py --write

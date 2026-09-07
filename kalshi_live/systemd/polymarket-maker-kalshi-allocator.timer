@@ -1,0 +1,9 @@
+[Unit]
+Description=Nightly Kalshi allocator run (04:10Z, post daily rollover)
+
+[Timer]
+OnCalendar=*-*-* 04:10:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -6879,7 +6879,13 @@ def run_once():
                (ca and plan.get("cancel_fail", 0) >= ca) or      # total cancel-path failure
                (fp and plan.get("fetch_failed", 0) >= fp) or     # total book-fetch failure
                plan.get("taker_failed", 0) > 0 or                # a backstop that did NOT work
-               (plan.get("programs_seen", 0) > 0 and fp == 0) or  # dead selection (was invisible)
+               # dead selection (was invisible) — EXCEPT a VALID allocator file that selects
+               # nothing (empty plan = deliberate discipline: nothing clears the cliff right
+               # now; observed first armed cycle 2026-09-07T00:45Z). A FAIL-CLOSED file
+               # (missing/corrupt/stale -> cache rows None) still trips the warning: that IS
+               # a systematic failure state and must not hide behind the file-mode exemption.
+               (plan.get("programs_seen", 0) > 0 and fp == 0
+                and not (FOOTPRINT_FILE and _FOOTPRINT_CACHE.get("rows") is not None)) or
                (fp and plan.get("quoted_markets", 0) == 0 and not plan.get("fetch_failed")
                 and not plan.get("taker_flattens")       # de-risk-only cycle != failure
                 and not plan.get("breaker_reduce_only")))  # nor a reduce-only cycle with a flat
