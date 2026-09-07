@@ -183,7 +183,12 @@ def decode_fill_v2(lg: dict, roster: set[str]) -> Optional[dict]:
       topics[2] = order owner (server-side filtered to the roster)
       data[1]   = ctf token id; data[2] = usdc*1e6; data[3] = tokens*1e6
       price = usdc/tokens (matched API ground truth to 4 decimals)
-    Direction is NOT here — side_from_receipt_logs() supplies it."""
+    Direction is NOT here — side_from_receipt_logs() supplies it.
+    CAVEAT (chain-verified 2026-09-06): the amount words are MAKER-
+    perspective — the layout above holds for the owner's BUY orders only.
+    For a SELL order data[2]=tokens given, data[3]=usdc received, so the
+    fields below come out inverted; sell_record() corrects them. The BUY
+    pipeline (side gated before use) is unaffected."""
     topics = lg.get("topics") or []
     if len(topics) < 3 or _hex(topics[0]).lower() != FILL_TOPIC_V2:
         return None
@@ -204,6 +209,11 @@ def decode_fill_v2(lg: dict, roster: set[str]) -> Optional[dict]:
         "whale_price": (usdc / SCALE) / (tok / SCALE),
         "whale_size_usd": usdc / SCALE,
         "was_taker": was_taker,
+        # w[0] = the order's side flag per the 2026-09-06 backfill
+        # measurement (809/809 receipt concordance). INTERNAL cross-check
+        # only - the watch loop pops it before any record write; receipts
+        # remain the side authority (operator ruling 2026-09-06).
+        "_w0": w[0],
     }
 
 
@@ -349,6 +359,11 @@ class WatcherConfig:
     # maker-execution measurement. OFF unless MIRROR3_BIDSIM=1.
     bidsim: bool = False
     bidsim_path: str = "/opt/pa2-shared/mirror3_bidsim.jsonl"
+    # GO-precondition #4 (operator "build all 5", 2026-09-06): roster SELLs
+    # recorded to their OWN sink for the future with-exits estimand. A
+    # separate file by design - the graded BUY pipeline and its consumers
+    # (all-BUY sink assumption) are never touched.
+    sell_sink: str = "/opt/pa2-shared/mirror3_shadow_sells.jsonl"
 
     @classmethod
     def from_env(cls, env) -> "WatcherConfig":
@@ -383,7 +398,44 @@ class WatcherConfig:
             bidsim=str(env.get("MIRROR3_BIDSIM", "")).strip() == "1",
             bidsim_path=env.get("MIRROR3_BIDSIM_PATH",
                                 "/opt/pa2-shared/mirror3_bidsim.jsonl"),
+            sell_sink=env.get("MIRROR3_SELL_SINK",
+                              "/opt/pa2-shared/mirror3_shadow_sells.jsonl"),
         )
+
+
+def w0_side_check(w0, side) -> Optional[str]:
+    """Alarm message if the event's w[0] side flag disagrees with the
+    receipt-derived side, else None. Operator ruling 2026-09-06: receipts
+    STAY the authority; w[0] (measured 809/809 concordant on the backfill
+    window) accrues evidence passively - any disagreement is loud."""
+    if w0 is None or side not in ("BUY", "SELL"):
+        return None
+    expected = 1 if side == "SELL" else 0
+    if w0 == expected:
+        return None
+    return (f"W0-SIDE MISMATCH: receipt={side} but event w0={w0} - "
+            f"receipts remain authority; investigate before trusting w0")
+
+
+def sell_record(sig: dict, now: float) -> dict:
+    """Minimal SELL record (GO-precondition #4, 2026-09-06). Pure - the
+    watch loop serializes it to cfg.sell_sink. No quotes, no gates: this
+    is raw material for the pre-registered with-exits estimand, not a
+    graded signal.
+
+    SELL-layout correction (2026-09-06, chain-verified on tx 0x0f422cdb
+    [Exchange V2] + 0x31f7d3b9 [NegRiskExchange V2]): the V2 fill event's
+    amount words are maker-perspective, so for a SELL order decode_fill_v2
+    hands this function whale_price = tokens/usdc (the true price's
+    inverse) and whale_size_usd = the TOKEN count. Invert here — the sig
+    is receipt-verified SELL before this is called. Exact through
+    merge_same_tx: merged price = sum(tok)/sum(usdc), merged size =
+    sum(tok), so 1/p and size/p recover the true VWAP and total USD."""
+    p = float(sig["whale_price"])
+    return {"trader": sig["trader"], "token_id": sig["token_id"],
+            "side": "SELL", "whale_price": 1.0 / p,
+            "whale_size_usd": sig["whale_size_usd"] / p,
+            "tx": sig.get("tx", ""), "detect_ts": now}
 
 
 def shadow_record(sig: dict, verdict: str, fill: Optional[float],
@@ -391,6 +443,10 @@ def shadow_record(sig: dict, verdict: str, fill: Optional[float],
                   block_ts: int, now_ts: float, tx: str,
                   book: Optional[dict] = None,
                   quote_ts: Optional[float] = None) -> dict:
+    # underscore-prefixed sig keys are INTERNAL (loop-local payloads like
+    # _block/_w0) and must never reach the recorded schema - stripped
+    # structurally here, not left to caller discipline (2026-09-06)
+    sig = {k: v for k, v in sig.items() if not k.startswith("_")}
     # quote_ts (2026-08-25, operator-approved rec): the moment the /price
     # quote was actually taken. detect_ts is stamped BEFORE the per-signal
     # receipt/block RPC work, so quote_ts - detect_ts measures the fill
@@ -666,12 +722,29 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                         log(f"[copy_watcher] receipt error {sig['tx'][:18]}…: "
                             f"{e!r}")
                         side = None
+                    # pop BEFORE any record write (shadow_record spreads
+                    # sig); check after - receipts stay authority
+                    _w0 = sig.pop("_w0", None)
+                    _w0_msg = w0_side_check(_w0, side)
+                    if _w0_msg:
+                        log(f"[copy_watcher] {_w0_msg} tx={sig['tx'][:18]}…")
                     if side != "BUY":
                         if side is None:
                             log(f"[copy_watcher] SIDE UNKNOWN (skipped) "
                                 f"{sig['trader'][:10]}… tok="
                                 f"{sig['token_id'][:10]}… tx={sig['tx'][:18]}…")
-                        continue  # estimand is first BUY; SELLs are ignored
+                        elif side == "SELL":
+                            # GO-precondition #4: record to the SEPARATE
+                            # sell sink; a sink failure must never break
+                            # BUY detection (fail-toward-missing-data,
+                            # alarmed by the sink's own staleness later)
+                            try:
+                                with open(cfg.sell_sink, "a") as _sf:
+                                    _sf.write(json.dumps(
+                                        sell_record(sig, now)) + "\n")
+                            except Exception as e:
+                                log(f"[copy_watcher] sell-sink error: {e!r}")
+                        continue  # graded estimand is first BUY - unchanged
                     sig["side"] = "BUY"
                     try:
                         blk = await rpc_call(bc.w3.eth.get_block(sig["_block"]))

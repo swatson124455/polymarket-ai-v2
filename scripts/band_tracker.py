@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze_shadow as az  # noqa: E402
+import mb_canon as mc  # noqa: E402  (ROI basis, conversion 2026-09-06)
 import shadow_readout as sr  # noqa: E402
 
 EPOCH = datetime(2026, 8, 19, 18, 0, 0, tzinfo=timezone.utc).timestamp()
@@ -33,6 +34,21 @@ E_REJECT = 20.0
 ECON_FLOOR = 0.02
 N_FUT = 600
 Y_MIN = -1.02  # per-market edge lower bound (fee-inclusive)
+
+# ── BASIS CONVERSION 2026-09-06 (operator "band tracker convert go") ────
+# The band test re-registers on the ruled basis: atoms = per-WAGER ROI of
+# band fills (BAND_LO <= fill < BAND_HI, ladder-aware), e = mc.roi_e_value,
+# reject at E_REJECT, PASS gate = LCB net winnings >= $100/wk @ $100/wager,
+# futility = 1 week time-based. Fresh epoch = the conversion epoch
+# (= cohort5_qualification.BASIS_EPOCH; duplicated here because cohort5
+# imports this module — the equality is PINNED by cohort5's self-test).
+# The OLD registration retires UNLOCKED at conversion (final read
+# 2026-09-06T11:42Z: n=488, e=0.415, pooled +0.0089 — recorded, no
+# verdict); its constants and helper stay above for the historical record.
+ROI_EPOCH = datetime(2026, 9, 6, 22, 30, 0, tzinfo=timezone.utc).timestamp()
+ROI_LOCK_KEY = "band_0.65_0.85_roi"
+ROI_FLOOR_WK = 100.0   # = cohort5 WEEKLY_FLOOR_USD (pinned by its self-test)
+ROI_FUTILITY_DAYS = 7.0
 
 
 def e_value(edges_in_order: list) -> float:
@@ -92,36 +108,61 @@ async def run(args) -> int:
            if os.path.exists(args.fee_rate_map) else {})
     locks = sr.load_locks(args.locks)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-    if "band_0.65_0.85" in locks:
-        lk = locks["band_0.65_0.85"]
+    if ROI_LOCK_KEY in locks:
+        lk = locks[ROI_LOCK_KEY]
         print(f"[band] VERDICT LOCKED {lk['locked_at']}: {lk['verdict']} "
               f"(e={lk.get('p')}, n={lk.get('resolved')})")
         return 0
-    seq = band_market_edges(recs, outcomes, frm, fee_map)
-    n = len(seq)
+    # BASIS CONVERSION 2026-09-06: per-WAGER ROI of band fills from the
+    # fresh conversion epoch; the old registration retired unlocked (see
+    # the constants block). Band filter mirrors the registered [lo, hi).
+    band_recs = [r for r in recs
+                 if isinstance(r.get("shadow_fill"), (int, float))
+                 and BAND_LO <= r["shadow_fill"] < BAND_HI]
+    # correlated-atom fix (operator "fix go" 2026-09-06): one atom per
+    # market — ladder position ROI of band fills.
+    seq = mc.market_position_rois(band_recs, outcomes, frm, fee_map,
+                                  epoch=ROI_EPOCH)
+    rois = [x for _, _, x, _ in seq]
+    n = len(rois)
+    n_wagers = sum(k for _, _, _, k in seq)
+    el_days = max((datetime.now(timezone.utc).timestamp() - ROI_EPOCH)
+                  / 86400.0, 1e-9)
     if n == 0:
-        print(f"[band] {stamp} forward window open, 0 resolved band markets "
-              f"yet (epoch 2026-08-19T18:00Z) - accruing")
+        if el_days >= ROI_FUTILITY_DAYS:
+            sr.write_lock(args.locks, locks, ROI_LOCK_KEY, {
+                "locked_at": stamp, "resolved": 0, "roi": None, "p": None,
+                "verdict": "NOT DEMONSTRATED (futility 1wk)",
+                "basis": "roi-netwin-20260906",
+                "source": "band_tracker ROI e-process"})
+            print(f"[band] {stamp} *** VERDICT LOCKED: NOT DEMONSTRATED "
+                  f"(futility 1wk, 0 resolved) ***")
+        else:
+            print(f"[band] {stamp} ROI-basis window open, 0 resolved band "
+                  f"wagers yet (epoch 2026-09-06T22:30Z) - accruing")
         return 0
-    edges = [e for _, e in seq]
-    ev = e_value(edges)
-    pooled = sum(edges) / n
-    print(f"[band] {stamp} n={n} resolved band mkts | pooled edge "
-          f"{pooled:+.4f} | e-value {ev:.3f} (reject at {E_REJECT:.0f}) | "
-          f"futility at {N_FUT}")
+    ev = mc.roi_e_value(rois, 0.0)
+    mean_roi = sum(rois) / n
+    print(f"[band] {stamp} n={n}mkt/{n_wagers}wag resolved band | mean roi "
+          f"{mean_roi:+.4f} | e-value {ev:.3f} (reject at {E_REJECT:.0f}) | "
+          f"futility 1wk [ROI basis, conv 2026-09-06]")
     verdict = None
+    lcb = None
     if ev >= E_REJECT:
-        econ = pooled >= ECON_FLOOR
-        verdict = ("PASS - edge>0 PROVEN + economic floor met" if econ else
-                   f"SIGNIFICANT but BELOW ECON FLOOR ({pooled:+.4f} < "
-                   f"+{ECON_FLOOR:.02f})")
-    elif n >= N_FUT:
-        verdict = "NOT DEMONSTRATED (futility bound reached)"
+        lcb = mc.roi_lcb(rois, e_bar=E_REJECT)
+        wk = (lcb * 100.0 * (n / el_days) * 7.0 if lcb is not None else None)
+        verdict = (f"PASS - LCB net winnings ${wk:.0f}/wk >= "
+                   f"${ROI_FLOOR_WK:.0f}/wk floor"
+                   if wk is not None and wk >= ROI_FLOOR_WK else
+                   f"SIGNIFICANT but BELOW MONEY FLOOR "
+                   f"(${0 if wk is None else wk:.0f}/wk)")
+    elif el_days >= ROI_FUTILITY_DAYS:
+        verdict = "NOT DEMONSTRATED (futility 1wk)"
     if verdict:
-        sr.write_lock(args.locks, locks, "band_0.65_0.85", {
-            "locked_at": stamp, "resolved": n, "edge": pooled,
-            "p": ev, "verdict": verdict,
-            "source": "band_tracker e-process first crossing"})
+        sr.write_lock(args.locks, locks, ROI_LOCK_KEY, {
+            "locked_at": stamp, "resolved": n, "roi": round(mean_roi, 6),
+            "p": ev, "verdict": verdict, "basis": "roi-netwin-20260906",
+            "source": "band_tracker ROI e-process first crossing"})
         print(f"[band] *** VERDICT LOCKED: {verdict} ***")
     return 0
 
@@ -157,6 +198,20 @@ def _self_test() -> int:
                             tzinfo=timezone.utc).timestamp()
     print(f"  [epoch] fixed constant, never derived : {ok6}")
     ok &= ok6
+    # BASIS-CONVERSION pins (2026-09-06): run() must score ROI wagers from
+    # the conversion epoch under the new lock key; regression turns RED.
+    import inspect as _i
+    rsrc = _i.getsource(run)
+    ok7 = ("market_position_rois" in rsrc and "roi_e_value" in rsrc
+           and "mc.wager_rois(" not in rsrc  # evidence = market atoms
+           and "roi_lcb" in rsrc and "ROI_LOCK_KEY" in rsrc
+           and "band_market_edges(" not in rsrc
+           and ROI_EPOCH == datetime(2026, 9, 6, 22, 30, 0,
+                                     tzinfo=timezone.utc).timestamp()
+           and ROI_FUTILITY_DAYS == 7.0)
+    print(f"  [basis] ROI wagers + conversion epoch + new lock key pinned "
+          f": {ok7}")
+    ok &= ok7
     print("  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

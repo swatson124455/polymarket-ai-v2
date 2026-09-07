@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze_shadow as az  # noqa: E402
 import band_tracker as bt  # noqa: E402
 import cohort5_qualification as cq  # noqa: E402  (groups/epochs/bars: theirs)
+import mb_allocator as mal  # noqa: E402  (envelope layer, operator fracs)
 import mb_canon as mc  # noqa: E402
 import mb_sizer as msz  # noqa: E402  (pre-registered sizing rule, read-only)
 import shadow_readout as sr  # noqa: E402
@@ -96,13 +97,21 @@ def peak_concurrency(t_recs: list, res_at: dict) -> int:
 
 def trader_row(a: str, epoch: float, recs: list, outcomes: dict,
                frm: dict, fee_map: dict, cfg, res_at: dict) -> dict:
-    """One trader's canon numbers in their forward window - the SAME
-    primitives and arguments the grader uses."""
+    """One trader's numbers in their forward window on the RULED BASIS
+    (conversion 2026-09-06, operator go): atoms = per-WAGER ROI
+    (ladder-aware), e = mc.roi_e_value, LCB = mc.roi_lcb — the SAME
+    primitives the converted grader uses. The 'edge' key now carries
+    MEAN ROI (dollars returned per dollar staked); the table header
+    says roi."""
     gfwd = cq.forward_records(recs, epoch)
     t_recs = [r for r in gfwd if str(r.get("trader", "")).lower() == a]
-    seq = mc.per_market_edges(t_recs, outcomes, frm or {}, fee_map or {},
-                              epoch=epoch)
-    edges = [e for _, _, e in seq]
+    # correlated-atom fix (operator "fix go" 2026-09-06): evidence =
+    # ONE atom per market (ladder position ROI); wagers shown for
+    # transparency via n_wagers.
+    seq = mc.market_position_rois(t_recs, outcomes, frm or {},
+                                  fee_map or {}, epoch=epoch)
+    rois = [x for _, _, x, _ in seq]
+    n_wagers = sum(k for _, _, _, k in seq)
     res = sr.cohort_readout(gfwd, outcomes, epoch, a, cfg)
     # median OK first-buy fill (+ its token) = the display reference point
     # for the sizer column; trade-time sizing uses the live quote instead
@@ -113,15 +122,46 @@ def trader_row(a: str, epoch: float, recs: list, outcomes: dict,
                    and 0 < r["shadow_fill"] < 1)
     med = fills[len(fills) // 2] if fills else None
     return {
-        "n": len(edges),
-        "e": bt.e_value(edges) if edges else None,
-        "edge": mc.pooled_edge(seq),
+        "n": len(rois),
+        "n_wagers": n_wagers,
+        "e": mc.roi_e_value(rois, 0.0) if rois else None,
+        "edge": (sum(rois) / len(rois)) if rois else None,  # mean ROI
         "ok": res.get("ok_rate"),
         "first_buys": res.get("first_buys"),
-        "lcb": msz.lcb_edge(edges, bt.e_value, bt.Y_MIN) if edges else None,
+        "lcb": mc.roi_lcb(rois) if rois else None,
         "med_fill": med,
         "peak_conc": peak_concurrency(t_recs, res_at),
     }
+
+
+def tier_of(a: str, locks: dict, groups_all: set) -> str:
+    """Allocator tier for one roster address (operator ruling 2026-09-06:
+    fractions proven:0.50 confirming:0.10, reserve uncommitted).
+    proven = locked QUALIFIES; confirming = unlocked with a registered
+    per-trader test (incl. an ACTIVE retrial); everything else (OBS,
+    FAILED locks) = 'untiered' — the allocator gives unknown tiers $0 +
+    a flag by design. Retrial verdicts under #r1 outrank the immutable
+    original lock for TIER purposes only (operator go 2026-09-06)."""
+    if a + "#r1" in locks:
+        v = str(locks[a + "#r1"].get("verdict", ""))
+        return "proven" if v.startswith("QUALIFIES") else "untiered"
+    if a in getattr(cq, "RETRIAL_R1", ()) and a in locks:
+        return "confirming"          # active retrial
+    if a in locks:
+        v = str(locks[a].get("verdict", ""))
+        return "proven" if v.startswith("QUALIFIES") else "untiered"
+    return "confirming" if a in groups_all else "untiered"
+
+
+def alloc_params(a: str, sz, envelopes):
+    """Sizer params for one trader under the envelope layer. envelopes
+    None (env unset) -> full-bankroll legacy params; $0 envelope -> None
+    (display shows no stake; the sizer's bankroll>0 guard would refuse).
+    Pure - the run loop calls this verbatim."""
+    if envelopes is None or sz is None:
+        return sz
+    env_a = envelopes[a]["envelope"]
+    return dict(sz, bankroll=env_a) if env_a > 0.0 else None
 
 
 def sizer_params_from_env():
@@ -144,6 +184,11 @@ def display_stake(r: dict, params, frm: dict, fee_map: dict):
         return None
     fill, tok = r["med_fill"]
     fee, _src = mc.canon_fee(tok, fill, frm or {}, fee_map or {})
+    # BASIS CONVERSION 2026-09-06: r['lcb'] is per-DOLLAR ROI; the
+    # sizer's exact binary Kelly takes the per-SHARE edge. Exact map at
+    # the display fill: edge = roi x fill (roi = edge/fill by
+    # construction), so k = roi*fill/(1 - fill - fee).
+    r = dict(r, lcb=r["lcb"] * fill)
     # divisor = the trader's own MEASURED peak concurrency; the env value
     # is a global FLOOR (conservative: larger divisor = smaller stake)
     p = dict(params)
@@ -212,12 +257,52 @@ async def run(args) -> int:
     probes12 = set(cq.INSUFF_PROBES)
     sweep2 = set(cq.SWEEP2_ADMITS)
     cracks_grp = set(cq.CRACK_ADMITS)
+    insuff57 = set(cq.SWEEP2_INSUFF)
+    # cross-trader envelopes (operator ruling 2026-09-06: MB_ALLOC_TIER_FRACS
+    # proven:0.50,confirming:0.10). Unset env = legacy full-bankroll display,
+    # disclosed. One implementation: mb_allocator does the split.
+    groups_all = c1 | probes12 | originals | sweep2 | cracks_grp | insuff57
+    alloc_spec = os.environ.get("MB_ALLOC_TIER_FRACS", "").strip()
+    envelopes = None
+    if alloc_spec and sz is not None:
+        fracs = mal.parse_tier_fracs(alloc_spec)
+        envelopes = mal.allocate_envelopes(
+            sz["bankroll"],
+            [{"key": a, "tier": tier_of(a, locks, groups_all)}
+             for a in clean], fracs)
     rows = []
+    retrials = set(cq.RETRIAL_R1)
     for a in clean:
+        # RETRIALS (operator go 2026-09-06): a FAILED-locked trader with a
+        # registered retrial shows as an ACTIVE trial until the #r1 lock
+        # lands; the original lock is immutable and stays in the note.
+        if a in retrials and (a + "#r1") in locks:
+            lk = locks[a + "#r1"]
+            v = str(lk.get("verdict", ""))
+            state = "PASSED" if v.startswith("QUALIFIES") else "FAILED"
+            rows.append({"a": a, "state": state, "n": lk.get("resolved"),
+                         "e": None, "edge": lk.get("roi"), "ok": None,
+                         "days": None,
+                         "note": f"r1 locked {lk.get('locked_at')}: {v[:26]}"})
+            continue
+        if a in retrials and a in locks:
+            r = trader_row(a, cq.BASIS_EPOCH, recs, outcomes, frm, fee_map,
+                           cfg, res_at)
+            srec = display_stake(r, alloc_params(a, sz, envelopes), frm,
+                                 fee_map)
+            days = days_since(cq.BASIS_EPOCH)
+            dday = None
+            if r.get("lcb") is not None and days and days > 0 and r["n"]:
+                dday = r["lcb"] * 100.0 * (r["n"] / days)
+            rows.append({"a": a, "state": "TRIAL", "n": r["n"], "e": r["e"],
+                         "edge": r["edge"], "ok": r["ok"], "lcb": r["lcb"],
+                         "stake": None if srec is None else srec["stake"],
+                         "dday": dday, "days": days, "note": "retrial-r1"})
+            continue
         if a in locks:
             lk = locks[a]
             v = str(lk.get("verdict", ""))
-            state = "PASSED" if v == "QUALIFIES" else "FAILED"
+            state = "PASSED" if v.startswith("QUALIFIES") else "FAILED"
             rows.append({"a": a, "state": state, "n": lk.get("resolved"),
                          "e": None, "edge": lk.get("edge"), "ok": None,
                          "days": None,
@@ -233,6 +318,8 @@ async def run(args) -> int:
             epoch, grp = cq.SWEEP2_EPOCH, "sweep2-admit"
         elif a in cracks_grp:
             epoch, grp = cq.CRACK_EPOCH, "crack-admit"
+        elif a in insuff57:
+            epoch, grp = cq.INSUFF57_EPOCH, "insuff57"
         else:
             # watched, no registered per-trader test (e.g. cohort4, fbfd
             # probe) - diagnostic only, honestly labeled
@@ -243,15 +330,32 @@ async def run(args) -> int:
                          "note": "no per-trader test registered - "
                                  "diagnostic only"})
             continue
+        # BASIS CONVERSION 2026-09-06 (operator go): scoring epoch =
+        # the ONE fresh conversion epoch for every unconsumed trial;
+        # the group epochs above remain provenance/labels only.
+        epoch = cq.BASIS_EPOCH
         r = trader_row(a, epoch, recs, outcomes, frm, fee_map, cfg, res_at)
-        srec = display_stake(r, sz, frm, fee_map)
+        srec = display_stake(r, alloc_params(a, sz, envelopes), frm, fee_map)
+        days = days_since(epoch)
+        # OPERATOR HARDCODE 2026-09-06 ($/day is the test): LCB dollars/day
+        # at the $100/market REFERENCE stake = lcb x 100 x resolved-rate.
+        # HYPOTHETICAL by standing rule; rate denominator = resolved
+        # markets/day (lags entry rate - disclosed in the header). This is
+        # the RANKING number; the sizer $stake stays the money gate.
+        dday = None
+        if r.get("lcb") is not None and days and days > 0 and r["n"]:
+            dday = r["lcb"] * 100.0 * (r["n"] / days)
         rows.append({"a": a, "state": "TRIAL", "n": r["n"], "e": r["e"],
                      "edge": r["edge"], "ok": r["ok"], "lcb": r["lcb"],
                      "stake": None if srec is None else srec["stake"],
-                     "days": days_since(epoch), "note": grp})
+                     "dday": dday,
+                     "days": days, "note": grp})
 
     order = {"TRIAL": 0, "PASSED": 1, "OBS": 2, "FAILED": 3}
+    # primary sort = the money metric (operator hardcode); e breaks ties
     rows.sort(key=lambda x: (order[x["state"]],
+                             -(x.get("dday") if x.get("dday") is not None
+                               else -1e18),
                              -(x["e"] if x["e"] is not None else -1)))
     now = datetime.now(timezone.utc)
     n_trial = sum(1 for x in rows if x["state"] == "TRIAL")
@@ -259,8 +363,9 @@ async def run(args) -> int:
     n_fail = sum(1 for x in rows if x["state"] == "FAILED")
     print(f"===== {now:%Y-%m-%dT%H:%MZ} TRADER FUNNEL - roster {len(clean)} "
           f"| TRIAL {n_trial} | PASSED {n_pass} | FAILED {n_fail} "
-          f"(bar: e>={cq.C1_E_REJECT:.0f} + edge>=+{cq.EDGE_BAR:.02f} + "
-          f"ok>={cq.OKRATE_BAR:.02f}; futility {cq.C1_FUTILITY_N}) =====")
+          f"(PASS = LCB net winnings >= ${cq.WEEKLY_FLOOR_USD:.0f}/week @ "
+          f"$100/WAGER ref, ladder-aware ROI basis [conversion "
+          f"2026-09-06]; futility 1wk time-based) =====")
     if sz is None:
         print("[sizer] stakes unset - set MB_SIZER_BANKROLL / "
               "MB_SIZER_KELLY_MULT / MB_SIZER_CONCURRENCY / "
@@ -270,6 +375,19 @@ async def run(args) -> int:
               f"{sz['kelly_mult']} / conc = max(trader's measured peak, "
               f"floor {sz['concurrency']}) @ each trader's median recorded "
               f"fill; book depth is trade-time, not applied here")
+    if envelopes is not None and sz is not None:
+        n_prov = sum(1 for e in envelopes.values() if e["tier"] == "proven")
+        n_conf = sum(1 for e in envelopes.values()
+                     if e["tier"] == "confirming")
+        e_conf = next((e["envelope"] for e in envelopes.values()
+                       if e["tier"] == "confirming"), 0.0)
+        print(f"[alloc] {alloc_spec} (operator 2026-09-06; remainder = "
+              f"uncommitted reserve) | proven {n_prov} trader(s), "
+              f"confirming {n_conf} -> ${e_conf:.2f} envelope each "
+              f"(down-only; stakes above use envelope, not full bankroll)")
+    elif sz is not None:
+        print("[alloc] MB_ALLOC_TIER_FRACS unset - stakes shown at FULL "
+              "bankroll per trader (allocator built, env not sourced)")
     cr = crack_census([args.deep_dive, args.rereview, args.scout_dir],
                       set(clean), set(locks))
     if cr:
@@ -278,10 +396,14 @@ async def run(args) -> int:
     else:
         print("[cracks] 0 - every reviewed non-REJECT address is on the "
               "roster or locked")
-    print(f"{'TRADER':<14} {'STATE':<7} {'n':>4} {'e':>7} {'edge':>8} "
-          f"{'lcb':>8} {'$stake':>7} {'ok%':>4} {'days':>4}  note")
+    print("[$/day] HYPOTHETICAL - LCB ROI x $100/wager ref x resolved-rate "
+          "(resolved/day lags entry rate); sorted by it - the operator "
+          "hardcode: money-for-us is the test, all else is inputs")
+    print(f"{'TRADER':<14} {'STATE':<7} {'$lcb/day':>9} {'n':>4} {'e':>7} "
+          f"{'roi':>8} {'lcb':>8} {'$stake':>7} {'ok%':>4} {'days':>4}  note")
     for x in rows:
         print(f"{x['a'][:12]+'..':<14} {x['state']:<7} "
+              f"{fmt(x.get('dday'), '+.2f'):>9} "
               f"{fmt(x['n'], 'd'):>4} {fmt(x['e'], '.2f'):>7} "
               f"{fmt(x['edge'], '+.4f'):>8} "
               f"{fmt(x.get('lcb'), '+.4f'):>8} "
@@ -375,6 +497,37 @@ def _self_test() -> int:
     print(f"  [cracks] census: INSUFF+corrupt in, REJECT/rostered out : "
           f"{ok7}")
     ok &= ok7
+    locks_t = {"0xq": {"verdict": "QUALIFIES"},
+               "0xf": {"verdict": "NOT DEMONSTRATED (futility)"}}
+    grp = {"0xt"}
+    ok8b = (tier_of("0xq", locks_t, grp) == "proven"
+            and tier_of("0xf", locks_t, grp) == "untiered"
+            and tier_of("0xt", locks_t, grp) == "confirming"
+            and tier_of("0xo", locks_t, grp) == "untiered")
+    env_t = mal.allocate_envelopes(
+        500.0, [{"key": k, "tier": tier_of(k, locks_t, grp)}
+                for k in ("0xq", "0xf", "0xt", "0xo")],
+        mal.parse_tier_fracs("proven:0.50,confirming:0.10"))
+    ok8b = (ok8b and abs(env_t["0xq"]["envelope"] - 250.0) < 1e-9
+            and abs(env_t["0xt"]["envelope"] - 50.0) < 1e-9
+            and env_t["0xf"]["envelope"] == 0.0
+            and env_t["0xo"]["envelope"] == 0.0)
+    p_full = {"bankroll": 500.0, "kelly_mult": 0.25, "concurrency": 20,
+              "min_viable": 1.0}
+    # lcb is per-DOLLAR ROI post-conversion; 0.5 keeps the full-
+    # bankroll stake above min_viable while the envelope zeroes
+    r_pos = {"med_fill": (0.50, "tok_x"), "lcb": 0.50, "peak_conc": 1}
+    s_full = display_stake(r_pos, p_full, {}, {})
+    p_t = alloc_params("0xt", p_full, env_t)      # $50 envelope applied
+    s_env = display_stake(r_pos, p_t, {}, {})
+    ok8b = (ok8b and p_t["bankroll"] == 50.0
+            and s_env["stake"] < s_full["stake"]
+            and alloc_params("0xt", p_full, None) is p_full   # env unset
+            and alloc_params("0xf", p_full, env_t) is None)   # $0 envelope
+    print(f"  [alloc] tier map + envelope split + down-only display : "
+          f"{ok8b}")
+    ok &= ok8b
+
     def _fr(tok, ts):
         return {"first_buy": True, "verdict": "OK", "token_id": tok,
                 "detect_ts": ts}
@@ -389,6 +542,18 @@ def _self_test() -> int:
     print(f"  [conc] per-trader peak: overlap 2, all-open 3, empty 0 : "
           f"{ok8}")
     ok &= ok8
+    # BASIS-CONVERSION pins (2026-09-06)
+    import inspect as _i2
+    tsrc = _i2.getsource(trader_row) + _i2.getsource(display_stake)
+    src_run2 = _i2.getsource(run)
+    okc = ("market_position_rois" in tsrc and "roi_lcb" in tsrc
+           and "mc.wager_rois(" not in tsrc  # evidence = market atoms
+           and "per_market_edges" not in tsrc
+           and 'lcb=r["lcb"] * fill' in tsrc
+           and "epoch = cq.BASIS_EPOCH" in src_run2)
+    print(f"  [basis] funnel on ROI atoms + conversion epoch + sizer "
+          f"roi->share map : {okc}")
+    ok &= okc
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

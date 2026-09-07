@@ -18,6 +18,423 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-07 (SESSION CLOSE ~00:50Z) — MARATHON SESSION HANDOFF:
+> ## ROI BASIS RULED+LIVE END-TO-END, CORRELATED-ATOM DEFECT FIXED,
+> ## BOTH REVIEWS COMPLETE
+>
+> **READ ORDER FOR THE NEXT SESSION:** this block -> memory TOP banner
+> (feedback_dollars_per_day_is_the_test, the ROI+net-winnings ladder
+> hardcode + every ruling) -> docs/MB_ROI_REVIEW_2026-09-06.md (both
+> completed reviews incl. the correlated-atom defect record) -> the
+> blocks below in order for tonight's full arc.
+>
+> **WHERE THE PROGRAM STANDS (all live-verified, branch pushed):**
+> - MEASUREMENT: every instrument (grader, funnel, band, hypo ledger,
+>   backtest, bayes) scores per-MARKET position ROI atoms (ladder fills
+>   price the position; one atom per market resolution — the correlated-
+>   atom fix; regression-pinned <=5% null false-pass). PASS = e>=20 +
+>   LCB net winnings >= $100/wk @ $100/wager ref; futility = 1 week;
+>   money rate = markets/day (conservative).
+> - TRIALS: ALL 122 (115 + 7 retrials-r1 under #r1 keys) run from
+>   BASIS_EPOCH 2026-09-06T22:30Z; band ROI registration same epoch;
+>   EVERYTHING resolves pass-or-futility by 2026-09-13. Old locks
+>   immutable. Hypo ledger fresh (hypo_ledger_roi.jsonl from $0).
+> - DISCOVERY (corrected board 2026-09-07T00:23Z, HYPOTHETICAL
+>   $100/wager, 36.3% label coverage): 4 positive holdout LCBs of
+>   8,241; sole QUALIFIES 0x052eb5d2cc +$887/wk (32 mkts; conc 76 >
+>   bar 20 — flagged); 0x12a7dd1d8e +$639/wk (70 mkts; 1mo-eligible
+>   ~09-26 + fraud screen then). Roster: zero positive holdout LCBs on
+>   honest atoms.
+> - BAYES (reviewed, HYPOTHESIS, ranking-input-only verdict — never a
+>   gate/stake): pooled mu=-0.0081 tau=0.0544 (450 fit wallets, med
+>   haircut); spread concentrates in crypto (mu=+0.0442 tau=0.1427,
+>   55 wallets); NOT deployed to cron — needs operator go naming a use.
+> **WATCH ITEMS FOR THE NEXT SESSION:** 09-07 11:40Z cron = first run
+> with the 9-stage chain incl. the daily backtest stage AND the fully
+> converted graders (expect small n everywhere — only post-22:30Z
+> wagers count; verify [chain] 9/9 + [canon] ALARMS=0 + [alloc] line +
+> the fresh hypo header); SELL sink accruing (watch W0-SIDE MISMATCH —
+> zero so far); cron now runs ~30min longer.
+> **OPEN [operator]:** none pending tonight. Standing gates: real money
+> only via docs/MB_GO_CHECKLIST.md; Bayes deployment; conc-76 QUALIFIES
+> wallet is above the tailability bar (informational).
+> **OPEN [build], named, none started:** leaderboard coverage% column
+> (review A3); with-exits estimand once SELL sink matures (GO item 4);
+> robust-prior Bayes variant (review B4, optional); gamma-by-token
+> label fetch for outside-DB markets (~80k tokens).
+> **LANDMINES ADDED TONIGHT:** root-run os.replace on a live-appended
+> file changes ownership (sell-sink outage, 809/809 backfilled);
+> pgrep-based watchers must not match their own/peers' cmdlines
+> (six stuck watchers); pydantic probes ./.env — cron's cd is
+> load-bearing; a global sed mutant can corrupt its own test pin
+> (anchor by indentation); validity sims must model DEPENDENCE not
+> just marginals (the correlated-atom lesson).
+
+> ## 2026-09-06 (~22:20Z live-verified) — BAND CONVERTED + RETRIALS-R1
+> ## LIVE; every instrument now on the ruled ROI basis
+>
+> Final two rulings executed (commits thru `b4e709d`+deploys, pushed):
+> - **BAND** re-registered on band-fill wager ROIs (epoch 22:30Z, lock
+>   key band_0.65_0.85_roi, $100/wk floor, futility 1wk); OLD
+>   registration retired UNLOCKED — final read n=488 e=0.415 recorded
+>   in band_tracker's constants block (.pre-roiconv-20260906 backup).
+> - **RETRIALS-R1**: the 7 old-basis FAILED locks (frozen list, live
+>   locks read 22:15:44Z) re-enter at BASIS_EPOCH; verdicts lock under
+>   "<addr>#r1"; ORIGINALS IMMUTABLE. Funnel live 22:20Z: TRIAL 122 |
+>   FAILED 0; envelope $0.41 x 122 confirming. Pins: band epoch/floor
+>   == grader's (import-cycle duplicate), exact lkey binding + 3 keyed
+>   write sites (a survived mutant closed by pinning the binding, and
+>   note: a global sed mutant corrupted its own pin — indentation-
+>   anchored re-run proved the kill).
+> **The 09-13 resolution wave now covers all 122 trials + the band.**
+> Remaining named gate: adversarial review of the ROI machinery
+> (lambda-subgrid inversion, haircut realism, label-coverage
+> survivorship) before any real-money composition.
+
+> ## 2026-09-06 (~21:36Z live-verified) — BASIS HARDCODE + LIVE GRADER
+> ## CONVERSION EXECUTED (evening operator session, 5 more rulings)
+>
+> **RULINGS (memory feedback_dollars_per_day_is_the_test, TOP block —
+> "top of the list to be read on anything"):** (1) MEASUREMENT BASIS =
+> ROI *and* NET WINNINGS, LADDER-AWARE — first-buy-only scoring is
+> FLAWED; roi=(o-f-fee)/f per wager; edge/e/ok are inputs only.
+> (2) Futility = TIME-BASED 1 WEEK. (3) Ceiling review GO — executed.
+> (4) LIVE GRADERS CONVERTED (operator go).
+> **EXECUTED (commits thru `bbeeb78`+pins, all pushed, all deployed,
+> all mutation-passed):**
+> - mb_canon: wager_rois + roi_e_value (per-shift lambda-subgrid by the
+>   PHYSICAL floor -1.10 — data-independent, anytime-valid) + roi_lcb
+>   (interval-walk inversion). TWO LCB truncation defects found in the
+>   first ROI boards and root-fixed (edge-era 1.0 cap; raw-floor misused
+>   as search bound -> exact +0.080 rows); then the +0.23 positivity
+>   ceiling lifted by the subgrid (loss-fixture LCB 0.08->0.23->1.80).
+> - Backtest boards on the ruled basis (21:19/21:22Z, artifacts in
+>   backtest/): discovery top $wk_net_lcb +$123.6k (0x62ca7dc910, 565
+>   holdout wagers, roi_lcb +1.527) — HYPOTHETICAL $100/wager, 36.3%
+>   label coverage, no 1mo/fraud checks; 6/10 top rows show "futility
+>   1wk" from label-sparse FIRST weeks under left-censored capture
+>   (holdout columns unaffected — read both lenses).
+> - LIVE GRADERS CONVERTED + deployed (.pre-basisconv-20260906):
+>   cohort5 (fresh epoch BASIS_EPOCH=2026-09-06T22:30Z for ALL
+>   unconsumed trials, groups=provenance; PASS = e>=20 + $100/wk
+>   net-winnings LCB @ $100/wager; futility 1wk; locks carry
+>   basis=roi-netwin-20260906), funnel (roi column, sizer fed
+>   roi x fill per-share equivalent), hypo ledger (per-wager rows,
+>   exact roi x stake, FRESH file hypo_ledger_roi.jsonl). Live-verified
+>   21:36Z: conversion banner prints, all trials ACCRUING 0-resolved
+>   (epoch in the future — correct), consumed locks untouched, ledger
+>   reset to 0 rows. Self-test basis PINS added (grader + funnel) —
+>   regression to old estimand/epochs turns them RED.
+> **CONSEQUENCES TO EXPECT:** tomorrow's 11:40Z funnel = tiny n (only
+> post-22:30Z wagers count); ENTIRE roster resolves to pass-or-futility
+> by 2026-09-13; hypo $ledger restarts from $0.
+> **OPEN (operator):** band tracker NOT converted (own frozen
+> pre-registration, e=0.415 @ n=488 of 600); locked traders keep
+> old-basis verdicts (re-trials grantable on request); lambda-grid /
+> estimand adversarial review of the ROI machinery remains the named
+> review step before any real-money composition.
+
+> ## 2026-09-06 (session close, VPS-verified ~16:3xZ) — ALL SIX OPERATOR
+> ## RULINGS EXECUTED; DAILY BACKTEST STAGE LIVE IN CRON (9 chain stages)
+>
+> **RULINGS (operator, this session — recorded in
+> feedback_dollars_per_day_is_the_test.md):** (1) tailability bar = 20
+> concurrent (physical-capacity line, headroom for scale/ladder — not a
+> quality claim); (2) tier fractions proven:0.50/confirming:0.10, 0.40
+> reserve; (3) Bayes = adversarial review before deploy; (4) daily
+> leaderboard cron stage GO; (5) w[0] = logged cross-check only,
+> receipts stay authority; (6) promotion checks GO for the find.
+> **EXECUTED + VERIFIED LIVE (commits thru `145e815` + this docs
+> commit):**
+> - [alloc] LIVE in funnel: envelopes via mb_allocator (proven 0,
+>   confirming 115 -> $0.43 each at $500 — correctly zeroes all display
+>   stakes until a PASS); MB_ALLOC_TIER_FRACS in mb_sizer.env
+>   (.pre-alloc backup). 4/4 funnel/watcher mutants killed after two
+>   survivor fixes (pure alloc_params; structural underscore-strip in
+>   shadow_record).
+> - w[0] cross-check LIVE in watcher (restart 16:17:58Z clean,
+>   roster=124, canary 1,961): logs W0-SIDE MISMATCH on any receipt
+>   disagreement; zero so far.
+> - DAILY BACKTEST STAGE in the 11:40Z cron (stage 9; chain-watch
+>   pinned to 9 — first graded run tomorrow): Monday/first-run rescreen
+>   at bar 20, incremental extract, label delta, haircut re-measured
+>   per run, both leaderboards. FULL STAGE VALIDATED under the cron
+>   identity+cwd (a first attempt from the wrong cwd hit pydantic's
+>   ./.env probe — cron's cd /opt/polymarket-ai-v2 is LOAD-BEARING).
+>   Bar-20 baseline rebuilt: 8,359 candidates, 1.2M rows; labels +314.
+> - FIND `0x12a7dd1d8e` FAILED the 1-month eligibility check (data-api
+>   16:06:59Z: zero trades before 2026-08-07 cutoff; first trade
+>   ~2026-08-26) -> NO roster add; RE-CHECK ~2026-09-26 with the fraud
+>   screen then. Profile note: 5-min BTC up/down micro-markets, ~$3.75
+>   own stakes. It stays on the board: bar-20 rerun 16:33Z again the
+>   ONLY positive holdout LCB of 8,234 wallets (+$214.97/wk_lcb, lcb
+>   +0.0206, n_ho=70, HYPOTHETICAL $100/mkt).
+> - BAYES REVIEW PREP (review still pending, NOT deployed): tau2 CLIPS
+>   TO 0 on the tailable universe too — med haircut mu=-0.0078 (448
+>   wallets n>=30), p90 mu=-0.0125 (441) — the no-detectable-spread
+>   result is NOT a whale artifact, and tailable wallets' mean edge is
+>   less negative than the <=50 universe's -0.0217. HYPOTHESIS.
+>   Artifacts: backtest/bayes_prior_conc20_{med,p90}.json.
+> **WATCH:** tomorrow's 11:40Z = first 9-stage [chain] grade + first
+> in-cron backtest stage (cron now runs ~30 min longer); band nearing
+> futility (e 0.415 @ n=488 of 600).
+
+> ## 2026-09-06 (~15:44Z) — BUILD 3 AT THE REVIEW GATE: EMPIRICAL PRIOR
+> ## FITTED — tau2 CLIPS TO ZERO (population spread = sampling noise)
+>
+> **`scripts/mb_bayes.py`** (commit `1ea96fe`; self-test 6/6, pytest
+> 7/7, 4/4 mutants — one symmetric-fixture blind spot found+closed):
+> normal-normal empirical Bayes on canon per-wallet edges; changes NO
+> gate (e>=20 + $100/wk floor untouched); outputs HYPOTHESIS-labeled.
+> Deployed to mb_readout as an ANALYSIS TOOL ONLY — no cron/gate wiring
+> until adversarial review + operator sign-off (mandate order).
+> **MEASURED PRIOR (fit 2026-09-06 ~15:41Z, sweep rows, haircut
+> +0.0100, min_n=30):** over 4,106 wallets with n>=30 resolved
+> (15,124 had >=2): **mu = -0.0217, tau2_raw = -0.000214 -> CLIPPED
+> to 0** (between-wallet var 0.004267 < avg sampling noise 0.004481).
+> Reading (HYPOTHESIS, model-based): on this 11-day, 28.2%-labeled
+> window the between-wallet spread of mean edges is fully explained by
+> noise — no detectable persistent skill differentiation, and the
+> population's mean haircut-adjusted copy edge is -2.2c/market. Every
+> posterior collapses to mu. This QUANTIFIES the base rate the confirm
+> track fights; it does not override the anytime-valid LCB machinery
+> (which guards selection at e>=20 by construction).
+> **ADVERSARIAL-REVIEW AGENDA (before any deploy):** (1) label-coverage
+> selection bias — the 28.2% labeled subset skews to our ingestion
+> universe; (2) 11-day window vs >=1mo eligibility; (3) normal-normal
+> adequacy under heavy-tailed edges (tau2=0 could be a tail artifact);
+> (4) haircut sensitivity (rerun at p90 +0.0149); (5) whether the prior
+> should be fit per-category; (6) interaction with the discovery
+> find's +0.0207 LCB (winner's-curse context). Artifact:
+> /opt/pa2-shared/mb_copyable_data/backtest/bayes_prior.json.
+
+> ## 2026-09-06 (~15:45Z) — SELL-SINK PERMISSION OUTAGE (my defect) FOUND,
+> ## FIXED, FULLY BACKFILLED; 11:40Z cron VERIFIED ([chain] first run OK)
+>
+> **OUTAGE:** the 03:16Z sell-sink migration's os.replace (run as root)
+> left the sink root-owned; the polymarket-user watcher failed every
+> SELL append with PermissionError 03:16:15Z..15:33Z (806 logged; found
+> at ~15:33Z after the steward box resumed from an ~11h suspend). BUY
+> pipeline unaffected throughout (11,890 verdicts in window). Fixed:
+> chown polymarket + append-probe verified; live records resumed on
+> their own (8 by 15:39Z). **BACKFILLED from chain** (`f3aa0c3`
+> scripts/mirror3_sell_backfill.py, watcher primitives imported):
+> 8,689 merged roster wagers in window -> 809 SELLs, receipt-confirmed
+> 809/809, appended with backfill marker (detect_ts = block time,
+> disclosed). Sink = 896 records, ALL prices in (0,1]. LESSON (deploy
+> trap class): root-run file REPLACEMENT changes ownership under a
+> service writer — migrations must chown back or append-only.
+> **MEASURED BONUS:** V2 fill event data word[0] is the order side flag
+> (0=BUY/1=SELL) — concordance vs receipts 809/809 agree, 0 disagree
+> on this window; could spare the per-signal receipt RPC (OPTIMIZATION
+> PROPOSAL, operator gate — receipts stay authority until ruled).
+> **11:40Z CRON (09-06) VERIFIED:** [chain] all 8 stages OK (first full
+> in-cron run), [canon] ALARMS=0, [grader] OK locks_written=2 (first
+> futility locks — FAILED 5->7, as handoff predicted), [hypo] in-cron
+> first run: 3,209 rows rebuilt, $ref100=-2,501.50 $sizer=+0.00
+> HYPOTHETICAL (reseed-on-cron per tuple-fix; supersedes the 1,860-row
+> +1,139.19 pre-fix seed — different row set). Band moved sharply:
+> n 259->488, e 1.827->0.415, pooled +0.0089 (futility 600 nearing —
+> watch item).
+
+> ## 2026-09-06 (~04:05Z) — BUILD 1 SHIPPED + FIRST DISCOVERY SWEEP RUN
+> ## (walk-forward backtest harness; one positive-LCB find)
+>
+> **`scripts/mb_backtest.py` LIVE in mb_readout** (commits `60be359` +
+> DB-parity `and lookahead-guard fixes, branch head pushed): replays any
+> trader through the DEPLOYED rules day-by-day, no lookahead (canon
+> primitives imported — a self-test probe rejects re-implementation);
+> judged ONLY out-of-sample (split 2026-09-02 = first day never used to
+> tune anything); copy lens only. Ship discipline: self-test 12/12,
+> pytest 11/11, 6/6 mutants killed (incl. lookahead + train-leakage +
+> label-lookahead mutants). Two parity fixes found by running it:
+> (1) replay now merges DB outcomes like the funnel (cache-only had
+> 39.4% coverage and silently diverged e-values); (2) holdout judge
+> excludes labels resolved after end_ts (0xbca08c1bc2 n_ho 74->44 —
+> real leak caught).
+> **MEASURED (all from tonight's runs, artifacts in
+> /opt/pa2-shared/mb_copyable_data/backtest/):**
+> - Follow-cost haircut med +$0.0100/share (n=9,889 roster OK
+>   first-buys; p90 +0.0149) — the sweep's non-roster pricing penalty.
+> - Screen: 17,846 candidates (>=25 trades + study peak_conc <=50
+>   superset; sensitivity <=3:785 <=5:1,490 <=10:3,614 <=20:8,359);
+>   187 conc-UNKNOWN excluded+counted. Tailability bar = operator
+>   decision, board slices by stored per-wallet conc.
+> - Labels: +14,737 markets added to gamma_resolutions (23,220/23,479
+>   cids fetched, 0 conflicts; cache 256,995 keys, backup kept).
+> - ROSTER board (holdout 09-02..09-06): all $wk_lcb negative (honest
+>   e>=20 LCB on 4 days — matures daily); best realized
+>   0x3471a897e5 +$603/wk (n_ho=50). Replay futility verdict on
+>   0x216509be53 matches the live grader's 08-08 lock (parity check).
+> - FIREHOSE DISCOVERY board (17,404 wallets replayed, 2.89M rows,
+>   11 capture days): **ONE positive out-of-sample LCB:
+>   0x12a7dd1d8e3bea0b5b7bac1d2d6135f5698c4ce3, +$253.49/wk_lcb
+>   (lcb +0.0207, n_ho=70), study peak_conc 12 (tailable at any
+>   bar >=12), 77 trades/$605 notional study week.** HYPOTHETICAL
+>   $100/mkt ref. NOT proposed for roster yet — needs 1-month-history
+>   data-api check + chain fraud screen + operator gate; tiny own
+>   stakes flag a depth question for $100/mkt copying.
+> **DISCLOSED LIMITS:** label coverage 28.2% of 92,539 firehose entry
+> tokens (~80k outside ingestion DB — gamma-by-token fetch = named
+> build option); replay conc = upper bound under sparse labels (study
+> conc is the screen number); ranking 17k wallets on a 4-day holdout
+> is a SCREEN with selection effects — forward confirm stays the proof.
+> **BUILD 2 ALSO SHIPPED (VPS deploy verified 2026-09-06 ~15:31Z — the
+> steward box SUSPENDED ~04:00Z->15:30Z mid-session; earlier stages
+> carry their own log stamps): `scripts/mb_allocator.py` LIVE in
+> mb_readout** (commit `a387d17`; self-test 6/6, pytest 7/7, 5/5
+> mutants killed incl. over-commit-guard removal and 10x-bankroll
+> inflation). Envelope layer: bankroll -> operator tier fractions
+> (MB_ALLOC_TIER_FRACS, NO defaults, sum<=1 enforced) -> equal
+> per-trader envelopes within tier -> mb_sizer inside the envelope.
+> Down-only property-tested; unknown tier = $0 + flagged. **AWAITING
+> OPERATOR: the tier names + fractions** (e.g. proven/confirming
+> splits) — funnel/executor wiring follows those numbers; until an
+> executor exists the gap remains harmless (all stakes $0).
+> **NEXT (mandate order):** build 3 Bayes head start (empirical prior
+> from the population study, adversarial review BEFORE deploy — not
+> rushed at session end); funnel/executor allocator wiring on operator
+> tier numbers; daily leaderboard refresh in cron = additive proposal.
+
+> ## 2026-09-06 (~03:25Z) — SELL-SINK LAYOUT DEFECT FOUND IN SESSION-START
+> ## CHECKS; FIXED + DEPLOYED + RECORDS MIGRATED
+>
+> The handoff's "verify records look sane" check FAILED: every SELL sink
+> record had whale_price > 1 (first record 12.5 on a binary market).
+> Chain replay of two record txs (0x0f422cdb Exchange V2, 0x31f7d3b9
+> NegRiskExchange V2) proved the V2 fill event's amount words are
+> MAKER-perspective: for a SELL order w[2]=tokens given / w[3]=usdc
+> received, so decode_fill_v2's BUY-layout arithmetic recorded
+> price=tokens/usdc (inverted) and size=token count. The BUY pipeline is
+> UNAFFECTED (owner BUY events genuinely have usdc at w[2]; the 7-wk BUY
+> dataset stands). Fix: sell_record() inverts (1/p, size/p — exact
+> through merge_same_tx algebra); commit `8e9c989`, mirror3+sizing
+> battery 116/116, 3/3 mutants killed, deployed to /opt/mirror3
+> (.pre-sellfix-20260906), service restarted 03:14:23Z, startup verified
+> (roster=124, canary 2509 fills, 0 tracebacks). All 79 pre-fix records
+> migrated exactly (backup .pre-sellfix-migration-20260906, marker
+> layout_fix_20260906); post-migration scan: 79/79 in (0,1]. Chain-watch
+> + hypo ledger wiring verified present in the cron script; their first
+> full in-cron run = today's 11:40Z (still pending at fix time).
+
+> ## 2026-09-06 (session close ~02:10Z) — GRADING REDESIGN RULED + BUILD
+> ## MANDATE ISSUED (backtest-as-discovery); handoff to fresh session
+>
+> **OPERATOR RULINGS (all binding, recorded in memory
+> feedback_dollars_per_day_is_the_test.md):**
+> 1. THE TEST IS MONEY: PASS = LCB-confident net winnings >= $100/week
+>    (WEEKLY_FLOOR_USD, deployed). $lcb/day column + sort live in funnel.
+> 2. FADE IS DEAD ("do not follow bad money") — copy-only.
+> 3. TAILABILITY: hyper-concurrent whales are NOT copyable — exclude from
+>    the universe (the sizing-around-them debate was a "false question").
+> 4. ELIGIBILITY: >= 1 month history AND >= 25 trades. QUALIFICATION
+>    CURVE presented (computed from deployed LCB machinery, total-trades
+>    basis): 25 trades -> ~$42/trade per $100; 100 -> $19; 300 -> $10.
+> 5. e>=20 stays. Backtest replaces the 4-week forward wait as the GATE
+>    and becomes the DISCOVERY engine (walk-forward, out-of-sample only,
+>    train/holdout split — screen params were tuned on this history).
+> 6. APPROVED BUILDS in order: (i) walk-forward backtest harness;
+>    (ii) cross-trader ALLOCATOR + graduated trust (VERIFIED GAP: funnel
+>    line 207 hands the full $500 to every trader independently — no
+>    cross-trader split exists; safe today, all stakes $0, no executor);
+>    (iii) Bayes head start on confirm track. Executor after, per
+>    docs/MB_GO_CHECKLIST.md (still the binding real-money gate).
+> **Session also shipped:** $100/wk floor grader (pre-100wk backups),
+> hypo ledger tuple-bug fix (reseeds on cron), window study (HOT screen
+> anti-predictive: 40%/-$38 next-wk; COLD persistence was 77% ONE wallet
+> - concentration trap caught, fade killed by operator anyway).
+> **Instruments all live:** roster 124, [chain] watchdog, [grader]
+> heartbeat, hypo ledger, SELL sink (awaiting first record), canon
+> ALARMS=0 throughout.
+
+> ## 2026-09-06 (~00:55Z) — ALL 5 GO-PRECONDITIONS BUILT (operator "build
+> ## all 5"); GO CHECKLIST is now the binding composition gate
+>
+> **docs/MB_GO_CHECKLIST.md** = the gate: no dollar moves until its five
+> lines are green or operator-struck; first PASS does not override.
+> Status: (1) verbatim-echo-at-GO codified; (2) [chain] watchdog LIVE in
+> cron (8 stages OK/CRASHED/MISSING; first run true-positived
+> hypo=MISSING for 09-05); (3) sizer depth_frac rail BUILT (slippage
+> measurement = pilot-day, spec in checklist); (4) SELL recorder LIVE —
+> watcher writes roster SELLs to mirror3_shadow_sells.jsonl (own sink,
+> BUY pipeline untouched, .pre-sellsink-20260906; sink file appears on
+> first roster SELL — none yet at 00:52Z; with-exits estimand = next
+> build once data accrues); (5) cap_per_event rail BUILT (per-event
+> proportional down-scale, sizing layer, never a market block).
+> Verification: sizer 23/23 + 5/5 mutants; mirror3 battery 65/65;
+> chain-watch self-test 5/5; watcher restarted roster=124, 0 tracebacks,
+> BUY record at 00:49:59Z post-restart. Also this session: hypo $ ledger
+> LIVE in cron (seeded 1,860 rows; $ref100 +1,139.19 HYPOTHETICAL,
+> $sizer 0.00); tailed-cohort own-P&L measured (+$263,827 resolved gross
+> vs $67.5M open basis, 95/124 wallets); verbatim-first reporting rule
+> codified. Memory: project_mb_go_preconditions.md.
+
+> ## 2026-09-02 (~15:25Z) — ALL 5 FOLLOW-UPS RUN ("run the follow ups");
+> ## roster 69->124 (insuff57 fold-in LIVE)
+>
+> **(1) GAP CENSUS (full pass, gaps>=60s):** 10 gaps in the 7-day study
+> window totaling 43,188s = 12.00h of the 165.3h window = **7.26%
+> downtime** (top: 08-31 06:31Z +249m, 08-26 04:02Z +235m, 08-31 23:12Z
+> +112m, 09-01 22:43Z +54m; plus 09-02 01:31Z +205m outside the window).
+> trades_per_capture_day denominators are ~7% generous; distributions
+> otherwise stand.
+> **(2) CATEGORY MIX (DB join, 254,875 capture tokens vs markets table):**
+> matched coverage = 41.38% of trades / 71.54% of notional (58.62% of
+> trades UNMATCHED — tokens outside our ingestion DB; small-market skew).
+> Of ALL capture trades: crypto 15.38%, sports 13.95% (39.64% of
+> notional), esports 4.35%, weather 3.66%. Denominator = whole capture.
+> **(3) PEAK OPEN-POSITION CONCURRENCY (net-long lens, resolutions
+> invisible -> upper bound; n=130,747 ever-open wallets):** p50=3 p75=14
+> p90=58 p95=144 p99=758 max=50,648. Artifact /tmp/peak_conc.jsonl (move
+> to durable storage!). THE sizer concurrency source per trader.
+> **(4) FOLLOWABILITY PHYSICS (measured):** quote_lag p50=0.14s p90=0.16s
+> (n=18,456); detect_lag p50=1.11s p90=4.51s (n=73,025); total p90=4.67s.
+> 91.3% of 98,815 spacing-defined wallets have median spacing > our p90
+> latency; 72.1% > 10x. Price-half-life estimator = remaining stage-2
+> component (named, not built).
+> **(5) STAGE-3 GROUNDWORK + INSUFF57 FOLD-IN EXECUTED (rec 3):** observed
+> live e-distribution (09-02 funnel, 62 trials, 16 e-bearing): 0.47..2.09,
+> top e=2.09. The 57 INSUFFs: 45/57 traded in capture — heavy (med 913
+> trades / $608.7k notional / 17.8s med gap). Fold-in LIVE: SWEEP2_INSUFF
+> group (55 = 57 minus 2 crack-admit overlaps), epoch 2026-09-02T15:30Z,
+> roster 69->124, watcher restarted roster=124 both sinks, self-tests
+> PASS (funnel auto-completeness 5 groups). Fade-side e-process = the
+> stage-3 build, still to come.
+
+> ## 2026-09-02 (~15:05Z) — STAGE-1 POPULATION STUDY DELIVERED (the week's
+> ## main event); capture verified; day-1 instruments all GREEN
+>
+> **STUDY RUN 2026-09-02T14:57:44Z** (`scripts/population_study.py`
+> `e0e3b1c`, self-tested + deployed to mb_readout): 7 complete capture
+> days 08-26T02:40Z..09-01T23:59Z (partial 09-02 gz EXCLUDED by pinned
+> globs), **27,193,448 rows, 0 unparseable, 137,372 wallets**. Artifacts:
+> `firehose/population_study_stage1.txt` (percentile tables + trades x
+> breadth joint grid) + `.wallets.jsonl` (137,372 per-wallet metric rows —
+> the stage-2/3 input). Headlines (per-wallet, week): median 4 trades /
+> 1 active day / 3 tokens / $48.85 notional; p90 = 131 trades / 57 tokens
+> / $3,066; buy-only >= half the population (median buy_share 1.000);
+> median-of-median spacing 354.8s; 1,008 wallets in the 1000+ trades x
+> 1000+ tokens cell (MM/bot-shaped tail). NO thresholds derived — that is
+> downstream work that must name percentiles + sensitivity per charter.
+> **Capture integrity:** row counts healthy all 8 files (29.36M gz rows
+> total measured 09-02 ~14:48Z incl. partial 09-02); ZERO parse failures
+> anywhere; day-boundary continuity confirmed. **3 capture holes found
+> (maxgap per file): 08-26 14,092s, 08-31 14,964s (+ 6,722s spillover
+> shown in 09-01), 09-02 12,289s** — recorder's 15s silence-watchdog
+> reconnect loop evidently can fail for hours; per-gap census + total
+> downtime quantification = named follow-up (affects trades_per_
+> capture_day denominators slightly; distributions otherwise sound).
+> **Day-1 of new instruments (11:41Z cron): ALL GREEN** — grader clean
+> with first cron heartbeat `[grader] OK groups=5 locks_written=0`; canon
+> 8/8|8/8|6/6 ALARMS=0 seed=20260902; band n=106 e=0.423; funnel roster
+> 69 | TRIAL 62 | PASSED 0 | FAILED 5 | [cracks] 0.
+> **Follow-ups named (additive, none started):** (1) per-gap census;
+> (2) category-mix pass (token->category join); (3) open-position
+> concurrency pass (entry/exit pairing) = the sizer's standing
+> concurrency source; (4) stage-2 followability (quote_lag_s vs spacing);
+> (5) stage-3 two-sided sluice thresholds FROM these distributions incl.
+> the 57 sweep-2 INSUFFICIENTs fold-in.
+
 > ## 2026-09-01 (~13:55Z) — SHARED-FIX DEPLOY LANDED (attempt 4, release
 > ## 20260901_093301); mirror stayed down; deploy-tooling hardened
 >

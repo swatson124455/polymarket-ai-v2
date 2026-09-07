@@ -225,6 +225,31 @@ def test_decode_fill_v2_roster_order():
     assert abs(sig["whale_price"] - 0.972) < 1e-4      # ground-truth trade
     assert abs(sig["whale_size_usd"] - 23141.92032) < 1e-6
     assert sig["was_taker"] is False
+    assert "_w0" in sig                     # internal cross-check payload
+
+
+def test_w0_side_check_matrix():
+    """Receipt stays authority (operator 2026-09-06): agreement and
+    unknowns are silent; ONLY a disagreement alarms."""
+    assert cw.w0_side_check(0, "BUY") is None
+    assert cw.w0_side_check(1, "SELL") is None
+    assert cw.w0_side_check(None, "BUY") is None       # v1/decode w/o w0
+    assert cw.w0_side_check(1, None) is None           # receipt failed
+    assert "MISMATCH" in cw.w0_side_check(1, "BUY")
+    assert "MISMATCH" in cw.w0_side_check(0, "SELL")
+
+
+def test_internal_keys_never_leak_into_records():
+    """Underscore-prefixed sig keys (_block, _w0, future internals) are
+    stripped STRUCTURALLY by shadow_record — not left to the caller's
+    pop discipline. sell_record's explicit schema has no leak path."""
+    sig = {"trader": "0xabc", "token_id": "123", "whale_price": 2.0,
+           "whale_size_usd": 10.0, "tx": "0xdead", "_w0": 1,
+           "_block": 99}
+    rec = cw.shadow_record(dict(sig), "OK", 0.5, 0.4, 0.5, 100, 101.0,
+                           "0xdead")
+    assert not any(k.startswith("_") for k in rec)
+    assert "_w0" not in cw.sell_record(sig, 1.0)
 
 
 def test_decode_fill_v2_taker_summary_and_rejects():
@@ -710,3 +735,59 @@ def test_bidsim_config_gating():
     cfg = cw.WatcherConfig.from_env({**base, "MIRROR3_BIDSIM": "1"})
     assert cfg.bidsim is True and cfg.bidsim_path.endswith("mirror3_bidsim.jsonl")
     assert cw.bidsim_make(cw.WatcherConfig.from_env(dict(base))) is None
+
+
+# ---- GO-precondition #4: SELL recording (operator "build all 5", 2026-09-06)
+
+def test_sell_record_schema_purity_and_layout_inversion():
+    """sell_record inverts the BUY-layout arithmetic decode_fill_v2 hands
+    it for SELL orders (maker-perspective amount words; chain-verified
+    2026-09-06). Fixture = the real first sink record's tx 0x0f422cdb:
+    sold 642.5 tokens for $51.40 gross (price $0.08); the defective
+    passthrough recorded price 12.5 / size 642.5."""
+    from mirror_v3 import copy_watcher as cw
+    sig = {"trader": "0xabc", "token_id": "123",
+           "whale_price": 642.5 / 51.4,     # tokens/usdc = 12.5 (inverted)
+           "whale_size_usd": 642.5,         # token count, not USD
+           "tx": "0xdead"}
+    r = cw.sell_record(sig, 1788000000.0)
+    assert r["trader"] == "0xabc" and r["token_id"] == "123"
+    assert r["side"] == "SELL" and r["tx"] == "0xdead"
+    assert r["detect_ts"] == 1788000000.0
+    assert abs(r["whale_price"] - 0.08) < 1e-9       # true price = usdc/tok
+    assert abs(r["whale_size_usd"] - 51.4) < 1e-9    # true USD received
+    assert 0.0 < r["whale_price"] < 1.0              # binary-market bound
+    assert sig == {"trader": "0xabc", "token_id": "123",
+                   "whale_price": 642.5 / 51.4, "whale_size_usd": 642.5,
+                   "tx": "0xdead"}  # input untouched
+
+
+def test_sell_record_inversion_exact_through_merge():
+    """merge_same_tx over inverted sell fills yields price=sum(tok)/sum(usdc)
+    and size=sum(tok); sell_record must recover total USD and true VWAP.
+    Two clips: 100 tok @ $0.25 ($25) + 300 tok @ $0.20 ($60) ->
+    VWAP 85/400 = 0.2125, USD 85."""
+    from mirror_v3 import copy_watcher as cw
+    from mirror_v3.sizing import merge_same_tx
+    clips = [{"tx": "0xt", "trader": "0xabc", "token_id": "9",
+              "whale_price": 100 / 25.0, "whale_size_usd": 100.0},
+             {"tx": "0xt", "trader": "0xabc", "token_id": "9",
+              "whale_price": 300 / 60.0, "whale_size_usd": 300.0}]
+    merged = merge_same_tx(clips)
+    assert len(merged) == 1
+    r = cw.sell_record(merged[0], 1.0)
+    assert abs(r["whale_size_usd"] - 85.0) < 1e-9
+    assert abs(r["whale_price"] - 85.0 / 400.0) < 1e-9
+
+
+def test_sell_sink_is_separate_from_shadow_path():
+    from mirror_v3.copy_watcher import WatcherConfig
+    base = {"MIRROR3_ROSTER_PATH": "/tmp/r.json",
+            "MIRROR3_RPC_URL": "http://localhost:1"}
+    cfg = WatcherConfig.from_env(base)
+    assert cfg.sell_sink != cfg.shadow_path
+    assert cfg.sell_sink != cfg.rtds_sink
+    assert cfg.sell_sink.endswith("mirror3_shadow_sells.jsonl")
+    cfg2 = WatcherConfig.from_env(dict(base,
+                                       MIRROR3_SELL_SINK="/tmp/x.jsonl"))
+    assert cfg2.sell_sink == "/tmp/x.jsonl"

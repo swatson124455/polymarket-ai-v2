@@ -29,7 +29,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze_shadow as az  # noqa: E402
 import band_tracker as bt  # noqa: E402  (anytime-valid e-process, C1 group)
 import mb_canon as mc  # noqa: E402  (canonical estimand, 2026-08-25)
+import mb_sizer as msz  # noqa: E402  (LCB inversion, 2026-08-30)
 import shadow_readout as sr  # noqa: E402
+
+# OPERATOR RULING 2026-09-06: the pass floor is MONEY PER WEEK, not a
+# percentage - LCB-confident net winnings >= $100/week at the $100/market
+# reference stake. Operator-supplied number; do not tune.
+WEEKLY_FLOOR_USD = 100.0
 
 # The approved forward-window epoch — 2026-07-30T17:00:00Z, fixed by the
 # ratified pre-registration. NEVER move it: records before it were visible
@@ -128,6 +134,72 @@ SWEEP2_ADMITS = [
     "0xdf804b17329a461425116c9e0f599e248b443259",
 ]
 
+INSUFF57_EPOCH = datetime(2026, 9, 2, 15, 30, 0,
+                          tzinfo=timezone.utc).timestamp()
+# sweep-2 INSUFFICIENT-EVIDENCE fold-in (operator rec 3, 2026-08-30 "go with
+# recs 1-2-3-4-5", scheduled AFTER the 09-02 population study; executed
+# 2026-09-02 on "run the follow ups"). 57 verdicts minus the 2 already
+# graded as crack-admits (0xabb89972b2.., 0xdf17f4a8dd.. — earlier epoch
+# wins, no double-grouping). Observation-only watch-first: INSUFFICIENT
+# under the VOIDED zero-based metrics is not evidence; forward data grades
+# them free. Epoch = registration time, never back-dated.
+SWEEP2_INSUFF = [
+    "0x198fa74120438fb7cabccb61aa824c6720dfc419",
+    "0x1b20a00709dfe648afd26b326394b5e031f83ab0",
+    "0x219c6e3d15e85dc10e6ec9292f2a90ea2494fed6",
+    "0x2d395d11014415644fe9a8599fe050e7f3a06053",
+    "0x2eaa693ca8a7bf512f98958db6379855d0a17d1a",
+    "0x2ec5ac52dcb5537f1fe8b47ee3cfd34bd666fd53",
+    "0x30c16e063c3be66d93acf14c06e2741e348f9f91",
+    "0x317149007acf6c4ac806df15ad95b2fa41aeb991",
+    "0x33ab58e55895f39619815d31dfc92d90d65f9523",
+    "0x3471a897e56a8d3621ca79af87dae4325977f17e",
+    "0x3b63b79d5d00a254ff0105792e04984f64654acd",
+    "0x46992d0e547e3822a9c28723f51bfa804ae4e03c",
+    "0x4d514c19b3dd6284c11a92dd6b1d151fb4c54946",
+    "0x51ad675fcb07c4b690501aea44605f798ede5e56",
+    "0x56acab44cfca2e88bb9b3406890aea7bfa0cd77e",
+    "0x56f4f054e92ced8fa7accfebcad73251afe49ec5",
+    "0x6049761986af66cd8e78997c940766bd69c7f14f",
+    "0x6a88c5ecd262e2c42e78bad8e6db7ab3c4e4b859",
+    "0x6d20c35f65d9899b6d6b74f8466e824580f9a165",
+    "0x73b18f50526851ac8e52f07ae0f3cc665bfdbd8b",
+    "0x751a2b86cab503496efd325c8344e10159349ea1",
+    "0x790e44a5056151c832ae0cbac71b249f0b6b55d6",
+    "0x7e5e420a5cde8a322f3b5b93a12a164827f47315",
+    "0x8201c74931d47ca0151715d43406a5eebe208a41",
+    "0x880b1fc5d3beb01c237f0848b249fd72b48fc98b",
+    "0x8b4bca1d794779e66e023d44391b2a86c5ab541b",
+    "0x8e52216607ebb117b498b689bcdc6d778cd32320",
+    "0x9279251b5c5e13535750a71beebbc4288e3e4748",
+    "0x95dcb3d91f4c83b09fbc5a8b6f52a4a45d134b45",
+    "0x9703676286b93c2eca71ca96e8757104519a69c2",
+    "0x9e8077593bf0a6fd63f988dcf589f7558897f694",
+    "0x9fcfbb4a9b536e5ba8cb0abe812f7fd9abbee455",
+    "0xa2a020a382c90b292331ef36e62a2680e3df7e90",
+    "0xa9ceceeba134abc87e5c2ecc35f08e0181133117",
+    "0xaa3ccfe85303804f4471baebdbb19a8e1c0c5607",
+    "0xb272505077cc2c6bde5acca133ea6364152e5030",
+    "0xb4d250f58c26840e09723a83ce9c8149aa32ce99",
+    "0xba8c5fbcc5f58b0e4ae0c1413e0413f8c803e77d",
+    "0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705",
+    "0xbca0b22982273b3c6590c363e78cf61f357dd7a0",
+    "0xbf1af4eaa64ecc3aafff7a64d32fce6136ba83ea",
+    "0xc23dc0eca9e1c2e293de8911b9ac254f0bcd82c8",
+    "0xcd30f4698c6f5f3829893e68e183a8e5ea18f316",
+    "0xcd71fd5370880f3d92bb941e628c05840fe0d127",
+    "0xcdc16095643e158c407da40f9a9a8da24f80bdd8",
+    "0xcf3a757bedfc4567bbfb6ec784f1bdd725f5fbfd",
+    "0xcf6c5492124794394dd9eac46498a8babbe47e66",
+    "0xd27cc742d023d06ef633a4c880cf1ff1836ec081",
+    "0xd487f513cfead22d76b6db4567c756b3cf25053e",
+    "0xe3611dada6c5ea53af7bf22e80e07c005f48ae44",
+    "0xec981ed70ae69c5cbcac08c1ba063e734f6bafcd",
+    "0xed8b0c9b88efb12391f7f2aa8f6060772cfb7954",
+    "0xf070207d315d47fd07870e464d3ded9151f5ac55",
+    "0xf377b9fb12a4b7507a4f997461a73eb30b564159",
+    "0xf8371076fb3df0fcfcdb4d9f16bbe98bb241bd42",
+]
 # CRACK-ADMITS (2026-08-30, operator "2 ok" on the crack proposals): the 10
 # reviewed-but-never-tracked addresses found by the crack census - latest
 # verdict INSUFFICIENT-EVIDENCE (9 in deep_dive + 1 in deep_dive_scout),
@@ -154,6 +226,42 @@ EDGE_BAR = 0.02
 P_BAR = 0.95
 N_BAR = 30
 OKRATE_BAR = 0.75
+
+# ── BASIS CONVERSION 2026-09-06 (operator: "convert live graders to new
+# basis go") ─────────────────────────────────────────────────────────────
+# ALL unconsumed trials re-register on the RULED basis (memory
+# feedback_dollars_per_day_is_the_test, top block): atoms = per-WAGER ROI
+# (mb_canon.wager_rois — ladder-aware, every OK buy incl. adds; repeats
+# are wagers, first_buy is diagnostic only); e-process =
+# mb_canon.roi_e_value (per-shift subgrid by the physical floor); LCB =
+# mb_canon.roi_lcb; PASS = e >= C1_E_REJECT AND LCB net winnings >=
+# WEEKLY_FLOOR_USD at the $100/wager reference; futility = TIME-BASED
+# 1 week (operator ruling, replaces the 300-count — C1_FUTILITY_N kept
+# below for the historical record, superseded for grading).
+# FRESH EPOCH for every unconsumed trial: the 2026-09-06 backtest boards
+# made all prior data design-visible, so per the lane's re-registration
+# discipline (C1 amendment / 08-25 precedent) the old group epochs cannot
+# score the new estimand. Group lists remain for provenance/membership.
+# CONSUMED LOCKS ARE IMMUTABLE — original-basis verdicts stand.
+BASIS_EPOCH = datetime(2026, 9, 6, 22, 30, 0,
+                       tzinfo=timezone.utc).timestamp()
+FUTILITY_DAYS = 7.0
+
+# RETRIALS (operator "old fails retrial go", 2026-09-06 ~22:15Z): the 7
+# FAILED-locked traders re-enter under the NEW basis at BASIS_EPOCH.
+# OLD LOCKS ARE IMMUTABLE and stand as the historical record; retrial
+# verdicts lock under "<addr>#r1" keys, never overwriting the original.
+# List = the live locks file at ruling time (read 22:15:44Z: 5 DNQ + 2
+# futility) — frozen here, never edited after.
+RETRIAL_R1 = [
+    "0x216509be5332c6037105b4f871966eb97240f598",
+    "0x4ad6cadefae3c28f5b2caa32a99ebba3a614464c",
+    "0x7c3db723f1d4d8cb9c550095203b686cb11e5c6b",
+    "0x9703676286b93c2eca71ca96e8757104519a69c2",
+    "0xc660ae71765d0d9eaf5fa8328c1c959841d2bd28",
+    "0xec981ed70ae69c5cbcac08c1ba063e734f6bafcd",
+    "0xf705fa045201391d9632b7f3cde06a5e24453ca7",
+]
 
 
 def eligible_admits(deep_dive_dir: str, rereview_dir: str) -> list[str]:
@@ -276,59 +384,100 @@ async def run(args) -> int:
     graded_groups = 0
     proposals = []
 
-    def eproc_grade(group, epoch, lock_source):
+    def eproc_grade(group, epoch, lock_source, lock_suffix=""):
         nonlocal locks, graded_groups
         graded_groups += 1
+        # BASIS CONVERSION 2026-09-06: every unconsumed trial scores from
+        # the ONE fresh conversion epoch — the group epoch parameter is
+        # provenance only (see the BASIS_EPOCH block above).
+        # lock_suffix (retrials): all lock lookups/writes key on
+        # a+lock_suffix so a retrial neither reads nor touches the
+        # immutable original lock.
+        epoch = BASIS_EPOCH
         gfwd = forward_records(recs, epoch)
+        now_ts = datetime.now(timezone.utc).timestamp()
         for a in group:
-            if a in locks:
-                lk = locks[a]
+            lkey = a + lock_suffix
+            if lkey in locks:
+                lk = locks[lkey]
                 print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: "
                       f"{lk['verdict']} (consumed)")
                 continue
             t_recs = [r for r in gfwd
                       if str(r.get("trader", "")).lower() == a]
-            seq = mc.per_market_edges(t_recs, outcomes, frm or {},
-                                      fee_map or {}, epoch=epoch)
-            edges = [e for _, _, e in seq]
-            n = len(edges)
+            # correlated-atom fix (operator "fix go" 2026-09-06): ONE
+            # atom per MARKET (ladder position ROI); wagers counted for
+            # transparency, never for evidence.
+            seq = mc.market_position_rois(t_recs, outcomes, frm or {},
+                                          fee_map or {}, epoch=epoch)
+            rois = [x for _, _, x, _ in seq]
+            n = len(rois)
+            n_wagers = sum(k for _, _, _, k in seq)
             res = sr.cohort_readout(gfwd, outcomes, epoch, a, cfg)
             okr = res.get("ok_rate")
+            el_days = max((now_ts - epoch) / 86400.0, 1e-9)
             if n == 0:
-                print(f"  {a[:12]}..  ACCRUING (0 resolved, e=n/a)")
+                if el_days >= FUTILITY_DAYS:
+                    locks = sr.write_lock(args.locks, locks, lkey, {
+                        "locked_at": datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%dT%H:%MZ"),
+                        "resolved": 0, "roi": None, "p": None,
+                        "verdict": "NOT DEMONSTRATED (futility 1wk)",
+                        "basis": "roi-netwin-20260906",
+                        "source": lock_source})
+                    print(f"  {a[:12]}..  <== NOT DEMONSTRATED (futility "
+                          f"1wk, 0 resolved) [LOCKED]")
+                else:
+                    print(f"  {a[:12]}..  ACCRUING (0 resolved, e=n/a)")
                 continue
-            ev = bt.e_value(edges)
-            pooled = mc.pooled_edge(seq)
-            line = (f"  {a[:12]}..  n={n} e={ev:.3f} pooled={pooled:+.4f} "
+            ev = mc.roi_e_value(rois, 0.0)
+            mean_roi = sum(rois) / n
+            line = (f"  {a[:12]}..  n={n}mkt/{n_wagers}wag e={ev:.3f} roi={mean_roi:+.4f} "
                     f"ok_rate={okr if okr is None else round(okr, 2)}")
             if ev >= C1_E_REJECT:
-                econ_ok = pooled is not None and pooled >= EDGE_BAR
-                ok_ok = isinstance(okr, float) and okr >= OKRATE_BAR
-                verdict = ("QUALIFIES" if (econ_ok and ok_ok)
-                           else "E-PASS BUT GATE FAIL "
-                                f"(econ_ok={econ_ok} ok_rate_ok={ok_ok})")
-                locks = sr.write_lock(args.locks, locks, a, {
+                # PASS = LCB net winnings >= WEEKLY_FLOOR_USD/wk at the
+                # $100/WAGER reference (ROI basis: profit per wager =
+                # roi x stake exactly). LCB = the ruled e>=20 inversion.
+                lcb = mc.roi_lcb(rois, e_bar=C1_E_REJECT)
+                wk = (lcb * 100.0 * (n / el_days) * 7.0
+                      if lcb is not None else None)
+                money_ok = wk is not None and wk >= WEEKLY_FLOOR_USD
+                verdict = ("QUALIFIES" if money_ok else
+                           f"E-PASS BUT BELOW MONEY FLOOR "
+                           f"(lcb ${0 if wk is None else wk:.0f}/wk vs "
+                           f"${WEEKLY_FLOOR_USD:.0f}/wk ruled floor)")
+                locks = sr.write_lock(args.locks, locks, lkey, {
                     "locked_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%MZ"),
-                    "resolved": n, "edge": pooled, "p": ev,
-                    "verdict": verdict, "source": lock_source})
+                    "resolved": n, "wagers": n_wagers, "roi": round(mean_roi, 6), "p": ev,
+                    "verdict": verdict,
+                    "basis": "roi-netwin-20260906", "source": lock_source})
                 print(line + f"  <== {verdict} [LOCKED THIS RUN]")
-                if verdict == "QUALIFIES":
+                if verdict.startswith("QUALIFIES"):
                     proposals.append(a)
-            elif n >= C1_FUTILITY_N:
-                locks = sr.write_lock(args.locks, locks, a, {
+            elif el_days >= FUTILITY_DAYS:
+                # TIME-BASED futility (operator ruling 2026-09-06):
+                # 1 week from the conversion epoch without e>=20.
+                locks = sr.write_lock(args.locks, locks, lkey, {
                     "locked_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%MZ"),
-                    "resolved": n, "edge": pooled, "p": ev,
-                    "verdict": "NOT DEMONSTRATED (futility)",
-                    "source": lock_source})
-                print(line + "  <== NOT DEMONSTRATED (futility) [LOCKED]")
+                    "resolved": n, "wagers": n_wagers, "roi": round(mean_roi, 6), "p": ev,
+                    "verdict": "NOT DEMONSTRATED (futility 1wk)",
+                    "basis": "roi-netwin-20260906", "source": lock_source})
+                print(line + "  <== NOT DEMONSTRATED (futility 1wk) "
+                             "[LOCKED]")
             else:
                 print(line + "  ACCRUING")
 
     print(f"  [amendment 2026-08-25] ALL unconsumed looks are ANYTIME-VALID "
-          f"e-process (reject e>={C1_E_REJECT:.0f}, futility {C1_FUTILITY_N},"
-          f" canon venue fees); the 5 consumed single-looks stay locked")
+          f"e-process (reject e>={C1_E_REJECT:.0f}); the consumed locks "
+          f"stay locked")
+    print(f"  [BASIS CONVERSION 2026-09-06, operator go] atoms = per-WAGER "
+          f"ROI (ladder-aware), PASS = e>={C1_E_REJECT:.0f} + LCB net "
+          f"winnings >= ${WEEKLY_FLOOR_USD:.0f}/wk @ $100/wager, futility "
+          f"= {FUTILITY_DAYS:.0f} days; ONE fresh epoch "
+          f"{datetime.fromtimestamp(BASIS_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
+          f" for every unconsumed trial (group epochs = provenance only)")
     print(f"original-20 unconsumed - re-registered epoch "
           f"{datetime.fromtimestamp(REREG_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
           f" (fresh: prior diagnostics were visible):")
@@ -355,6 +504,18 @@ async def run(args) -> int:
           f"crack, not evidence):")
     eproc_grade(CRACK_ADMITS, CRACK_EPOCH,
                 "crack_admit e-process (2026-08-30)")
+    print(f"sweep2-insufficients ({len(SWEEP2_INSUFF)}) - epoch "
+          f"{datetime.fromtimestamp(INSUFF57_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
+          f" (rec-3 fold-in post-population-study; observation-only - "
+          f"INSUFFICIENT under voided metrics is not evidence):")
+    eproc_grade(SWEEP2_INSUFF, INSUFF57_EPOCH,
+                "sweep2_insufficient e-process (2026-09-02)")
+    print(f"retrials-r1 ({len(RETRIAL_R1)}) - the 7 old-basis FAILED locks "
+          f"re-entered under the NEW basis (operator go 2026-09-06; "
+          f"originals immutable, verdicts lock under #r1):")
+    eproc_grade(RETRIAL_R1, BASIS_EPOCH,
+                "retrial r1 e-process (basis conversion 2026-09-06)",
+                lock_suffix="#r1")
     if proposals:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
@@ -417,6 +578,19 @@ def _self_test() -> int:
     print(f"  [group3] 10 unique crack addresses, disjoint : {ok3g}")
     ok &= ok3f
     ok &= ok3g
+    ok3h = (INSUFF57_EPOCH == datetime(2026, 9, 2, 15, 30, 0,
+                                       tzinfo=timezone.utc).timestamp()
+            and INSUFF57_EPOCH > CRACK_EPOCH
+            and len(SWEEP2_INSUFF) == 55 and len(set(SWEEP2_INSUFF)) == 55
+            and all(a == a.lower() and a.startswith("0x") and len(a) == 42
+                    for a in SWEEP2_INSUFF)
+            and not (set(SWEEP2_INSUFF) & (set(C1_UNTESTED)
+                                           | set(INSUFF_PROBES)
+                                           | set(SWEEP2_ADMITS)
+                                           | set(CRACK_ADMITS))))
+    print(f"  [group4] 55 unique insuff57 addresses (57 minus 2 crack "
+          f"overlaps), disjoint from ALL groups : {ok3h}")
+    ok &= ok3h
     ok3e = (len(INSUFF_PROBES) == 12 and len(set(INSUFF_PROBES)) == 12
             and all(a == a.lower() and a.startswith("0x") and len(a) == 42
                     for a in INSUFF_PROBES)
@@ -467,6 +641,37 @@ def _self_test() -> int:
     print(f"  [heartbeat] run() writes at BOTH clean exits (early no-tokens"
           f" + full grade) : {ok7}")
     ok &= ok7
+    # BASIS-CONVERSION pins (2026-09-06): the grading closure must score
+    # ROI wagers from the ONE conversion epoch — a regression to the old
+    # estimand or the old epochs turns these RED.
+    import inspect as _i
+    esrc = _i.getsource(run)
+    okb = ("market_position_rois" in esrc and "roi_e_value" in esrc
+           and "mc.wager_rois(" not in esrc  # evidence = market atoms
+           # (correlated-atom fix, operator "fix go" 2026-09-06)
+           and "roi_lcb" in esrc
+           and "per_market_edges(" not in esrc  # call form; a history
+           # comment at the frm-fix site may NAME the old estimand
+           and "epoch = BASIS_EPOCH" in esrc
+           and FUTILITY_DAYS == 7.0
+           and BASIS_EPOCH == datetime(2026, 9, 6, 22, 30, 0,
+                                       tzinfo=timezone.utc).timestamp())
+    print(f"  [basis] ROI atoms + conversion epoch + 1wk futility pinned"
+          f" : {okb}")
+    ok &= okb
+    # cross-module pins: band_tracker duplicates the conversion epoch and
+    # floor (import cycle) — they may never drift; retrials use #r1 keys
+    # and never touch base locks.
+    okb2 = (bt.ROI_EPOCH == BASIS_EPOCH
+            and bt.ROI_FLOOR_WK == WEEKLY_FLOOR_USD
+            and len(RETRIAL_R1) == 7
+            and "lkey = a + lock_suffix" in esrc   # exact binding: a
+            # dropped suffix would read/overwrite the immutable originals
+            and esrc.count("locks, lkey, {") == 3  # every write keyed
+            and 'lock_suffix="#r1"' in esrc)
+    print(f"  [basis] band epoch/floor pinned to grader; retrial #r1 keys"
+          f" : {okb2}")
+    ok &= okb2
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
