@@ -242,6 +242,84 @@ def market_position_rois(records: list[dict], outcomes: dict,
                   for t, v in per_tok.items())
 
 
+# ── AMENDMENT 2026-09-07 (operator activation ruling, this date:
+# "with-exits D1 = b, D2 fresh epoch at activation, D3 analysis lens").
+# WITH-EXITS estimand per docs/WITH_EXITS_PREREGISTRATION.md:
+#   D1(b): a position whose trader records a FIRST post-entry SELL before
+#     resolution exits ENTIRELY at x = whale SELL price MINUS the
+#     measured BUY-side follow-cost median (a disclosed transfer — sell-
+#     side cost is not yet directly measurable), clamped to [0, 1];
+#     otherwise hold-to-resolution (identical to the registered basis).
+#   D2: fresh epoch, set at activation — carried by the CALLER (the lens
+#     surface in mb_backtest pins it); this function only enforces it.
+#   D3: ANALYSIS LENS ONLY — never a gate, never a stake input; the
+#     registered estimand (market_position_rois) is unchanged.
+# Fees per canon, BOTH fills of an exited round trip (entry fee on the
+# buy fill + exit fee on the exit price); hold-to-resolution charges the
+# entry fee only, exactly as wager_rois. Wager filters are wager_rois's
+# verbatim (OK verdict, valid fill, ts >= epoch, ladder adds included) —
+# relaxed only in that an EXITED position needs no resolution label.
+
+
+def market_position_rois_with_exits(
+        records: list[dict], outcomes: dict, fee_rate_map: dict,
+        fee_map: dict, exits: dict, exit_haircut: float,
+        epoch: float = 0.0, res_at: dict | None = None
+        ) -> list[tuple[float, str, float, int, bool]]:
+    """[(first_ts, token_id, position_roi, n_wagers, exited)] — ONE atom
+    per MARKET position under the WITH-EXITS lens (amendment above).
+    exits: token -> (sell_ts, whale_sell_price), the trader's first
+    recorded SELL. An exit is honored iff sell_ts >= the position's first
+    wager ts AND (res_at unknown for the token, a disclosed asymmetry, or
+    sell_ts < res_at[token]). Exited positions grade at
+    x = min(max(whale_sell_price - exit_haircut, 0), 1) with canon fees
+    on both fills; unexited positions grade at their resolution outcome
+    (entry fee only) or are skipped while unresolved."""
+    per_tok: dict[str, list[tuple[float, float]]] = {}  # tok -> [(f, fee)]
+    first_ts: dict[str, float] = {}
+    for r in records:
+        ts = float(r.get("detect_ts") or 0)
+        if ts < epoch or r.get("verdict") != "OK":
+            continue
+        f = r.get("shadow_fill")
+        if not isinstance(f, (int, float)) or not (0.0 < f):
+            continue
+        tok = str(r.get("token_id"))
+        fee, _src = canon_fee(tok, f, fee_rate_map, fee_map)
+        per_tok.setdefault(tok, []).append((float(f), fee))
+        first_ts[tok] = min(first_ts.get(tok, ts), ts)
+    out: list[tuple[float, str, float, int, bool]] = []
+    for tok, fills in per_tok.items():
+        ex = exits.get(tok) if exits else None
+        exited = False
+        o_eff = None
+        if ex is not None:
+            sell_ts, sell_px = float(ex[0]), float(ex[1])
+            r_ts = (res_at or {}).get(tok)
+            if sell_ts >= first_ts[tok] and (r_ts is None or sell_ts < r_ts):
+                x = min(max(sell_px - exit_haircut, 0.0), 1.0)
+                exit_fee, _ = canon_fee(tok, x, fee_rate_map, fee_map)
+                o_eff = x - exit_fee
+                exited = True
+        if not exited:
+            o = outcomes.get(tok)
+            if o is None:
+                continue  # unresolved, unexited: still open — skipped
+            o_eff = float(o)
+        rois = []
+        for f, fee in fills:
+            roi = (o_eff - f - fee) / f
+            if roi < ROI_Y_MIN:
+                raise ValueError(
+                    f"with-exits ROI {roi:.4f} below the physical floor "
+                    f"{ROI_Y_MIN} (token {tok}) — data corruption, refusing")
+            rois.append(roi)
+        out.append((first_ts[tok], tok, sum(rois) / len(rois), len(rois),
+                    exited))
+    out.sort()
+    return out
+
+
 def mixture_e_value(ys: list, y_min: float = MIX_POSITIVITY_FLOOR) -> float:
     """Uniform-mixture betting e-process for H0: mean <= 0 — the same
     mixture as band_tracker.e_value (grid pinned equal by test),

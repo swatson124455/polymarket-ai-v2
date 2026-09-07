@@ -1,10 +1,34 @@
-# WITH-EXITS ESTIMAND — PRE-REGISTRATION DRAFT (NOT ACTIVE)
+# WITH-EXITS ESTIMAND — ACTIVATED (ANALYSIS LENS)
 
-**Status: DRAFT 2026-09-07 (~01:1xZ). NOTHING is registered by this
-document.** Activation requires an operator go naming (a) the exit-pricing
-rule and (b) the epoch — per measurement law (pre-registration before
-looking; epochs never move). Until then this is a design record only; no
-with-exits number may be quoted from any source.
+**Status: ACTIVATED 2026-09-07 (operator ruling, verbatim: "with-exits
+D1 = b, D2 fresh epoch at activation, D3 analysis lens").**
+- **D1 = (b):** exit priced at whale SELL price MINUS the measured
+  BUY-side follow-cost median (re-measured from the shadow sink at each
+  run and printed — a disclosed transfer; (c) real exit fills remains
+  the named requirement before any GO weight, unchanged).
+- **D2: EPOCH = 2026-09-07T03:30:00Z** (clock measured 03:10:39Z at
+  activation, next clean boundary; IMMUTABLE — epochs never move). Only
+  positions entered at/after the epoch are graded.
+- **D3: ANALYSIS LENS** — reported beside the registered estimand,
+  neither replaced; never a gate, never a stake input.
+
+**Implementation (deployed with this activation):**
+`mb_canon.market_position_rois_with_exits` (amendment block in-file:
+canon fees on BOTH fills of an exited round trip, exit price clamped to
+[0,1], pre-entry and post-resolution SELLs ignored, unexited positions
+hold to resolution exactly as the registered basis, unresolved unexited
+skipped). Surface: a WITH-EXITS table printed after the roster
+leaderboard in `mb_backtest replay`/`daily-replay` (`--sells`, default =
+the live sink; firehose own-SELL variant = named future work).
+Self-test 17/17 PASS; 5/5 targeted mutants killed (entry-guard,
+res-guard, clamp, exit-fee, first-sell ordering).
+
+---
+
+The original draft below is retained verbatim as the design record.
+
+# WITH-EXITS ESTIMAND — PRE-REGISTRATION DRAFT (superseded by the
+# activation block above)
 
 Provenance: ZERO_BASED_SIFTER stage 3 names "with-exits once SELL
 recording ships" as a parallel pre-registered estimand;

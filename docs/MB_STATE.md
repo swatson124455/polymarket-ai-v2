@@ -66,8 +66,19 @@
 > operator (additive, NOT done): a daily narrow-window crawl stage to
 > keep outside-DB coverage from decaying — would change the 9-stage
 > chain pin, so operator-gated.
-> **OPEN [operator]:** with-exits D1/D2/D3 (draft doc); daily-crawl
-> stage proposal; standing gates unchanged (GO checklist; Bayes use).
+> **UPDATE ~03:2xZ same date: WITH-EXITS RULED + ACTIVATED** (operator:
+> "with-exits D1 = b, D2 fresh epoch at activation, D3 analysis lens").
+> Canon amendment market_position_rois_with_exits deployed
+> (.pre-withexits-20260907): exit @ whale SELL − measured BUY follow-
+> cost med (transfer, disclosed), clamp [0,1], canon fees BOTH fills;
+> EPOCH 2026-09-07T03:30:00Z IMMUTABLE; lens table after the roster
+> board (--sells, default sink) — ANALYSIS ONLY, never gate/stake.
+> Self-test 17/17; mutants 5/5 killed; pytest 42/42 incl. atom pin;
+> consumer self-tests PASS; live smoke 03:16:04Z = correct accruing
+> state. PR #10. GO-checklist item 4's estimand half: rail now exists,
+> but (c) real exit fills before GO weight stands unchanged.
+> **OPEN [operator]:** daily-crawl stage proposal; standing gates
+> unchanged (GO checklist; Bayes use).
 
 > ## 2026-09-07 (SESSION CLOSE ~00:50Z) — MARATHON SESSION HANDOFF:
 > ## ROI BASIS RULED+LIVE END-TO-END, CORRELATED-ATOM DEFECT FIXED,
