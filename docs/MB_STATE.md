@@ -10,13 +10,64 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-09-01 (grader frm fix + checks; prior: 2026-08-21) (bidsim AMENDMENT 1 deployed + scout sweep #1 CLOSED; read the 2026-08-21 block first) · *(prior: 2026-08-20 session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first)* · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-09-07 (~02:2xZ steward session — coverage builds; read the 2026-09-07 STEWARD block first) · *(prior: 2026-09-01, grader frm fix + checks; prior: 2026-08-21)* (bidsim AMENDMENT 1 deployed + scout sweep #1 CLOSED; read the 2026-08-21 block first) · *(prior: 2026-08-20 session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first)* · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
 ## 0. IMMEDIATE RESUME (read this block first)
+
+> ## 2026-09-07 (STEWARD SESSION ~00:53-02:2xZ) — LABEL COVERAGE 33->74%,
+> ## COV COLUMN LIVE, WITH-EXITS DRAFT, ROBUST-PRIOR MEASURED
+>
+> Session-start checks (all measured): 09-06 11:43Z cron block clean
+> ([canon] ALARMS=0, [chain] 8/8 OK — pre-conversion basis, last of its
+> kind); W0-SIDE MISMATCH count 0; sell-sink errors ENDED 15:33:42Z
+> (pre-restart outage class, zero since the 16:17:58Z watcher instance);
+> SELL sink accruing hard (1,670 @ 00:54Z -> 2,261 @ ~01:1xZ); legacy
+> mirror down since 09-01 13:22:57Z, disabled (ruled state, correct).
+> **BUILDS (branch claude/mb-steward-0907-cov1, all deployed to
+> mb_readout from git blobs, LF byte-checked, .pre-* backups):**
+> - **A3 cov% column LIVE** (mb_backtest, .pre-covcol-20260907): per-row
+>   tokens/tokens_labeled/cov_pct + table col; '!' below the 50%
+>   majority-unknown line (--cov-flag; display only, ranking untouched).
+>   Live-verified on roster: renders, 22/92 flagged post-label-boost.
+> - **ITEM 4 DONE via WINDOW CRAWL** (mb_gamma_window_labels.py, NEW):
+>   gamma ?clob_token_ids= measured INERT (0 rows on gamma's own
+>   listing round-trip; comma form 422s) — by-token fetch impossible;
+>   built adaptive endDate-window crawl instead (page cap 100, offset
+>   ceiling 1000 measured; split-on-overflow, 60s floor disclosed).
+>   FULL CAPTURE-ERA RUN 02:00Z: 14,627 pages / 1.41M rows / CONFLICT=0
+>   vs 986k overlaps; +410,645 cache entries (668,371 keys; backup
+>   .pre-window-supplement-20260907, polymarket-owned). **Sweep-token
+>   coverage 18,873/57,074 (33.1%) -> 42,327/57,074 (74.2%)**; roster
+>   replay entry-token coverage 47.3% -> 77.8% (cache-only lens).
+>   ⚠ cache now 244MB (was 89MB) — expect tonight's cron stages that
+>   load it to run longer; 69 overflow windows = daily-endDate spikes,
+>   residual undisclosed rows named in the run log.
+> - **ITEM 2 (with-exits): NOT MATURE, measured** — 269 of 11,544 entry
+>   positions have a post-entry same-trader SELL (36 traders; counts
+>   only, no outcomes read). docs/WITH_EXITS_PREREGISTRATION.md = DRAFT
+>   naming operator decisions D1 (exit pricing a/b/c, rec (b) analysis /
+>   (c) GO-weight) D2 (epoch) D3 (standing). Nothing registered/built.
+> - **ITEM 3 (B4 robust prior) BUILT + MEASURED** (mb_bayes --trim,
+>   default 0.0 = reviewed fit; .pre-trim-20260907): same new label
+>   state, med haircut: trim=0 mu=-0.0387 tau=0.0250 (944 fit wallets);
+>   trim=0.05 mu=-0.0538 **tau=0.0000 CLIPPED** (850) — the detectable
+>   skill spread is TAIL-DRIVEN, gone under a 5% trim (HYPOTHESIS,
+>   ranking-input-only; artifacts backtest/bayes_prior_labelboost_med
+>   {,_trim05}.json). Not comparable to the 00:19Z artifacts (label
+>   state changed — disclosed).
+> **WATCH (unchanged + new):** 09-07 11:40Z cron = first 9-stage run on
+> converted graders (verify [chain] 9/9, [canon] ALARMS=0, [alloc],
+> fresh hypo header, small n expected) AND first run on the enlarged
+> cache + cov column — boards will show the coverage jump. Proposal for
+> operator (additive, NOT done): a daily narrow-window crawl stage to
+> keep outside-DB coverage from decaying — would change the 9-stage
+> chain pin, so operator-gated.
+> **OPEN [operator]:** with-exits D1/D2/D3 (draft doc); daily-crawl
+> stage proposal; standing gates unchanged (GO checklist; Bayes use).
 
 > ## 2026-09-07 (SESSION CLOSE ~00:50Z) — MARATHON SESSION HANDOFF:
 > ## ROI BASIS RULED+LIVE END-TO-END, CORRELATED-ATOM DEFECT FIXED,

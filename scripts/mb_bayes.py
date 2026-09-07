@@ -72,15 +72,27 @@ def wallet_moments(records: list[dict], outcomes: dict, frm: dict,
     return {"n": n, "mean": mean, "var": var}
 
 
-def fit_prior(moments: list[dict], min_n: int) -> dict:
+def fit_prior(moments: list[dict], min_n: int, trim: float = 0.0) -> dict:
     """Method-of-moments empirical prior over trader true mean edge.
     moments: [{n, mean, var}] per wallet. Wallets with n < min_n are
     excluded from the FIT (their posteriors still shrink toward it).
-    Returns {mu, tau2, tau2_clipped, n_wallets, min_n}."""
+    trim (ROBUST VARIANT, review B4 2026-09-06, optional): symmetric
+    trimmed moments at the WALLET level — the trim*N most extreme wallet
+    means on each side are dropped from mu/tau2 (and their noise terms
+    with them, same retained set); the canon atoms themselves are never
+    touched. trim=0.0 (default) is the reviewed fit, bit-identical.
+    Returns {mu, tau2, tau2_clipped, n_wallets, min_n, trim,
+    n_trimmed}."""
+    if not (0.0 <= trim < 0.5):
+        raise ValueError(f"trim must be in [0, 0.5): {trim}")
     fit = [m for m in moments if m["n"] >= min_n]
+    k = int(trim * len(fit))
+    if k:
+        fit = sorted(fit, key=lambda m: m["mean"])[k:-k]
     if len(fit) < 2:
-        raise ValueError(f"only {len(fit)} wallets with n >= {min_n} — "
-                         f"cannot fit a population prior")
+        raise ValueError(f"only {len(fit)} wallets with n >= {min_n} "
+                         f"after trim {trim} — cannot fit a population "
+                         f"prior")
     means = [m["mean"] for m in fit]
     mu = sum(means) / len(means)
     var_means = sum((x - mu) ** 2 for x in means) / (len(means) - 1)
@@ -89,7 +101,8 @@ def fit_prior(moments: list[dict], min_n: int) -> dict:
     clipped = tau2_raw < 0.0
     return {"mu": mu, "tau2": max(tau2_raw, 0.0), "tau2_clipped": clipped,
             "tau2_raw": tau2_raw, "between_var": var_means,
-            "avg_noise": noise, "n_wallets": len(fit), "min_n": min_n}
+            "avg_noise": noise, "n_wallets": len(fit), "min_n": min_n,
+            "trim": trim, "n_trimmed": 2 * k}
 
 
 def posterior(prior: dict, m: dict) -> dict:
@@ -140,10 +153,14 @@ def cmd_fit(args) -> int:
         m = wallet_moments(recs, outcomes, frm, fee_map)
         if m is not None:
             moments[w] = m
-    prior = fit_prior(list(moments.values()), args.min_n)
+    prior = fit_prior(list(moments.values()), args.min_n,
+                      trim=getattr(args, "trim", 0.0))
     print(f"[bayes] prior fit over {prior['n_wallets']} wallets "
-          f"(n >= {args.min_n}; {len(moments)} wallets had >= 2 resolved): "
-          f"mu={prior['mu']:+.4f} tau={prior['tau2'] ** 0.5:.4f} "
+          f"(n >= {args.min_n}; {len(moments)} wallets had >= 2 resolved"
+          + (f"; ROBUST trim={prior['trim']:.2f} dropped "
+             f"{prior['n_trimmed']} extreme wallets, review B4"
+             if prior["n_trimmed"] else "")
+          + f"): mu={prior['mu']:+.4f} tau={prior['tau2'] ** 0.5:.4f} "
           f"(tau2_raw={prior['tau2_raw']:+.6f}"
           f"{', CLIPPED to 0' if prior['tau2_clipped'] else ''}; "
           f"between-wallet var {prior['between_var']:.6f}, avg sampling "
@@ -222,6 +239,27 @@ def _self_test() -> int:
     ok5 = p_deg.get("degenerate_zero_var") is True
     print(f"  [post] zero within-variance flagged degenerate : {ok5}")
     ok &= ok5
+    # [trim] robust variant (B4): trim=0 bit-identical; an extreme wallet
+    # inflates tau2 untrimmed and is dropped by the trim; bad trim raises
+    base = [{"n": 100, "mean": 0.10, "var": 1.0},
+            {"n": 100, "mean": -0.10, "var": 1.0},
+            {"n": 100, "mean": 0.05, "var": 1.0},
+            {"n": 100, "mean": -0.05, "var": 1.0}]
+    outlier = base + [{"n": 100, "mean": 11.0, "var": 1.0}]  # a +11x atom
+    pr_plain = fit_prior(base, 10)
+    ok7 = (fit_prior(base, 10, trim=0.0) == {**pr_plain, "trim": 0.0,
+                                             "n_trimmed": 0}
+           and fit_prior(outlier, 10)["tau2"] > 1.0        # tail-inflated
+           and fit_prior(outlier, 10, trim=0.2)["tau2"] < 0.1  # dulled
+           and fit_prior(outlier, 10, trim=0.2)["n_trimmed"] == 2)
+    try:
+        fit_prior(base, 10, trim=0.5)
+        ok7 = False
+    except ValueError:
+        pass
+    print(f"  [trim] B4 robust fit: default identical, outlier dulled, "
+          f"bad trim raises : {ok7}")
+    ok &= ok7
     import inspect
     src = inspect.getsource(sys.modules[__name__])
     ok6 = all(f"def {n}(" not in src for n in
@@ -250,6 +288,10 @@ if __name__ == "__main__":
     p.add_argument("--fee-map", dest="fee_map",
                    default=os.path.join(mbt.CACHE_DIR, "fee_map.json"))
     p.add_argument("--top", type=int, default=15)
+    p.add_argument("--trim", type=float, default=0.0,
+                   help="robust-prior variant (review B4): symmetric "
+                        "wallet-level trim fraction for the FIT "
+                        "(default 0.0 = the reviewed fit, unchanged)")
     p.add_argument("--out", required=True)
     sub.add_parser("self-test")
     args = ap.parse_args()

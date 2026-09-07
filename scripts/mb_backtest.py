@@ -301,6 +301,21 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
     return out
 
 
+COV_FLAG_DEFAULT = 0.5  # ROI-review A3 (2026-09-06): per-wallet label
+#                         coverage on the leaderboard, sub-threshold rows
+#                         UNKNOWN-flagged. 0.5 = the majority-unknown line
+#                         (a flagged row is judged on FEWER THAN HALF of
+#                         its entry tokens) — display flag only, never a
+#                         gate; ranking and verdicts unchanged.
+
+
+def wallet_coverage(records: list[dict], outcomes: dict) -> tuple[int, int]:
+    """(distinct entry tokens, labeled among them) for ONE wallet — the
+    per-row version of cmd_replay's board-wide coverage line. Pure."""
+    toks = {str(r["token_id"]) for r in records if r.get("token_id")}
+    return len(toks), sum(1 for t in toks if t in outcomes)
+
+
 def res_at_map(cache: dict) -> dict[str, float]:
     """token -> resolved_at epoch seconds from the resolutions cache
     (both legs; same pattern as trader_funnel's res_at block)."""
@@ -534,7 +549,8 @@ def cmd_daily_replay(args) -> int:
           f"{h['p90']:+.4f} (n={h['n']}) - med used for firehose pricing")
     common = dict(resolutions=args.resolutions,
                   fee_rate_map=args.fee_rate_map, fee_map=args.fee_map,
-                  split=args.split, end=None, top=args.top)
+                  split=args.split, end=None, top=args.top,
+                  cov_flag=getattr(args, "cov_flag", COV_FLAG_DEFAULT))
     rc1 = cmd_replay(NS(source="roster", rows=args.log, haircut=None,
                         out=os.path.join(args.outdir,
                                          "leaderboard_roster.jsonl"),
@@ -622,9 +638,13 @@ def cmd_replay(args) -> int:
         pc = peak_concurrency_replay(recs, exits_by_w.get(w, {}), r_at,
                                      end_ts)
         obs_days = (float(recs[-1]["detect_ts"]) - epoch) / DAY_S
+        n_tok, n_tok_lab = wallet_coverage(recs, outcomes)
         lb.append({"w": w, "entries": len(recs),
                    "observed_days": round(obs_days, 1),
-                   "peak_conc_replay": pc, **rep,
+                   "peak_conc_replay": pc,
+                   "tokens": n_tok, "tokens_labeled": n_tok_lab,
+                   "cov_pct": round(100.0 * n_tok_lab / max(n_tok, 1), 1),
+                   **rep,
                    **{f"ho_{k}": v for k, v in hold.items()}})
     lb.sort(key=lambda x: -(x["ho_wk_net_lcb"]
                             if x["ho_wk_net_lcb"] is not None else -1e18))
@@ -640,21 +660,29 @@ def cmd_replay(args) -> int:
           "holdout ROI atoms alone; verdicts = day-by-day replay on the "
           "ruled basis (live grader still on superseded basis pending "
           "conversion); >=1mo-history check = promotion-time data-api]")
+    cov_flag = getattr(args, "cov_flag", COV_FLAG_DEFAULT)
+    n_low = sum(1 for r in lb if r["cov_pct"] < cov_flag * 100.0)
+    print(f"[cov% = labeled/distinct entry tokens per wallet (review A3); "
+          f"! = below {cov_flag * 100:.0f}%: row judged on a MINORITY of "
+          f"its markets, UNKNOWN-flagged — {n_low}/{len(lb)} wallets "
+          f"flagged; display only, ranking unchanged]")
     print(f"{'WALLET':<14} {'$wk_net_lcb':>11} {'$wk_net_real':>12} "
           f"{'roi_lcb':>8} {'roi_real':>8} {'n_ho':>5} {'conc':>5} "
-          f"{'wagers':>6} {'verdict(replay)'}")
+          f"{'wagers':>6} {'cov%':>6} {'verdict(replay)'}")
     shown = 0
     for row in lb:
         if shown >= args.top:
             break
         shown += 1
+        cov_cell = (f"{row['cov_pct']:.0f}"
+                    + ("!" if row["cov_pct"] < cov_flag * 100.0 else " "))
         print(f"{row['w'][:12] + '..':<14} "
               f"{fmt_num(row['ho_wk_net_lcb'], '+.2f'):>11} "
               f"{fmt_num(row['ho_wk_net_real'], '+.2f'):>12} "
               f"{fmt_num(row['ho_roi_lcb'], '+.3f'):>8} "
               f"{fmt_num(row['ho_roi_realized'], '+.3f'):>8} "
               f"{row['ho_n_holdout']:>5} {row['peak_conc_replay']:>5} "
-              f"{row['entries']:>6} {row['verdict']}")
+              f"{row['entries']:>6} {cov_cell:>6} {row['verdict']}")
     print(f"[replay] full leaderboard ({len(lb)} wallets) -> {args.out}")
     return 0
 
@@ -801,6 +829,17 @@ def _self_test() -> int:
             and mc.mixture_e_value([-1.06]) > 0.0)  # band bound would assert
     print(f"  [canon-roi] ladder adds scored; ROI bound wider : {ok9b}")
     ok &= ok9b
+    # [cov] per-wallet label coverage (review A3): distinct tokens (ladder
+    # adds dedupe), labeled counted against outcomes; empty -> (0, 0)
+    cov_recs = [{"token_id": "a"}, {"token_id": "a"},   # ladder add: 1 token
+                {"token_id": "b"}, {"token_id": "c"}]
+    okc = (wallet_coverage(cov_recs, {"a": 1, "c": 0}) == (3, 2)
+           and wallet_coverage([], {}) == (0, 0)
+           # the 0.5 default flags a minority-labeled wallet (1/3), not 2/3
+           and (1 / 3) * 100 < COV_FLAG_DEFAULT * 100
+           and (2 / 3) * 100 >= COV_FLAG_DEFAULT * 100)
+    print(f"  [cov] per-wallet coverage counts + majority line : {okc}")
+    ok &= okc
     # [screen] eligibility, tailability, UNKNOWN counted
     wrows = [{"w": "0xa", "n": 30, "usd_sum": 10.0},   # ok
              {"w": "0xb", "n": 10, "usd_sum": 99.0},   # too few trades
@@ -877,6 +916,11 @@ if __name__ == "__main__":
                    help="measured follow-cost (from `haircut`); required "
                         "for --source firehose")
     p.add_argument("--top", type=int, default=40)
+    p.add_argument("--cov-flag", dest="cov_flag", type=float,
+                   default=COV_FLAG_DEFAULT,
+                   help="label-coverage UNKNOWN-flag line (review A3; "
+                        "default 0.5 = judged on a minority of markets; "
+                        "display only, never a gate)")
     p.add_argument("--out", required=True)
 
     p = sub.add_parser("daily-extract",
@@ -905,6 +949,9 @@ if __name__ == "__main__":
                    default=os.path.join(CACHE_DIR, "fee_map.json"))
     p.add_argument("--split", default=SPLIT_DEFAULT)
     p.add_argument("--top", type=int, default=10)
+    p.add_argument("--cov-flag", dest="cov_flag", type=float,
+                   default=COV_FLAG_DEFAULT,
+                   help="label-coverage UNKNOWN-flag line (review A3)")
 
     sub.add_parser("self-test", help="offline self-test")
 
