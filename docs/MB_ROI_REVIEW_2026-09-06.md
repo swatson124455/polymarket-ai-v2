@@ -63,18 +63,51 @@ SOUND FOR GATING after A4's fix, with the named residuals: depth
 (pilot-day), discovery-wallet haircut scope (A2), coverage column (A3),
 and the standing HYPOTHETICAL label on all reference-stake dollars.
 
-## B. Bayes head start (review of the converted module)
-Moments now computed on market-position ROI atoms (independence restored
-— the same correlation defect would have corrupted its variance
-estimates). Refit results recorded in
-backtest/bayes_prior_atomfix_{med,p90}.json (see MB_STATE for the
-numbers read at fit time). Standing agenda items that remain OPEN even
-after this review: 11-day window vs the 1-month eligibility horizon;
-per-category priors; normal-normal adequacy under heavy-tailed ROI atoms
-(tau2=0 clipping is the honest-disclosure mechanism, not a resolution).
-STATUS: reviewed to this point; still NOT deployed to any cron/gate —
-deployment needs an explicit operator go naming what it would be used
-for.
+## B. Bayes head start — REVIEW COMPLETE (2026-09-07 ~00:35Z)
+All numbers HYPOTHESIS (model-based), fit on market-position ROI atoms
+(the correlation defect would have corrupted the variance estimates;
+conversion done before any of these fits).
+
+### B1. Pooled prior (atom-fix refits, artifacts
+backtest/bayes_prior_atomfix_{med,p90}.json, fits 00:19/00:20Z)
+- med haircut (+0.0100): mu=-0.0081, tau=0.0544 (tau2_raw=+0.002959),
+  450 fit wallets of 6,549 with >=2 resolved markets
+- p90 haircut (+0.0155): mu=-0.0265, tau=0.0067, 443 fit wallets
+FINDING: the earlier "tau2 clips to 0 — no detectable skill spread"
+result REVERSED on honest atoms (it was partly the correlation
+artifact): the population shows real between-wallet spread at the med
+haircut. Haircut sensitivity is large (tau 0.054 -> 0.007 med->p90) —
+disclosed with every quote.
+
+### B2. Per-category priors (dominant-category join, med-haircut atoms)
+    sports   207 fit wallets  mu=+0.0016  tau=0 (CLIPPED)
+    crypto    55              mu=+0.0442  tau=0.1427
+    esports   84              mu=-0.0454  tau=0 (CLIPPED)
+    weather   88              mu=-0.0071  tau=0.2363
+    politics/entertainment/finance/geopolitical/science/unknown: too few
+    fit-eligible wallets (n>=30) — UNKNOWN, disclosed.
+FINDING: the detectable spread concentrates in CRYPTO (positive mean AND
+wide spread) and weather (wide spread, ~zero mean); sports copiers are
+indistinguishable from break-even noise. Category priors are viable and
+more informative than the pooled prior.
+
+### B3. Window length — LIMITATION, disclosed
+The prior is fit on <=11 days of capture vs the 1-month eligibility
+horizon; it refits daily as capture grows (the daily cron re-extracts).
+Verdict: usable, with the window length attached to every quote.
+
+### B4. Model adequacy — CONSTRAINED-USE verdict
+Normal-normal moments on heavy-tailed ROI atoms (single atoms reach
++11x) make tau estimates outlier-sensitive; the clipping mechanism
+discloses degeneracy but does not fix tails. VERDICT: the Bayes output
+is approved as a HEAD-START RANKING INPUT ONLY — never a gate, never a
+stake input; the e-process/LCB machinery (review A) remains the sole
+gate. A robust-prior variant (e.g. trimmed moments) is named as optional
+future work, not required for this use.
+
+### B5. Status
+REVIEW COMPLETE. Deployment beyond ad-hoc analysis (e.g. a cron column)
+still requires an explicit operator go naming the use.
 
 ## Review discipline note
 The A1 simulation (independent wagers) could not see A4 — the defect
