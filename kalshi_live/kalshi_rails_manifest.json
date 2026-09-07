@@ -1,6 +1,6 @@
 {
   "_doc": "OPERATOR-APPROVED rails + caps for the Kalshi maker. kalshi_preflight.py FAILS if live.env drifts from any line. Update ONLY alongside an explicit operator approval; each entry cites its ruling.",
-  "_updated": "2026-09-06 (N4 near-money daily clamp; fix-sheet 'all' 09-02; rails 09-01; relight diff 09-01)",
+  "_updated": "2026-09-07 (W2 effective-size gate; N4 09-06; fix-sheet 09-02; rails 09-01)",
   "rails": {
     "KALSHI_D3_NEWSERIES_MAX_RUNG": {
       "value": "2",
@@ -105,6 +105,10 @@
     "KALSHI_NEARMONEY_DAILY_MAX_CT": {
       "value": "25",
       "why": "N4 rail: shape clamp for widebook-admitted short-window (daily) programs - the -$11.91 halt leg class; series-credit exemption gap - operator 'proceed with recs' 09-06"
+    },
+    "KALSHI_CAPTURE_EFFECTIVE_SIZE": {
+      "value": "1",
+      "why": "W2: capture floor gated at EFFECTIVE resting size (ramp/floor/clamps) - sub-cliff admission measured live 09-06/07 - operator 'build the effective size gate now' 09-07"
     }
   }
 }
