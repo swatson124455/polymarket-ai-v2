@@ -420,6 +420,64 @@ def roster_admit_groups(chain_audit_path: str, admit_dirs: list,
     return out
 
 
+# DROP-OFF TRIPWIRE (docs/MB_TAILABLE_PLAN.md P2, operator ruling
+# 2026-09-08 #1: forward watching is the drop-off signal, never the
+# admission gate). A LABEL only - it never removes a wallet from the
+# roster or the list (report + ask). Thresholds = the plan's numbers;
+# operator re-rules them here, nowhere else.
+TRIPWIRE_DROP_LCB_N = 10     # DROPPED when forward ROI LCB < 0 at n >= this
+TRIPWIRE_DEGRADE_N = 5       # DEGRADED when forward mean ROI < 0 at n >= this
+
+
+def tripwire(verdict, n, mean_roi, lcb) -> str:
+    """Forward drop-off label for one wallet from the grader's own numbers.
+    verdict = the lock verdict ('' / None while ACCRUING). Order: a lock
+    verdict decides first (PASSED / DROPPED (futility) / DROPPED (DNQ) /
+    E-PASS-BELOW-FLOOR); then the plan's two forward tests on the live
+    numbers; else WATCH. LCB here is mc.roi_lcb (sup{m: e(m) >= 20}), a
+    confidence bound - LCB < 0 means 'not yet shown positive', which the
+    plan names DROPPED at n >= 10; measured 2026-09-08 that fires on
+    wallets with positive realized ROI (board row 0x4ab40f2a49: roi +1.128,
+    lcb -0.781 @ n=54) - flagged to the operator, implemented as written."""
+    v = str(verdict or "")
+    if v.startswith("QUALIFIES"):
+        return "PASSED"
+    if v.startswith("NOT DEMONSTRATED"):
+        return "DROPPED (futility)"
+    if v.startswith("DOES NOT QUALIFY"):
+        return "DROPPED (locked DNQ)"
+    if v.startswith("E-PASS"):
+        return "E-PASS-BELOW-FLOOR"
+    n = int(n or 0)
+    if lcb is not None and lcb < 0.0 and n >= TRIPWIRE_DROP_LCB_N:
+        return f"DROPPED (lcb<0 @ n>={TRIPWIRE_DROP_LCB_N})"
+    if mean_roi is not None and mean_roi < 0.0 and n >= TRIPWIRE_DEGRADE_N:
+        return f"DEGRADED (roi<0 @ n>={TRIPWIRE_DEGRADE_N})"
+    return "WATCH"
+
+
+def write_forward_status(path: str, rows: list, note: str = "") -> None:
+    """Machine-readable per-wallet forward status - the ONE source the
+    tailable list (scripts/mb_tailable_list.py, P1) reads for 'forward
+    status'. Atomic replace; a write failure must not fail the grading
+    run (locks already committed) - it prints and the consumer alarms on
+    a stale ts instead."""
+    try:
+        rec = {"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+               "basis": "roi-netwin-20260906",
+               "futility_days": FUTILITY_DAYS,
+               "tripwire": {"drop_lcb_n": TRIPWIRE_DROP_LCB_N,
+                            "degrade_n": TRIPWIRE_DEGRADE_N},
+               "note": note, "rows": rows}
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(rec, f, indent=1)
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"  [forward-status] WARN: could not write {path}: {e!r} - "
+              f"the tailable list will see a STALE ts (alarm direction)")
+
+
 def bar_status(res: dict) -> tuple[bool, str]:
     """(qualifies_now, human status) vs the approved bars. Only meaningful at
     the single look (first crossing of N_BAR) — the caller enforces that."""
@@ -481,6 +539,8 @@ async def run(args) -> int:
         print("no forward tokens yet — window just opened; nothing to grade "
               "(NOT a failure; re-run after fills accrue)")
         write_heartbeat(args.heartbeat, 0, 0)
+        write_forward_status(args.forward_status, [],
+                             "no forward tokens - nothing graded this run")
         return 0
     db = await sr.fresh_outcomes(tokens)
     supp = sr.supplement_outcomes(args.supplement, tokens) if tokens else {}
@@ -512,6 +572,7 @@ async def run(args) -> int:
     n_locks_start = len(locks)
     graded_groups = 0
     proposals = []
+    status_rows = []   # one per graded address -> forward-status artifact
 
     def eproc_grade(group, epoch, lock_source, lock_suffix=""):
         nonlocal locks, graded_groups
@@ -528,12 +589,32 @@ async def run(args) -> int:
         epoch = effective_epoch(epoch)
         gfwd = forward_records(recs, epoch)
         now_ts = datetime.now(timezone.utc).timestamp()
+        epoch_utc = datetime.fromtimestamp(epoch, timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        futility_utc = datetime.fromtimestamp(
+            epoch + FUTILITY_DAYS * 86400.0, timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+
+        def srow(a, lkey, state, verdict, n, n_wagers, ev, mean_roi, lcb,
+                 wk, el_days, locked_at=None):
+            status_rows.append({
+                "address": a, "lock_key": lkey, "source": lock_source,
+                "epoch_utc": epoch_utc, "el_days": round(el_days, 3),
+                "futility_utc": futility_utc if state == "ACCRUING" else None,
+                "state": state, "verdict": verdict, "locked_at": locked_at,
+                "n_mkts": n, "n_wagers": n_wagers, "e": ev,
+                "roi": mean_roi, "lcb": lcb,
+                "wk_ref100_lcb": wk,   # HYPOTHETICAL $100/wager reference
+                "tripwire": tripwire(verdict, n, mean_roi, lcb)})
         for a in group:
             lkey = a + lock_suffix
             if lkey in locks:
                 lk = locks[lkey]
                 print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: "
                       f"{lk['verdict']} (consumed)")
+                srow(a, lkey, "LOCKED", lk.get("verdict"), lk.get("resolved"),
+                     lk.get("wagers"), lk.get("p"), lk.get("roi"), None, None,
+                     max((now_ts - epoch) / 86400.0, 1e-9), lk.get("locked_at"))
                 continue
             t_recs = [r for r in gfwd
                       if str(r.get("trader", "")).lower() == a]
@@ -559,8 +640,13 @@ async def run(args) -> int:
                         "source": lock_source})
                     print(f"  {a[:12]}..  <== NOT DEMONSTRATED (futility "
                           f"1wk, 0 resolved) [LOCKED]")
+                    srow(a, lkey, "LOCKED", "NOT DEMONSTRATED (futility 1wk)",
+                         0, 0, None, None, None, None, el_days,
+                         locks[lkey]["locked_at"])
                 else:
                     print(f"  {a[:12]}..  ACCRUING (0 resolved, e=n/a)")
+                    srow(a, lkey, "ACCRUING", None, 0, 0, None, None, None,
+                         None, el_days)
                 continue
             ev = mc.roi_e_value(rois, 0.0)
             mean_roi = sum(rois) / n
@@ -585,6 +671,9 @@ async def run(args) -> int:
                     "verdict": verdict,
                     "basis": "roi-netwin-20260906", "source": lock_source})
                 print(line + f"  <== {verdict} [LOCKED THIS RUN]")
+                srow(a, lkey, "LOCKED", verdict, n, n_wagers, ev,
+                     round(mean_roi, 6), lcb, wk, el_days,
+                     locks[lkey]["locked_at"])
                 if verdict.startswith("QUALIFIES"):
                     proposals.append(a)
             elif el_days >= FUTILITY_DAYS:
@@ -598,8 +687,18 @@ async def run(args) -> int:
                     "basis": "roi-netwin-20260906", "source": lock_source})
                 print(line + "  <== NOT DEMONSTRATED (futility 1wk) "
                              "[LOCKED]")
+                srow(a, lkey, "LOCKED", "NOT DEMONSTRATED (futility 1wk)",
+                     n, n_wagers, ev, round(mean_roi, 6), None, None,
+                     el_days, locks[lkey]["locked_at"])
             else:
                 print(line + "  ACCRUING")
+                # LCB reported while accruing = the same canon inversion
+                # (None until even m=-1 rejects); wk at the $100 reference
+                lcb_acc = mc.roi_lcb(rois, e_bar=C1_E_REJECT)
+                wk_acc = (lcb_acc * 100.0 * (n / el_days) * 7.0
+                          if lcb_acc is not None else None)
+                srow(a, lkey, "ACCRUING", None, n, n_wagers, ev,
+                     round(mean_roi, 6), lcb_acc, wk_acc, el_days)
 
     print(f"  [amendment 2026-08-25] ALL unconsumed looks are ANYTIME-VALID "
           f"e-process (reject e>={C1_E_REJECT:.0f}); the consumed locks "
@@ -669,6 +768,8 @@ async def run(args) -> int:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
     write_heartbeat(args.heartbeat, graded_groups, len(locks) - n_locks_start)
+    write_forward_status(args.forward_status, status_rows,
+                         f"{graded_groups} groups graded")
     return 0
 
 
@@ -934,6 +1035,52 @@ def _self_test() -> int:
     print(f"  [registration] run() grades every registered group on its "
           f"epoch; cands in the exclusion set; resolved pre-grade : {okr}")
     ok &= okr
+    # DROP-OFF TRIPWIRE (P2) truth table - a label, never a removal
+    okt = (tripwire("QUALIFIES", 40, 0.2, 0.1) == "PASSED"
+           and tripwire("NOT DEMONSTRATED (futility 1wk)", 0, None, None)
+           == "DROPPED (futility)"
+           and tripwire("DOES NOT QUALIFY", 30, -0.1, None)
+           == "DROPPED (locked DNQ)"
+           and tripwire("E-PASS BUT BELOW MONEY FLOOR (..)", 30, 0.1, 0.01)
+           == "E-PASS-BELOW-FLOOR"
+           and tripwire(None, TRIPWIRE_DROP_LCB_N, 0.5, -0.01).startswith("DROPPED (lcb<0")
+           and tripwire(None, TRIPWIRE_DROP_LCB_N - 1, 0.5, -0.01) == "WATCH"
+           and tripwire(None, TRIPWIRE_DEGRADE_N, -0.05, None).startswith("DEGRADED")
+           and tripwire(None, TRIPWIRE_DEGRADE_N - 1, -0.05, None) == "WATCH"
+           and tripwire(None, 50, 0.3, 0.05) == "WATCH"
+           and tripwire("", 0, None, None) == "WATCH"
+           and TRIPWIRE_DROP_LCB_N == 10 and TRIPWIRE_DEGRADE_N == 5)
+    print(f"  [tripwire] lock verdicts first; lcb<0@n>=10 DROPPED; "
+          f"roi<0@n>=5 DEGRADED; else WATCH; plan thresholds pinned : {okt}")
+    ok &= okt
+    # FORWARD-STATUS artifact: atomic, full schema, written at both exits,
+    # one row per graded address in EVERY closure branch
+    with tempfile.TemporaryDirectory() as d:
+        fsp = os.path.join(d, "fs.json")
+        write_forward_status(fsp, [{"address": "0xa"}], "t")
+        try:
+            fs = json.load(open(fsp))
+        except (ValueError, OSError):
+            fs = {}
+        oks = (set(fs) == {"ts", "basis", "futility_days", "tripwire", "note",
+                           "rows"}
+               and fs.get("rows") == [{"address": "0xa"}]
+               and fs.get("tripwire") == {"drop_lcb_n": TRIPWIRE_DROP_LCB_N,
+                                          "degrade_n": TRIPWIRE_DEGRADE_N}
+               and not os.path.exists(fsp + ".tmp"))
+        try:
+            datetime.strptime(fs.get("ts", ""), "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            oks = False
+    oks2 = (esrc.count("write_forward_status(") == 2
+            and esrc.count('srow(a, lkey, "') == 6   # the 6 CALLS (the
+            # def line has no quoted state), one per closure branch
+            and '"tripwire": tripwire(verdict, n, mean_roi, lcb)' in esrc
+            and esrc.index("write_heartbeat(args.heartbeat, graded_groups")
+            < esrc.index("write_forward_status(args.forward_status, status_rows"))
+    print(f"  [forward-status] atomic + schema; run() writes at both exits; "
+          f"all 6 branches emit a row with the tripwire : {oks and oks2}")
+    ok &= oks and oks2
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -961,6 +1108,9 @@ if __name__ == "__main__":
     ap.add_argument("--heartbeat",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
                             "cohort5_grader_heartbeat.json")
+    ap.add_argument("--forward-status", dest="forward_status",
+                    default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
+                            "cohort5_forward_status.json")
     ap.add_argument("--chain-audit", dest="chain_audit",
                     default=CHAIN_AUDIT_DEFAULT)
     ap.add_argument("--admit-dirs", dest="admit_dirs", nargs="*",
