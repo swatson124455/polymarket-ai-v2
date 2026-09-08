@@ -150,19 +150,24 @@ async def run(args) -> int:
         p[0] += 1
         p[1] += r["d_ref100"]
         p[2] += r["d_sizer"]
+    # $ALGO FIRST (operator ruling 2026-09-08 #2): the ledger's money
+    # headline is the accrual at OUR sizer's stake per wager (row field
+    # d_sizer, unchanged); the $100/wager reference is the comparison.
     print(f"===== {now} HYPOTHETICAL $ LEDGER (paper; no orders placed; "
-          f"$ref100 = wager ROI x $100/wager [basis conv 2026-09-06]; $sizer = roi x "
-          f"sizer stake, $0 until proven) =====")
+          f"$algo = wager ROI x OUR sizer stake [ruling 2026-09-08 #2; $0 "
+          f"until the forward LCB > 0]; $ref100 = wager ROI x $100/wager "
+          f"comparison [basis conv 2026-09-06]) =====")
     print(f"[hypo] appended {len(new_rows)} newly-resolved rows this run | "
           f"ledger total rows {len(rows)}")
     tot100 = sum(p[1] for p in per.values())
     totsz = sum(p[2] for p in per.values())
-    for a, (n, d100, dsz) in sorted(per.items(), key=lambda x: -x[1][1])[:15]:
-        print(f"  {a[:12]}..  n={n:<4} $ref100={d100:+9.2f}  $sizer={dsz:+8.2f}")
+    for a, (n, d100, dsz) in sorted(per.items(),
+                                    key=lambda x: (-x[1][2], -x[1][1]))[:15]:
+        print(f"  {a[:12]}..  n={n:<4} $algo={dsz:+8.2f}  $ref100={d100:+9.2f}")
     if len(per) > 15:
         print(f"  ... {len(per) - 15} more traders in the ledger file")
-    print(f"[hypo] CUMULATIVE since ledger start: $ref100={tot100:+.2f} "
-          f"$sizer={totsz:+.2f} across {len(per)} traders "
+    print(f"[hypo] CUMULATIVE since ledger start: $algo={totsz:+.2f} "
+          f"$ref100={tot100:+.2f} across {len(per)} traders "
           f"(HYPOTHETICAL - label travels with every quote of these)")
     return 0
 
@@ -207,6 +212,14 @@ def _self_test() -> int:
     print(f"  [clock] pre-conversion groups on the conversion clock; roster-"
           f"admitted groups appended on their own : {ok6}")
     ok &= ok6
+    # $ALGO FIRST (P3): the sizer-stake accrual leads every print + sort
+    ok7 = (src.index("$algo={dsz") < src.index("$ref100={d100")
+           and src.index("$algo={totsz") < src.index("$ref100={tot100")
+           and "key=lambda x: (-x[1][2], -x[1][1])" in src
+           and "d_sizer" in src)   # row field unchanged (interface)
+    print(f"  [algo] $algo (sizer stake) printed and sorted first; $ref100 "
+          f"= comparison; row fields unchanged : {ok7}")
+    ok &= ok7
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
