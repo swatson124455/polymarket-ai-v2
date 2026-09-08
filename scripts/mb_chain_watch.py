@@ -173,11 +173,20 @@ def _git(clone: str, *args: str) -> str | None:
 
 
 def read_code_note(clone: str) -> str:
-    """code-drift note for the clone: HEAD vs the remote ref of the branch it
-    is on. I/O shell around the pure code_drift()."""
+    """code-drift note for the clone: HEAD vs what the last fetch delivered.
+
+    Ref resolution order matters here (measured 2026-09-08): the refresh cron
+    runs `git fetch --depth 1 origin <branch>` with NO refspec, which does NOT
+    create refs/remotes/origin/<branch> — so `origin/master` is unresolvable in
+    this clone and a naive lookup returns UNKNOWN forever. FETCH_HEAD is always
+    written by that fetch, and HEAD != FETCH_HEAD is exactly the condition we
+    care about: the clone did not end up on what it last fetched.
+    """
     head = _git(clone, "rev-parse", "HEAD")
     branch = _git(clone, "rev-parse", "--abbrev-ref", "HEAD")
     remote = _git(clone, "rev-parse", f"origin/{branch}") if branch else None
+    if remote is None:
+        remote = _git(clone, "rev-parse", "FETCH_HEAD")
     return code_drift(head, remote)
 
 
