@@ -7,7 +7,18 @@
 # relays the ALERT file to the operator. Read-only vs the DB + shadow log.
 set -uo pipefail
 D=/opt/pa2-shared/mb_readout
-BR=claude/repo-setup-docs-fq9bhn   # branch pin — update when the MB lane moves branches
+BR=master
+# BRANCH PIN — 2026-09-08 root fix. This was pinned to a SESSION BRANCH
+# (claude/repo-setup-docs-fq9bhn, last advanced 2026-09-06) while the lane's work
+# moved onto master via PRs #9/#10/#11. The refresh below is `reset --hard`, so
+# every 12:30Z success silently reverted the clone — and any file hand-installed
+# into it — back to that stale branch. Measured 2026-09-08: the 11:40Z chain ran
+# reverted code (no cov% column, wager-counting concurrency, crawl stage absent,
+# chain-watch narrowed to its old 9-stage list so it did NOT flag the miss).
+# Pinning to master means the clone mirrors exactly what the operator has MERGED.
+# CONSEQUENCE — THE DEPLOY PATH FOR THIS CLONE IS NOW: merge to master, then let
+# the 12:30Z refresh pick it up (or force one). A hand `install` into the clone is
+# TEMPORARY BY DESIGN and dies at the next refresh; never treat one as deployed.
 LOG=/opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_log.txt
 # safe.directory: guarded — an unguarded --add appends a duplicate line to
 # ~/.gitconfig every day (review finding D); usually unnecessary (clone is
