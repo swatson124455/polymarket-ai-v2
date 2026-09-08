@@ -298,6 +298,25 @@ def forward_records(recs: list[dict], epoch: float) -> list[dict]:
     return [r for r in recs if float(r.get("detect_ts") or 0) >= epoch]
 
 
+def effective_epoch(group_epoch: float) -> float:
+    """The scoring clock for one group = max(group admission, BASIS_EPOCH).
+
+    PER-GROUP CLOCK (operator ruling 2026-09-08 #1, memory
+    feedback_dollars_per_day_is_the_test top block: "back testing is to
+    allow to the list and watching is in case they fall off"). Forward
+    watching is the DROP-OFF tripwire, so a trial's clock may never start
+    before its watch did. Groups admitted BEFORE the conversion keep the
+    conversion clock (their earlier data was design-visible; the
+    re-registration discipline in the BASIS_EPOCH block is unchanged).
+    Groups admitted AFTER it start at their OWN admission time
+    (chain_audit.json admitted_utc). Monotone both ways: no trial scores
+    data older than the basis conversion, none scores data older than its
+    own watch. Replaces the `epoch = BASIS_EPOCH` hardcode that would have
+    locked any post-conversion admit NOT DEMONSTRATED at
+    2026-09-13T22:30Z with n=0, immutably (2026-09-08 audit, defect D1)."""
+    return max(float(group_epoch), BASIS_EPOCH)
+
+
 def bar_status(res: dict) -> tuple[bool, str]:
     """(qualifies_now, human status) vs the approved bars. Only meaningful at
     the single look (first crossing of N_BAR) — the caller enforces that."""
@@ -387,13 +406,16 @@ async def run(args) -> int:
     def eproc_grade(group, epoch, lock_source, lock_suffix=""):
         nonlocal locks, graded_groups
         graded_groups += 1
-        # BASIS CONVERSION 2026-09-06: every unconsumed trial scores from
-        # the ONE fresh conversion epoch — the group epoch parameter is
-        # provenance only (see the BASIS_EPOCH block above).
+        # BASIS CONVERSION 2026-09-06: every PRE-conversion trial scores
+        # from the ONE fresh conversion epoch (its group epoch = provenance
+        # only, see the BASIS_EPOCH block). PER-GROUP CLOCK 2026-09-08
+        # (ruling 1): a group admitted AFTER the conversion starts at its
+        # own admission - effective_epoch(). The former hardcode of this
+        # line to BASIS_EPOCH was the 09-13 false-futility trap (D1).
         # lock_suffix (retrials): all lock lookups/writes key on
         # a+lock_suffix so a retrial neither reads nor touches the
         # immutable original lock.
-        epoch = BASIS_EPOCH
+        epoch = effective_epoch(epoch)
         gfwd = forward_records(recs, epoch)
         now_ts = datetime.now(timezone.utc).timestamp()
         for a in group:
@@ -477,7 +499,9 @@ async def run(args) -> int:
           f"winnings >= ${WEEKLY_FLOOR_USD:.0f}/wk @ $100/wager, futility "
           f"= {FUTILITY_DAYS:.0f} days; ONE fresh epoch "
           f"{datetime.fromtimestamp(BASIS_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
-          f" for every unconsumed trial (group epochs = provenance only)")
+          f" for every PRE-conversion trial (group epochs = provenance "
+          f"only); a group admitted AFTER it runs its OWN clock "
+          f"[per-group clock, ruling 2026-09-08]")
     print(f"original-20 unconsumed - re-registered epoch "
           f"{datetime.fromtimestamp(REREG_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
           f" (fresh: prior diagnostics were visible):")
@@ -652,7 +676,10 @@ def _self_test() -> int:
            and "roi_lcb" in esrc
            and "per_market_edges(" not in esrc  # call form; a history
            # comment at the frm-fix site may NAME the old estimand
-           and "epoch = BASIS_EPOCH" in esrc
+           and "epoch = effective_epoch(epoch)" in esrc
+           and "epoch = BASIS_EPOCH" not in esrc   # the D1 hardcode
+           and "(now_ts - epoch) / 86400.0" in esrc  # futility clock
+           # runs off the SAME (effective) epoch, never BASIS directly
            and FUTILITY_DAYS == 7.0
            and BASIS_EPOCH == datetime(2026, 9, 6, 22, 30, 0,
                                        tzinfo=timezone.utc).timestamp())
@@ -672,6 +699,35 @@ def _self_test() -> int:
     print(f"  [basis] band epoch/floor pinned to grader; retrial #r1 keys"
           f" : {okb2}")
     ok &= okb2
+    # PER-GROUP CLOCK (operator ruling 2026-09-08 #1 - forward watching
+    # is the drop-off tripwire; D1 fix). Pre-conversion groups keep the
+    # conversion clock; a post-conversion admit starts at its own.
+    _utc = timezone.utc
+    okc1 = all(effective_epoch(e) == BASIS_EPOCH for e in
+               (QUAL_EPOCH, C1_FWD_EPOCH, REREG_EPOCH, SWEEP2_EPOCH,
+                CRACK_EPOCH, INSUFF57_EPOCH, BASIS_EPOCH))
+    okc2 = effective_epoch(BASIS_EPOCH + 2 * 86400.0) == BASIS_EPOCH + 2 * 86400.0
+    print(f"  [clock] pre-conversion groups -> conversion clock; later "
+          f"admit -> own clock : {okc1 and okc2}")
+    ok &= okc1 and okc2
+    # the D1 scenario, from constants: cohort5 rostered 2026-09-08T02:56:10Z
+    # (chain_audit.json admitted_utc). Old hardcode: futility date
+    # 2026-09-13T22:30Z with n=0. Per-group clock: 2026-09-15T02:56:10Z.
+    c5 = datetime(2026, 9, 8, 2, 56, 10, tzinfo=_utc).timestamp()
+    fut_old = BASIS_EPOCH + FUTILITY_DAYS * 86400.0
+    fut_new = effective_epoch(c5) + FUTILITY_DAYS * 86400.0
+    okc3 = (fut_old == datetime(2026, 9, 13, 22, 30, 0, tzinfo=_utc).timestamp()
+            and fut_new == datetime(2026, 9, 15, 2, 56, 10,
+                                    tzinfo=_utc).timestamp()
+            and fut_new > fut_old)
+    # and the futility test itself, 'now' = 8 days after conversion: the
+    # old clock says futile (8 >= 7), the group clock says accruing (< 7)
+    now = BASIS_EPOCH + 8 * 86400.0
+    okc4 = ((now - BASIS_EPOCH) / 86400.0 >= FUTILITY_DAYS
+            and (now - effective_epoch(c5)) / 86400.0 < FUTILITY_DAYS)
+    print(f"  [clock] D1 scenario: cohort5 futility moves 09-13T22:30Z -> "
+          f"09-15T02:56:10Z; not futile at conv+8d : {okc3 and okc4}")
+    ok &= okc3 and okc4
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
