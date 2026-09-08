@@ -57,6 +57,16 @@ PASS does not override this checklist; composition sign-off consumes it.
    the composition echo, never silently passed. NEVER implement this as a
    neg-risk market block (Bug 14, f66ed43, CLAUDE.md hardcode).
 
+6. **Allocator tiers OFF for the hypothetical phase — MUST BE RE-RULED BEFORE
+   LIVE (operator 2026-09-08 ~20:4xZ: "lets remove tiers bet full, this NEEDS
+   TO BE CHANGED BEFORE LIVE THOUGH").** `MB_ALLOC_TIER_FRACS` was blanked in
+   /opt/pa2-shared/mb_sizer.env (backup `mb_sizer.env.pre-tiersoff-20260908`),
+   so every displayed stake uses the FULL bankroll per trader, no
+   proven/confirming envelopes, no reserve. GO REQUIRES an explicit operator
+   ruling on tier fractions (restore proven:0.50,confirming:0.10 from the
+   2026-09-06 ruling, or a new split) written back into mb_sizer.env before
+   the first real order. A blank value at GO is a checklist violation.
+
 ## Accepted-risk table (to be completed AT GO, one line per residual)
 
 | # | residual risk | rail | armed? | operator signature |
