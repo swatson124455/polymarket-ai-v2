@@ -262,6 +262,15 @@ async def run(args) -> int:
     # proven:0.50,confirming:0.10). Unset env = legacy full-bankroll display,
     # disclosed. One implementation: mb_allocator does the split.
     groups_all = c1 | probes12 | originals | sweep2 | cracks_grp | insuff57
+    # ROSTER-ADMITTED groups (P2, operator ruling 2026-09-08 #1): the
+    # grader's own registration rule - dive ADMIT + roster, own clock -
+    # so a cohort5 wallet is a TRIAL here, not OBS, from its admission.
+    roster_reg = {}
+    for g in cq.roster_admit_groups(args.audit, args.admit_dirs,
+                                    groups_all | set(cq.RETRIAL_R1)):
+        for a in g["addresses"]:
+            roster_reg[a] = (g["epoch"], f"roster-{g['name']}")
+    groups_all = groups_all | set(roster_reg)
     alloc_spec = os.environ.get("MB_ALLOC_TIER_FRACS", "").strip()
     envelopes = None
     if alloc_spec and sz is not None:
@@ -320,6 +329,8 @@ async def run(args) -> int:
             epoch, grp = cq.CRACK_EPOCH, "crack-admit"
         elif a in insuff57:
             epoch, grp = cq.INSUFF57_EPOCH, "insuff57"
+        elif a in roster_reg:
+            epoch, grp = roster_reg[a]
         else:
             # watched, no registered per-trader test (e.g. cohort4, fbfd
             # probe) - diagnostic only, honestly labeled
@@ -331,9 +342,12 @@ async def run(args) -> int:
                                  "diagnostic only"})
             continue
         # BASIS CONVERSION 2026-09-06 (operator go): scoring epoch =
-        # the ONE fresh conversion epoch for every unconsumed trial;
-        # the group epochs above remain provenance/labels only.
-        epoch = cq.BASIS_EPOCH
+        # the ONE fresh conversion epoch for every PRE-conversion trial
+        # (group epochs above = provenance/labels only). PER-GROUP CLOCK
+        # 2026-09-08 (ruling 1, D1 fix): a group admitted AFTER the
+        # conversion runs its own clock - the grader's effective_epoch,
+        # so the funnel's days/rates match the grader's exactly.
+        epoch = cq.effective_epoch(epoch)
         r = trader_row(a, epoch, recs, outcomes, frm, fee_map, cfg, res_at)
         srec = display_stake(r, alloc_params(a, sz, envelopes), frm, fee_map)
         days = days_since(epoch)
@@ -550,10 +564,25 @@ def _self_test() -> int:
            and "mc.wager_rois(" not in tsrc  # evidence = market atoms
            and "per_market_edges" not in tsrc
            and 'lcb=r["lcb"] * fill' in tsrc
-           and "epoch = cq.BASIS_EPOCH" in src_run2)
-    print(f"  [basis] funnel on ROI atoms + conversion epoch + sizer "
-          f"roi->share map : {okc}")
+           and "epoch = cq.effective_epoch(epoch)" in src_run2
+           and "epoch = cq.BASIS_EPOCH\n" not in src_run2)  # the D1
+    # hardcode is gone; effective_epoch == BASIS_EPOCH for every
+    # pre-conversion group, so nothing registered today moves
+    print(f"  [basis] funnel on ROI atoms + per-group clock (effective_"
+          f"epoch) + sizer roi->share map : {okc}")
     ok &= okc
+    # ROSTER REGISTRATION surfaced (P2): a roster-admitted wallet is a
+    # TRIAL on its own clock and 'confirming' for the allocator, never OBS
+    okd = ("elif a in roster_reg:" in src_run2
+           and "epoch, grp = roster_reg[a]" in src_run2
+           and "groups_all = groups_all | set(roster_reg)" in src_run2
+           and "cq.roster_admit_groups(args.audit, args.admit_dirs" in src_run2
+           and src_run2.index("cq.roster_admit_groups(")
+           < src_run2.index("for a in clean:")
+           and cq.effective_epoch(cq.BASIS_EPOCH + 1.0) == cq.BASIS_EPOCH + 1.0)
+    print(f"  [roster-reg] roster-admitted wallets are TRIAL rows on their "
+          f"own clock and count as registered for tiering : {okd}")
+    ok &= okd
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -580,6 +609,10 @@ if __name__ == "__main__":
     ap.add_argument("--locks",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
                             "cohort5_qual_locks.json")
+    ap.add_argument("--admit-dirs", dest="admit_dirs", nargs="*",
+                    default=cq.ADMIT_DIRS_DEFAULT,
+                    help="dive dossier dirs for roster registration "
+                         "(grader's list; newest dossier decides ADMIT)")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     raise SystemExit(_self_test() if a.self_test else asyncio.run(run(a)))

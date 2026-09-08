@@ -83,6 +83,12 @@ async def run(args) -> int:
         (cq.SWEEP2_INSUFF, cq.INSUFF57_EPOCH),
         (cq.eligible_admits(args.deep_dive, args.rereview), cq.REREG_EPOCH),
     ]
+    # ROSTER-ADMITTED groups (P2, operator ruling 2026-09-08 #1): the
+    # grader's registration rule (dive ADMIT + roster, own clock), so the
+    # ledger accrues for a cohort5 wallet from ITS admission, not never.
+    hand = set().union(*[set(g) for g, _ in groups]) | set(cq.RETRIAL_R1)
+    for g in cq.roster_admit_groups(args.chain_audit, args.admit_dirs, hand):
+        groups.append((g["addresses"], g["epoch"]))
     tokens = sorted({str(r["token_id"]) for r in recs if r.get("token_id")})
     db = await sr.fresh_outcomes(tokens)
     supp = sr.supplement_outcomes(args.supplement, tokens) if tokens else {}
@@ -94,8 +100,10 @@ async def run(args) -> int:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_rows = []
     for group, epoch in groups:
-        # BASIS CONVERSION 2026-09-06: one fresh epoch for all groups
-        epoch = cq.BASIS_EPOCH
+        # BASIS CONVERSION 2026-09-06: one fresh epoch for every
+        # PRE-conversion group; PER-GROUP CLOCK 2026-09-08 (ruling 1):
+        # a post-conversion roster admit accrues from its own admission
+        epoch = cq.effective_epoch(epoch)
         gfwd = cq.forward_records(recs, epoch)
         for a in group:
             t_recs = [r for r in gfwd
@@ -189,6 +197,16 @@ def _self_test() -> int:
     ok5 = "HYPOTHETICAL" in src and "no orders placed" in src
     print(f"  [label] HYPOTHETICAL + no-orders-placed baked into header : {ok5}")
     ok &= ok5
+    # PER-GROUP CLOCK + ROSTER REGISTRATION (P2, ruling 2026-09-08 #1)
+    ok6 = ("epoch = cq.effective_epoch(epoch)" in src
+           and "epoch = cq.BASIS_EPOCH\n" not in src
+           and "cq.roster_admit_groups(args.chain_audit, args.admit_dirs, hand)" in src
+           and 'groups.append((g["addresses"], g["epoch"]))' in src
+           and src.index("cq.roster_admit_groups(") < src.index("for group, epoch in groups:")
+           and cq.effective_epoch(cq.REREG_EPOCH) == cq.BASIS_EPOCH)
+    print(f"  [clock] pre-conversion groups on the conversion clock; roster-"
+          f"admitted groups appended on their own : {ok6}")
+    ok &= ok6
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -212,6 +230,10 @@ if __name__ == "__main__":
     ap.add_argument("--ledger",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
                             "hypo_ledger_roi.jsonl")
+    ap.add_argument("--chain-audit", dest="chain_audit",
+                    default=cq.CHAIN_AUDIT_DEFAULT)
+    ap.add_argument("--admit-dirs", dest="admit_dirs", nargs="*",
+                    default=cq.ADMIT_DIRS_DEFAULT)
     ap.add_argument("--self-test", action="store_true", dest="self_test")
     a = ap.parse_args()
     sys.exit(_self_test() if a.self_test else asyncio.run(run(a)))
