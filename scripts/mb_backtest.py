@@ -184,13 +184,23 @@ def wallet_exits(rows: list[dict]) -> dict[str, float]:
 
 def peak_concurrency_replay(records: list[dict], exits: dict[str, float],
                             res_at: dict[str, float], end_ts: float) -> int:
-    """Peak simultaneous open copies over the replayed entries. Exit =
-    earliest of the wallet's own SELL, market resolution, else end_ts
-    (open-to-end upper bound, same lens as the population study)."""
-    events: list[tuple[float, int]] = []
+    """Peak simultaneous open POSITIONS (one per market/token — screening
+    gap audit 2026-09-07: the pre-fix version counted every ladder WAGER
+    as a separate open position, so a 1,328-wager wallet printed conc 567
+    where its distinct-market peak is 30; the operator's tailability bar
+    counts positions WITH ladder headroom, and trader_funnel's own
+    peak_concurrency was already position-level). Entry = the token's
+    earliest wager; exit = earliest of the wallet's own SELL, market
+    resolution, else end_ts (open-to-end upper bound, same lens as the
+    population study)."""
+    first_ts: dict[str, float] = {}
     for r in records:
-        ts = float(r["detect_ts"])
         tok = str(r["token_id"])
+        ts = float(r["detect_ts"])
+        if tok not in first_ts or ts < first_ts[tok]:
+            first_ts[tok] = ts
+    events: list[tuple[float, int]] = []
+    for tok, ts in first_ts.items():
         t_end = min([t for t in (exits.get(tok), res_at.get(tok))
                      if t is not None] or [end_ts])
         events.append((ts, +1))
@@ -515,10 +525,15 @@ def files_to_process(all_files: list[str], processed: set[str],
 
 
 def should_rescreen(force: bool, cand_exists: bool, weekday: int,
-                    last_rescreen: str, today: str) -> bool:
-    """Monday (UTC) once per day, first run ever, or --rescreen. Pure."""
-    return force or not cand_exists or (weekday == 0
-                                        and last_rescreen != today)
+                    last_rescreen: str, today: str,
+                    inputs_changed: bool = False) -> bool:
+    """Monday (UTC) once per day, first run ever, --rescreen, or the
+    study inputs are newer than the candidate set (screen-gap audit
+    2026-09-07: the module doc always promised fresh-study pickup; the
+    code only honored Mondays — a regenerated wallets/conc file sat
+    unused until the next Monday). Pure."""
+    return force or not cand_exists or inputs_changed \
+        or (weekday == 0 and last_rescreen != today)
 
 
 def cmd_daily_extract(args) -> int:
@@ -538,9 +553,19 @@ def cmd_daily_extract(args) -> int:
     today = now.strftime("%Y%m%d")
     state = json.load(open(state_path)) if os.path.exists(state_path) \
         else {"processed": [], "last_rescreen": ""}
+    inputs_changed = False
+    if os.path.exists(cand_path):
+        cand_m = os.path.getmtime(cand_path)
+        inputs_changed = any(
+            os.path.exists(p) and os.path.getmtime(p) > cand_m
+            for p in (args.wallets, args.conc))
+    if inputs_changed:
+        print("[daily] study inputs newer than the candidate set -> "
+              "rescreen (fresh-study pickup, gap fix 2026-09-07)")
     rescreen = should_rescreen(args.rescreen, os.path.exists(cand_path),
                                now.weekday(),
-                               state.get("last_rescreen", ""), today)
+                               state.get("last_rescreen", ""), today,
+                               inputs_changed=inputs_changed)
     if rescreen:
         from types import SimpleNamespace as NS
         rc = cmd_screen(NS(wallets=args.wallets, conc=args.conc,
@@ -839,7 +864,13 @@ def _self_test() -> int:
     ok4 = (peak_concurrency_replay(e_recs, {"t1": 150.0}, {}, 1000.0) == 2
            and peak_concurrency_replay(e_recs, {"t1": 110.0}, {}, 1000.0) == 1
            and peak_concurrency_replay([], {}, {}, 1000.0) == 0)
-    print(f"  [conc] SELL-exit refinement + empty=0 : {ok4}")
+    # gap fix 2026-09-07: ladder wagers on ONE market are ONE position
+    lad_recs = e_recs + [{"token_id": "t1", "detect_ts": 105.0},
+                         {"token_id": "t1", "detect_ts": 108.0}]
+    ok4 = ok4 and peak_concurrency_replay(lad_recs, {"t1": 150.0}, {},
+                                          1000.0) == 2
+    print(f"  [conc] SELL-exit refinement + ladder=1 position + empty=0 "
+          f": {ok4}")
     ok &= ok4
     # [replay] no lookahead: verdict day = first day resolutions suffice.
     # 30 markets, edges +0.5 (e_value([0.5]*30) > 20): all entered day 0,
@@ -1004,6 +1035,20 @@ def _self_test() -> int:
            and (2 / 3) * 100 >= COV_FLAG_DEFAULT * 100)
     print(f"  [cov] per-wallet coverage counts + majority line : {okc}")
     ok &= okc
+    # [rescreen] fresh-study pickup (gap fix 2026-09-07): changed inputs
+    # trigger; Monday-once and force still work; quiet weekday without
+    # changes does not
+    okrs = (should_rescreen(False, True, 2, "", "20260907",
+                            inputs_changed=True) is True
+            and should_rescreen(False, True, 2, "", "20260907") is False
+            and should_rescreen(False, True, 0, "", "20260907") is True
+            and should_rescreen(False, True, 0, "20260907", "20260907")
+            is False
+            and should_rescreen(True, True, 2, "", "20260907") is True
+            and should_rescreen(False, False, 2, "", "20260907") is True)
+    print(f"  [rescreen] fresh-inputs trigger + Monday/force preserved : "
+          f"{okrs}")
+    ok &= okrs
     # [screen] eligibility, tailability, UNKNOWN counted
     wrows = [{"w": "0xa", "n": 30, "usd_sum": 10.0},   # ok
              {"w": "0xb", "n": 10, "usd_sum": 99.0},   # too few trades

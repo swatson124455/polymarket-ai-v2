@@ -18,6 +18,57 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-07 (~16:4xZ) — SCREENING AUDIT: 3 GAPS FIXED, UNIVERSE
+> ## CORRECTED 137k->183k, NEW #1 FIND; CRAWL = CRON STAGE 10;
+> ## 0x2c50852938 FULL PROMOTION DOSSIER = ADMIT
+>
+> Operator rulings executed this block: "1 do it (crawl stage) / 2 do it
+> (promotion checks) / 3 verify all screening for gaps / 4 proceed as
+> needed". Also: 09-07 11:40Z cron VERIFIED clean ([chain] 9/9,
+> ALARMS=0, [alloc] live, funnel TRIAL 122/FAILED 0, fresh hypo 373
+> rows, with-exits accruing).
+> **SCREENING AUDIT (all measured):** (G1) peak_conc.jsonl was an
+> UNCOMMITTED one-off frozen Sep-2 15:12Z — committed generator now
+> exists (mb_peak_conc_regen.py, replay-lens, self-tested), regen run
+> 15:5xZ: 46,247 eligible, med conc 23, backup .pre-regen-20260907;
+> (G2) wallets file equally frozen — population_study re-run 15:06Z
+> (universe 137,372 -> 182,752; 45,380 wallets were INVISIBLE to
+> discovery); (G3) peak_concurrency_replay counted ladder WAGERS as
+> positions (0xddc38b8242: board said conc 567, true distinct-market
+> peak 30; funnel/sizer version was already correct) — FIXED, ladder
+> self-test added; (G4) should_rescreen ignored fresh study files
+> despite its docstring — FIXED (mtime trigger; fired live on the first
+> run). max_fill 0.98 verified == live watcher default (no env
+> override). DISCLOSED residual: eligibility now uses capture through
+> today (activity-based selection overlapping the judge window — named,
+> not outcome-based). Study/conc regen cadence is still MANUAL —
+> proposal open (fold into a weekly cron step, operator-gated).
+> **CORRECTED BOARDS (15:59/16:35Z, HYPOTHETICAL $100/wager, coverage
+> 81.0% firehose / 76.8% roster):** candidates 8,359 -> 21,018 at bar
+> 20. NEW #1: 0x5feea3460c +$14,509/wk holdout LCB (n_ho=132! roi_lcb
+> +0.890, conc 18, cov 97) QUALIFIES; also 0x1c010e69db +$1,501 (n_ho
+> 79), 0xe48217d0b7 +$1,254, 0x5d2e0736fb +$97 QUALIFIES; 0x4ab40f2a49
+> +$7,953 LCB but replay-futility (both lenses shown). 1-month
+> eligibility reads 16:36:38Z: 5/6 PASS; 0x5cb1327663 FAIL (wallet born
+> 2026-09-05 — the bar catching exactly its target). Deep-dive queue
+> for the 4 passing QUALIFIES launched 16:37:27Z (serial, proposals
+> only; log /tmp/promo_queue_0907.log, out deep_dive_promo0907/).
+> **PROMOTION DOSSIER 0x2c50852938 (operator "2 do it") — COMPLETE,
+> ADMIT:** eligibility PASS (first trade 2026-05-24T14:01:35Z, data-api
+> 15:09:19Z); conc 11 (regen + board); cov 75; +$936.07/wk holdout LCB
+> n_ho=8 (corrected board); chain dive 15:13:53Z = ADMIT (411 fills, 0
+> mismatch, 100% of 316 API-BUYs chain-backed, skill P=1.0 on 62 mkts,
+> no forensic). ROSTER ADD = OPERATOR DECISION (proposal per the dive
+> framework).
+> **CRAWL = CRON STAGE 10 (operator "1 do it"):** 72h rolling window
+> after the backtest stage, timeout -s INT 2400; chain-watch pinned
+> 9->10 same commit (self-test 5/5). First cron run 09-08 11:40Z —
+> verify [chain] 10/10.
+> **WITH-EXITS (bonus read, 16:35Z):** first positive LCB —
+> 0xb4d250f58c +$2,623/wk (13/13 exited, roi_mean +0.837; ANALYSIS
+> ONLY). 12 wallets, 58 exited positions since the 03:30Z epoch.
+
+
 > ## 2026-09-07 (STEWARD SESSION ~00:53-02:2xZ) — LABEL COVERAGE 33->74%,
 > ## COV COLUMN LIVE, WITH-EXITS DRAFT, ROBUST-PRIOR MEASURED
 >
