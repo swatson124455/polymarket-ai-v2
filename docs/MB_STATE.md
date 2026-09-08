@@ -18,6 +18,112 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-08 (~18:3xZ) — 53-AGENT AUDIT: TWO OPERATOR-FACING CLAIMS
+> ## CORRECTED, A DATED TRAP FOUND (09-13), WATCHDOGS MADE UN-NARROWABLE
+>
+> **⛔ CORRECTION 1 — "the cohort5 wallets are accruing canon evidence" was
+> WRONG.** Roster membership is NOT grader registration. Verified by grep:
+> 0x2c50852938 / 0x5feea3460c / 0xe48217d0b7 appear **0 times** in
+> cohort5_qualification.py's group lists. The watcher IS recording their
+> trades (real, verified), but NO canon verdict accrues until a wallet is in
+> a grader group (or has an ADMIT dossier picked up by eligible_admits()).
+> **⛔ CORRECTION 2 — SELECTION. Two of the three do not survive multiplicity
+> adjustment.** Against an independently re-run break-even null (400 reps,
+> 12,889-wallet universe, deployed roi_lcb), the null board's TOP ROW reaches
+> or beats 0xe48217d0b7's number **19.0%** of the time (76/400) and
+> 0x2c50852938's **47.0%** (188/400). 0x5feea3460c was never reached (0/400,
+> 95% upper bound 0.75%) and clears the family-wise bar (5,271 holdout-tested
+> wallets -> e >= 105,420) by 189x with e=1.99e7, vs e=183 / e=593 for the
+> other two. The BOARD'S COUNT of winners is fully null-consistent (null
+> reproduces 11.2 positive-LCB rows vs 13 observed); the MAGNITUDE at the top
+> is not (null max e 5,956 vs observed 1.99e7). Failure to reject is not
+> evidence of absence — both still passed a separate chain deep-dive on 62-
+> and 886-market histories.
+> **⛔ DATED TRAP — DECIDE BEFORE 2026-09-13T22:30Z.** eproc_grade hardcodes
+> `epoch = BASIS_EPOCH` (cohort5_qualification.py:396 = 2026-09-06T22:30Z)
+> against FUTILITY_DAYS=7.0 (:248), and a self-test PINS that behavior
+> (:655-656). Registering the three as-is would lock them **NOT DEMONSTRATED
+> (futility 1wk) on 09-13 with n=0 atoms** — and locks are IMMUTABLE. Root
+> fix = honor the per-group epoch instead of the hardcode. OPERATOR SIGN-OFF
+> (behavior change: moves when every future group's clock starts).
+> **OTHER AUDIT FINDINGS (all measured, adversarially verified):**
+> - LABEL-VINTAGE INSTABILITY (bigger mover than any robustness test): same
+>   code, same split, same pinned end — a 17:31:47Z label refresh moved
+>   0x1c010e69db +$1,310 -> **+$64/wk**, 0xe48217d0b7 +$1,359 -> +$626,
+>   0xf7d03961dd +$95 -> **−$421**, 0x5feea3460c +$14,731 -> +$17,341, with
+>   ZERO lookahead. Cause: the guard tests `resolved_at <= end_ts`, not when
+>   the LABEL ARRIVED. **Never quote a holdout dollar without its label
+>   vintage.**
+> - 0x5feea3460c's edge is CONCENTRATED: 09-05 = 38.6% of atoms and 60.9% of
+>   summed ROI; the single 19:00Z hour = 42.5%. Dropping 09-05: +$17,341 ->
+>   **+$545/wk**. Plus a literal A4 leak: condition_ids 0x09c27cf43bb0 and
+>   0x62676230bf52 each appear TWICE (a YES atom +4.54 and a NO atom −1.02 on
+>   the same market, same minute) — perfectly anti-correlated, counted as
+>   independent. Effective n < 145. ("single correlated event slate" REFUTED:
+>   143 distinct condition_ids, 100% held under 30 min.)
+> - COPYABILITY, not price, is the replay's real error: synth_records gates
+>   only on max_fill 0.98, but only **47.0%** of roster first-buys clear the
+>   live gates (OK 11,807 / NO_UPSIDE 7,441 / SPREAD 3,262 / RAN_AWAY 2,611).
+>   Every board row's wager count — and every n/days rate in the money floor
+>   — is ~2x optimistic. (The "haircut regime mismatch" worry is REFUTED: in
+>   sub-3c buckets the price-matched median haircut is +0.0010..+0.0018, so
+>   the flat +0.0100 OVER-charges 5-10x; 0 of 11,806 pairs exceed +0.0300.)
+> - MONEY FLOOR fires at the one instant roi_lcb is least informative
+>   (measured lcb/mu 0.008-0.117 at first crossing), writes an immutable
+>   E-PASS-BELOW-FLOOR, and never revisits — a real +0.30 trader locks at
+>   $39/wk on day 11 where the same trader shows $234/wk at n=56. Branch has
+>   NEVER executed (zero "MONEY FLOOR" strings in the log) — cheap to fix now.
+> - TWO PRE-REGISTRATION CRITERIA DROPPED SILENTLY with no successor: n>=30
+>   resolved and ok_rate>=0.75 (bar_status() is called only from _self_test).
+>   The edge/P bars were deliberately superseded and documented; these were
+>   not. Live example: 0xb4d250f58c ACCRUING at n=48 with ok_rate=0.31.
+> - CANON zero-row supplement refusal is enforced at **1 of 7** call sites;
+>   band_tracker.py:103 bypasses it and writes immutable ROI locks daily.
+> - NULL POPULATION: atom-weighted holdout ROI across the board is **−0.0758**
+>   (174,108 atoms / 12,508 wallets), median per-wallet −0.116, 36.1% above
+>   zero. Selection surfaces cheap-fill max-variance wallets from a losing
+>   population.
+> - RULED OUT, do not re-litigate: capture censoring ABSENT (0 pre-split buys
+>   across all top-7 wallets); label survivorship on the PRICE axis not
+>   detectable (median fill labeled vs unlabeled differs <=0.01) — duration
+>   axis untested.
+> - REFUTED claims of mine: "label coverage declining" (it ROSE cron-over-cron
+>   74.6->76.5% firehose; the roster dip is denominator growth); "conc gates
+>   roster admission" (the screen reads the UNTRACKED position-level
+>   peak_conc.jsonl, and trader_funnel's sizer divisor was byte-identical
+>   throughout — the surviving risk is an operator EYEBALL hazard, the board
+>   printing conc 35 vs a bar of 20); "/opt/mirror3 carries hand-installed
+>   live code" (blob-identical to master).
+> **BUILT + LIVE THIS BLOCK (operator "fix watchdog move if needed", "add a
+> watcher in parallel"):**
+> - chain-watch AMENDED: the stage list moved OUTSIDE the clone
+>   (/opt/pa2-shared/mb_chain_stages.json) so `reset --hard` can no longer
+>   narrow it; drift reported BOTH ways; plus a code-drift check (HEAD vs
+>   FETCH_HEAD — measured: the refspec-less fetch never creates
+>   origin/<branch>, so a naive origin/master lookup is UNKNOWN forever).
+>   Self-test 9/9, mutants 5/5. One test encodes the original bug directly.
+> - mb_stall_watch.py NEW + LIVE on cron `*/15` -> deep_dive/stall_watch.log,
+>   installed OUTSIDE the clone (a watchdog for clone problems must not live
+>   in the clone). Catches ALIVE-BUT-NOT-PROGRESSING, which [chain] is
+>   structurally blind to. Self-excludes by PID never by pattern. Thresholds
+>   from measured idle (shadow 9s, recorder 581s) at 3600s. Self-test 6/6,
+>   mutants 6/6. First live read: dive=RUNNING(2m) chain=IDLE
+>   firehose=RUNNING(12m) watcher=RUNNING(0m).
+> - DIVE QUEUE UNWEDGED: the 09-07 queue slept 15h38m at 0% CPU because its
+>   `pgrep -f "chain_deep_div[e].py"` matched its OWN cmdline (the payload
+>   path was embedded in the wrapper). Killed; relaunched 18:20:04Z via
+>   scripts/vps_jobs/promo_queue_0908.sh (PID self-exclusion + the secret read
+>   INSIDE the script — the old inline form expanded DATABASE_URL into the
+>   world-readable process list).
+> - .git ownership VERIFIED CLEAN (0 non-polymarket entries under .git; the
+>   audit's 76-root-owned-dirs count predates the 17:17Z chown). STANDING
+>   RULE: every root run of the readout cron re-contaminates it — run it as
+>   polymarket.
+> **PROCESS NOTE:** commit 7e08430d was pushed DIRECTLY to master rather than
+> through a PR (a one-line fix to code merged minutes earlier). CLAUDE.md
+> keeps master merges operator-gated; flagging it rather than burying it.
+
+
 > ## 2026-09-08 (~17:0x-18:0xZ) — ⛔ LANDMINE CLOSED: THE READOUT CLONE WAS
 > ## SILENTLY REVERTING EVERY DEPLOY. FIXED, RESTORED, BOARDS RE-RUN.
 >
