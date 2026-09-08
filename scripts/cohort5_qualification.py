@@ -263,6 +263,20 @@ RETRIAL_R1 = [
     "0xf705fa045201391d9632b7f3cde06a5e24453ca7",
 ]
 
+# ROSTER REGISTRATION (docs/MB_TAILABLE_PLAN.md P2, operator ruling
+# 2026-09-08 #1): every dir a chain deep-dive dossier can land in. The
+# NEWEST dossier per address (file mtime) decides ADMIT. Add a dir here
+# when a new dive runner writes somewhere new (P4).
+ADMIT_DIRS_DEFAULT = [
+    "/opt/pa2-shared/mb_copyable_data/deep_dive",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_rereview",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_insuff_regrade",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_scout",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_scout2",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_promo0907",
+]
+CHAIN_AUDIT_DEFAULT = "/opt/pa2-shared/mb_copyable_data/chain_audit.json"
+
 
 def eligible_admits(deep_dive_dir: str, rereview_dir: str) -> list[str]:
     """Chain-screen ADMITs on complete labels: the re-review out-dir is the
@@ -317,6 +331,95 @@ def effective_epoch(group_epoch: float) -> float:
     return max(float(group_epoch), BASIS_EPOCH)
 
 
+def parse_utc(stamp) -> float:
+    """chain_audit.json admitted_utc -> epoch seconds. Accepts '+00:00',
+    'Z' and naive (taken as UTC). Raises ValueError on garbage."""
+    dt = datetime.fromisoformat(str(stamp).strip().replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def roster_admit_groups(chain_audit_path: str, admit_dirs: list,
+                        already: set) -> list:
+    """Roster groups admitted AFTER the basis conversion, each on its OWN
+    clock (effective_epoch). Registration = dive ADMIT + roster, no hand
+    list (docs/MB_TAILABLE_PLAN.md P2; operator ruling 2026-09-08 #1).
+
+    A wallet is registered iff ALL of:
+      - it is in a chain_audit.json group whose admitted_utc parses and
+        is >= BASIS_EPOCH (older groups are the hand lists above);
+      - it is on the watcher roster (chain_audit 'clean') - the watcher
+        records ONLY roster wallets, so anything else has n=0 forever and
+        its futility lock would be a lie;
+      - its NEWEST dive dossier across admit_dirs (file mtime) is ADMIT;
+      - it is not in `already` (a hand list / cands): the earlier
+        registration wins, never double-grouped - printed LOUD because
+        that earlier trial runs the conversion clock, not the wallet's.
+    Every exclusion is returned with its reason and printed by run();
+    nothing is silently dropped. A group with zero registrable addresses
+    is still returned (so the run shows it). Unreadable chain_audit is
+    FATAL (fail-toward-alarm: no heartbeat -> scoreboard STALE)."""
+    import glob
+    try:
+        audit = json.load(open(chain_audit_path))
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"FATAL: chain_audit unreadable ({e!r}) - refusing "
+                         f"to grade with roster registration unknown")
+    clean = {str(a).lower() for a in audit.get("clean", [])}
+    if not clean:
+        raise SystemExit("FATAL: chain_audit 'clean' roster empty - refusing")
+    newest: dict = {}
+    for d in admit_dirs:
+        for f in glob.glob(os.path.join(d, "0x*.json")):
+            try:
+                blob = json.load(open(f))
+                mt = os.path.getmtime(f)
+            except (OSError, ValueError) as e:
+                print(f"  [registration] WARNING unreadable dossier "
+                      f"{os.path.basename(f)}: {e!r} - NOT silently skipped")
+                continue
+            a = str(blob.get("address", "")).lower()
+            if a and (a not in newest or mt > newest[a][0]):
+                newest[a] = (mt, str(blob.get("verdict", "")), f)
+    out = []
+    for name, g in audit.items():
+        if not (isinstance(g, dict) and "admitted_utc" in g
+                and "addresses" in g):
+            continue
+        try:
+            ts = parse_utc(g["admitted_utc"])
+        except ValueError:
+            print(f"  [registration] WARNING {name}: admitted_utc "
+                  f"{g['admitted_utc']!r} unparseable - group NOT registered")
+            continue
+        if ts < BASIS_EPOCH:
+            continue     # pre-conversion groups = the hand lists above
+        addrs, skipped = [], []
+        for a in [str(x).lower() for x in g.get("addresses", [])]:
+            if a in already:
+                skipped.append((a, "already registered under an earlier "
+                                   "group -> graded on the CONVERSION clock, "
+                                   "not its own; if its watch began after "
+                                   "the conversion that trial's futility is "
+                                   "a false tripwire - operator call"))
+            elif a not in clean:
+                skipped.append((a, "not on the watcher roster (chain_audit "
+                                   "clean) - nothing is recorded for it"))
+            elif a not in newest:
+                skipped.append((a, "no dive dossier in any admit dir"))
+            elif not newest[a][1].startswith("ADMIT"):
+                skipped.append((a, f"newest dive verdict {newest[a][1]} "
+                                   f"({os.path.basename(os.path.dirname(newest[a][2]))})"))
+            else:
+                addrs.append(a)
+        out.append({"name": name, "epoch": ts,
+                    "admitted_utc": str(g["admitted_utc"]),
+                    "addresses": sorted(addrs), "skipped": skipped})
+    out.sort(key=lambda x: (x["epoch"], x["name"]))
+    return out
+
+
 def bar_status(res: dict) -> tuple[bool, str]:
     """(qualifies_now, human status) vs the approved bars. Only meaningful at
     the single look (first crossing of N_BAR) — the caller enforces that."""
@@ -360,6 +463,13 @@ def write_heartbeat(path: str, groups_graded: int, locks_written: int) -> None:
 async def run(args) -> int:
     from types import SimpleNamespace as NS
     cands = eligible_admits(args.deep_dive, args.rereview)
+    # ROSTER REGISTRATION (P2): resolved BEFORE any grading so a corrupt
+    # chain_audit fails fast, never after other groups wrote locks.
+    hand = (set(cands) | set(C1_UNTESTED) | set(INSUFF_PROBES)
+            | set(SWEEP2_ADMITS) | set(CRACK_ADMITS) | set(SWEEP2_INSUFF)
+            | set(RETRIAL_R1))
+    roster_groups = roster_admit_groups(args.chain_audit, args.admit_dirs,
+                                        hand)
     recs = az.load_records(args.log)
     assert recs, "EMPTY shadow log - ABORT"
     fwd = forward_records(recs, QUAL_EPOCH)
@@ -540,6 +650,21 @@ async def run(args) -> int:
     eproc_grade(RETRIAL_R1, BASIS_EPOCH,
                 "retrial r1 e-process (basis conversion 2026-09-06)",
                 lock_suffix="#r1")
+    # ROSTER-ADMITTED GROUPS (post-conversion; own clock per ruling
+    # 2026-09-08 #1; registration = dive ADMIT + roster, no hand list)
+    for g in roster_groups:
+        print(f"roster-admit {g['name']} ({len(g['addresses'])}) - epoch "
+              f"{datetime.fromtimestamp(g['epoch'], timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
+              f" (OWN clock: admitted after the conversion; registration = "
+              f"dive ADMIT + roster; forward = drop-off tripwire only):")
+        for a, why in g["skipped"]:
+            print(f"  {a[:12]}..  NOT REGISTERED: {why}")
+        if g["addresses"]:
+            eproc_grade(g["addresses"], g["epoch"],
+                        f"roster-admit {g['name']} e-process (admitted "
+                        f"{g['admitted_utc']}, own clock, ruling 2026-09-08)")
+    if not roster_groups:
+        print("roster-admit groups: none admitted after the conversion epoch")
     if proposals:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
@@ -728,6 +853,87 @@ def _self_test() -> int:
     print(f"  [clock] D1 scenario: cohort5 futility moves 09-13T22:30Z -> "
           f"09-15T02:56:10Z; not futile at conv+8d : {okc3 and okc4}")
     ok &= okc3 and okc4
+    # ROSTER REGISTRATION (P2): registration = dive ADMIT + roster, own
+    # clock; newest dossier wins; every exclusion returned with a reason.
+    okp = (parse_utc("2026-09-08T02:56:10+00:00")
+           == datetime(2026, 9, 8, 2, 56, 10, tzinfo=_utc).timestamp()
+           and parse_utc("2026-08-25T18:00:00Z")
+           == datetime(2026, 8, 25, 18, 0, 0, tzinfo=_utc).timestamp()
+           and parse_utc("2026-08-25T18:00:00")
+           == parse_utc("2026-08-25T18:00:00Z"))
+    try:
+        parse_utc("not a date")
+        okp = False
+    except ValueError:
+        pass
+    print(f"  [registration] admitted_utc parse: +00:00 / Z / naive=UTC; "
+          f"garbage raises : {okp}")
+    ok &= okp
+    with tempfile.TemporaryDirectory() as d:
+        A, B, C, D, E, F = ("0x" + ch * 40 for ch in "abcdef")
+        d1, d2 = os.path.join(d, "dd1"), os.path.join(d, "dd2")
+        os.makedirs(d1)
+        os.makedirs(d2)
+
+        def dossier(dr, a, v, mt):
+            fp = os.path.join(dr, a + ".json")
+            with open(fp, "w") as fh:
+                json.dump({"address": a, "verdict": v}, fh)
+            os.utime(fp, (mt, mt))
+        dossier(d1, A, "ADMIT", 100)
+        dossier(d2, A, "ADMIT", 200)     # A: ADMIT everywhere -> registered
+        dossier(d1, B, "ADMIT", 100)     # B: in `already` -> earlier wins
+        dossier(d1, C, "ADMIT", 100)
+        dossier(d2, C, "REJECT", 200)    # C: NEWEST says REJECT -> out
+        dossier(d1, D, "ADMIT", 100)     # D: not on roster -> out
+        #                                  F: on group+roster, no dossier
+        post = datetime.fromtimestamp(BASIS_EPOCH + 86400.0,
+                                      _utc).isoformat()
+        audit = {"results": {}, "clean": [A, B, C, E, F],
+                 "cohortX": {"addresses": [A, B, C, D, F],
+                             "admitted_utc": post},
+                 "cohortOld": {"addresses": [E], "admitted_utc":
+                               "2026-07-15T19:20:12.393568+00:00"}}
+        apath = os.path.join(d, "chain_audit.json")
+        with open(apath, "w") as fh:
+            json.dump(audit, fh)
+        groups = roster_admit_groups(apath, [d1, d2], {B})
+        ok8 = (len(groups) == 1 and groups[0]["name"] == "cohortX"
+               and groups[0]["epoch"] == BASIS_EPOCH + 86400.0
+               and groups[0]["addresses"] == [A]
+               and sorted(a for a, _ in groups[0]["skipped"]) == [B, C, D, F])
+        why = dict(groups[0]["skipped"]) if groups else {}
+        ok8b = ("earlier" in why.get(B, "") and "REJECT" in why.get(C, "")
+                and "roster" in why.get(D, "") and "no dive" in why.get(F, ""))
+        print(f"  [registration] post-conversion group: ADMIT+roster in; "
+              f"already/newest-REJECT/off-roster/no-dossier out with reasons;"
+              f" pre-conversion group skipped : {ok8 and ok8b}")
+        ok &= ok8 and ok8b
+        # a wallet's clock = its group's admission, via the same path the
+        # closure takes (effective_epoch on the registered epoch)
+        ok8c = (groups and effective_epoch(groups[0]["epoch"])
+                == BASIS_EPOCH + 86400.0)
+        print(f"  [registration] registered group scores on its own clock"
+              f" : {bool(ok8c)}")
+        ok &= bool(ok8c)
+        try:
+            roster_admit_groups(os.path.join(d, "missing.json"), [d1], set())
+            ok8d = False
+        except SystemExit:
+            ok8d = True
+        print(f"  [registration] unreadable chain_audit is FATAL, never "
+              f"'no groups' : {ok8d}")
+        ok &= ok8d
+    okr = ("roster_admit_groups(args.chain_audit, args.admit_dirs" in esrc
+           and 'eproc_grade(g["addresses"], g["epoch"]' in esrc
+           and "hand = (set(cands)" in esrc
+           and esrc.index("roster_groups = roster_admit_groups")
+           < esrc.index("recs = az.load_records"))   # registration
+    # resolved BEFORE the shadow-log read, the DB read and every
+    # eproc_grade call (a corrupt roster file fails before anything runs)
+    print(f"  [registration] run() grades every registered group on its "
+          f"epoch; cands in the exclusion set; resolved pre-grade : {okr}")
+    ok &= okr
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -755,6 +961,12 @@ if __name__ == "__main__":
     ap.add_argument("--heartbeat",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
                             "cohort5_grader_heartbeat.json")
+    ap.add_argument("--chain-audit", dest="chain_audit",
+                    default=CHAIN_AUDIT_DEFAULT)
+    ap.add_argument("--admit-dirs", dest="admit_dirs", nargs="*",
+                    default=ADMIT_DIRS_DEFAULT,
+                    help="every dir a dive dossier can land in; newest "
+                         "dossier per address decides ADMIT")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     raise SystemExit(_self_test() if a.self_test else asyncio.run(run(a)))
