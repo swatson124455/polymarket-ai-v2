@@ -149,9 +149,18 @@ def newest_dossiers(dirs: list) -> dict:
                     "span_days": blob.get("span_days"),
                     "n_markets": t3.get("n_markets"),
                     "p": t3.get("p"),
-                    "reason": (blob.get("reasons") or [""])[0][:160],
+                    "reason": _clip((blob.get("reasons") or [""])[0], 220),
                 }
     return newest
+
+
+def _clip(text, n: int) -> str:
+    """Cut at a word boundary, never mid-word; marks the cut."""
+    t = str(text or "")
+    if len(t) <= n:
+        return t
+    cut = t[:n].rsplit(" ", 1)[0]
+    return cut + " [..]"
 
 
 def peak_conc_map(path: str) -> dict:
@@ -545,12 +554,14 @@ def render_md(rows: list, prov: dict) -> str:
                      + (f", roster-board $ref100/wk LCB "
                         f"{_fmt(r['roster_board_wk_lcb'], '+,.0f')}"
                         if r["roster_board_wk_lcb"] is not None else "")
-                     + f". Eligibility {r['elig_status']} "
+                     + f". Eligibility {r['elig_status'] or 'UNREAD'} "
                      f"({r['elig_reason']}; read {r['elig_read_utc']}). "
-                     f"Dive {r['dive_verdict']} {r['dive_dir']} "
-                     f"{r['dive_utc']} span={r['dive_span_days']}d "
-                     f"mkts={r['dive_n_markets']} P={_fmt(r['dive_p'], '.3f')}"
-                     + (f" - {r['dive_reason']}" if r["dive_reason"] else "")
+                     + (f"Dive {r['dive_verdict']} {r['dive_dir']} "
+                        f"{r['dive_utc']} span={r['dive_span_days']}d "
+                        f"mkts={r['dive_n_markets']} "
+                        f"P={_fmt(r['dive_p'], '.3f')}"
+                        + (f" - {r['dive_reason']}" if r["dive_reason"] else "")
+                        if r["dive_verdict"] else "Dive: none (no dossier)")
                      + (f". Forward epoch {r['fwd_epoch_utc']}, futility "
                         f"{r['fwd_futility_utc']}, {r['fwd_n_records']} "
                         f"records / {r['fwd_n_ok_fills']} paper fills."
@@ -633,7 +644,10 @@ def run(args) -> int:
             "peak_conc": dict(file_vintage(args.peak_conc), count=len(conc)),
             "forward_status": dict(file_vintage(args.forward_status), count=len(fwd)),
             "shadow_sink": dict(file_vintage(args.shadow), count=len(fills)),
-            "dossiers": {"path": ";".join(args.admit_dirs), "mtime_utc": None,
+            "dossiers": {"path": ";".join(args.admit_dirs),
+                         "mtime_utc": utc_iso(max((d["mtime"] for d in
+                                                   dossiers.values()),
+                                                  default=None)),
                          "count": len(dossiers)},
             "eligibility_cache": dict(file_vintage(args.elig_cache), count=len(cache)),
             "null_replication": dict(file_vintage(args.null), count=len(nulls)),
