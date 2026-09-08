@@ -18,6 +18,37 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-08 (~02:5xZ) — COHORT5 ROSTER ADD (operator "go"): the 3
+> ## ADMIT dossiers are LIVE ON THE SHADOW ROSTER; still $0 everywhere
+>
+> Operator "go" executed as the pending roster ruling — SHADOW ONLY,
+> real money remains gated by docs/MB_GO_CHECKLIST.md (its operator-set
+> blanks are unfilled; presented to operator this session).
+> - LEDGER: chain_audit.json clean 124 -> 127 + new `cohort5` group
+>   (0x2c50852938, 0x5feea3460c, 0xe48217d0b7; admitted_utc
+>   2026-09-08T02:56:10+00:00; backup .pre-cohort5-20260908; root
+>   ownership/mode preserved). Forward measurement from admitted_utc.
+> - WATCHER: systemctl restart 02:56:21Z clean — roster=127 on chain
+>   watcher AND rtds consumer, env guard paper/canary 0, no tracebacks.
+>   Funnel picks the three up as trials at the next 11:40Z cron.
+> - ⚠ PRE-EXISTING BREAKAGE FOUND (not from this change, verified
+>   before it): the 12:30Z shadow_readout cron has been FAILING on
+>   load_cohorts — clean(124, pre-add) != cohort-group union (59): the
+>   roster's growth to 124 (sweep/crack admits) never extended the
+>   cohort groups. The 11:40Z chain is unaffected (reads `clean`
+>   directly; only shadow_readout consumes load_cohorts). REPAIR =
+>   operator decision: extend the ledger groups for the 65 unattributed
+>   members (provenance exists in funnel tags) or amend the readout's
+>   invariant. Since when: check shadow_readout_cron.log history.
+> - Our-ROI scenario read (this session, HYPOTHETICAL $100/wager,
+>   1,712 wagers/12d, canon fees): proven-10 portfolio mean roi/wager
+>   +1.52 at med follow-cost (+0.0100) vs +1.31 at p90 (+0.0159) —
+>   depth at stake UNMODELED (GO item 3 pilot measures it).
+> - Artifact: Wallet Daybook (daily ROI/trades, 35 wallets) published.
+> - Dive queue C (5 remaining proven wallets) still running at launch
+>   of this block; verdicts land in deep_dive_promo0907/.
+
+
 > ## 2026-09-07 (~16:4xZ) — SCREENING AUDIT: 3 GAPS FIXED, UNIVERSE
 > ## CORRECTED 137k->183k, NEW #1 FIND; CRAWL = CRON STAGE 10;
 > ## 0x2c50852938 FULL PROMOTION DOSSIER = ADMIT
