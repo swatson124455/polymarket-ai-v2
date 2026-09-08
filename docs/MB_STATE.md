@@ -18,6 +18,26 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-08 (~19:0xZ) — OPERATOR HANDOFF: THE DELIVERABLE IS THE
+> ## TAILABLE LIST + MONITOR + CANDIDATE PIPELINE, ROI ON OUR WAGER ALGO.
+> ## READ docs/MB_TAILABLE_PLAN.md AND EXECUTE IT IN ORDER. NOTHING ELSE.
+>
+> Operator, verbatim: "we need the top traders we can tail verified and on a
+> list as well as a set up to monitor them and new possible candidates. we
+> need to track roi based on our wager algo not 100 flatrate." Two design
+> rulings recorded in memory feedback_dollars_per_day_is_the_test.md (top):
+> BACKTEST ADMITS / FORWARD WATCH = DROP-OFF TRIPWIRE; ROI BASIS = mb_sizer
+> STAKE PER WAGER, not $100 flat. The operator also said sessions were "all
+> over the place" — stay on the plan's P1→P5, no unrequested audits.
+> **FIRST ACTION OF THE NEXT SESSION = P2's D1 fix** (the 2026-09-13T22:30Z
+> false-futility trap; operator-approved via ruling 1), then P1 the list.
+> State inherited: dive queue `/tmp/promo_queue_0908.sh` was RUNNING at
+> 18:48Z (5 wallets; results → deep_dive_promo0907/); PR #14 OPEN (audit
+> docs); one commit (7e08430d) went to master without a PR — flagged.
+> Watch 09-09 11:40Z: [chain] 10/10 + no INTEGRITY note; 12:30Z: no
+> "refresh FAILED" in shadow_readout_log.txt.
+
+
 > ## 2026-09-08 (~18:3xZ) — 53-AGENT AUDIT: TWO OPERATOR-FACING CLAIMS
 > ## CORRECTED, A DATED TRAP FOUND (09-13), WATCHDOGS MADE UN-NARROWABLE
 >
