@@ -48,8 +48,32 @@
 > 6. Young QUALIFIES wallets: no moves (the 1-month bar re-reads daily).
 > 7. **Clone chown'd** to polymarket (the 76 pre-existing root-owned entries
 >    under tests/ and docs/).
-> **Still true:** zero real orders; every $ HYPOTHETICAL; first cron proof of
-> the 12-stage chain = the next 11:40Z run on the refreshed clone.
+> **DEPLOY VERIFIED (measured):** clone HEAD 9ede291 == origin/master
+> (forced refresh as polymarket 20:45:56Z with the cron's own commands);
+> md5 10/10 changed files == master BLOBS; post-merge script applied
+> 20:45:57Z (stages 11+12 in mb_chain_stages.json, stall 'dive' job ->
+> chain_fills, runner cron 13:00Z installed); clone non-polymarket entries
+> 0. Watcher restart 20:44:55Z: `[copy_watcher] roster=129`, env guard OK,
+> first canary 1835 V2 fills. Registration replay from the CLONE (read-only)
+> 20:47:18Z: cohort5 3 registered (epoch 02:56:10Z, futility
+> 2026-09-15T02:56:10Z) + cohort8 2 registered (epoch 20:44:55Z, futility
+> 2026-09-15T20:44:55Z); tripwire(roi +1.128, lcb −0.781, n=54) = WATCH.
+> Deployed list + pipeline stages hand-run from the clone 20:46:45Z:
+> VERIFIED 5 / PENDING 7 / universe 12, roster proposals none (both new
+> wallets rostered); pipeline queued 0x4ed3513040 (NEW dive) for the 13:00Z
+> runner. NOTE: the LIVE boards are still the 17:58Z old-code artifacts, so
+> the deployed list prints `$algo = P3` until stage 9 regenerates them at
+> the next 11:40Z; the $algo snapshot in docs/MB_TAILABLE_LIST.md came from
+> the scratch boards. The grader itself has NOT been hand-run (it writes
+> locks) - its first run on the merged code is the next 11:40Z.
+> **WATCH (next 11:40Z, first run of the 12-stage chain):** grader block
+> prints "roster-admit cohort5 (3)" and "roster-admit cohort8 (2)" ACCRUING
+> lines + writes cohort5_forward_status.json; stage 9 boards carry $algo +
+> FILL-MODELED; "tailable list" prints $algo; "candidate pipeline" prints;
+> `[chain] 12/12`; 12:30Z: no "refresh FAILED"; 13:00Z runner log shows
+> the 0x4ed3513040 dive.
+> **Still true:** zero real orders; every $ HYPOTHETICAL; real money only via
+> docs/MB_GO_CHECKLIST.md (now 6 items - tiers must be re-ruled before live).
 
 
 > ## 2026-09-08 (~20:0xZ) — TAILABLE PROGRAM BUILT (P1–P5) ON BRANCH
