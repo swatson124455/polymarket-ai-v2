@@ -169,6 +169,8 @@ per-fill slippage recording). Not a build order until the operator says.
 
 **Deploy = merge to master, then `sudo bash deploy/mb_tailable_post_merge.sh`
 (after the clone refresh that carries the merge; `--check` first).**
-**Open operator rulings:** (1) tripwire DROPPED test (keep as written or
-futility/lock only); (2) roster adds for 0x75a27d0cc9 / 0xe9f5c75ee1
-(VERIFIED, tiny $, replay verdict futility) — proposals only.
+**Operator rulings 2026-09-08 ~20:4xZ (resolved):** (1) tripwire DROPPED =
+lock-only (LCB<0 clause retired); (2) roster adds for 0x75a27d0cc9 /
+0xe9f5c75ee1 executed watch-only (group `cohort8`); (5) allocator tiers OFF
+for the hypothetical phase — GO CHECKLIST ITEM 6: must be re-ruled before
+live. PR #15 merged (master 2b82775d); clone force-refreshed as polymarket.
