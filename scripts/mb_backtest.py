@@ -841,7 +841,7 @@ def cmd_replay(args) -> int:
               f"{fmt_num(row['ho_roi_lcb'], '+.3f'):>8} "
               f"{fmt_num(row['ho_roi_realized'], '+.3f'):>8} "
               f"{row['ho_n_holdout']:>5} {row['peak_conc_replay']:>5} "
-              f"{row['entries']:>6} {fmt_num(row['algo_stake_med'], '.2f'):>9} "
+              f"{row['entries']:>6} {fmt_num(row['ho_algo_stake_med'], '.2f'):>9} "
               f"{cov_cell:>6} {row['verdict']}")
     print(f"[replay] full leaderboard ({len(lb)} wallets) -> {args.out}")
 
@@ -1077,7 +1077,13 @@ def _self_test() -> int:
             and "sizer=sizer, conc=pc" in csrc
             and csrc.index("pc = peak_concurrency_replay(")
             < csrc.index("hold = holdout_metrics(")
-            and '"ho_wk_net_algo_lcb" if sizer' in csrc)
+            and '"ho_wk_net_algo_lcb" if sizer' in csrc
+           # the table print reads the ho_-prefixed row keys (a bare key
+           # is a KeyError on the first live row - hit 2026-09-08T19:42Z)
+           and "row['ho_algo_stake_med']" in csrc
+           and "row['ho_wk_net_algo_lcb']" in csrc
+           and "row['ho_wk_net_algo_real']" in csrc
+           and "row['algo_stake_med']" not in csrc)
     print(f"  [algo] sizer stake per holdout wager (fill, canon fee, conc="
           f"max(peak,floor)); LCB<=0 -> $0; unset -> None; board ranks on "
           f"$algo : {ok9c and ok9d and ok9e}")
