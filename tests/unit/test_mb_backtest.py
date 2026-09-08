@@ -83,6 +83,77 @@ def test_holdout_excludes_train():
     assert abs(hm["wk_net_real"] - roi_exp * 100 * 5) < 1e-9
 
 
+def test_holdout_algo_stake_uses_sizer():
+    """P3 (operator ruling 2026-09-08 #2): $algo = mb_sizer stake per
+    holdout wager at its own fill; evidence = holdout LCB x fill; conc =
+    max(replay peak, env floor); LCB<=0 -> $0; sizer unset -> None."""
+    import mb_sizer as msz
+    split = T0 + 5 * DAY
+    # 30 holdout wins: enough atoms for the e>=20 LCB to turn positive
+    recs = ([_rec(f"tr{i}", T0 + i) for i in range(10)]
+            + [_rec(f"ho{i}", split + i) for i in range(30)])
+    outc = {f"tr{i}": 1 for i in range(10)}
+    outc.update({f"ho{i}": 1 for i in range(30)})
+    szr = {"bankroll": 500.0, "kelly_mult": 0.25, "concurrency": 1,
+           "min_viable": 1.0}
+    plain = mbt.holdout_metrics(recs, outc, {}, {}, split, split + 7 * DAY)
+    assert plain["wk_net_algo_lcb"] is None and plain["algo_stake_total"] is None
+    hm = mbt.holdout_metrics(recs, outc, {}, {}, split, split + 7 * DAY,
+                             sizer=szr, conc=2)
+    lcb = hm["roi_lcb"]
+    assert lcb is not None and lcb > 0.0        # the test is meaningful
+    exp = msz.recommend_stake_from_lcb(lcb * 0.48, 0.48, 0.02 * 0.48,
+                                       book_depth_usd=1e12, bankroll=500.0,
+                                       kelly_mult=0.25, concurrency=2,
+                                       min_viable=1.0)["stake"]
+    assert exp > 0.0
+    assert hm["algo_n_wagers"] == 30 and hm["algo_n_zero"] == 0
+    assert abs(hm["algo_stake_total"] - round(30 * exp, 4)) < 1e-6
+    assert abs(hm["wk_net_algo_lcb"] - lcb * 30 * exp) < 1e-6
+    roi_exp = (1.0 - 0.48 - 0.02 * 0.48) / 0.48
+    assert abs(hm["wk_net_algo_real"] - roi_exp * 30 * exp) < 1e-6
+    # env floor above the measured peak wins (conservative divisor)
+    hm3 = mbt.holdout_metrics(recs, outc, {}, {}, split, split + 7 * DAY,
+                              sizer=dict(szr, concurrency=4), conc=2)
+    assert hm3["algo_stake_total"] < hm["algo_stake_total"]
+    # a losing holdout: LCB <= 0 -> the sizer's own $0
+    lose = dict(outc, **{f"ho{i}": 0 for i in range(30)})
+    hml = mbt.holdout_metrics(recs, lose, {}, {}, split, split + 7 * DAY,
+                              sizer=szr, conc=2)
+    assert hml["algo_n_zero"] == 30 and hml["algo_stake_total"] == 0.0
+    assert hml["wk_net_algo_real"] == 0.0 and hml["wk_net_algo_lcb"] is None
+
+
+def test_holdout_fill_modeled_from_measured_gate_table():
+    """P5 (D3): firehose money weighted by the measured per-bucket gate
+    pass probability; raw kept; evidence (LCB) untouched; no table = no
+    change; roster path passes no table."""
+    sink = ([{"side": "BUY", "whale_price": 0.45, "verdict": "OK"}] * 2
+            + [{"side": "BUY", "whale_price": 0.45, "verdict": "SPREAD_TOO_WIDE"}] * 2)
+    ft = mbt.gate_pass_table(sink)
+    assert ft["buckets"][4]["rate"] == 0.5 and mbt.fill_prob(0.48, ft) == 0.5
+    assert mbt.fill_prob(0.48, None) == 1.0 and mbt.gate_pass_table([]) is None
+    split = T0 + 5 * DAY
+    recs = ([_rec(f"tr{i}", T0 + i) for i in range(10)]
+            + [_rec(f"ho{i}", split + i) for i in range(30)])
+    outc = {f"tr{i}": 1 for i in range(10)}
+    outc.update({f"ho{i}": 1 for i in range(30)})
+    szr = {"bankroll": 500.0, "kelly_mult": 0.25, "concurrency": 1,
+           "min_viable": 1.0}
+    raw = mbt.holdout_metrics(recs, outc, {}, {}, split, split + 7 * DAY,
+                              sizer=szr, conc=2)
+    mod = mbt.holdout_metrics(recs, outc, {}, {}, split, split + 7 * DAY,
+                              sizer=szr, conc=2, fill_table=ft)
+    assert not raw["fill_modeled"] and raw["wk_net_lcb_raw"] == raw["wk_net_lcb"]
+    assert mod["fill_modeled"] and mod["fill_p"] == 0.5
+    assert abs(mod["wk_net_lcb"] - 0.5 * raw["wk_net_lcb"]) < 1e-9
+    assert abs(mod["wk_net_algo_lcb"] - 0.5 * raw["wk_net_algo_lcb"]) < 1e-9
+    assert abs(mod["wk_net_algo_real"] - 0.5 * raw["wk_net_algo_real"]) < 1e-9
+    assert mod["roi_lcb"] == raw["roi_lcb"]
+    src = inspect.getsource(mbt.cmd_daily_replay)
+    assert "fill_table=None, **common" in src and "fill_table=ft, **common" in src
+
+
 def test_holdout_label_lookahead_guard():
     """A market with a KNOWN resolved_at AFTER end_ts must not count —
     its label did not exist at judge time. Unknown res_at passes (the

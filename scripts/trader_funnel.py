@@ -198,6 +198,20 @@ def display_stake(r: dict, params, frm: dict, fee_map: dict):
         r["lcb"], fill, fee, book_depth_usd=1e12, **p)
 
 
+def algo_day(r: dict, stake, days) -> float | None:
+    """$algo/day (operator ruling 2026-09-08 #2, "track roi based on our
+    wager algo not 100 flatrate"): LCB ROI x OUR sizer's stake at the
+    trader's median fill x resolved-markets/day - the $100-reference
+    formula with the reference replaced by the sizer's stake. $0 stake
+    (unproven forward LCB) -> $0.00, never None, so the column reads
+    "the algo would bet nothing yet". None only when there is no LCB /
+    no rate. HYPOTHETICAL. Pure."""
+    if (r.get("lcb") is None or not days or days <= 0 or not r.get("n")
+            or stake is None):
+        return None
+    return r["lcb"] * float(stake) * (r["n"] / days)
+
+
 def fmt(v, spec, dash="   -"):
     if v is None or (isinstance(v, float) and v != v):   # None or NaN
         return dash
@@ -262,6 +276,15 @@ async def run(args) -> int:
     # proven:0.50,confirming:0.10). Unset env = legacy full-bankroll display,
     # disclosed. One implementation: mb_allocator does the split.
     groups_all = c1 | probes12 | originals | sweep2 | cracks_grp | insuff57
+    # ROSTER-ADMITTED groups (P2, operator ruling 2026-09-08 #1): the
+    # grader's own registration rule - dive ADMIT + roster, own clock -
+    # so a cohort5 wallet is a TRIAL here, not OBS, from its admission.
+    roster_reg = {}
+    for g in cq.roster_admit_groups(args.audit, args.admit_dirs,
+                                    groups_all | set(cq.RETRIAL_R1)):
+        for a in g["addresses"]:
+            roster_reg[a] = (g["epoch"], f"roster-{g['name']}")
+    groups_all = groups_all | set(roster_reg)
     alloc_spec = os.environ.get("MB_ALLOC_TIER_FRACS", "").strip()
     envelopes = None
     if alloc_spec and sz is not None:
@@ -294,9 +317,10 @@ async def run(args) -> int:
             dday = None
             if r.get("lcb") is not None and days and days > 0 and r["n"]:
                 dday = r["lcb"] * 100.0 * (r["n"] / days)
+            stk = None if srec is None else srec["stake"]
             rows.append({"a": a, "state": "TRIAL", "n": r["n"], "e": r["e"],
                          "edge": r["edge"], "ok": r["ok"], "lcb": r["lcb"],
-                         "stake": None if srec is None else srec["stake"],
+                         "stake": stk, "aday": algo_day(r, stk, days),
                          "dday": dday, "days": days, "note": "retrial-r1"})
             continue
         if a in locks:
@@ -320,6 +344,8 @@ async def run(args) -> int:
             epoch, grp = cq.CRACK_EPOCH, "crack-admit"
         elif a in insuff57:
             epoch, grp = cq.INSUFF57_EPOCH, "insuff57"
+        elif a in roster_reg:
+            epoch, grp = roster_reg[a]
         else:
             # watched, no registered per-trader test (e.g. cohort4, fbfd
             # probe) - diagnostic only, honestly labeled
@@ -331,9 +357,12 @@ async def run(args) -> int:
                                  "diagnostic only"})
             continue
         # BASIS CONVERSION 2026-09-06 (operator go): scoring epoch =
-        # the ONE fresh conversion epoch for every unconsumed trial;
-        # the group epochs above remain provenance/labels only.
-        epoch = cq.BASIS_EPOCH
+        # the ONE fresh conversion epoch for every PRE-conversion trial
+        # (group epochs above = provenance/labels only). PER-GROUP CLOCK
+        # 2026-09-08 (ruling 1, D1 fix): a group admitted AFTER the
+        # conversion runs its own clock - the grader's effective_epoch,
+        # so the funnel's days/rates match the grader's exactly.
+        epoch = cq.effective_epoch(epoch)
         r = trader_row(a, epoch, recs, outcomes, frm, fee_map, cfg, res_at)
         srec = display_stake(r, alloc_params(a, sz, envelopes), frm, fee_map)
         days = days_since(epoch)
@@ -345,15 +374,20 @@ async def run(args) -> int:
         dday = None
         if r.get("lcb") is not None and days and days > 0 and r["n"]:
             dday = r["lcb"] * 100.0 * (r["n"] / days)
+        stk = None if srec is None else srec["stake"]
         rows.append({"a": a, "state": "TRIAL", "n": r["n"], "e": r["e"],
                      "edge": r["edge"], "ok": r["ok"], "lcb": r["lcb"],
-                     "stake": None if srec is None else srec["stake"],
+                     "stake": stk, "aday": algo_day(r, stk, days),
                      "dday": dday,
                      "days": days, "note": grp})
 
     order = {"TRIAL": 0, "PASSED": 1, "OBS": 2, "FAILED": 3}
-    # primary sort = the money metric (operator hardcode); e breaks ties
+    # primary sort = the money metric (operator hardcode) at OUR stake
+    # ($algo/day, ruling 2026-09-08 #2); the $100 reference breaks ties
+    # ($0 stakes tie at zero), then e
     rows.sort(key=lambda x: (order[x["state"]],
+                             -(x.get("aday") if x.get("aday") is not None
+                               else -1e18),
                              -(x.get("dday") if x.get("dday") is not None
                                else -1e18),
                              -(x["e"] if x["e"] is not None else -1)))
@@ -396,13 +430,17 @@ async def run(args) -> int:
     else:
         print("[cracks] 0 - every reviewed non-REJECT address is on the "
               "roster or locked")
-    print("[$/day] HYPOTHETICAL - LCB ROI x $100/wager ref x resolved-rate "
-          "(resolved/day lags entry rate); sorted by it - the operator "
-          "hardcode: money-for-us is the test, all else is inputs")
-    print(f"{'TRADER':<14} {'STATE':<7} {'$lcb/day':>9} {'n':>4} {'e':>7} "
-          f"{'roi':>8} {'lcb':>8} {'$stake':>7} {'ok%':>4} {'days':>4}  note")
+    print("[$/day] HYPOTHETICAL - $algo/day = LCB ROI x OUR sizer stake x "
+          "resolved-rate (ruling 2026-09-08 #2: our wager algo, not a flat "
+          "$100; $0 stake until the forward LCB > 0); $ref100/day = the "
+          "$100/wager comparison (resolved/day lags entry rate); sorted by "
+          "$algo/day then $ref100/day")
+    print(f"{'TRADER':<14} {'STATE':<7} {'$algo/day':>9} {'$ref/day':>9} "
+          f"{'n':>4} {'e':>7} {'roi':>8} {'lcb':>8} {'$stake':>7} {'ok%':>4} "
+          f"{'days':>4}  note")
     for x in rows:
         print(f"{x['a'][:12]+'..':<14} {x['state']:<7} "
+              f"{fmt(x.get('aday'), '+.2f'):>9} "
               f"{fmt(x.get('dday'), '+.2f'):>9} "
               f"{fmt(x['n'], 'd'):>4} {fmt(x['e'], '.2f'):>7} "
               f"{fmt(x['edge'], '+.4f'):>8} "
@@ -550,10 +588,40 @@ def _self_test() -> int:
            and "mc.wager_rois(" not in tsrc  # evidence = market atoms
            and "per_market_edges" not in tsrc
            and 'lcb=r["lcb"] * fill' in tsrc
-           and "epoch = cq.BASIS_EPOCH" in src_run2)
-    print(f"  [basis] funnel on ROI atoms + conversion epoch + sizer "
-          f"roi->share map : {okc}")
+           and "epoch = cq.effective_epoch(epoch)" in src_run2
+           and "epoch = cq.BASIS_EPOCH\n" not in src_run2)  # the D1
+    # hardcode is gone; effective_epoch == BASIS_EPOCH for every
+    # pre-conversion group, so nothing registered today moves
+    print(f"  [basis] funnel on ROI atoms + per-group clock (effective_"
+          f"epoch) + sizer roi->share map : {okc}")
     ok &= okc
+    # ROSTER REGISTRATION surfaced (P2): a roster-admitted wallet is a
+    # TRIAL on its own clock and 'confirming' for the allocator, never OBS
+    okd = ("elif a in roster_reg:" in src_run2
+           and "epoch, grp = roster_reg[a]" in src_run2
+           and "groups_all = groups_all | set(roster_reg)" in src_run2
+           and "cq.roster_admit_groups(args.audit, args.admit_dirs" in src_run2
+           and src_run2.index("cq.roster_admit_groups(")
+           < src_run2.index("for a in clean:")
+           and cq.effective_epoch(cq.BASIS_EPOCH + 1.0) == cq.BASIS_EPOCH + 1.0)
+    print(f"  [roster-reg] roster-admitted wallets are TRIAL rows on their "
+          f"own clock and count as registered for tiering : {okd}")
+    ok &= okd
+    # $ALGO FIRST (P3, ruling 2026-09-08 #2): the money column at OUR
+    # sizer's stake leads the table and the sort; $100 ref = comparison
+    r_ = {"lcb": 0.2, "n": 10}
+    oke = (algo_day(r_, 5.0, 5) == 0.2 * 5.0 * 2
+           and algo_day(r_, 0.0, 5) == 0.0            # unproven -> $0.00
+           and algo_day(r_, None, 5) is None
+           and algo_day({"lcb": None, "n": 10}, 5.0, 5) is None
+           and algo_day(r_, 5.0, 0) is None
+           and src_run2.count('"aday": algo_day(r, stk, days)') == 2
+           and src_run2.index("'$algo/day'") < src_run2.index("'$ref/day'")
+           and src_run2.index("fmt(x.get('aday')") < src_run2.index("fmt(x.get('dday')")
+           and src_run2.index('x.get("aday")') < src_run2.index('x.get("dday")'))
+    print(f"  [algo] $algo/day = lcb x sizer stake x rate, $0 when unproven;"
+          f" both TRIAL rows carry it; column + sort lead with it : {oke}")
+    ok &= oke
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -580,6 +648,10 @@ if __name__ == "__main__":
     ap.add_argument("--locks",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
                             "cohort5_qual_locks.json")
+    ap.add_argument("--admit-dirs", dest="admit_dirs", nargs="*",
+                    default=cq.ADMIT_DIRS_DEFAULT,
+                    help="dive dossier dirs for roster registration "
+                         "(grader's list; newest dossier decides ADMIT)")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     raise SystemExit(_self_test() if a.self_test else asyncio.run(run(a)))

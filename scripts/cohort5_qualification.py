@@ -263,6 +263,21 @@ RETRIAL_R1 = [
     "0xf705fa045201391d9632b7f3cde06a5e24453ca7",
 ]
 
+# ROSTER REGISTRATION (docs/MB_TAILABLE_PLAN.md P2, operator ruling
+# 2026-09-08 #1): every dir a chain deep-dive dossier can land in. The
+# NEWEST dossier per address (file mtime) decides ADMIT. Add a dir here
+# when a new dive runner writes somewhere new (P4).
+ADMIT_DIRS_DEFAULT = [
+    "/opt/pa2-shared/mb_copyable_data/deep_dive",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_rereview",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_insuff_regrade",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_scout",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_scout2",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_promo0907",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_pipeline",   # P4 runner
+]
+CHAIN_AUDIT_DEFAULT = "/opt/pa2-shared/mb_copyable_data/chain_audit.json"
+
 
 def eligible_admits(deep_dive_dir: str, rereview_dir: str) -> list[str]:
     """Chain-screen ADMITs on complete labels: the re-review out-dir is the
@@ -296,6 +311,172 @@ def eligible_admits(deep_dive_dir: str, rereview_dir: str) -> list[str]:
 def forward_records(recs: list[dict], epoch: float) -> list[dict]:
     """The REAL detect_ts cutoff (trust_after is not a time filter)."""
     return [r for r in recs if float(r.get("detect_ts") or 0) >= epoch]
+
+
+def effective_epoch(group_epoch: float) -> float:
+    """The scoring clock for one group = max(group admission, BASIS_EPOCH).
+
+    PER-GROUP CLOCK (operator ruling 2026-09-08 #1, memory
+    feedback_dollars_per_day_is_the_test top block: "back testing is to
+    allow to the list and watching is in case they fall off"). Forward
+    watching is the DROP-OFF tripwire, so a trial's clock may never start
+    before its watch did. Groups admitted BEFORE the conversion keep the
+    conversion clock (their earlier data was design-visible; the
+    re-registration discipline in the BASIS_EPOCH block is unchanged).
+    Groups admitted AFTER it start at their OWN admission time
+    (chain_audit.json admitted_utc). Monotone both ways: no trial scores
+    data older than the basis conversion, none scores data older than its
+    own watch. Replaces the `epoch = BASIS_EPOCH` hardcode that would have
+    locked any post-conversion admit NOT DEMONSTRATED at
+    2026-09-13T22:30Z with n=0, immutably (2026-09-08 audit, defect D1)."""
+    return max(float(group_epoch), BASIS_EPOCH)
+
+
+def parse_utc(stamp) -> float:
+    """chain_audit.json admitted_utc -> epoch seconds. Accepts '+00:00',
+    'Z' and naive (taken as UTC). Raises ValueError on garbage."""
+    dt = datetime.fromisoformat(str(stamp).strip().replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def roster_admit_groups(chain_audit_path: str, admit_dirs: list,
+                        already: set) -> list:
+    """Roster groups admitted AFTER the basis conversion, each on its OWN
+    clock (effective_epoch). Registration = dive ADMIT + roster, no hand
+    list (docs/MB_TAILABLE_PLAN.md P2; operator ruling 2026-09-08 #1).
+
+    A wallet is registered iff ALL of:
+      - it is in a chain_audit.json group whose admitted_utc parses and
+        is >= BASIS_EPOCH (older groups are the hand lists above);
+      - it is on the watcher roster (chain_audit 'clean') - the watcher
+        records ONLY roster wallets, so anything else has n=0 forever and
+        its futility lock would be a lie;
+      - its NEWEST dive dossier across admit_dirs (file mtime) is ADMIT;
+      - it is not in `already` (a hand list / cands): the earlier
+        registration wins, never double-grouped - printed LOUD because
+        that earlier trial runs the conversion clock, not the wallet's.
+    Every exclusion is returned with its reason and printed by run();
+    nothing is silently dropped. A group with zero registrable addresses
+    is still returned (so the run shows it). Unreadable chain_audit is
+    FATAL (fail-toward-alarm: no heartbeat -> scoreboard STALE)."""
+    import glob
+    try:
+        audit = json.load(open(chain_audit_path))
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"FATAL: chain_audit unreadable ({e!r}) - refusing "
+                         f"to grade with roster registration unknown")
+    clean = {str(a).lower() for a in audit.get("clean", [])}
+    if not clean:
+        raise SystemExit("FATAL: chain_audit 'clean' roster empty - refusing")
+    newest: dict = {}
+    for d in admit_dirs:
+        for f in glob.glob(os.path.join(d, "0x*.json")):
+            try:
+                blob = json.load(open(f))
+                mt = os.path.getmtime(f)
+            except (OSError, ValueError) as e:
+                print(f"  [registration] WARNING unreadable dossier "
+                      f"{os.path.basename(f)}: {e!r} - NOT silently skipped")
+                continue
+            a = str(blob.get("address", "")).lower()
+            if a and (a not in newest or mt > newest[a][0]):
+                newest[a] = (mt, str(blob.get("verdict", "")), f)
+    out = []
+    for name, g in audit.items():
+        if not (isinstance(g, dict) and "admitted_utc" in g
+                and "addresses" in g):
+            continue
+        try:
+            ts = parse_utc(g["admitted_utc"])
+        except ValueError:
+            print(f"  [registration] WARNING {name}: admitted_utc "
+                  f"{g['admitted_utc']!r} unparseable - group NOT registered")
+            continue
+        if ts < BASIS_EPOCH:
+            continue     # pre-conversion groups = the hand lists above
+        addrs, skipped = [], []
+        for a in [str(x).lower() for x in g.get("addresses", [])]:
+            if a in already:
+                skipped.append((a, "already registered under an earlier "
+                                   "group -> graded on the CONVERSION clock, "
+                                   "not its own; if its watch began after "
+                                   "the conversion that trial's futility is "
+                                   "a false tripwire - operator call"))
+            elif a not in clean:
+                skipped.append((a, "not on the watcher roster (chain_audit "
+                                   "clean) - nothing is recorded for it"))
+            elif a not in newest:
+                skipped.append((a, "no dive dossier in any admit dir"))
+            elif not newest[a][1].startswith("ADMIT"):
+                skipped.append((a, f"newest dive verdict {newest[a][1]} "
+                                   f"({os.path.basename(os.path.dirname(newest[a][2]))})"))
+            else:
+                addrs.append(a)
+        out.append({"name": name, "epoch": ts,
+                    "admitted_utc": str(g["admitted_utc"]),
+                    "addresses": sorted(addrs), "skipped": skipped})
+    out.sort(key=lambda x: (x["epoch"], x["name"]))
+    return out
+
+
+# DROP-OFF TRIPWIRE (docs/MB_TAILABLE_PLAN.md P2, operator ruling
+# 2026-09-08 #1: forward watching is the drop-off signal, never the
+# admission gate). A LABEL only - it never removes a wallet from the
+# roster or the list (report + ask). Thresholds = the plan's numbers;
+# operator re-rules them here, nowhere else.
+TRIPWIRE_DROP_LCB_N = 10     # DROPPED when forward ROI LCB < 0 at n >= this
+TRIPWIRE_DEGRADE_N = 5       # DEGRADED when forward mean ROI < 0 at n >= this
+
+
+def tripwire(verdict, n, mean_roi, lcb) -> str:
+    """Forward drop-off label for one wallet from the grader's own numbers.
+    verdict = the lock verdict ('' / None while ACCRUING). Order: a lock
+    verdict decides first (PASSED / DROPPED (futility) / DROPPED (DNQ) /
+    E-PASS-BELOW-FLOOR); then the plan's two forward tests on the live
+    numbers; else WATCH. LCB here is mc.roi_lcb (sup{m: e(m) >= 20}), a
+    confidence bound - LCB < 0 means 'not yet shown positive', which the
+    plan names DROPPED at n >= 10; measured 2026-09-08 that fires on
+    wallets with positive realized ROI (board row 0x4ab40f2a49: roi +1.128,
+    lcb -0.781 @ n=54) - flagged to the operator, implemented as written."""
+    v = str(verdict or "")
+    if v.startswith("QUALIFIES"):
+        return "PASSED"
+    if v.startswith("NOT DEMONSTRATED"):
+        return "DROPPED (futility)"
+    if v.startswith("DOES NOT QUALIFY"):
+        return "DROPPED (locked DNQ)"
+    if v.startswith("E-PASS"):
+        return "E-PASS-BELOW-FLOOR"
+    n = int(n or 0)
+    if lcb is not None and lcb < 0.0 and n >= TRIPWIRE_DROP_LCB_N:
+        return f"DROPPED (lcb<0 @ n>={TRIPWIRE_DROP_LCB_N})"
+    if mean_roi is not None and mean_roi < 0.0 and n >= TRIPWIRE_DEGRADE_N:
+        return f"DEGRADED (roi<0 @ n>={TRIPWIRE_DEGRADE_N})"
+    return "WATCH"
+
+
+def write_forward_status(path: str, rows: list, note: str = "") -> None:
+    """Machine-readable per-wallet forward status - the ONE source the
+    tailable list (scripts/mb_tailable_list.py, P1) reads for 'forward
+    status'. Atomic replace; a write failure must not fail the grading
+    run (locks already committed) - it prints and the consumer alarms on
+    a stale ts instead."""
+    try:
+        rec = {"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+               "basis": "roi-netwin-20260906",
+               "futility_days": FUTILITY_DAYS,
+               "tripwire": {"drop_lcb_n": TRIPWIRE_DROP_LCB_N,
+                            "degrade_n": TRIPWIRE_DEGRADE_N},
+               "note": note, "rows": rows}
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(rec, f, indent=1)
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"  [forward-status] WARN: could not write {path}: {e!r} - "
+              f"the tailable list will see a STALE ts (alarm direction)")
 
 
 def bar_status(res: dict) -> tuple[bool, str]:
@@ -341,6 +522,13 @@ def write_heartbeat(path: str, groups_graded: int, locks_written: int) -> None:
 async def run(args) -> int:
     from types import SimpleNamespace as NS
     cands = eligible_admits(args.deep_dive, args.rereview)
+    # ROSTER REGISTRATION (P2): resolved BEFORE any grading so a corrupt
+    # chain_audit fails fast, never after other groups wrote locks.
+    hand = (set(cands) | set(C1_UNTESTED) | set(INSUFF_PROBES)
+            | set(SWEEP2_ADMITS) | set(CRACK_ADMITS) | set(SWEEP2_INSUFF)
+            | set(RETRIAL_R1))
+    roster_groups = roster_admit_groups(args.chain_audit, args.admit_dirs,
+                                        hand)
     recs = az.load_records(args.log)
     assert recs, "EMPTY shadow log - ABORT"
     fwd = forward_records(recs, QUAL_EPOCH)
@@ -352,6 +540,8 @@ async def run(args) -> int:
         print("no forward tokens yet — window just opened; nothing to grade "
               "(NOT a failure; re-run after fills accrue)")
         write_heartbeat(args.heartbeat, 0, 0)
+        write_forward_status(args.forward_status, [],
+                             "no forward tokens - nothing graded this run")
         return 0
     db = await sr.fresh_outcomes(tokens)
     supp = sr.supplement_outcomes(args.supplement, tokens) if tokens else {}
@@ -383,25 +573,49 @@ async def run(args) -> int:
     n_locks_start = len(locks)
     graded_groups = 0
     proposals = []
+    status_rows = []   # one per graded address -> forward-status artifact
 
     def eproc_grade(group, epoch, lock_source, lock_suffix=""):
         nonlocal locks, graded_groups
         graded_groups += 1
-        # BASIS CONVERSION 2026-09-06: every unconsumed trial scores from
-        # the ONE fresh conversion epoch — the group epoch parameter is
-        # provenance only (see the BASIS_EPOCH block above).
+        # BASIS CONVERSION 2026-09-06: every PRE-conversion trial scores
+        # from the ONE fresh conversion epoch (its group epoch = provenance
+        # only, see the BASIS_EPOCH block). PER-GROUP CLOCK 2026-09-08
+        # (ruling 1): a group admitted AFTER the conversion starts at its
+        # own admission - effective_epoch(). The former hardcode of this
+        # line to BASIS_EPOCH was the 09-13 false-futility trap (D1).
         # lock_suffix (retrials): all lock lookups/writes key on
         # a+lock_suffix so a retrial neither reads nor touches the
         # immutable original lock.
-        epoch = BASIS_EPOCH
+        epoch = effective_epoch(epoch)
         gfwd = forward_records(recs, epoch)
         now_ts = datetime.now(timezone.utc).timestamp()
+        epoch_utc = datetime.fromtimestamp(epoch, timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        futility_utc = datetime.fromtimestamp(
+            epoch + FUTILITY_DAYS * 86400.0, timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+
+        def srow(a, lkey, state, verdict, n, n_wagers, ev, mean_roi, lcb,
+                 wk, el_days, locked_at=None):
+            status_rows.append({
+                "address": a, "lock_key": lkey, "source": lock_source,
+                "epoch_utc": epoch_utc, "el_days": round(el_days, 3),
+                "futility_utc": futility_utc if state == "ACCRUING" else None,
+                "state": state, "verdict": verdict, "locked_at": locked_at,
+                "n_mkts": n, "n_wagers": n_wagers, "e": ev,
+                "roi": mean_roi, "lcb": lcb,
+                "wk_ref100_lcb": wk,   # HYPOTHETICAL $100/wager reference
+                "tripwire": tripwire(verdict, n, mean_roi, lcb)})
         for a in group:
             lkey = a + lock_suffix
             if lkey in locks:
                 lk = locks[lkey]
                 print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: "
                       f"{lk['verdict']} (consumed)")
+                srow(a, lkey, "LOCKED", lk.get("verdict"), lk.get("resolved"),
+                     lk.get("wagers"), lk.get("p"), lk.get("roi"), None, None,
+                     max((now_ts - epoch) / 86400.0, 1e-9), lk.get("locked_at"))
                 continue
             t_recs = [r for r in gfwd
                       if str(r.get("trader", "")).lower() == a]
@@ -427,8 +641,13 @@ async def run(args) -> int:
                         "source": lock_source})
                     print(f"  {a[:12]}..  <== NOT DEMONSTRATED (futility "
                           f"1wk, 0 resolved) [LOCKED]")
+                    srow(a, lkey, "LOCKED", "NOT DEMONSTRATED (futility 1wk)",
+                         0, 0, None, None, None, None, el_days,
+                         locks[lkey]["locked_at"])
                 else:
                     print(f"  {a[:12]}..  ACCRUING (0 resolved, e=n/a)")
+                    srow(a, lkey, "ACCRUING", None, 0, 0, None, None, None,
+                         None, el_days)
                 continue
             ev = mc.roi_e_value(rois, 0.0)
             mean_roi = sum(rois) / n
@@ -453,6 +672,9 @@ async def run(args) -> int:
                     "verdict": verdict,
                     "basis": "roi-netwin-20260906", "source": lock_source})
                 print(line + f"  <== {verdict} [LOCKED THIS RUN]")
+                srow(a, lkey, "LOCKED", verdict, n, n_wagers, ev,
+                     round(mean_roi, 6), lcb, wk, el_days,
+                     locks[lkey]["locked_at"])
                 if verdict.startswith("QUALIFIES"):
                     proposals.append(a)
             elif el_days >= FUTILITY_DAYS:
@@ -466,8 +688,18 @@ async def run(args) -> int:
                     "basis": "roi-netwin-20260906", "source": lock_source})
                 print(line + "  <== NOT DEMONSTRATED (futility 1wk) "
                              "[LOCKED]")
+                srow(a, lkey, "LOCKED", "NOT DEMONSTRATED (futility 1wk)",
+                     n, n_wagers, ev, round(mean_roi, 6), None, None,
+                     el_days, locks[lkey]["locked_at"])
             else:
                 print(line + "  ACCRUING")
+                # LCB reported while accruing = the same canon inversion
+                # (None until even m=-1 rejects); wk at the $100 reference
+                lcb_acc = mc.roi_lcb(rois, e_bar=C1_E_REJECT)
+                wk_acc = (lcb_acc * 100.0 * (n / el_days) * 7.0
+                          if lcb_acc is not None else None)
+                srow(a, lkey, "ACCRUING", None, n, n_wagers, ev,
+                     round(mean_roi, 6), lcb_acc, wk_acc, el_days)
 
     print(f"  [amendment 2026-08-25] ALL unconsumed looks are ANYTIME-VALID "
           f"e-process (reject e>={C1_E_REJECT:.0f}); the consumed locks "
@@ -477,7 +709,9 @@ async def run(args) -> int:
           f"winnings >= ${WEEKLY_FLOOR_USD:.0f}/wk @ $100/wager, futility "
           f"= {FUTILITY_DAYS:.0f} days; ONE fresh epoch "
           f"{datetime.fromtimestamp(BASIS_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
-          f" for every unconsumed trial (group epochs = provenance only)")
+          f" for every PRE-conversion trial (group epochs = provenance "
+          f"only); a group admitted AFTER it runs its OWN clock "
+          f"[per-group clock, ruling 2026-09-08]")
     print(f"original-20 unconsumed - re-registered epoch "
           f"{datetime.fromtimestamp(REREG_EPOCH, timezone.utc):%Y-%m-%dT%H:%MZ}"
           f" (fresh: prior diagnostics were visible):")
@@ -516,10 +750,27 @@ async def run(args) -> int:
     eproc_grade(RETRIAL_R1, BASIS_EPOCH,
                 "retrial r1 e-process (basis conversion 2026-09-06)",
                 lock_suffix="#r1")
+    # ROSTER-ADMITTED GROUPS (post-conversion; own clock per ruling
+    # 2026-09-08 #1; registration = dive ADMIT + roster, no hand list)
+    for g in roster_groups:
+        print(f"roster-admit {g['name']} ({len(g['addresses'])}) - epoch "
+              f"{datetime.fromtimestamp(g['epoch'], timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
+              f" (OWN clock: admitted after the conversion; registration = "
+              f"dive ADMIT + roster; forward = drop-off tripwire only):")
+        for a, why in g["skipped"]:
+            print(f"  {a[:12]}..  NOT REGISTERED: {why}")
+        if g["addresses"]:
+            eproc_grade(g["addresses"], g["epoch"],
+                        f"roster-admit {g['name']} e-process (admitted "
+                        f"{g['admitted_utc']}, own clock, ruling 2026-09-08)")
+    if not roster_groups:
+        print("roster-admit groups: none admitted after the conversion epoch")
     if proposals:
         print(chr(10) + "PROPOSALS (operator go required for composition): "
               + ", ".join(a[:12] + ".." for a in proposals))
     write_heartbeat(args.heartbeat, graded_groups, len(locks) - n_locks_start)
+    write_forward_status(args.forward_status, status_rows,
+                         f"{graded_groups} groups graded")
     return 0
 
 
@@ -652,7 +903,10 @@ def _self_test() -> int:
            and "roi_lcb" in esrc
            and "per_market_edges(" not in esrc  # call form; a history
            # comment at the frm-fix site may NAME the old estimand
-           and "epoch = BASIS_EPOCH" in esrc
+           and "epoch = effective_epoch(epoch)" in esrc
+           and "epoch = BASIS_EPOCH" not in esrc   # the D1 hardcode
+           and "(now_ts - epoch) / 86400.0" in esrc  # futility clock
+           # runs off the SAME (effective) epoch, never BASIS directly
            and FUTILITY_DAYS == 7.0
            and BASIS_EPOCH == datetime(2026, 9, 6, 22, 30, 0,
                                        tzinfo=timezone.utc).timestamp())
@@ -672,6 +926,162 @@ def _self_test() -> int:
     print(f"  [basis] band epoch/floor pinned to grader; retrial #r1 keys"
           f" : {okb2}")
     ok &= okb2
+    # PER-GROUP CLOCK (operator ruling 2026-09-08 #1 - forward watching
+    # is the drop-off tripwire; D1 fix). Pre-conversion groups keep the
+    # conversion clock; a post-conversion admit starts at its own.
+    _utc = timezone.utc
+    okc1 = all(effective_epoch(e) == BASIS_EPOCH for e in
+               (QUAL_EPOCH, C1_FWD_EPOCH, REREG_EPOCH, SWEEP2_EPOCH,
+                CRACK_EPOCH, INSUFF57_EPOCH, BASIS_EPOCH))
+    okc2 = effective_epoch(BASIS_EPOCH + 2 * 86400.0) == BASIS_EPOCH + 2 * 86400.0
+    print(f"  [clock] pre-conversion groups -> conversion clock; later "
+          f"admit -> own clock : {okc1 and okc2}")
+    ok &= okc1 and okc2
+    # the D1 scenario, from constants: cohort5 rostered 2026-09-08T02:56:10Z
+    # (chain_audit.json admitted_utc). Old hardcode: futility date
+    # 2026-09-13T22:30Z with n=0. Per-group clock: 2026-09-15T02:56:10Z.
+    c5 = datetime(2026, 9, 8, 2, 56, 10, tzinfo=_utc).timestamp()
+    fut_old = BASIS_EPOCH + FUTILITY_DAYS * 86400.0
+    fut_new = effective_epoch(c5) + FUTILITY_DAYS * 86400.0
+    okc3 = (fut_old == datetime(2026, 9, 13, 22, 30, 0, tzinfo=_utc).timestamp()
+            and fut_new == datetime(2026, 9, 15, 2, 56, 10,
+                                    tzinfo=_utc).timestamp()
+            and fut_new > fut_old)
+    # and the futility test itself, 'now' = 8 days after conversion: the
+    # old clock says futile (8 >= 7), the group clock says accruing (< 7)
+    now = BASIS_EPOCH + 8 * 86400.0
+    okc4 = ((now - BASIS_EPOCH) / 86400.0 >= FUTILITY_DAYS
+            and (now - effective_epoch(c5)) / 86400.0 < FUTILITY_DAYS)
+    print(f"  [clock] D1 scenario: cohort5 futility moves 09-13T22:30Z -> "
+          f"09-15T02:56:10Z; not futile at conv+8d : {okc3 and okc4}")
+    ok &= okc3 and okc4
+    # ROSTER REGISTRATION (P2): registration = dive ADMIT + roster, own
+    # clock; newest dossier wins; every exclusion returned with a reason.
+    okp = (parse_utc("2026-09-08T02:56:10+00:00")
+           == datetime(2026, 9, 8, 2, 56, 10, tzinfo=_utc).timestamp()
+           and parse_utc("2026-08-25T18:00:00Z")
+           == datetime(2026, 8, 25, 18, 0, 0, tzinfo=_utc).timestamp()
+           and parse_utc("2026-08-25T18:00:00")
+           == parse_utc("2026-08-25T18:00:00Z"))
+    try:
+        parse_utc("not a date")
+        okp = False
+    except ValueError:
+        pass
+    print(f"  [registration] admitted_utc parse: +00:00 / Z / naive=UTC; "
+          f"garbage raises : {okp}")
+    ok &= okp
+    with tempfile.TemporaryDirectory() as d:
+        A, B, C, D, E, F = ("0x" + ch * 40 for ch in "abcdef")
+        d1, d2 = os.path.join(d, "dd1"), os.path.join(d, "dd2")
+        os.makedirs(d1)
+        os.makedirs(d2)
+
+        def dossier(dr, a, v, mt):
+            fp = os.path.join(dr, a + ".json")
+            with open(fp, "w") as fh:
+                json.dump({"address": a, "verdict": v}, fh)
+            os.utime(fp, (mt, mt))
+        dossier(d1, A, "ADMIT", 100)
+        dossier(d2, A, "ADMIT", 200)     # A: ADMIT everywhere -> registered
+        dossier(d1, B, "ADMIT", 100)     # B: in `already` -> earlier wins
+        dossier(d1, C, "ADMIT", 100)
+        dossier(d2, C, "REJECT", 200)    # C: NEWEST says REJECT -> out
+        dossier(d1, D, "ADMIT", 100)     # D: not on roster -> out
+        #                                  F: on group+roster, no dossier
+        post = datetime.fromtimestamp(BASIS_EPOCH + 86400.0,
+                                      _utc).isoformat()
+        audit = {"results": {}, "clean": [A, B, C, E, F],
+                 "cohortX": {"addresses": [A, B, C, D, F],
+                             "admitted_utc": post},
+                 "cohortOld": {"addresses": [E], "admitted_utc":
+                               "2026-07-15T19:20:12.393568+00:00"}}
+        apath = os.path.join(d, "chain_audit.json")
+        with open(apath, "w") as fh:
+            json.dump(audit, fh)
+        groups = roster_admit_groups(apath, [d1, d2], {B})
+        ok8 = (len(groups) == 1 and groups[0]["name"] == "cohortX"
+               and groups[0]["epoch"] == BASIS_EPOCH + 86400.0
+               and groups[0]["addresses"] == [A]
+               and sorted(a for a, _ in groups[0]["skipped"]) == [B, C, D, F])
+        why = dict(groups[0]["skipped"]) if groups else {}
+        ok8b = ("earlier" in why.get(B, "") and "REJECT" in why.get(C, "")
+                and "roster" in why.get(D, "") and "no dive" in why.get(F, ""))
+        print(f"  [registration] post-conversion group: ADMIT+roster in; "
+              f"already/newest-REJECT/off-roster/no-dossier out with reasons;"
+              f" pre-conversion group skipped : {ok8 and ok8b}")
+        ok &= ok8 and ok8b
+        # a wallet's clock = its group's admission, via the same path the
+        # closure takes (effective_epoch on the registered epoch)
+        ok8c = (groups and effective_epoch(groups[0]["epoch"])
+                == BASIS_EPOCH + 86400.0)
+        print(f"  [registration] registered group scores on its own clock"
+              f" : {bool(ok8c)}")
+        ok &= bool(ok8c)
+        try:
+            roster_admit_groups(os.path.join(d, "missing.json"), [d1], set())
+            ok8d = False
+        except SystemExit:
+            ok8d = True
+        print(f"  [registration] unreadable chain_audit is FATAL, never "
+              f"'no groups' : {ok8d}")
+        ok &= ok8d
+    okr = ("roster_admit_groups(args.chain_audit, args.admit_dirs" in esrc
+           and 'eproc_grade(g["addresses"], g["epoch"]' in esrc
+           and "hand = (set(cands)" in esrc
+           and esrc.index("roster_groups = roster_admit_groups")
+           < esrc.index("recs = az.load_records"))   # registration
+    # resolved BEFORE the shadow-log read, the DB read and every
+    # eproc_grade call (a corrupt roster file fails before anything runs)
+    print(f"  [registration] run() grades every registered group on its "
+          f"epoch; cands in the exclusion set; resolved pre-grade : {okr}")
+    ok &= okr
+    # DROP-OFF TRIPWIRE (P2) truth table - a label, never a removal
+    okt = (tripwire("QUALIFIES", 40, 0.2, 0.1) == "PASSED"
+           and tripwire("NOT DEMONSTRATED (futility 1wk)", 0, None, None)
+           == "DROPPED (futility)"
+           and tripwire("DOES NOT QUALIFY", 30, -0.1, None)
+           == "DROPPED (locked DNQ)"
+           and tripwire("E-PASS BUT BELOW MONEY FLOOR (..)", 30, 0.1, 0.01)
+           == "E-PASS-BELOW-FLOOR"
+           and tripwire(None, TRIPWIRE_DROP_LCB_N, 0.5, -0.01).startswith("DROPPED (lcb<0")
+           and tripwire(None, TRIPWIRE_DROP_LCB_N - 1, 0.5, -0.01) == "WATCH"
+           and tripwire(None, TRIPWIRE_DEGRADE_N, -0.05, None).startswith("DEGRADED")
+           and tripwire(None, TRIPWIRE_DEGRADE_N - 1, -0.05, None) == "WATCH"
+           and tripwire(None, 50, 0.3, 0.05) == "WATCH"
+           and tripwire("", 0, None, None) == "WATCH"
+           and TRIPWIRE_DROP_LCB_N == 10 and TRIPWIRE_DEGRADE_N == 5)
+    print(f"  [tripwire] lock verdicts first; lcb<0@n>=10 DROPPED; "
+          f"roi<0@n>=5 DEGRADED; else WATCH; plan thresholds pinned : {okt}")
+    ok &= okt
+    # FORWARD-STATUS artifact: atomic, full schema, written at both exits,
+    # one row per graded address in EVERY closure branch
+    with tempfile.TemporaryDirectory() as d:
+        fsp = os.path.join(d, "fs.json")
+        write_forward_status(fsp, [{"address": "0xa"}], "t")
+        try:
+            fs = json.load(open(fsp))
+        except (ValueError, OSError):
+            fs = {}
+        oks = (set(fs) == {"ts", "basis", "futility_days", "tripwire", "note",
+                           "rows"}
+               and fs.get("rows") == [{"address": "0xa"}]
+               and fs.get("tripwire") == {"drop_lcb_n": TRIPWIRE_DROP_LCB_N,
+                                          "degrade_n": TRIPWIRE_DEGRADE_N}
+               and not os.path.exists(fsp + ".tmp"))
+        try:
+            datetime.strptime(fs.get("ts", ""), "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            oks = False
+    oks2 = (esrc.count("write_forward_status(") == 2
+            and esrc.count('srow(a, lkey, "') == 6   # the 6 CALLS (the
+            # def line has no quoted state), one per closure branch
+            and '"tripwire": tripwire(verdict, n, mean_roi, lcb)' in esrc
+            and esrc.index("write_heartbeat(args.heartbeat, graded_groups")
+            < esrc.index("write_forward_status(args.forward_status, status_rows"))
+    print(f"  [forward-status] atomic + schema; run() writes at both exits; "
+          f"all 6 branches emit a row with the tripwire : {oks and oks2}")
+    ok &= oks and oks2
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -699,6 +1109,15 @@ if __name__ == "__main__":
     ap.add_argument("--heartbeat",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
                             "cohort5_grader_heartbeat.json")
+    ap.add_argument("--forward-status", dest="forward_status",
+                    default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
+                            "cohort5_forward_status.json")
+    ap.add_argument("--chain-audit", dest="chain_audit",
+                    default=CHAIN_AUDIT_DEFAULT)
+    ap.add_argument("--admit-dirs", dest="admit_dirs", nargs="*",
+                    default=ADMIT_DIRS_DEFAULT,
+                    help="every dir a dive dossier can land in; newest "
+                         "dossier per address decides ADMIT")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     raise SystemExit(_self_test() if a.self_test else asyncio.run(run(a)))

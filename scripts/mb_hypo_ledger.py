@@ -83,6 +83,12 @@ async def run(args) -> int:
         (cq.SWEEP2_INSUFF, cq.INSUFF57_EPOCH),
         (cq.eligible_admits(args.deep_dive, args.rereview), cq.REREG_EPOCH),
     ]
+    # ROSTER-ADMITTED groups (P2, operator ruling 2026-09-08 #1): the
+    # grader's registration rule (dive ADMIT + roster, own clock), so the
+    # ledger accrues for a cohort5 wallet from ITS admission, not never.
+    hand = set().union(*[set(g) for g, _ in groups]) | set(cq.RETRIAL_R1)
+    for g in cq.roster_admit_groups(args.chain_audit, args.admit_dirs, hand):
+        groups.append((g["addresses"], g["epoch"]))
     tokens = sorted({str(r["token_id"]) for r in recs if r.get("token_id")})
     db = await sr.fresh_outcomes(tokens)
     supp = sr.supplement_outcomes(args.supplement, tokens) if tokens else {}
@@ -94,8 +100,10 @@ async def run(args) -> int:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_rows = []
     for group, epoch in groups:
-        # BASIS CONVERSION 2026-09-06: one fresh epoch for all groups
-        epoch = cq.BASIS_EPOCH
+        # BASIS CONVERSION 2026-09-06: one fresh epoch for every
+        # PRE-conversion group; PER-GROUP CLOCK 2026-09-08 (ruling 1):
+        # a post-conversion roster admit accrues from its own admission
+        epoch = cq.effective_epoch(epoch)
         gfwd = cq.forward_records(recs, epoch)
         for a in group:
             t_recs = [r for r in gfwd
@@ -142,19 +150,24 @@ async def run(args) -> int:
         p[0] += 1
         p[1] += r["d_ref100"]
         p[2] += r["d_sizer"]
+    # $ALGO FIRST (operator ruling 2026-09-08 #2): the ledger's money
+    # headline is the accrual at OUR sizer's stake per wager (row field
+    # d_sizer, unchanged); the $100/wager reference is the comparison.
     print(f"===== {now} HYPOTHETICAL $ LEDGER (paper; no orders placed; "
-          f"$ref100 = wager ROI x $100/wager [basis conv 2026-09-06]; $sizer = roi x "
-          f"sizer stake, $0 until proven) =====")
+          f"$algo = wager ROI x OUR sizer stake [ruling 2026-09-08 #2; $0 "
+          f"until the forward LCB > 0]; $ref100 = wager ROI x $100/wager "
+          f"comparison [basis conv 2026-09-06]) =====")
     print(f"[hypo] appended {len(new_rows)} newly-resolved rows this run | "
           f"ledger total rows {len(rows)}")
     tot100 = sum(p[1] for p in per.values())
     totsz = sum(p[2] for p in per.values())
-    for a, (n, d100, dsz) in sorted(per.items(), key=lambda x: -x[1][1])[:15]:
-        print(f"  {a[:12]}..  n={n:<4} $ref100={d100:+9.2f}  $sizer={dsz:+8.2f}")
+    for a, (n, d100, dsz) in sorted(per.items(),
+                                    key=lambda x: (-x[1][2], -x[1][1]))[:15]:
+        print(f"  {a[:12]}..  n={n:<4} $algo={dsz:+8.2f}  $ref100={d100:+9.2f}")
     if len(per) > 15:
         print(f"  ... {len(per) - 15} more traders in the ledger file")
-    print(f"[hypo] CUMULATIVE since ledger start: $ref100={tot100:+.2f} "
-          f"$sizer={totsz:+.2f} across {len(per)} traders "
+    print(f"[hypo] CUMULATIVE since ledger start: $algo={totsz:+.2f} "
+          f"$ref100={tot100:+.2f} across {len(per)} traders "
           f"(HYPOTHETICAL - label travels with every quote of these)")
     return 0
 
@@ -189,6 +202,24 @@ def _self_test() -> int:
     ok5 = "HYPOTHETICAL" in src and "no orders placed" in src
     print(f"  [label] HYPOTHETICAL + no-orders-placed baked into header : {ok5}")
     ok &= ok5
+    # PER-GROUP CLOCK + ROSTER REGISTRATION (P2, ruling 2026-09-08 #1)
+    ok6 = ("epoch = cq.effective_epoch(epoch)" in src
+           and "epoch = cq.BASIS_EPOCH\n" not in src
+           and "cq.roster_admit_groups(args.chain_audit, args.admit_dirs, hand)" in src
+           and 'groups.append((g["addresses"], g["epoch"]))' in src
+           and src.index("cq.roster_admit_groups(") < src.index("for group, epoch in groups:")
+           and cq.effective_epoch(cq.REREG_EPOCH) == cq.BASIS_EPOCH)
+    print(f"  [clock] pre-conversion groups on the conversion clock; roster-"
+          f"admitted groups appended on their own : {ok6}")
+    ok &= ok6
+    # $ALGO FIRST (P3): the sizer-stake accrual leads every print + sort
+    ok7 = (src.index("$algo={dsz") < src.index("$ref100={d100")
+           and src.index("$algo={totsz") < src.index("$ref100={tot100")
+           and "key=lambda x: (-x[1][2], -x[1][1])" in src
+           and "d_sizer" in src)   # row field unchanged (interface)
+    print(f"  [algo] $algo (sizer stake) printed and sorted first; $ref100 "
+          f"= comparison; row fields unchanged : {ok7}")
+    ok &= ok7
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -212,6 +243,10 @@ if __name__ == "__main__":
     ap.add_argument("--ledger",
                     default="/opt/pa2-shared/mb_copyable_data/deep_dive/"
                             "hypo_ledger_roi.jsonl")
+    ap.add_argument("--chain-audit", dest="chain_audit",
+                    default=cq.CHAIN_AUDIT_DEFAULT)
+    ap.add_argument("--admit-dirs", dest="admit_dirs", nargs="*",
+                    default=cq.ADMIT_DIRS_DEFAULT)
     ap.add_argument("--self-test", action="store_true", dest="self_test")
     a = ap.parse_args()
     sys.exit(_self_test() if a.self_test else asyncio.run(run(a)))

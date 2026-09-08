@@ -73,7 +73,14 @@ cd /opt/polymarket-ai-v2
   else
     echo "[daily] 0 new tokens - label step skipped"
   fi
+  # $algo basis (operator ruling 2026-09-08 #2): the boards size every
+  # holdout wager with the sizer foursome - sourced, never hardcoded
+  [ -f /opt/pa2-shared/mb_sizer.env ] && . /opt/pa2-shared/mb_sizer.env
   DATABASE_URL="$DBURL" PYTHONPATH="$D" \
+  MB_SIZER_BANKROLL="${MB_SIZER_BANKROLL:-}" \
+  MB_SIZER_KELLY_MULT="${MB_SIZER_KELLY_MULT:-}" \
+  MB_SIZER_CONCURRENCY="${MB_SIZER_CONCURRENCY:-}" \
+  MB_SIZER_MIN_VIABLE="${MB_SIZER_MIN_VIABLE:-}" \
     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_backtest.py" daily-replay \
       --rows "$BT/candidate_rows.jsonl" --outdir "$BT" --top 10 2>&1 \
       | grep -vE "^[0-9]{4}-|\[info|\[debug"
@@ -91,6 +98,29 @@ cd /opt/polymarket-ai-v2
     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_gamma_window_labels.py" \
       --tokens "$BT/sweep_tokens.jsonl" \
       --start "$(date -u -d '72 hours ago' +%FT%TZ)" --rps 8 --write 2>&1 | tail -8
+} >> "$LOG"
+{
+  # tailable list (docs/MB_TAILABLE_PLAN.md P1, operator deliverable
+  # 2026-09-08): one row per wallet from the boards, dossiers, eligibility
+  # reads, roster, forward status. Writes OUTSIDE the clone
+  # (mb_copyable_data/tailable/). Sizer foursome sourced, never hardcoded.
+  echo "===== $(date -u +%FT%TZ) tailable list ====="
+  [ -f /opt/pa2-shared/mb_sizer.env ] && . /opt/pa2-shared/mb_sizer.env
+  PYTHONPATH="$D" \
+  MB_SIZER_BANKROLL="${MB_SIZER_BANKROLL:-}" \
+  MB_SIZER_KELLY_MULT="${MB_SIZER_KELLY_MULT:-}" \
+  MB_SIZER_CONCURRENCY="${MB_SIZER_CONCURRENCY:-}" \
+  MB_SIZER_MIN_VIABLE="${MB_SIZER_MIN_VIABLE:-}" \
+    timeout -s INT 900 \
+    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_tailable_list.py" 2>&1 \
+      | grep -vE "^[0-9]{4}-|\[info|\[debug"
+} >> "$LOG"
+{
+  # candidate pipeline (plan P4): list -> dive queue (NEW dives + 60d
+  # re-dives); a serial runner (vps_jobs/tailable_dive_runner.sh, its own
+  # cron) drains it into deep_dive_pipeline/. Proposals only.
+  echo "===== $(date -u +%FT%TZ) candidate pipeline ====="
+  PYTHONPATH="$D"     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_candidate_pipeline.py" 2>&1
 } >> "$LOG"
 {
   /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_chain_watch.py" 2>&1

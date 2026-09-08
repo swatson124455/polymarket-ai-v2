@@ -1,0 +1,11 @@
+{
+  "_why": "SELECTION (multiplicity) adjustment carried into the tailable list (docs/MB_TAILABLE_PLAN.md P1: 'selection-survives Y/N from the null replication; carry the p'). No script writes this file: the numbers are the 2026-09-08 53-agent audit's independently re-run break-even null, recorded verbatim in docs/MB_STATE.md (2026-09-08 ~18:3xZ block, CORRECTION 2). Hand-entered from that record = INFERRED-from-doc, never re-measured here. DEPLOYED COPY: /opt/pa2-shared/mb_copyable_data/tailable/tailable_null.json (outside the clone). A wallet absent from `wallets` is reported 'untested' - never assumed to survive.",
+  "source": "docs/MB_STATE.md 2026-09-08 audit block; null = break-even, 400 reps, 12,889-wallet universe, deployed roi_lcb; family-wise bar = 5,271 holdout-tested wallets -> e >= 105,420",
+  "reps": 400,
+  "recorded_utc": "2026-09-08T18:3xZ",
+  "wallets": {
+    "0x5feea3460cc6d46d800a2540876324c8b9d5f719": {"hits": 0, "p": 0.0, "survives": true, "note": "never reached in 400 reps (95% upper bound 0.75%); clears the family-wise bar by 189x, e=1.99e7"},
+    "0xe48217d0b70128d77a00615275d26916a95f025d": {"hits": 76, "p": 0.19, "survives": false, "note": "null top row reaches or beats it 19.0% of reps; e=183 vs bar 105,420"},
+    "0x2c50852938f7cb4ed10c7a8e49877adc076470e3": {"hits": 188, "p": 0.47, "survives": false, "note": "null top row reaches or beats it 47.0% of reps; e=593 vs bar 105,420"}
+  }
+}
