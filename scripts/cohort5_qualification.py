@@ -426,7 +426,13 @@ def roster_admit_groups(chain_audit_path: str, admit_dirs: list,
 # admission gate). A LABEL only - it never removes a wallet from the
 # roster or the list (report + ask). Thresholds = the plan's numbers;
 # operator re-rules them here, nowhere else.
-TRIPWIRE_DROP_LCB_N = 10     # DROPPED when forward ROI LCB < 0 at n >= this
+# RE-RULED 2026-09-08 ~20:4xZ (operator "3 rec"): DROPPED = a LOCK only
+# (futility / DNQ). The plan's "LCB < 0 at n >= 10" clause is retired:
+# mc.roi_lcb is sup{m: e(m) >= 20}, so LCB < 0 means "not yet shown
+# positive" and fired on a strongly positive trader (17:58Z board:
+# 0x4ab40f2a49 roi +1.128, lcb -0.781 @ n=54). DEGRADED (realized mean
+# ROI < 0 at n >= TRIPWIRE_DEGRADE_N) stays as the early-warning label.
+TRIPWIRE_DROP_LCB_N = None   # retired 2026-09-08 (was 10); kept for the record
 TRIPWIRE_DEGRADE_N = 5       # DEGRADED when forward mean ROI < 0 at n >= this
 
 
@@ -434,12 +440,10 @@ def tripwire(verdict, n, mean_roi, lcb) -> str:
     """Forward drop-off label for one wallet from the grader's own numbers.
     verdict = the lock verdict ('' / None while ACCRUING). Order: a lock
     verdict decides first (PASSED / DROPPED (futility) / DROPPED (DNQ) /
-    E-PASS-BELOW-FLOOR); then the plan's two forward tests on the live
-    numbers; else WATCH. LCB here is mc.roi_lcb (sup{m: e(m) >= 20}), a
-    confidence bound - LCB < 0 means 'not yet shown positive', which the
-    plan names DROPPED at n >= 10; measured 2026-09-08 that fires on
-    wallets with positive realized ROI (board row 0x4ab40f2a49: roi +1.128,
-    lcb -0.781 @ n=54) - flagged to the operator, implemented as written."""
+    E-PASS-BELOW-FLOOR); then DEGRADED on the live realized mean; else
+    WATCH. DROPPED is LOCK-ONLY (operator re-ruling 2026-09-08 ~20:4xZ):
+    the plan's LCB<0 clause was measured to fire on positive traders and
+    retired - see the constants block."""
     v = str(verdict or "")
     if v.startswith("QUALIFIES"):
         return "PASSED"
@@ -450,8 +454,8 @@ def tripwire(verdict, n, mean_roi, lcb) -> str:
     if v.startswith("E-PASS"):
         return "E-PASS-BELOW-FLOOR"
     n = int(n or 0)
-    if lcb is not None and lcb < 0.0 and n >= TRIPWIRE_DROP_LCB_N:
-        return f"DROPPED (lcb<0 @ n>={TRIPWIRE_DROP_LCB_N})"
+    # (LCB < 0 no longer drops - ruling 2026-09-08 ~20:4xZ; lcb is still
+    # carried on the row for the reader)
     if mean_roi is not None and mean_roi < 0.0 and n >= TRIPWIRE_DEGRADE_N:
         return f"DEGRADED (roi<0 @ n>={TRIPWIRE_DEGRADE_N})"
     return "WATCH"
@@ -467,8 +471,9 @@ def write_forward_status(path: str, rows: list, note: str = "") -> None:
         rec = {"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                "basis": "roi-netwin-20260906",
                "futility_days": FUTILITY_DAYS,
-               "tripwire": {"drop_lcb_n": TRIPWIRE_DROP_LCB_N,
-                            "degrade_n": TRIPWIRE_DEGRADE_N},
+               "tripwire": {"drop_lcb_n": TRIPWIRE_DROP_LCB_N,   # None = retired
+                            "degrade_n": TRIPWIRE_DEGRADE_N,
+                            "dropped": "lock only (ruling 2026-09-08)"},
                "note": note, "rows": rows}
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
@@ -1044,15 +1049,20 @@ def _self_test() -> int:
            == "DROPPED (locked DNQ)"
            and tripwire("E-PASS BUT BELOW MONEY FLOOR (..)", 30, 0.1, 0.01)
            == "E-PASS-BELOW-FLOOR"
-           and tripwire(None, TRIPWIRE_DROP_LCB_N, 0.5, -0.01).startswith("DROPPED (lcb<0")
-           and tripwire(None, TRIPWIRE_DROP_LCB_N - 1, 0.5, -0.01) == "WATCH"
+           # re-ruling 2026-09-08: LCB < 0 alone NEVER drops (the
+           # 0x4ab40f2a49 shape: positive realized mean, negative LCB)
+           and tripwire(None, 54, 1.128, -0.781) == "WATCH"
+           and tripwire(None, 10, 0.5, -0.01) == "WATCH"
            and tripwire(None, TRIPWIRE_DEGRADE_N, -0.05, None).startswith("DEGRADED")
+           and tripwire(None, TRIPWIRE_DEGRADE_N, -0.05, -0.9).startswith("DEGRADED")
            and tripwire(None, TRIPWIRE_DEGRADE_N - 1, -0.05, None) == "WATCH"
            and tripwire(None, 50, 0.3, 0.05) == "WATCH"
            and tripwire("", 0, None, None) == "WATCH"
-           and TRIPWIRE_DROP_LCB_N == 10 and TRIPWIRE_DEGRADE_N == 5)
-    print(f"  [tripwire] lock verdicts first; lcb<0@n>=10 DROPPED; "
-          f"roi<0@n>=5 DEGRADED; else WATCH; plan thresholds pinned : {okt}")
+           and TRIPWIRE_DROP_LCB_N is None and TRIPWIRE_DEGRADE_N == 5
+           and "DROPPED (lcb<0" not in _i.getsource(tripwire))
+    print(f"  [tripwire] lock verdicts first; DROPPED = lock only (LCB<0 "
+          f"retired, ruling 2026-09-08); roi<0@n>=5 DEGRADED; else WATCH : "
+          f"{okt}")
     ok &= okt
     # FORWARD-STATUS artifact: atomic, full schema, written at both exits,
     # one row per graded address in EVERY closure branch
@@ -1066,8 +1076,9 @@ def _self_test() -> int:
         oks = (set(fs) == {"ts", "basis", "futility_days", "tripwire", "note",
                            "rows"}
                and fs.get("rows") == [{"address": "0xa"}]
-               and fs.get("tripwire") == {"drop_lcb_n": TRIPWIRE_DROP_LCB_N,
-                                          "degrade_n": TRIPWIRE_DEGRADE_N}
+               and fs.get("tripwire") == {"drop_lcb_n": None,
+                                          "degrade_n": TRIPWIRE_DEGRADE_N,
+                                          "dropped": "lock only (ruling 2026-09-08)"}
                and not os.path.exists(fsp + ".tmp"))
         try:
             datetime.strptime(fs.get("ts", ""), "%Y-%m-%dT%H:%M:%SZ")
