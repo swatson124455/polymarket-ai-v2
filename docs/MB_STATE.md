@@ -18,6 +18,72 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-08 (~17:0x-18:0xZ) — ⛔ LANDMINE CLOSED: THE READOUT CLONE WAS
+> ## SILENTLY REVERTING EVERY DEPLOY. FIXED, RESTORED, BOARDS RE-RUN.
+>
+> **THE DEFECT (measured, operator-approved fix "approve the fix, restore the
+> code and rerun the boards"):** `/opt/pa2-shared/mb_readout` is a GIT CLONE
+> whose 12:30Z refresh runs `git fetch --depth 1 origin $BR && git reset
+> --hard FETCH_HEAD`. `BR` was pinned to the SESSION BRANCH
+> `claude/repo-setup-docs-fq9bhn` (frozen 2026-09-06 @ 20138bf) while the
+> lane's work landed on master via PRs #9/#10/#11. **Every successful refresh
+> therefore destroyed every file installed into the clone.** The 09-07 deploy
+> set was wiped when a manual root run of the readout cron at 09-08T03:02Z
+> made the long-failing refresh finally succeed (it had been failing on a
+> permissions error, which is the ONLY reason the 09-07 work survived its
+> first day).
+> **MEASURED BLAST RADIUS — the 09-08 11:40Z chain ran REVERTED code:**
+> deployed md5s equalled the pinned blob, not master, for mb_backtest.py,
+> mb_canon.py, mb_bayes.py, mb_chain_watch.py and the 11:40Z cron script.
+> Consequences visible in that block: NO cov% column; concurrency back to
+> WAGER-counting (0x880b1fc5d3 printed conc 131 where the position-level fix
+> measures 14; 0xd487f513cf 415 vs 89); no WITH-EXITS section; the crawl stage
+> never ran. **WORST PART — the watchdog lied by omission:** mb_chain_watch.py
+> reverted to its 9-stage list, so it printed "all stages ran clean" with no
+> `crawl` entry and no `!!`. A watchdog whose stage list can be reverted
+> reports clean on exactly the failure it exists to catch. Untracked files
+> survived (`reset --hard` leaves them): mb_gamma_window_labels.py,
+> mb_peak_conc_regen.py. ALL DATA UNAFFECTED (ledger, caches, boards,
+> firehose, cohort5 add all live OUTSIDE the clone); the watcher is a separate
+> service and kept running roster=127 correctly throughout.
+> **ROOT FIX (merged, PR #12, master db4a2958):** `BR=master` in
+> deploy/shadow_readout_cron.sh, with the consequence documented in-file —
+> **THE DEPLOY PATH FOR THIS CLONE IS NOW: merge to master, then let the
+> refresh pick it up. A hand `install` into the clone is TEMPORARY BY DESIGN
+> and dies at the next refresh; NEVER treat one as deployed.** Circularity
+> broken by a one-time converge (the old pin could never fetch its own fix).
+> **RESTORE EXECUTED + VERIFIED:** .git ownership normalized (root had
+> contaminated refs/objects at 03:02Z, which is what made refreshes fail as
+> polymarket); clone checked out to master @ db4a2958, clean; all 8 files
+> md5-match master (mb_backtest b45a79dc, mb_canon 737770c0, mb_bayes
+> 182e0356, mb_chain_watch 1f6444dc, cron bc75d9c2); self-tests PASS incl.
+> the restored [conc ladder], [with-exits] x3, [cov], [rescreen] cases, plus
+> cohort5/funnel/band consumers. **DURABILITY PROVEN:** re-running the real
+> refresh as the polymarket user now KEEPS master (HEAD db4a295, md5 still
+> b45a79dc) — the same operation that used to revert. **WATCHDOG HONEST
+> AGAIN:** it now prints `!! ... crawl=MISSING - 1 stage(s) NOT OK` (correct —
+> the crawl ran manually today, outside the cron block). Expect 10/10 OK from
+> the 09-09 11:40Z run.
+> **RE-RUN ON CORRECT CODE (17:20Z roster / 17:58Z firehose):** crawl first
+> (+35,165 labels, CONFLICT=0, cache 704,350 keys; sweep-token coverage
+> 92,850/115,010 = 80.7%). Roster board 95 traders, 27/95 cov-flagged.
+> Firehose board 19,236 wallets, 3,087 cov-flagged. **The finds HELD and
+> strengthened on better labels** (HYPOTHETICAL $100/wager): 0x5feea3460c
+> +$14,659/wk LCB (n_ho 134, roi_lcb +1.051, conc 18, cov 94) QUALIFIES;
+> 0xe48217d0b7 +$1,312 (cov 91) QUALIFIES; 0x1c010e69db +$1,265 (n_ho 79, cov
+> 94) QUALIFIES; 0x2c50852938 +$789 (cov 75) QUALIFIES. NEW high rows are
+> cov-FLAGGED and must not be promoted on face: 0x1fd5ead7fe +$698 (cov 20%!),
+> 0xab9555abda +$593 (cov 21%!), 0x04da946c9f +$547 (cov 45%!, n_ho 73) — the
+> A3 column doing exactly its job. WITH-EXITS lens now 48 wallets / 233 exited
+> positions (was 12/58).
+> **COHORT5 ACCRUING:** since the 02:56:10Z admission the watcher has recorded
+> 0x5feea3460c 14 records/7 OK fills, 0x2c50852938 4/1, 0xe48217d0b7 2/0.
+> **STILL OPEN:** dive queue C (5 proven wallets) STILL RUNNING >15h;
+> a 6-agent audit of this defect + the canon-stats question was in flight at
+> restore time — reconcile any of its findings that measured post-restore
+> state. GO-checklist blanks remain with the operator (no real money).
+
+
 > ## 2026-09-08 (~02:5xZ) — COHORT5 ROSTER ADD (operator "go"): the 3
 > ## ADMIT dossiers are LIVE ON THE SHADOW ROSTER; still $0 everywhere
 >
