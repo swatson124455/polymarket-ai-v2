@@ -150,3 +150,25 @@ per-fill slippage recording). Not a build order until the operator says.
 - Locks are immutable; a false lock is permanent. Fix D1 before any grader
   registration.
 - `polymarket-mirror3`: never hand-relaunch; `systemctl restart` only.
+
+---
+
+## 3. STATUS 2026-09-08 ~20:0xZ (branch `claude/mb-tailable-0908`, PR pending)
+
+| step | done-state in §1 | status (sourced) |
+|---|---|---|
+| P2/D1 | grader honors per-group epoch; pinning test updated; mutation-checked | **BUILT** 67e20692 — `effective_epoch()`; 4/4 mutants; cohort5 futility 09-13T22:30Z → 09-15T02:56:10Z |
+| P2 registration | registration = dive ADMIT + roster, no hand list | **BUILT** 5a602bb2 — replay on real data 19:09Z: exactly the 3 cohort5 wallets, epoch 02:56:10Z; 8/8 mutants |
+| P2 drop-off | surfaced in funnel + list; never removes | **BUILT** 8282fb4f (forward-status artifact + tripwire label), 413ce156 (funnel/ledger) — ⚠ "LCB<0 @ n≥10" flagged for ruling (fires on roi +1.128/lcb −0.781 @ n=54) |
+| P2 done-state | 3 cohort5 wallets show a forward line with THEIR epoch | **PENDING DEPLOY** — first 11:40Z run on the merged code |
+| P1 list | `mb_tailable_list.py` from cron; doc regenerates with provenance | **BUILT** 4f66ec27 + 5ffeb1a5 (stage 11) — hand-run 19:25Z: VERIFIED 5 / PENDING 6; cron path pending deploy |
+| P3 $algo | boards/funnel/ledger print $algo first; list money column = $algo/wk | **BUILT** 440e5c31, 891b162b — sizer stake per holdout wager (fill, canon fee, conc = max(peak, floor)); hand-run boards 20:21Z + list 20:22:28Z → docs/MB_TAILABLE_LIST.md: 0x5feea3460c $algo/wk LCB +$222 vs $ref100 +$13,351 (stake_med $1.70 at bankroll 500/kelly 0.25/conc 18; min_viable $1 clamps cheap-fill wagers to $0) — the ruled basis says the algo bets little at this foursome; finding, not a change |
+| P4 pipeline | new QUALIFIES → PENDING with eligibility; queue log shows its dive | **BUILT** 445b803f — `mb_candidate_pipeline.py` (stage 12) + `vps_jobs/tailable_dive_runner.sh` (13:00Z cron, post-merge script installs it); first live drain pending deploy |
+| P5 fill realism | board headers show fill-modeled; rates drop | **BUILT** 68f9ad8f — measured table 19:40Z: 67.9% all wagers / 46.8% first-buys / 0.9–1.0 bucket 31%; firehose $ weighted, raw kept, roster real gates |
+| P6 | operator-gated | unchanged |
+
+**Deploy = merge to master, then `sudo bash deploy/mb_tailable_post_merge.sh`
+(after the clone refresh that carries the merge; `--check` first).**
+**Open operator rulings:** (1) tripwire DROPPED test (keep as written or
+futility/lock only); (2) roster adds for 0x75a27d0cc9 / 0xe9f5c75ee1
+(VERIFIED, tiny $, replay verdict futility) — proposals only.
