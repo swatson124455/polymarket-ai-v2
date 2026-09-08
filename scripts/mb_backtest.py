@@ -450,12 +450,13 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
             out["algo_stake_med"] = round(ss[len(ss) // 2], 4)
             out["algo_n_wagers"] = len(stakes)
             out["algo_n_zero"] = sum(1 for x in stakes if x == 0.0)
-            out["wk_net_algo_lcb_raw"] = (lcb * total / days * 7.0
+            # (+ 0.0 normalises the -0.0 a negative LCB x $0 stake prints)
+            out["wk_net_algo_lcb_raw"] = (lcb * total / days * 7.0 + 0.0
                                           if lcb is not None else None)
-            out["wk_net_algo_real_raw"] = algo_real / days * 7.0
-            out["wk_net_algo_lcb"] = (lcb * tot_eff / days * 7.0
+            out["wk_net_algo_real_raw"] = algo_real / days * 7.0 + 0.0
+            out["wk_net_algo_lcb"] = (lcb * tot_eff / days * 7.0 + 0.0
                                       if lcb is not None else None)
-            out["wk_net_algo_real"] = real_eff / days * 7.0
+            out["wk_net_algo_real"] = real_eff / days * 7.0 + 0.0
     return out
 
 
