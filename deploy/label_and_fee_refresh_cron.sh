@@ -73,7 +73,14 @@ cd /opt/polymarket-ai-v2
   else
     echo "[daily] 0 new tokens - label step skipped"
   fi
+  # $algo basis (operator ruling 2026-09-08 #2): the boards size every
+  # holdout wager with the sizer foursome - sourced, never hardcoded
+  [ -f /opt/pa2-shared/mb_sizer.env ] && . /opt/pa2-shared/mb_sizer.env
   DATABASE_URL="$DBURL" PYTHONPATH="$D" \
+  MB_SIZER_BANKROLL="${MB_SIZER_BANKROLL:-}" \
+  MB_SIZER_KELLY_MULT="${MB_SIZER_KELLY_MULT:-}" \
+  MB_SIZER_CONCURRENCY="${MB_SIZER_CONCURRENCY:-}" \
+  MB_SIZER_MIN_VIABLE="${MB_SIZER_MIN_VIABLE:-}" \
     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_backtest.py" daily-replay \
       --rows "$BT/candidate_rows.jsonl" --outdir "$BT" --top 10 2>&1 \
       | grep -vE "^[0-9]{4}-|\[info|\[debug"
