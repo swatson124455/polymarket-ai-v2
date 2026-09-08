@@ -93,5 +93,14 @@ cd /opt/polymarket-ai-v2
       --start "$(date -u -d '72 hours ago' +%FT%TZ)" --rps 8 --write 2>&1 | tail -8
 } >> "$LOG"
 {
+  # tailable list (docs/MB_TAILABLE_PLAN.md P1, operator deliverable
+  # 2026-09-08): one row per wallet from the boards, dossiers, eligibility
+  # reads, roster, forward status. Writes OUTSIDE the clone
+  # (mb_copyable_data/tailable/). Sizer foursome sourced, never hardcoded.
+  echo "===== $(date -u +%FT%TZ) tailable list ====="
+  [ -f /opt/pa2-shared/mb_sizer.env ] && . /opt/pa2-shared/mb_sizer.env
+  PYTHONPATH="$D" \n  MB_SIZER_BANKROLL="${MB_SIZER_BANKROLL:-}" \n  MB_SIZER_KELLY_MULT="${MB_SIZER_KELLY_MULT:-}" \n  MB_SIZER_CONCURRENCY="${MB_SIZER_CONCURRENCY:-}" \n  MB_SIZER_MIN_VIABLE="${MB_SIZER_MIN_VIABLE:-}" \n    timeout -s INT 900 \n    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_tailable_list.py" 2>&1 \n      | grep -vE "^[0-9]{4}-|\[info|\[debug"
+} >> "$LOG"
+{
   /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_chain_watch.py" 2>&1
 } >> "$LOG"

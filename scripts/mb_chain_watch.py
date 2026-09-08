@@ -63,6 +63,7 @@ EXPECTED = [
     ("hypo", "hypothetical dollar ledger"),
     ("backtest", "backtest daily leaderboard"),
     ("crawl", "gamma window crawl"),
+    ("tailable", "tailable list"),    # stage 11, 2026-09-08 (plan P1)
 ]
 
 
@@ -263,7 +264,7 @@ def _self_test() -> int:
           f" loud : {ok2}")
     ok &= ok2
     line, bad = grade_chain(_mk_log(day, EXPECTED[:-1]), day)
-    ok3 = bad == 1 and "crawl=MISSING" in line \
+    ok3 = bad == 1 and "tailable=MISSING" in line \
         and line.startswith("[chain] !!")
     print(f"  [missing] absent stage reported MISSING, never silently OK :"
           f" {ok3}")
@@ -272,9 +273,11 @@ def _self_test() -> int:
     ok4 = bad == len(EXPECTED) and line.startswith("[chain] !!")
     print(f"  [stale] yesterday's sections do NOT count for today : {ok4}")
     ok &= ok4
-    ok5 = len(EXPECTED) == 10
-    print(f"  [pin] watchlist covers the 10 cron stages (update BOTH on cron"
-          f" change; backtest joined 2026-09-06, crawl 2026-09-07) : {ok5}")
+    ok5 = (len(EXPECTED) == 11
+           and EXPECTED[-1] == ("tailable", "tailable list"))
+    print(f"  [pin] watchlist covers the 11 cron stages (update BOTH on cron"
+          f" change; backtest 2026-09-06, crawl 2026-09-07, tailable"
+          f" 2026-09-08) : {ok5}")
     ok &= ok5
     # ── amendment 2026-09-08: the watchdog must not be narrowable ──────────
     # [stages] external list parses in both accepted shapes; junk RAISES

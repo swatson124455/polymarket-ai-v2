@@ -1,5 +1,5 @@
 {
-  "_why": "AUTHORITATIVE stage list for mb_chain_watch.py. DEPLOYED TO /opt/pa2-shared/mb_chain_stages.json — OUTSIDE the mb_readout clone on purpose. That clone is reset --hard daily, and on 2026-09-08 the reset silently removed the crawl stage from the watchdog's own EXPECTED list, so it printed 'all stages ran clean' while a stage had not run at all. A watchdog whose definition of 'everything' can be narrowed by the thing it watches is not a watchdog. This copy is the repo's record; the deployed copy is what the watchdog reads.",
+  "_why": "AUTHORITATIVE stage list for mb_chain_watch.py. DEPLOYED TO /opt/pa2-shared/mb_chain_stages.json \u2014 OUTSIDE the mb_readout clone on purpose. That clone is reset --hard daily, and on 2026-09-08 the reset silently removed the crawl stage from the watchdog's own EXPECTED list, so it printed 'all stages ran clean' while a stage had not run at all. A watchdog whose definition of 'everything' can be narrowed by the thing it watches is not a watchdog. This copy is the repo's record; the deployed copy is what the watchdog reads.",
   "stages": [
     {"key": "labels", "marker": "label supplement"},
     {"key": "fees", "marker": "fee map"},
@@ -10,6 +10,7 @@
     {"key": "funnel", "marker": "trader funnel"},
     {"key": "hypo", "marker": "hypothetical dollar ledger"},
     {"key": "backtest", "marker": "backtest daily leaderboard"},
-    {"key": "crawl", "marker": "gamma window crawl"}
+    {"key": "crawl", "marker": "gamma window crawl"},
+    {"key": "tailable", "marker": "tailable list"}
   ]
 }
