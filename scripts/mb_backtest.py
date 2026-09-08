@@ -273,10 +273,72 @@ def daily_replay(records: list[dict], outcomes: dict, res_at: dict,
             "unplaceable_resolved": n_unplaceable, **last}
 
 
+# ── FILL REALISM (docs/MB_TAILABLE_PLAN.md P5, defect D3) ────────────────
+# The firehose replay prices every wager at THEIR fill + haircut and keeps
+# it (price-only gate). Live, the watcher's book gates (chase / spread /
+# no-upside / no-book) reject a large share: measured 2026-09-08T19:40Z
+# over 170,956 shadow BUY records with a whale_price - 67.9% of all
+# wagers cleared, 46.8% of first-buys, and the 0.9-1.0 price bucket
+# cleared 30.6% vs 75-89% elsewhere. The table below is MEASURED from
+# the shadow sink at every daily run (never a constant) per 0.1 price
+# bucket over ALL BUY records (wagers - the ladder-aware basis), and each
+# firehose holdout wager is weighted by its bucket's pass probability.
+# Roster rows carry REAL gate verdicts and are never modeled.
+FILL_BUCKETS = 10
+
+
+def gate_pass_table(recs: list[dict]) -> dict | None:
+    """Per-0.1-price-bucket gate pass rate from shadow BUY records with a
+    numeric whale_price: {"buckets": [{"lo","hi","n","ok","rate"}...],
+    "all": {...}, "first_buy": {...}, "n_records": N}. None when there
+    are no records (the caller then does NOT model - disclosed)."""
+    n = [0] * FILL_BUCKETS
+    ok = [0] * FILL_BUCKETS
+    fb_n = fb_ok = 0
+    for r in recs:
+        if r.get("side") not in (None, "BUY"):
+            continue
+        p_ = r.get("whale_price")
+        if not isinstance(p_, (int, float)) or not (0.0 <= p_ <= 1.0):
+            continue
+        b = min(int(p_ * FILL_BUCKETS), FILL_BUCKETS - 1)
+        good = r.get("verdict") == "OK"
+        n[b] += 1
+        ok[b] += good
+        if r.get("first_buy"):
+            fb_n += 1
+            fb_ok += good
+    tot = sum(n)
+    if not tot:
+        return None
+    return {"buckets": [{"lo": i / FILL_BUCKETS, "hi": (i + 1) / FILL_BUCKETS,
+                         "n": n[i], "ok": ok[i],
+                         "rate": (ok[i] / n[i]) if n[i] else None}
+                        for i in range(FILL_BUCKETS)],
+            "all": {"n": tot, "ok": sum(ok), "rate": sum(ok) / tot},
+            "first_buy": {"n": fb_n, "ok": fb_ok,
+                          "rate": (fb_ok / fb_n) if fb_n else None},
+            "n_records": tot}
+
+
+def fill_prob(fill: float, table: dict | None) -> float:
+    """Pass probability for a wager at `fill` from the measured table;
+    1.0 with no table (not modeled). An EMPTY bucket falls back to the
+    all-records rate - never 0, never 1 by assumption."""
+    if table is None:
+        return 1.0
+    b = min(max(int(float(fill) * FILL_BUCKETS), 0), FILL_BUCKETS - 1)
+    rate = table["buckets"][b]["rate"]
+    if rate is None:
+        rate = table["all"]["rate"]
+    return float(rate)
+
+
 def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
                     fee_map: dict, split_ts: float, end_ts: float,
                     res_at: dict | None = None, sizer: dict | None = None,
-                    conc: int | None = None) -> dict:
+                    conc: int | None = None,
+                    fill_table: dict | None = None) -> dict:
     """Judged ONLY out-of-sample, on the RULED BASIS (ROI + net winnings,
     ladder-aware): per-wager ROIs over wagers with detect_ts >= split_ts;
     LCB over those atoms alone (train never touches the ranking number).
@@ -305,7 +367,18 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
     copy order), while the $100 reference counts market positions.
     LCB <= 0 -> the sizer stakes $0 (its own rule, not overridden): an
     unproven wallet's $algo is exactly $0 - honest, and the sign of the
-    money follows the evidence, never a constant. All HYPOTHETICAL."""
+    money follows the evidence, never a constant. All HYPOTHETICAL.
+
+    FILL REALISM (P5, D3): with `fill_table` (firehose source only) every
+    holdout wager carries its bucket's measured gate pass probability
+    p_w. The headline money columns become fill-modeled -
+      wk_net_lcb        x fill_p   (fill_p = mean p_w; the $100 reference
+                                    counts market positions - approximate)
+      wk_net_algo_*     exact: SUM p_w x stake_w  /  SUM p_w x roi_w x stake_w
+    - and the un-modeled values stay beside them as *_raw. Without a
+    table nothing changes (fill_modeled False). Evidence (LCB) is NOT
+    thinned: the gates change how often we are IN a market, not the ROI
+    of a market we are in."""
     if res_at:
         outcomes = {t: o for t, o in outcomes.items()
                     if res_at.get(t) is None or res_at[t] <= end_ts}
@@ -321,30 +394,43 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
            "wk_net_lcb": None, "wk_net_real": None,
            "wk_net_algo_lcb": None, "wk_net_algo_real": None,
            "algo_stake_total": None, "algo_stake_med": None,
-           "algo_n_wagers": None, "algo_n_zero": None}
+           "algo_n_wagers": None, "algo_n_zero": None,
+           "fill_modeled": fill_table is not None, "fill_p": None,
+           "wk_net_lcb_raw": None, "wk_net_real_raw": None,
+           "wk_net_algo_lcb_raw": None, "wk_net_algo_real_raw": None}
     if not n:
         return out
     lcb = mc.roi_lcb(rois)
     mean_roi = sum(rois) / n
     out["roi_lcb"] = lcb
     out["roi_realized"] = mean_roi
-    if lcb is not None:
-        out["wk_net_lcb"] = lcb * 100.0 * (n / days) * 7.0
-    out["wk_net_real"] = mean_roi * 100.0 * (n / days) * 7.0
+    fills = {}
+    for r in records:
+        if (r.get("verdict") == "OK"
+                and isinstance(r.get("shadow_fill"), (int, float))):
+            fills[(float(r.get("detect_ts") or 0),
+                   str(r.get("token_id")))] = float(r["shadow_fill"])
+    wseq = mc.wager_rois(records, outcomes, frm or {}, fee_map or {},
+                         epoch=split_ts)
+    # per-wager gate pass probability (1.0 = not modeled)
+    pw = [fill_prob(fills.get((ts, tok), 0.5), fill_table)
+          for ts, tok, _roi in wseq]
+    fill_p = (sum(pw) / len(pw)) if pw else 1.0
+    if fill_table is not None:
+        out["fill_p"] = round(fill_p, 4)
+    raw_lcb = (lcb * 100.0 * (n / days) * 7.0) if lcb is not None else None
+    raw_real = mean_roi * 100.0 * (n / days) * 7.0
+    out["wk_net_lcb_raw"], out["wk_net_real_raw"] = raw_lcb, raw_real
+    out["wk_net_lcb"] = (raw_lcb * fill_p) if raw_lcb is not None else None
+    out["wk_net_real"] = raw_real * fill_p
     if sizer is not None:
         # LCB None (no informative bound) or <= 0 -> the sizer's own $0
         # per wager; the LCB $ column stays None when there is no LCB.
-        fills = {}
-        for r in records:
-            if (r.get("verdict") == "OK"
-                    and isinstance(r.get("shadow_fill"), (int, float))):
-                fills[(float(r.get("detect_ts") or 0),
-                       str(r.get("token_id")))] = float(r["shadow_fill"])
         p = dict(sizer)
         p["concurrency"] = max(int(conc or 1), 1, int(p["concurrency"]))
         stakes, algo_real = [], 0.0
-        for ts, tok, roi in mc.wager_rois(records, outcomes, frm or {},
-                                          fee_map or {}, epoch=split_ts):
+        tot_eff, real_eff = 0.0, 0.0
+        for (ts, tok, roi), p_w in zip(wseq, pw):
             fill = fills.get((ts, tok))
             if fill is None or not (0.0 < fill < 1.0):
                 continue   # unsizeable (fill at/above 1): no order
@@ -355,6 +441,8 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
             st = float(srec["stake"])
             stakes.append(st)
             algo_real += roi * st
+            tot_eff += p_w * st
+            real_eff += p_w * roi * st
         if stakes:
             total = sum(stakes)
             ss = sorted(stakes)
@@ -362,9 +450,12 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
             out["algo_stake_med"] = round(ss[len(ss) // 2], 4)
             out["algo_n_wagers"] = len(stakes)
             out["algo_n_zero"] = sum(1 for x in stakes if x == 0.0)
-            out["wk_net_algo_lcb"] = (lcb * total / days * 7.0
+            out["wk_net_algo_lcb_raw"] = (lcb * total / days * 7.0
+                                          if lcb is not None else None)
+            out["wk_net_algo_real_raw"] = algo_real / days * 7.0
+            out["wk_net_algo_lcb"] = (lcb * tot_eff / days * 7.0
                                       if lcb is not None else None)
-            out["wk_net_algo_real"] = algo_real / days * 7.0
+            out["wk_net_algo_real"] = real_eff / days * 7.0
     return out
 
 
@@ -683,6 +774,19 @@ def cmd_daily_replay(args) -> int:
     assert h is not None, "no measurable haircut pairs - ABORT"
     print(f"[daily] measured haircut med {h['med']:+.4f} p90 "
           f"{h['p90']:+.4f} (n={h['n']}) - med used for firehose pricing")
+    # FILL REALISM (P5): the gate pass table, measured from the same sink
+    ft = gate_pass_table(recs)
+    if ft is None:
+        print("[daily] gate pass table: NO records with a whale_price - "
+              "firehose board NOT fill-modeled this run (disclosed)")
+    else:
+        print(f"[daily] gate pass table (shadow BUY records, {ft['n_records']}"
+              f"): all wagers {100 * ft['all']['rate']:.1f}% | first-buys "
+              + (f"{100 * ft['first_buy']['rate']:.1f}%" if ft['first_buy']['rate'] is not None else "n/a")
+              + " | by price bucket: "
+              + " ".join(f"{b['lo']:.1f}-{b['hi']:.1f}:"
+                         + (f"{100 * b['rate']:.0f}%" if b['rate'] is not None else "-")
+                         for b in ft["buckets"]))
     common = dict(resolutions=args.resolutions,
                   fee_rate_map=args.fee_rate_map, fee_map=args.fee_map,
                   split=args.split, end=None, top=args.top,
@@ -691,12 +795,12 @@ def cmd_daily_replay(args) -> int:
     rc1 = cmd_replay(NS(source="roster", rows=args.log, haircut=None,
                         out=os.path.join(args.outdir,
                                          "leaderboard_roster.jsonl"),
-                        **common))
+                        fill_table=None, **common))   # real gate verdicts
     rc2 = cmd_replay(NS(source="firehose", rows=args.rows,
                         haircut=h["med"],
                         out=os.path.join(args.outdir,
                                          "leaderboard_firehose.jsonl"),
-                        **common))
+                        fill_table=ft, **common))
     return rc1 or rc2
 
 
@@ -776,6 +880,16 @@ def cmd_replay(args) -> int:
              f"ROI LCB at each wager's fill (as-if-approved)"
              if sizer else "UNSET (MB_SIZER_* env absent) - $algo columns "
                            "None; $100/wager reference only"))
+    fill_table = getattr(args, "fill_table", None)
+    if args.source == "firehose":
+        print("[replay] FILL-MODELED: " + (
+            f"each holdout wager weighted by its 0.1-price-bucket gate pass "
+            f"probability measured from {fill_table['n_records']} shadow BUY "
+            f"records (all {100 * fill_table['all']['rate']:.1f}%); headline "
+            f"$ columns are modeled, *_raw beside them"
+            if fill_table else
+            "NO table this run - $ columns UN-modeled (rates ~1/0.68x "
+            "optimistic; disclosed)"))
     lb = []
     for w, recs in sorted(per_wallet.items()):
         if not recs:
@@ -786,7 +900,8 @@ def cmd_replay(args) -> int:
         pc = peak_concurrency_replay(recs, exits_by_w.get(w, {}), r_at,
                                      end_ts)
         hold = holdout_metrics(recs, outcomes, frm, fee_map, split_ts,
-                               end_ts, res_at=r_at, sizer=sizer, conc=pc)
+                               end_ts, res_at=r_at, sizer=sizer, conc=pc,
+                               fill_table=fill_table)
         obs_days = (float(recs[-1]["detect_ts"]) - epoch) / DAY_S
         n_tok, n_tok_lab = wallet_coverage(recs, outcomes)
         lb.append({"w": w, "entries": len(recs),
@@ -825,7 +940,8 @@ def cmd_replay(args) -> int:
     print(f"{'WALLET':<14} {'$algo/wk_lcb':>12} {'$algo/wk_real':>13} "
           f"{'$ref100/wk_lcb':>14} {'$ref100/wk_real':>15} "
           f"{'roi_lcb':>8} {'roi_real':>8} {'n_ho':>5} {'conc':>5} "
-          f"{'wagers':>6} {'stake_med':>9} {'cov%':>6} {'verdict(replay)'}")
+          f"{'wagers':>6} {'stake_med':>9} {'fill_p':>6} {'cov%':>6} "
+          f"{'verdict(replay)'}")
     shown = 0
     for row in lb:
         if shown >= args.top:
@@ -842,6 +958,7 @@ def cmd_replay(args) -> int:
               f"{fmt_num(row['ho_roi_realized'], '+.3f'):>8} "
               f"{row['ho_n_holdout']:>5} {row['peak_conc_replay']:>5} "
               f"{row['entries']:>6} {fmt_num(row['ho_algo_stake_med'], '.2f'):>9} "
+              f"{fmt_num(row['ho_fill_p'], '.2f'):>6} "
               f"{cov_cell:>6} {row['verdict']}")
     print(f"[replay] full leaderboard ({len(lb)} wallets) -> {args.out}")
 
@@ -1088,6 +1205,47 @@ def _self_test() -> int:
           f"max(peak,floor)); LCB<=0 -> $0; unset -> None; board ranks on "
           f"$algo : {ok9c and ok9d and ok9e}")
     ok &= ok9c and ok9d and ok9e
+    # [fill] P5 (D3): measured gate pass table by 0.1 price bucket; the
+    # firehose holdout money is weighted by each wager's bucket rate,
+    # raw values kept beside; roster (no table) unchanged
+    sink = ([{"side": "BUY", "whale_price": 0.45, "verdict": "OK",
+              "first_buy": True}] * 3
+            + [{"side": "BUY", "whale_price": 0.45, "verdict": "SPREAD_TOO_WIDE",
+                "first_buy": False}] * 3
+            + [{"side": "BUY", "whale_price": 0.95, "verdict": "OK"}]
+            + [{"side": "BUY", "whale_price": 0.95, "verdict": "PRICE_NO_UPSIDE"}] * 3
+            + [{"side": "SELL", "whale_price": 0.45, "verdict": "OK"}]     # not a BUY
+            + [{"side": "BUY", "whale_price": None, "verdict": "OK"}])      # no price
+    ft = gate_pass_table(sink)
+    okf1 = (ft["n_records"] == 10 and ft["buckets"][4]["rate"] == 0.5
+            and ft["buckets"][9]["rate"] == 0.25 and ft["buckets"][0]["rate"] is None
+            and abs(ft["all"]["rate"] - 0.4) < 1e-12
+            and ft["first_buy"] == {"n": 3, "ok": 3, "rate": 1.0}
+            and fill_prob(0.48, ft) == 0.5 and fill_prob(0.99, ft) == 0.25
+            and abs(fill_prob(0.05, ft) - 0.4) < 1e-12      # empty -> all
+            and fill_prob(0.48, None) == 1.0 and gate_pass_table([]) is None)
+    hmf = holdout_metrics(recs_a, outc_a, {}, {}, split, split + 7 * DAY_S,
+                          sizer=szr, conc=2, fill_table=ft)
+    okf2 = (hmf["fill_modeled"] and hmf["fill_p"] == 0.5
+            and abs(hmf["wk_net_lcb"] - 0.5 * hmf["wk_net_lcb_raw"]) < 1e-9
+            and abs(hmf["wk_net_real"] - 0.5 * hmf["wk_net_real_raw"]) < 1e-9
+            and abs(hmf["wk_net_algo_lcb"] - 0.5 * hmf["wk_net_algo_lcb_raw"]) < 1e-9
+            and abs(hmf["wk_net_algo_real"] - 0.5 * hmf["wk_net_algo_real_raw"]) < 1e-9
+            and abs(hmf["wk_net_lcb_raw"] - hma["wk_net_lcb"]) < 1e-9   # raw == unmodeled
+            and abs(hmf["wk_net_algo_lcb_raw"] - hma["wk_net_algo_lcb"]) < 1e-9
+            and hmf["roi_lcb"] == hma["roi_lcb"]            # evidence not thinned
+            and not hma["fill_modeled"] and hma["fill_p"] is None
+            and hma["wk_net_lcb_raw"] == hma["wk_net_lcb"])
+    dsrc = _ia.getsource(cmd_daily_replay)
+    okf3 = ("ft = gate_pass_table(recs)" in dsrc
+            and "fill_table=None, **common" in dsrc      # roster: real gates
+            and "fill_table=ft, **common" in dsrc        # firehose: modeled
+            and "fill_table=fill_table)" in csrc
+            and "row['ho_fill_p']" in csrc)
+    print(f"  [fill] measured pass table by bucket (empty->all, no table->1);"
+          f" firehose $ x p_w with *_raw kept, LCB untouched; roster never "
+          f"modeled : {okf1 and okf2 and okf3}")
+    ok &= okf1 and okf2 and okf3
     # [canon-roi] ladder atoms: repeats count (first_buy NOT required);
     # ROI support bound honored by the generalized mixture
     lad = [{"detect_ts": 1.0, "first_buy": True, "verdict": "OK",

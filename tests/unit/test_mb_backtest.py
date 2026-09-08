@@ -124,6 +124,36 @@ def test_holdout_algo_stake_uses_sizer():
     assert hml["wk_net_algo_real"] == 0.0 and hml["wk_net_algo_lcb"] is None
 
 
+def test_holdout_fill_modeled_from_measured_gate_table():
+    """P5 (D3): firehose money weighted by the measured per-bucket gate
+    pass probability; raw kept; evidence (LCB) untouched; no table = no
+    change; roster path passes no table."""
+    sink = ([{"side": "BUY", "whale_price": 0.45, "verdict": "OK"}] * 2
+            + [{"side": "BUY", "whale_price": 0.45, "verdict": "SPREAD_TOO_WIDE"}] * 2)
+    ft = mbt.gate_pass_table(sink)
+    assert ft["buckets"][4]["rate"] == 0.5 and mbt.fill_prob(0.48, ft) == 0.5
+    assert mbt.fill_prob(0.48, None) == 1.0 and mbt.gate_pass_table([]) is None
+    split = T0 + 5 * DAY
+    recs = ([_rec(f"tr{i}", T0 + i) for i in range(10)]
+            + [_rec(f"ho{i}", split + i) for i in range(30)])
+    outc = {f"tr{i}": 1 for i in range(10)}
+    outc.update({f"ho{i}": 1 for i in range(30)})
+    szr = {"bankroll": 500.0, "kelly_mult": 0.25, "concurrency": 1,
+           "min_viable": 1.0}
+    raw = mbt.holdout_metrics(recs, outc, {}, {}, split, split + 7 * DAY,
+                              sizer=szr, conc=2)
+    mod = mbt.holdout_metrics(recs, outc, {}, {}, split, split + 7 * DAY,
+                              sizer=szr, conc=2, fill_table=ft)
+    assert not raw["fill_modeled"] and raw["wk_net_lcb_raw"] == raw["wk_net_lcb"]
+    assert mod["fill_modeled"] and mod["fill_p"] == 0.5
+    assert abs(mod["wk_net_lcb"] - 0.5 * raw["wk_net_lcb"]) < 1e-9
+    assert abs(mod["wk_net_algo_lcb"] - 0.5 * raw["wk_net_algo_lcb"]) < 1e-9
+    assert abs(mod["wk_net_algo_real"] - 0.5 * raw["wk_net_algo_real"]) < 1e-9
+    assert mod["roi_lcb"] == raw["roi_lcb"]
+    src = inspect.getsource(mbt.cmd_daily_replay)
+    assert "fill_table=None, **common" in src and "fill_table=ft, **common" in src
+
+
 def test_holdout_label_lookahead_guard():
     """A market with a KNOWN resolved_at AFTER end_ts must not count —
     its label did not exist at judge time. Unknown res_at passes (the

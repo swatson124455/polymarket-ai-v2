@@ -406,6 +406,10 @@ def build_rows(cands: set, fh: dict, ro: dict, dossiers: dict,
             "algo_stake_med": b.get("ho_algo_stake_med"),
             "algo_stake_total": b.get("ho_algo_stake_total"),
             "algo_n_zero": b.get("ho_algo_n_zero"),
+            "fill_modeled": b.get("ho_fill_modeled"),
+            "fill_p": b.get("ho_fill_p"),
+            "ho_wk_net_lcb_raw": b.get("ho_wk_net_lcb_raw"),
+            "ho_wk_net_algo_lcb_raw": b.get("ho_wk_net_algo_lcb_raw"),
             "ho_roi_lcb": b.get("ho_roi_lcb"),
             "ho_roi_realized": b.get("ho_roi_realized"),
             "ho_n_holdout": b.get("ho_n_holdout"),
@@ -556,6 +560,12 @@ def render_md(rows: list, prov: dict) -> str:
                      + (f", roster-board $ref100/wk LCB "
                         f"{_fmt(r['roster_board_wk_lcb'], '+,.0f')}"
                         if r["roster_board_wk_lcb"] is not None else "")
+                     + (f". FILL-MODELED x{_fmt(r['fill_p'], '.2f')} "
+                        f"(raw $ref100/wk LCB {_fmt(r['ho_wk_net_lcb_raw'], '+,.0f')}"
+                        f", raw $algo/wk LCB {_fmt(r['ho_wk_net_algo_lcb_raw'], '+,.0f')})"
+                        if r.get("fill_modeled") else
+                        ". Not fill-modeled (roster row: real gate verdicts)"
+                        if r.get("fill_modeled") is False else "")
                      + f". Eligibility {r['elig_status'] or 'UNREAD'} "
                      f"({r['elig_reason']}; read {r['elig_read_utc']}). "
                      + (f"Dive {r['dive_verdict']} {r['dive_dir']} "
@@ -578,6 +588,10 @@ def render_md(rows: list, prov: dict) -> str:
              "HYPOTHETICAL. `P3` = the board does not carry it yet.")
     L.append("- **$ref100/wk LCB** - same at a flat $100/wager reference "
              "(comparison column only, ruling 2026-09-08 #2).")
+    L.append("- **FILL-MODELED** (P5, D3) - firehose rows weight every holdout "
+             "wager by the measured gate pass probability of its 0.1 price "
+             "bucket (shadow sink, re-measured daily); raw values in the "
+             "detail line. Roster rows carry real gate verdicts.")
     L.append("- **conc pos/replay** - position-level peak concurrency "
              "(firehose/peak_conc.jsonl, the screen's authority) / the "
              "board's replay measurement.")
