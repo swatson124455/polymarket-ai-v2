@@ -11,6 +11,7 @@
     {"key": "hypo", "marker": "hypothetical dollar ledger"},
     {"key": "backtest", "marker": "backtest daily leaderboard"},
     {"key": "crawl", "marker": "gamma window crawl"},
-    {"key": "tailable", "marker": "tailable list"}
+    {"key": "tailable", "marker": "tailable list"},
+    {"key": "pipeline", "marker": "candidate pipeline"}
   ]
 }

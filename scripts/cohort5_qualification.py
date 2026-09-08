@@ -274,6 +274,7 @@ ADMIT_DIRS_DEFAULT = [
     "/opt/pa2-shared/mb_copyable_data/deep_dive_scout",
     "/opt/pa2-shared/mb_copyable_data/deep_dive_scout2",
     "/opt/pa2-shared/mb_copyable_data/deep_dive_promo0907",
+    "/opt/pa2-shared/mb_copyable_data/deep_dive_pipeline",   # P4 runner
 ]
 CHAIN_AUDIT_DEFAULT = "/opt/pa2-shared/mb_copyable_data/chain_audit.json"
 

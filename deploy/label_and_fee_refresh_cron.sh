@@ -116,5 +116,12 @@ cd /opt/polymarket-ai-v2
       | grep -vE "^[0-9]{4}-|\[info|\[debug"
 } >> "$LOG"
 {
+  # candidate pipeline (plan P4): list -> dive queue (NEW dives + 60d
+  # re-dives); a serial runner (vps_jobs/tailable_dive_runner.sh, its own
+  # cron) drains it into deep_dive_pipeline/. Proposals only.
+  echo "===== $(date -u +%FT%TZ) candidate pipeline ====="
+  PYTHONPATH="$D"     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_candidate_pipeline.py" 2>&1
+} >> "$LOG"
+{
   /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_chain_watch.py" 2>&1
 } >> "$LOG"
