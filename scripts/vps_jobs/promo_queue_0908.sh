@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 2026-09-09 (re-review alt#6): the dive runs from the READOUT CLONE (master),
+# never the watcher's frozen /opt/mirror3 checkout - one rule set per dossier dir.
 # Promotion dive queue — the 5 remaining lower-bound-proven wallets
 # (2026-09-08 relaunch after the 09-07 queue wedged for 15.6h).
 #
@@ -40,9 +42,9 @@ touch "$OUT/.wtest" && rm -f "$OUT/.wtest" || { echo "FATAL: $OUT not writable" 
 # secret read here, never on a command line
 DBURL=$(grep -m1 '^DATABASE_URL=' /opt/pa2-shared/.env | cut -d= -f2-)
 [ -n "$DBURL" ] || { echo "FATAL: no DATABASE_URL" >&2; exit 4; }
-export DATABASE_URL="$DBURL" PYTHONPATH=/opt/mirror3
+export DATABASE_URL="$DBURL" PYTHONPATH=/opt/pa2-shared/mb_readout
 
-"$PY" /opt/mirror3/scripts/chain_deep_dive.py \
+"$PY" /opt/pa2-shared/mb_readout/scripts/chain_deep_dive.py \
   --extra-traders "$ROSTER" --cache "$CACHE" \
   --gamma-cache "$CACHE/gamma_resolutions.json" \
   --rpc-url https://polygon.gateway.tenderly.co --rps 8 --max-receipts 30000 \
