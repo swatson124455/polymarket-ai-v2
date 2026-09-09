@@ -101,9 +101,17 @@ def decide(rows: list[dict], now_ts: float, queued: set,
         if tier == "PENDING" and r.get("elig_status") == "PASS" and not dive:
             new.append((a, "PENDING, eligibility PASS, no dossier"))
             continue
+        if dive.startswith("REJECT"):
+            skipped.append((a, "dive REJECT (deliberate exclusion) - never re-dived"))
+            continue
         if dive.startswith("INSUFFICIENT"):
             span = r.get("dive_span_days")
             dts = parse_iso(r.get("dive_utc"))
+            if span is None and "raised" in str(r.get("dive_reason") or ""):
+                # an ERRORED dive ("deep dive raised: ...") writes a dossier
+                # without span - retry it, never park it (re-review C2)
+                redive.append((a, "dive ERRORED (dossier has no span) - retry"))
+                continue
             if span is None or dts is None:
                 skipped.append((a, "INSUFFICIENT but span/date unknown"))
                 continue
@@ -211,6 +219,17 @@ def _self_test() -> int:
         {"wallet": G, "tier": "PENDING", "elig_status": "PASS",
          "dive_verdict": None, "tier_reasons": ["dive none"]},          # already queued
     ]
+    # errored dive -> retry; REJECT -> named skip (re-review C2 / A-lower)
+    dx = decide([{"wallet": A, "tier": "PENDING", "elig_status": "PASS",
+                  "dive_verdict": "INSUFFICIENT-EVIDENCE", "dive_span_days": None,
+                  "dive_utc": iso(now - 1), "dive_reason": "deep dive raised: RPC"},
+                 {"wallet": B, "tier": "EXCLUDED", "elig_status": "PASS",
+                  "dive_verdict": "REJECT"}], now, set(),
+                old_bar_retired_ts=now - 2 * DAY_S)
+    okx = ([a for a, _ in dx["redive"]] == [A] and "ERRORED" in dx["redive"][0][1]
+           and [a for a, _ in dx["skipped"]] == [B] and "REJECT" in dx["skipped"][0][1])
+    print(f"  [decide] errored dossier (no span) retried; REJECT skipped by name : {okx}")
+    ok &= okx
     # bar = 30 (ruling B): C (57d at dive, ~61 now) is NOT a span crossing any
     # more; D (40d, ~44 now) and E (144d) are old-bar INSUFFICIENTs -> ONE
     # fresh dive each; C too (old-bar). Pass old_bar_retired_ts = now-2d so
