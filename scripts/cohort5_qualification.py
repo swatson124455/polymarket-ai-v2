@@ -384,6 +384,7 @@ def roster_admit_groups(chain_audit_path: str, admit_dirs: list,
             if a and (a not in newest or mt > newest[a][0]):
                 newest[a] = (mt, str(blob.get("verdict", "")), f)
     out = []
+    groups = []
     for name, g in audit.items():
         if not (isinstance(g, dict) and "admitted_utc" in g
                 and "addresses" in g):
@@ -396,6 +397,11 @@ def roster_admit_groups(chain_audit_path: str, admit_dirs: list,
             continue
         if ts < BASIS_EPOCH:
             continue     # pre-conversion groups = the hand lists above
+        groups.append((ts, name, g))
+    # EARLIER GROUP WINS across post-conversion groups too (re-review A4):
+    # walk in epoch order and grow the exclusion set as we register
+    already = set(already)
+    for ts, name, g in sorted(groups, key=lambda x: (x[0], x[1])):
         addrs, skipped = [], []
         for a in [str(x).lower() for x in g.get("addresses", [])]:
             if a in already:
@@ -417,7 +423,7 @@ def roster_admit_groups(chain_audit_path: str, admit_dirs: list,
         out.append({"name": name, "epoch": ts,
                     "admitted_utc": str(g["admitted_utc"]),
                     "addresses": sorted(addrs), "skipped": skipped})
-    out.sort(key=lambda x: (x["epoch"], x["name"]))
+        already |= set(addrs)
     return out
 
 
@@ -1044,6 +1050,22 @@ def _self_test() -> int:
         with open(apath, "w") as fh:
             json.dump(audit, fh)
         groups = roster_admit_groups(apath, [d1, d2], {B})
+        # re-review A4: the same wallet in TWO post-conversion groups is
+        # registered once, in the EARLIER group; the later one names it
+        post2 = datetime.fromtimestamp(BASIS_EPOCH + 3 * 86400.0,
+                                       _utc).isoformat()
+        audit2 = dict(audit, cohortY={"addresses": [A], "admitted_utc": post2})
+        with open(apath, "w") as fh:
+            json.dump(audit2, fh)
+        g2 = roster_admit_groups(apath, [d1, d2], {B})
+        ok8x = ([x["name"] for x in g2] == ["cohortX", "cohortY"]
+                and g2[0]["addresses"] == [A] and g2[1]["addresses"] == []
+                and any(a == A and "earlier" in w for a, w in g2[1]["skipped"]))
+        with open(apath, "w") as fh:
+            json.dump(audit, fh)
+        print(f"  [registration] a wallet in two post-conversion groups "
+              f"registers once, earlier group wins : {ok8x}")
+        ok &= ok8x
         ok8 = (len(groups) == 1 and groups[0]["name"] == "cohortX"
                and groups[0]["epoch"] == BASIS_EPOCH + 86400.0
                and groups[0]["addresses"] == [A]
