@@ -88,10 +88,20 @@
 >    futility / DNQ locks → tripwire DROPPED → DROPPED tier; the next
 >    futility date is 2026-09-13T22:30Z. Proposal: monitor-only (no
 >    locks) for every list wallet regardless of group.
-> **RUNNER DRAIN IN PROGRESS:** launched 01:18:59Z from the clone, queue 6
-> (0x4ed3513040 NEW; 0x4ab40f2a49, 0x4f453abb65, 0x1c010e69db,
-> 0x5d2e0736fb, 0xf7d03961dd old-bar re-dives) → deep_dive_pipeline/;
-> log deep_dive/tailable_dive_runner.log; ADMITs surface on the next list.
+> **RUNNER DRAIN DONE 01:23:04Z** (queue 6 → 0 in ~4 min from the fill
+> cache): ALL SIX ADMIT under the integrity-only rules (0x4ed3513040 NEW;
+> 0x4ab40f2a49, 0x4f453abb65, 0x1c010e69db, 0x5d2e0736fb, 0xf7d03961dd
+> re-dives) → deep_dive_pipeline/. **LIST 01:23:58Z: VERIFIED 8 / PENDING 5
+> / universe 13.** New VERIFIED: 0x4ab40f2a49 ($algo/wk +143, $ref100
+> +5,671, lcb +4.952, n_ho 13), 0x4f453abb65 (+15 / +132), 0x1c010e69db
+> (+0 / +48, lcb +0.007). Still PENDING on holdout LCB<0: 0x4ed3513040
+> (−0.235), 0x5d2e0736fb (−0.125), 0xf7d03961dd (−0.163); young: 0xd6730ad2d5,
+> 0x5cb1327663.
+> **⚠ ROSTER PROPOSALS (operator ruling; pipeline line verbatim):**
+> `[pipeline] ROSTER PROPOSALS (VERIFIED, not on roster; roster add =
+> OPERATOR RULING): 0x4ab40f2a49.., 0x4f453abb65.., 0x1c010e69db..` — a
+> roster add = chain_audit.json group `cohort9` + watcher `systemctl
+> restart` (the cohort8 procedure); the grader registers automatically.
 > **WATCH (next 11:40Z = first run of the 12-stage chain on the merged
 > code; ORDER CHANGED: boards run before funnel/ledger):** grader prints
 > "roster-admit cohort5 (3)" + "roster-admit cohort8 (2)" MONITOR lines,
