@@ -580,7 +580,14 @@ async def run(args) -> int:
     proposals = []
     status_rows = []   # one per graded address -> forward-status artifact
 
-    def eproc_grade(group, epoch, lock_source, lock_suffix=""):
+    def eproc_grade(group, epoch, lock_source, lock_suffix="", lock=True):
+        """lock=False (operator ruling 2026-09-09 'do all recs' D): MONITOR
+        ONLY for roster-admitted groups - rolling forward n / ROI / e / LCB
+        are computed and reported, NO lock is ever written (no futility, no
+        QUALIFIES). Backtest admits; a futility lock at day 7 would be the
+        D1 false tripwire again and would blind the drop-off monitor after
+        it fired (a consumed lock stops scoring). Drop-off for these groups
+        = the DEGRADED label on the realized mean, nothing else."""
         nonlocal locks, graded_groups
         graded_groups += 1
         # BASIS CONVERSION 2026-09-06: every PRE-conversion trial scores
@@ -607,6 +614,7 @@ async def run(args) -> int:
                 "address": a, "lock_key": lkey, "source": lock_source,
                 "epoch_utc": epoch_utc, "el_days": round(el_days, 3),
                 "futility_utc": futility_utc if state == "ACCRUING" else None,
+                "monitor_only": state == "MONITOR",
                 "state": state, "verdict": verdict, "locked_at": locked_at,
                 "n_mkts": n, "n_wagers": n_wagers, "e": ev,
                 "roi": mean_roi, "lcb": lcb,
@@ -614,6 +622,30 @@ async def run(args) -> int:
                 "tripwire": tripwire(verdict, n, mean_roi, lcb)})
         for a in group:
             lkey = a + lock_suffix
+            if not lock:
+                # MONITOR ONLY: never reads or writes a lock for this key
+                t_recs = [r for r in gfwd
+                          if str(r.get("trader", "")).lower() == a]
+                seq = mc.market_position_rois(t_recs, outcomes, frm or {},
+                                              fee_map or {}, epoch=epoch)
+                rois = [x for _, _, x, _ in seq]
+                n = len(rois)
+                n_wagers = sum(k for _, _, _, k in seq)
+                el_days = max((now_ts - epoch) / 86400.0, 1e-9)
+                ev = mc.roi_e_value(rois, 0.0) if rois else None
+                mean_roi = (sum(rois) / n) if n else None
+                lcb_m = mc.roi_lcb(rois, e_bar=C1_E_REJECT) if rois else None
+                wk_m = (lcb_m * 100.0 * (n / el_days) * 7.0
+                        if lcb_m is not None else None)
+                print(f"  {a[:12]}..  MONITOR n={n}mkt/{n_wagers}wag "
+                      f"e={'n/a' if ev is None else f'{ev:.3f}'} "
+                      f"roi={'n/a' if mean_roi is None else f'{mean_roi:+.4f}'} "
+                      f"lcb={'n/a' if lcb_m is None else f'{lcb_m:+.4f}'} "
+                      f"({el_days:.1f}d since admission; no lock by design)")
+                srow(a, lkey, "MONITOR", None, n, n_wagers, ev,
+                     None if mean_roi is None else round(mean_roi, 6),
+                     lcb_m, wk_m, el_days)
+                continue
             if lkey in locks:
                 lk = locks[lkey]
                 print(f"  {a[:12]}..  LOCKED {lk['locked_at']}: "
@@ -761,13 +793,15 @@ async def run(args) -> int:
         print(f"roster-admit {g['name']} ({len(g['addresses'])}) - epoch "
               f"{datetime.fromtimestamp(g['epoch'], timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
               f" (OWN clock: admitted after the conversion; registration = "
-              f"dive ADMIT + roster; forward = drop-off tripwire only):")
+              f"dive ADMIT + roster; MONITOR ONLY - no locks, ruling "
+              f"2026-09-09; drop-off = DEGRADED label):")
         for a, why in g["skipped"]:
             print(f"  {a[:12]}..  NOT REGISTERED: {why}")
         if g["addresses"]:
             eproc_grade(g["addresses"], g["epoch"],
-                        f"roster-admit {g['name']} e-process (admitted "
-                        f"{g['admitted_utc']}, own clock, ruling 2026-09-08)")
+                        f"roster-admit {g['name']} MONITOR (admitted "
+                        f"{g['admitted_utc']}, own clock, ruling 2026-09-08; "
+                        f"no locks, ruling 2026-09-09)", lock=False)
     if not roster_groups:
         print("roster-admit groups: none admitted after the conversion epoch")
     if proposals:
@@ -1090,14 +1124,28 @@ def _self_test() -> int:
         except ValueError:
             oks = False
     oks2 = (esrc.count("write_forward_status(") == 2
-            and esrc.count('srow(a, lkey, "') == 6   # the 6 CALLS (the
-            # def line has no quoted state), one per closure branch
+            and esrc.count('srow(a, lkey, "') == 7   # the 7 CALLS (the
+            # def line has no quoted state), one per closure branch incl.
+            # the MONITOR branch (ruling 2026-09-09)
             and '"tripwire": tripwire(verdict, n, mean_roi, lcb)' in esrc
             and esrc.index("write_heartbeat(args.heartbeat, graded_groups")
             < esrc.index("write_forward_status(args.forward_status, status_rows"))
     print(f"  [forward-status] atomic + schema; run() writes at both exits; "
-          f"all 6 branches emit a row with the tripwire : {oks and oks2}")
+          f"all 7 branches emit a row with the tripwire : {oks and oks2}")
     ok &= oks and oks2
+    # MONITOR ONLY for roster-admitted groups (ruling 2026-09-09 D): the
+    # roster call passes lock=False; the MONITOR branch touches no lock and
+    # runs BEFORE any lock read; the lock write count is unchanged (3)
+    okm = ('lock=False)' in esrc
+           and 'lock=True):' in esrc
+           and esrc.index("if not lock:") < esrc.index("if lkey in locks:")
+           and esrc.count("locks, lkey, {") == 3
+           and 'srow(a, lkey, "MONITOR"' in esrc
+           and "sr.write_lock" not in esrc[esrc.index("if not lock:"):esrc.index("if lkey in locks:")]
+           and '"monitor_only": state == "MONITOR"' in esrc)
+    print(f"  [monitor] roster-admitted groups graded lock=False: rolling "
+          f"stats, MONITOR rows, zero lock reads/writes : {okm}")
+    ok &= okm
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
