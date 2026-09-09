@@ -630,7 +630,8 @@ def render_md(rows: list, prov: dict) -> str:
                      f"{r['board_verdict']}, holdout n={r['ho_n_holdout']} "
                      f"wagers={r['ho_wagers']} over {r['ho_holdout_days']}d, "
                      f"$ref100/wk real {_fmt(r['ho_wk_net_real'], '+,.0f')}"
-                     + (f", roster-board $ref100/wk LCB "
+                     + (f", {r.get('alt_board_source') or 'other'}-board "
+                        f"$ref100/wk LCB "
                         f"{_fmt(r['roster_board_wk_lcb'], '+,.0f')}"
                         if r["roster_board_wk_lcb"] is not None else "")
                      + (f". FILL-MODELED x{_fmt(r['fill_p'], '.2f')} "
@@ -877,7 +878,9 @@ def _self_test() -> int:
              "cov_pct": 80.0, "peak_conc_replay": 3},   # $<=0 -> not a cand
         ])
         rop = j("ro.jsonl", [{"w": A, "verdict": "ACCRUING",
-                              "ho_wk_net_lcb": 120.0}])
+                              "ho_wk_net_lcb": 120.0, "ho_roi_lcb": 0.05,
+                              "ho_n_holdout": 5, "cov_pct": 90.0,
+                              "peak_conc_replay": 12}])
         pcp = j("pc.jsonl", [{"w": A, "peak_conc": 10}, {"w": B, "peak_conc": 5},
                              {"w": D, "peak_conc": 2}])
         dd = os.path.join(d, "deep_dive_pipeline")
@@ -933,7 +936,12 @@ def _self_test() -> int:
                and rows[B]["tier"] == "FLAGGED"
                and rows[D]["tier"] == "EXCLUDED"
                and rows[A]["conc_pos"] == 10 and rows[A]["conc_replay"] == 12
-               and rows[A]["roster_board_wk_lcb"] == 120.0
+               # the ROSTER row (real fills, has an LCB) is the primary;
+               # the firehose row is the alternate (re-review B2)
+               and rows[A]["board_source"] == "roster"
+               and rows[A]["ho_roi_lcb"] == 0.05
+               and rows[A]["roster_board_wk_lcb"] == 500.0
+               and rows[A]["alt_board_source"] == "firehose"
                and rows[A]["selection_survives"] is True
                and rows[B]["selection_survives"] is None
                and rows[A]["fwd_tripwire"] == "WATCH"
@@ -1007,6 +1015,18 @@ def _self_test() -> int:
         c = refresh_eligibility(["0x" + "1" * 40], {}, True, nowx,
                                 sleep_s=0.0, save=lambda cc: saves.append(len(cc)))
         okr = okr and saves == [1] and c["0x" + "1" * 40]["status"] in ("ERROR", "FAIL", "PASS")
+        # the loop SKIPS an age-FAIL that is not yet due and READS one that is
+        # (stubbed fetch, no network)
+        _orig = globals()["fetch_first_trades"]
+        calls = []
+        globals()["fetch_first_trades"] = lambda a, timeout_s=0: (calls.append(a), [])[1]
+        try:
+            w1, w2 = "0x" + "2" * 40, "0x" + "3" * 40
+            cache2 = {w1: dict(fa), w2: dict(fa, first_trade_utc=utc_iso(nowx - 40 * DAY_S))}
+            refresh_eligibility([w1, w2], cache2, True, nowx, sleep_s=0.0)
+        finally:
+            globals()["fetch_first_trades"] = _orig
+        okr = okr and calls == [w2] and cache2[w1]["reason"].startswith("first trade 2.9d")
     print(f"  [fixes] age-FAIL skipped until due; NaN->null JSON; cache saved "
           f"per read : {okr}")
     ok &= okr
