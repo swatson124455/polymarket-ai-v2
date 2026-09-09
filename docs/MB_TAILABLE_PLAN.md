@@ -174,3 +174,11 @@ lock-only (LCB<0 clause retired); (2) roster adds for 0x75a27d0cc9 /
 0xe9f5c75ee1 executed watch-only (group `cohort8`); (5) allocator tiers OFF
 for the hypothetical phase — GO CHECKLIST ITEM 6: must be re-ruled before
 live. PR #15 merged (master 2b82775d); clone force-refreshed as polymarket.
+
+**2026-09-09 ~01:2xZ addendum:** rulings "go 1 2 yes 3" + "do all recs" (A–E)
+executed and deployed (master 3602f573); full 8-angle re-review of the
+session done, 11 findings fixed (PR #20–#22); the dive is an integrity
+screen (skill P = flag), evidence bar 30d, grader monitor-only for roster
+groups, funnel/ledger on the board's holdout LCB, cron order boards →
+funnel → ledger. Two composed-ruling decisions open (DEGRADED tier;
+hand-list futility locks) — docs/MB_STATE.md top block.
