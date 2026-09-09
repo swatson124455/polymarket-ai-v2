@@ -39,24 +39,9 @@ cd /opt/polymarket-ai-v2
     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/canon_verify.py" 2>&1
 } >> "$LOG"
 {
-  echo "===== $(date -u +%FT%TZ) trader funnel (one-table review) ====="
-  # operator sizer foursome (2026-08-30 "1 ok"): sourced, never hardcoded -
-  # /opt/pa2-shared/mb_sizer.env is the ONE place to change sizing params
-  [ -f /opt/pa2-shared/mb_sizer.env ] && . /opt/pa2-shared/mb_sizer.env
-  DATABASE_URL="$DBURL" PYTHONPATH="$D" \
-  MB_SIZER_BANKROLL="$MB_SIZER_BANKROLL" \
-  MB_SIZER_KELLY_MULT="$MB_SIZER_KELLY_MULT" \
-  MB_SIZER_CONCURRENCY="$MB_SIZER_CONCURRENCY" \
-  MB_SIZER_MIN_VIABLE="$MB_SIZER_MIN_VIABLE" \
-  MB_ALLOC_TIER_FRACS="${MB_ALLOC_TIER_FRACS:-}" \
-    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/trader_funnel.py" 2>&1
-} >> "$LOG"
-{
-  echo "===== $(date -u +%FT%TZ) hypothetical dollar ledger (paper) ====="
-  [ -f /opt/pa2-shared/mb_sizer.env ] && . /opt/pa2-shared/mb_sizer.env
-  DATABASE_URL="$DBURL" PYTHONPATH="$D"   MB_SIZER_BANKROLL="$MB_SIZER_BANKROLL"   MB_SIZER_KELLY_MULT="$MB_SIZER_KELLY_MULT"   MB_SIZER_CONCURRENCY="$MB_SIZER_CONCURRENCY"   MB_SIZER_MIN_VIABLE="$MB_SIZER_MIN_VIABLE"     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_hypo_ledger.py" 2>&1 | grep -vE "^[0-9]{4}-"
-} >> "$LOG"
-{
+  # ORDER (re-review 2026-09-09 A6): the boards run BEFORE the funnel and
+  # the ledger because both now size on the boards' holdout LCB (ruling
+  # 2026-09-09 "yes 3"); running after would stake on YESTERDAY's board.
   # backtest daily stage (operator GO 2026-09-06): incremental extract of
   # newly-complete firehose days -> label the new tokens -> both
   # leaderboards. Tailability bar 20 = operator ruling 2026-09-06.
@@ -84,6 +69,24 @@ cd /opt/polymarket-ai-v2
     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_backtest.py" daily-replay \
       --rows "$BT/candidate_rows.jsonl" --outdir "$BT" --top 10 2>&1 \
       | grep -vE "^[0-9]{4}-|\[info|\[debug"
+} >> "$LOG"
+{
+  echo "===== $(date -u +%FT%TZ) trader funnel (one-table review) ====="
+  # operator sizer foursome (2026-08-30 "1 ok"): sourced, never hardcoded -
+  # /opt/pa2-shared/mb_sizer.env is the ONE place to change sizing params
+  [ -f /opt/pa2-shared/mb_sizer.env ] && . /opt/pa2-shared/mb_sizer.env
+  DATABASE_URL="$DBURL" PYTHONPATH="$D" \
+  MB_SIZER_BANKROLL="$MB_SIZER_BANKROLL" \
+  MB_SIZER_KELLY_MULT="$MB_SIZER_KELLY_MULT" \
+  MB_SIZER_CONCURRENCY="$MB_SIZER_CONCURRENCY" \
+  MB_SIZER_MIN_VIABLE="$MB_SIZER_MIN_VIABLE" \
+  MB_ALLOC_TIER_FRACS="${MB_ALLOC_TIER_FRACS:-}" \
+    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/trader_funnel.py" 2>&1
+} >> "$LOG"
+{
+  echo "===== $(date -u +%FT%TZ) hypothetical dollar ledger (paper) ====="
+  [ -f /opt/pa2-shared/mb_sizer.env ] && . /opt/pa2-shared/mb_sizer.env
+  DATABASE_URL="$DBURL" PYTHONPATH="$D"   MB_SIZER_BANKROLL="$MB_SIZER_BANKROLL"   MB_SIZER_KELLY_MULT="$MB_SIZER_KELLY_MULT"   MB_SIZER_CONCURRENCY="$MB_SIZER_CONCURRENCY"   MB_SIZER_MIN_VIABLE="$MB_SIZER_MIN_VIABLE"     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_hypo_ledger.py" 2>&1 | grep -vE "^[0-9]{4}-"
 } >> "$LOG"
 {
   # gamma window crawl (operator GO 2026-09-07 "1 do it"): labels for
