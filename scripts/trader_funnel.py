@@ -198,6 +198,47 @@ def display_stake(r: dict, params, frm: dict, fee_map: dict):
         r["lcb"], fill, fee, book_depth_usd=1e12, **p)
 
 
+def load_boards(firehose: str, roster: str) -> dict:
+    """{wallet: board row} - firehose row wins (the list's primary lens),
+    roster row fills in. Tolerant of an absent/torn file (empty dict)."""
+    out: dict = {}
+    for path in (roster, firehose):      # firehose LAST = wins
+        if not path or not os.path.exists(path):
+            continue
+        with open(path, errors="replace") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue
+                w = str(r.get("w", "")).lower()
+                if w:
+                    out[w] = r
+    return out
+
+
+def evidence_lcb(fwd_lcb, board_row) -> tuple:
+    """(lcb, source) for the stake + $algo/day (operator ruling 2026-09-09
+    ~00:3xZ 'yes 3': BACKTEST ADMITS, so the money evidence for a wallet
+    with a board row is its holdout ROI LCB; forward data is the drop-off
+    tripwire only). No board row -> the forward LCB, labeled 'fwd'. Pure."""
+    if board_row is not None and board_row.get("ho_roi_lcb") is not None:
+        return float(board_row["ho_roi_lcb"]), "bt"
+    return fwd_lcb, "fwd"
+
+
+def evidence_rate(r: dict, days, board_row) -> tuple:
+    """(n, days) for the $/day rate from the same source as the evidence:
+    board holdout markets/days when a board row exists, else forward."""
+    if (board_row is not None and board_row.get("ho_roi_lcb") is not None
+            and board_row.get("ho_n_holdout") and board_row.get("ho_holdout_days")):
+        return int(board_row["ho_n_holdout"]), float(board_row["ho_holdout_days"])
+    return r.get("n"), days
+
+
 def algo_day(r: dict, stake, days) -> float | None:
     """$algo/day (operator ruling 2026-09-08 #2, "track roi based on our
     wager algo not 100 flatrate"): LCB ROI x OUR sizer's stake at the
@@ -264,6 +305,10 @@ async def run(args) -> int:
              min_markets=cq.N_BAR, fee_map_data=fee_map)
     locks = sr.load_locks(args.locks)
     sz = sizer_params_from_env()
+    # BACKTEST ADMITS (ruling 2026-09-09 'yes 3'): the boards are the stake
+    # evidence for every wallet that has a row; forward = drop-off only
+    boards = load_boards(getattr(args, "firehose_board", None),
+                         getattr(args, "roster_board", None))
 
     # group + epoch per trader, straight from the grader's module
     originals = set(cq.eligible_admits(args.deep_dive, args.rereview))
@@ -311,17 +356,21 @@ async def run(args) -> int:
         if a in retrials and a in locks:
             r = trader_row(a, cq.BASIS_EPOCH, recs, outcomes, frm, fee_map,
                            cfg, res_at)
-            srec = display_stake(r, alloc_params(a, sz, envelopes), frm,
-                                 fee_map)
+            ev, ev_src = evidence_lcb(r.get("lcb"), boards.get(a))
+            srec = display_stake(dict(r, lcb=ev), alloc_params(a, sz, envelopes),
+                                 frm, fee_map)
             days = days_since(cq.BASIS_EPOCH)
             dday = None
             if r.get("lcb") is not None and days and days > 0 and r["n"]:
                 dday = r["lcb"] * 100.0 * (r["n"] / days)
             stk = None if srec is None else srec["stake"]
+            en, ed = evidence_rate(r, days, boards.get(a))
             rows.append({"a": a, "state": "TRIAL", "n": r["n"], "e": r["e"],
                          "edge": r["edge"], "ok": r["ok"], "lcb": r["lcb"],
-                         "stake": stk, "aday": algo_day(r, stk, days),
-                         "dday": dday, "days": days, "note": "retrial-r1"})
+                         "stake": stk,
+                         "aday": algo_day({"lcb": ev, "n": en}, stk, ed),
+                         "dday": dday, "days": days,
+                         "note": f"retrial-r1 [{ev_src}]"})
             continue
         if a in locks:
             lk = locks[a]
@@ -364,7 +413,9 @@ async def run(args) -> int:
         # so the funnel's days/rates match the grader's exactly.
         epoch = cq.effective_epoch(epoch)
         r = trader_row(a, epoch, recs, outcomes, frm, fee_map, cfg, res_at)
-        srec = display_stake(r, alloc_params(a, sz, envelopes), frm, fee_map)
+        ev, ev_src = evidence_lcb(r.get("lcb"), boards.get(a))
+        srec = display_stake(dict(r, lcb=ev), alloc_params(a, sz, envelopes),
+                             frm, fee_map)
         days = days_since(epoch)
         # OPERATOR HARDCODE 2026-09-06 ($/day is the test): LCB dollars/day
         # at the $100/market REFERENCE stake = lcb x 100 x resolved-rate.
@@ -375,11 +426,13 @@ async def run(args) -> int:
         if r.get("lcb") is not None and days and days > 0 and r["n"]:
             dday = r["lcb"] * 100.0 * (r["n"] / days)
         stk = None if srec is None else srec["stake"]
+        en, ed = evidence_rate(r, days, boards.get(a))
         rows.append({"a": a, "state": "TRIAL", "n": r["n"], "e": r["e"],
                      "edge": r["edge"], "ok": r["ok"], "lcb": r["lcb"],
-                     "stake": stk, "aday": algo_day(r, stk, days),
+                     "stake": stk,
+                     "aday": algo_day({"lcb": ev, "n": en}, stk, ed),
                      "dday": dday,
-                     "days": days, "note": grp})
+                     "days": days, "note": f"{grp} [{ev_src}]"})
 
     order = {"TRIAL": 0, "PASSED": 1, "OBS": 2, "FAILED": 3}
     # primary sort = the money metric (operator hardcode) at OUR stake
@@ -430,10 +483,17 @@ async def run(args) -> int:
     else:
         print("[cracks] 0 - every reviewed non-REJECT address is on the "
               "roster or locked")
+    n_bt = sum(1 for x in rows if x["state"] == "TRIAL"
+               and str(x.get("note", "")).endswith("[bt]"))
+    print(f"[evidence] BACKTEST ADMITS (ruling 2026-09-09): $stake + $algo/day "
+          f"use the board's holdout ROI LCB + holdout rate where a board row "
+          f"exists ([bt], {n_bt} trial rows; boards {len(boards)} wallets), "
+          f"else the forward LCB ([fwd]); forward data = drop-off tripwire "
+          f"only, never the money gate")
     print("[$/day] HYPOTHETICAL - $algo/day = LCB ROI x OUR sizer stake x "
           "resolved-rate (ruling 2026-09-08 #2: our wager algo, not a flat "
-          "$100; $0 stake until the forward LCB > 0); $ref100/day = the "
-          "$100/wager comparison (resolved/day lags entry rate); sorted by "
+          "$100; $0 when the evidence LCB is not > 0); $ref100/day = the "
+          "$100/wager comparison at the FORWARD lcb x forward rate; sorted by "
           "$algo/day then $ref100/day")
     print(f"{'TRADER':<14} {'STATE':<7} {'$algo/day':>9} {'$ref/day':>9} "
           f"{'n':>4} {'e':>7} {'roi':>8} {'lcb':>8} {'$stake':>7} {'ok%':>4} "
@@ -615,13 +675,40 @@ def _self_test() -> int:
            and algo_day(r_, None, 5) is None
            and algo_day({"lcb": None, "n": 10}, 5.0, 5) is None
            and algo_day(r_, 5.0, 0) is None
-           and src_run2.count('"aday": algo_day(r, stk, days)') == 2
+           and src_run2.count('"aday": algo_day({"lcb": ev, "n": en}, stk, ed)') == 2
            and src_run2.index("'$algo/day'") < src_run2.index("'$ref/day'")
            and src_run2.index("fmt(x.get('aday')") < src_run2.index("fmt(x.get('dday')")
            and src_run2.index('x.get("aday")') < src_run2.index('x.get("dday")'))
     print(f"  [algo] $algo/day = lcb x sizer stake x rate, $0 when unproven;"
           f" both TRIAL rows carry it; column + sort lead with it : {oke}")
     ok &= oke
+    # BACKTEST ADMITS (ruling 2026-09-09 'yes 3'): evidence = board holdout
+    # LCB + holdout rate when a row exists; forward otherwise; both TRIAL
+    # row kinds route through it; boards loaded firehose-wins
+    okf = (evidence_lcb(0.1, {"ho_roi_lcb": 0.7}) == (0.7, "bt")
+           and evidence_lcb(0.1, {"ho_roi_lcb": None}) == (0.1, "fwd")
+           and evidence_lcb(0.1, None) == (0.1, "fwd")
+           and evidence_lcb(None, None) == (None, "fwd")
+           and evidence_rate({"n": 3}, 2, {"ho_roi_lcb": 0.7, "ho_n_holdout": 40,
+                                          "ho_holdout_days": 6.5}) == (40, 6.5)
+           and evidence_rate({"n": 3}, 2, None) == (3, 2)
+           and src_run2.count("ev, ev_src = evidence_lcb(r.get(\"lcb\"), boards.get(a))") == 2
+           and src_run2.count("display_stake(dict(r, lcb=ev)") == 2
+           and src_run2.count('algo_day({"lcb": ev, "n": en}, stk, ed)') == 2
+           and "boards = load_boards(" in src_run2
+           and src_run2.index("boards = load_boards(") < src_run2.index("for a in clean:"))
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _d:
+        fp, rp = os.path.join(_d, "f.jsonl"), os.path.join(_d, "r.jsonl")
+        open(rp, "w").write(json.dumps({"w": "0xA", "ho_roi_lcb": 0.2}) + "\n"
+                            + json.dumps({"w": "0xB", "ho_roi_lcb": 0.3}) + "\n")
+        open(fp, "w").write(json.dumps({"w": "0xa", "ho_roi_lcb": 0.9}) + "\n")
+        b = load_boards(fp, rp)
+        okf = okf and b["0xa"]["ho_roi_lcb"] == 0.9 and b["0xb"]["ho_roi_lcb"] == 0.3 \
+            and load_boards(os.path.join(_d, "none"), None) == {}
+    print(f"  [evidence] board holdout LCB + rate drive stake/$algo when a row"
+          f" exists, forward otherwise; both TRIAL rows; firehose wins : {okf}")
+    ok &= okf
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -652,6 +739,12 @@ if __name__ == "__main__":
                     default=cq.ADMIT_DIRS_DEFAULT,
                     help="dive dossier dirs for roster registration "
                          "(grader's list; newest dossier decides ADMIT)")
+    ap.add_argument("--firehose-board", dest="firehose_board",
+                    default="/opt/pa2-shared/mb_copyable_data/backtest/"
+                            "leaderboard_firehose.jsonl")
+    ap.add_argument("--roster-board", dest="roster_board",
+                    default="/opt/pa2-shared/mb_copyable_data/backtest/"
+                            "leaderboard_roster.jsonl")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     raise SystemExit(_self_test() if a.self_test else asyncio.run(run(a)))

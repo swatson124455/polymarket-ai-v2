@@ -323,6 +323,34 @@ def refresh_eligibility(wallets: list, cache: dict, net: bool,
 
 
 # ── the list ──────────────────────────────────────────────────────────────
+def per_bet(b: dict) -> dict:
+    """PURE. Expected profit PER BET from one board row (operator ask
+    2026-09-08 ~21:0xZ: "per bet expectation on average"):
+      algo_lcb  = holdout ROI LCB x mean sizer stake per wager
+      algo_real = realized $ per wager that fills = SUM(roi x stake) / wagers
+                  (from the un-modeled weekly figure x days / 7)
+      ref_lcb / ref_real = the same at the flat $100/wager reference
+    None where the board lacks the input. HYPOTHETICAL like every $ here."""
+    out = {"per_bet_algo_lcb": None, "per_bet_algo_real": None,
+           "per_bet_ref_lcb": None, "per_bet_ref_real": None,
+           "algo_stake_mean": None}
+    lcb, real = b.get("ho_roi_lcb"), b.get("ho_roi_realized")
+    if lcb is not None:
+        out["per_bet_ref_lcb"] = lcb * 100.0
+    if real is not None:
+        out["per_bet_ref_real"] = real * 100.0
+    tot, nw = b.get("ho_algo_stake_total"), b.get("ho_algo_n_wagers")
+    if tot is not None and nw:
+        mean_stake = float(tot) / float(nw)
+        out["algo_stake_mean"] = mean_stake
+        if lcb is not None:
+            out["per_bet_algo_lcb"] = lcb * mean_stake
+        wk_raw, days = b.get("ho_wk_net_algo_real_raw"), b.get("ho_holdout_days")
+        if wk_raw is not None and days:
+            out["per_bet_algo_real"] = float(wk_raw) * float(days) / 7.0 / float(nw)
+    return out
+
+
 def tier_of(r: dict) -> tuple[str, list]:
     """PURE. Precedence: EXCLUDED (dive REJECT) > DROPPED (forward
     tripwire) > FLAGGED (cov<50 / conc>20) > VERIFIED (all green) >
@@ -406,6 +434,7 @@ def build_rows(cands: set, fh: dict, ro: dict, dossiers: dict,
             "algo_stake_med": b.get("ho_algo_stake_med"),
             "algo_stake_total": b.get("ho_algo_stake_total"),
             "algo_n_zero": b.get("ho_algo_n_zero"),
+            **per_bet(b),
             "fill_modeled": b.get("ho_fill_modeled"),
             "fill_p": b.get("ho_fill_p"),
             "ho_wk_net_lcb_raw": b.get("ho_wk_net_lcb_raw"),
@@ -514,10 +543,12 @@ def render_md(rows: list, prov: dict) -> str:
     counts = {t: sum(1 for r in rows if r["tier"] == t) for t in TIER_ORDER}
     L.append("## Summary: " + " | ".join(f"{t} {counts[t]}" for t in TIER_ORDER))
     L.append("")
-    hdr = ("| # | wallet | $algo/wk LCB | $ref100/wk LCB | roi_lcb | n_ho | "
+    hdr = ("| # | wallet | $algo/wk LCB | $/bet algo lcb / real | "
+           "$ref100/wk LCB | $/bet ref100 lcb / real | roi_lcb | n_ho | "
            "conc pos/replay | cov% | elig | dive | selection | roster | "
            "forward (grader) | tripwire | last fill |")
-    sep = "|---|---|---:|---:|---:|---:|---|---:|---|---|---|---|---|---|---|"
+    sep = ("|---|---|---:|---:|---:|---:|---:|---:|---|---:|---|---|---|---|"
+           "---|---|---|")
     for t in TIER_ORDER:
         sub = [r for r in rows if r["tier"] == t]
         L.append(f"## {t} ({len(sub)})")
@@ -538,9 +569,15 @@ def render_md(rows: list, prov: dict) -> str:
             sel = ("untested" if r["selection_survives"] is None else
                    ("Y" if r["selection_survives"] else "no")
                    + f" p={_fmt(r['selection_p'], '.2f')}")
+            pb_algo = (f"{_fmt(r['per_bet_algo_lcb'], '+.2f')} / "
+                       f"{_fmt(r['per_bet_algo_real'], '+.2f')}"
+                       if r["per_bet_algo_lcb"] is not None
+                       or r["per_bet_algo_real"] is not None else "P3")
+            pb_ref = (f"{_fmt(r['per_bet_ref_lcb'], '+.2f')} / "
+                      f"{_fmt(r['per_bet_ref_real'], '+.2f')}")
             L.append(
-                f"| {i} | `{r['wallet'][:12]}` | {algo} | "
-                f"{_fmt(r['ho_wk_net_lcb'], '+,.0f')} | "
+                f"| {i} | `{r['wallet'][:12]}` | {algo} | {pb_algo} | "
+                f"{_fmt(r['ho_wk_net_lcb'], '+,.0f')} | {pb_ref} | "
                 f"{_fmt(r['ho_roi_lcb'], '+.3f')} | {_fmt(r['ho_n_holdout'], 'd')} | "
                 f"{_fmt(r['conc_pos'], 'd')}/{_fmt(r['conc_replay'], 'd')} | "
                 f"{_fmt(r['cov_pct'], '.0f')} | {r['elig_status'] or 'UNREAD'} | "
@@ -588,6 +625,10 @@ def render_md(rows: list, prov: dict) -> str:
              "HYPOTHETICAL. `P3` = the board does not carry it yet.")
     L.append("- **$ref100/wk LCB** - same at a flat $100/wager reference "
              "(comparison column only, ruling 2026-09-08 #2).")
+    L.append("- **$/bet** - expected profit per bet: lcb = holdout ROI LCB x "
+             "stake, real = realized profit per wager that fills; algo = at "
+             "our sizer's mean stake per wager for that wallet, ref100 = at "
+             "$100. HYPOTHETICAL.")
     L.append("- **FILL-MODELED** (P5, D3) - firehose rows weight every holdout "
              "wager by the measured gate pass probability of its 0.1 price "
              "bucket (shadow sink, re-measured daily); raw values in the "
@@ -702,7 +743,11 @@ def run(args) -> int:
             algo = (_fmt(r["ho_wk_net_algo_lcb"], "+,.0f")
                     if r["ho_wk_net_algo_lcb"] is not None else "P3")
             print(f"  {r['wallet'][:12]}..  {r['tier']:<9} $algo/wk {algo:>8} "
+                  f"$/bet {_fmt(r['per_bet_algo_lcb'], '+.2f'):>7}/"
+                  f"{_fmt(r['per_bet_algo_real'], '+.2f'):>7} "
                   f"$ref100/wk {_fmt(r['ho_wk_net_lcb'], '+,.0f'):>8} "
+                  f"$/bet {_fmt(r['per_bet_ref_lcb'], '+.2f'):>8}/"
+                  f"{_fmt(r['per_bet_ref_real'], '+.2f'):>8} "
                   f"lcb {_fmt(r['ho_roi_lcb'], '+.3f')} n_ho {_fmt(r['ho_n_holdout'], 'd'):>4} "
                   f"conc {_fmt(r['conc_pos'], 'd')}/{_fmt(r['conc_replay'], 'd')} "
                   f"cov {_fmt(r['cov_pct'], '.0f')} elig {r['elig_status'] or 'UNREAD'} "
@@ -877,6 +922,23 @@ def _self_test() -> int:
            and 'cq.parse_utc' in inspect.getsource(_after_basis)
            and "sortDirection" in inspect.getsource(fetch_first_trades)
            and '"ASC"' in inspect.getsource(fetch_first_trades))
+    # PER-BET (operator ask 2026-09-08 ~21:0xZ): lcb x mean stake; realized
+    # $ per filling wager; $100 reference; None without inputs
+    pb = per_bet({"ho_roi_lcb": 0.5, "ho_roi_realized": 1.2,
+                  "ho_algo_stake_total": 60.0, "ho_algo_n_wagers": 30,
+                  "ho_wk_net_algo_real_raw": 210.0, "ho_holdout_days": 7.0})
+    okpb = (abs(pb["algo_stake_mean"] - 2.0) < 1e-12
+            and abs(pb["per_bet_algo_lcb"] - 1.0) < 1e-12
+            and abs(pb["per_bet_algo_real"] - 7.0) < 1e-12   # 210*7/7/30
+            and abs(pb["per_bet_ref_lcb"] - 50.0) < 1e-12
+            and abs(pb["per_bet_ref_real"] - 120.0) < 1e-12
+            and per_bet({})["per_bet_algo_lcb"] is None
+            and per_bet({"ho_roi_lcb": 0.5})["per_bet_ref_lcb"] == 50.0
+            and per_bet({"ho_roi_lcb": 0.5})["per_bet_algo_lcb"] is None
+            and "$/bet" in md and "**per_bet(b)" in inspect.getsource(build_rows))
+    print(f"  [per-bet] lcb x mean stake, realized per filling wager, $100 "
+          f"ref, None without inputs; column in md + json : {okpb}")
+    ok &= okpb
     print(f"  [pins] HYPOTHETICAL + vintage in outputs; $algo read from the "
           f"board; roster clock via the grader's parser; ASC query : {ok4}")
     ok &= ok4
