@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 2026-09-09 (re-review alt#6): the dive runs from the READOUT CLONE (master),
+# never the watcher's frozen /opt/mirror3 checkout - one rule set per dossier dir.
 # Scout dive relaunch (2026-08-19). Fix for the 07-31 failure: explicit
 # cd /opt/polymarket-ai-v2 (cwd EACCES on relative .env). Stale caches
 # (2026-07-10, status=hft) DISCLOSED - chain reconstruction is authoritative.
@@ -12,7 +14,7 @@ DBURL=$(grep -m1 '^DATABASE_URL=' /opt/pa2-shared/.env | cut -d= -f2-)
 echo "[$(date -u +%FT%TZ)] scout relaunch: $(wc -l < $ROSTER) candidates"
 while pgrep -f "chain_deep_div[e].py" >/dev/null 2>&1; do sleep 600; done
 touch "$OUT/.wtest" && rm -f "$OUT/.wtest" || { echo "FATAL: $OUT not writable" >&2; exit 3; }
-PYTHONPATH=/opt/mirror3 DATABASE_URL="$DBURL" "$PY" /opt/mirror3/scripts/chain_deep_dive.py \
+PYTHONPATH=/opt/pa2-shared/mb_readout DATABASE_URL="$DBURL" "$PY" /opt/pa2-shared/mb_readout/scripts/chain_deep_dive.py \
   --extra-traders "$ROSTER" --cache "$CACHE" --gamma-cache "$CACHE/gamma_resolutions.json" \
   --rpc-url https://polygon.gateway.tenderly.co --rps 8 --max-receipts 30000 \
   --fill-cache-dir "$CACHE/chain_fills" \

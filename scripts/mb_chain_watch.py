@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -151,7 +152,10 @@ def grade_chain(log_text: str, today: str,
                 j = k
                 break
         section = "\n".join(lines[i + 1:j])
-        if "Traceback (most recent call last)" in section:
+        # a stage that exits early with a FATAL line (SystemExit text, no
+        # traceback) is just as dead as a traceback (re-review C3)
+        if ("Traceback (most recent call last)" in section
+                or re.search(r"(^|\W)FATAL\b", section)):
             results.append(f"{key}=CRASHED")
             bad += 1
         else:
@@ -261,6 +265,12 @@ def _self_test() -> int:
     ok &= ok1
     line, bad = grade_chain(_mk_log(day, EXPECTED, crash_in="grader"), day)
     ok2 = bad == 1 and line.startswith("[chain] !!") and "grader=CRASHED" in line
+    # FATAL early exit (no traceback) is CRASHED too (re-review C3)
+    lf = _mk_log(day, EXPECTED).replace(
+        "===== " + day + "T11:41:00Z tailable list =====\nsome ordinary output",
+        "===== " + day + "T11:41:00Z tailable list =====\n[tailable] FATAL: both boards empty")
+    line_f, bad_f = grade_chain(lf, day)
+    ok2 = ok2 and bad_f == 1 and "tailable=CRASHED" in line_f
     print(f"  [crash] traceback inside one section -> that stage CRASHED,"
           f" loud : {ok2}")
     ok &= ok2

@@ -199,24 +199,24 @@ def display_stake(r: dict, params, frm: dict, fee_map: dict):
 
 
 def load_boards(firehose: str, roster: str) -> dict:
-    """{wallet: board row} - firehose row wins (the list's primary lens),
-    roster row fills in. Tolerant of an absent/torn file (empty dict)."""
-    out: dict = {}
-    for path in (roster, firehose):      # firehose LAST = wins
-        if not path or not os.path.exists(path):
-            continue
-        with open(path, errors="replace") as f:
-            for ln in f:
-                ln = ln.strip()
-                if not ln:
-                    continue
-                try:
-                    r = json.loads(ln)
-                except ValueError:
-                    continue
+    """{wallet: board row}. The ROSTER row wins when it carries a holdout
+    LCB (OUR recorded fills + real gate verdicts, never fill-modeled - the
+    most realistic evidence for a roster wallet; re-review B2); otherwise
+    the firehose row (their fill + haircut, fill-modeled). Tolerant of an
+    absent/torn file (empty dict). Same rule as the tailable list."""
+    def _load(path):
+        d: dict = {}
+        if path and os.path.exists(path):
+            for r in az.load_records(path):
                 w = str(r.get("w", "")).lower()
                 if w:
-                    out[w] = r
+                    d[w] = r
+        return d
+    fh, ro = _load(firehose), _load(roster)
+    out = dict(fh)
+    for w, r in ro.items():
+        if r.get("ho_roi_lcb") is not None or w not in out:
+            out[w] = r
     return out
 
 
@@ -228,6 +228,16 @@ def evidence_lcb(fwd_lcb, board_row) -> tuple:
     if board_row is not None and board_row.get("ho_roi_lcb") is not None:
         return float(board_row["ho_roi_lcb"]), "bt"
     return fwd_lcb, "fwd"
+
+
+def evidence_conc(r: dict, board_row) -> int:
+    """Concurrency divisor from the SAME source as the evidence: the
+    board's replay peak when the board supplies the LCB (the board's $algo
+    used exactly that), else the forward-measured peak (re-review A5)."""
+    if (board_row is not None and board_row.get("ho_roi_lcb") is not None
+            and board_row.get("peak_conc_replay") is not None):
+        return int(board_row["peak_conc_replay"])
+    return int(r.get("peak_conc") or 0)
 
 
 def evidence_rate(r: dict, days, board_row) -> tuple:
@@ -357,8 +367,9 @@ async def run(args) -> int:
             r = trader_row(a, cq.BASIS_EPOCH, recs, outcomes, frm, fee_map,
                            cfg, res_at)
             ev, ev_src = evidence_lcb(r.get("lcb"), boards.get(a))
-            srec = display_stake(dict(r, lcb=ev), alloc_params(a, sz, envelopes),
-                                 frm, fee_map)
+            srec = display_stake(dict(r, lcb=ev,
+                                      peak_conc=evidence_conc(r, boards.get(a))),
+                                 alloc_params(a, sz, envelopes), frm, fee_map)
             days = days_since(cq.BASIS_EPOCH)
             dday = None
             if r.get("lcb") is not None and days and days > 0 and r["n"]:
@@ -414,8 +425,9 @@ async def run(args) -> int:
         epoch = cq.effective_epoch(epoch)
         r = trader_row(a, epoch, recs, outcomes, frm, fee_map, cfg, res_at)
         ev, ev_src = evidence_lcb(r.get("lcb"), boards.get(a))
-        srec = display_stake(dict(r, lcb=ev), alloc_params(a, sz, envelopes),
-                             frm, fee_map)
+        srec = display_stake(dict(r, lcb=ev,
+                                  peak_conc=evidence_conc(r, boards.get(a))),
+                             alloc_params(a, sz, envelopes), frm, fee_map)
         days = days_since(epoch)
         # OPERATOR HARDCODE 2026-09-06 ($/day is the test): LCB dollars/day
         # at the $100/market REFERENCE stake = lcb x 100 x resolved-rate.
@@ -693,7 +705,11 @@ def _self_test() -> int:
                                           "ho_holdout_days": 6.5}) == (40, 6.5)
            and evidence_rate({"n": 3}, 2, None) == (3, 2)
            and src_run2.count("ev, ev_src = evidence_lcb(r.get(\"lcb\"), boards.get(a))") == 2
-           and src_run2.count("display_stake(dict(r, lcb=ev)") == 2
+           and src_run2.count("display_stake(dict(r, lcb=ev,") == 2
+           and src_run2.count("peak_conc=evidence_conc(r, boards.get(a))") == 2
+           and evidence_conc({"peak_conc": 3}, {"ho_roi_lcb": 0.2, "peak_conc_replay": 18}) == 18
+           and evidence_conc({"peak_conc": 3}, {"ho_roi_lcb": None, "peak_conc_replay": 18}) == 3
+           and evidence_conc({"peak_conc": 3}, None) == 3
            and src_run2.count('algo_day({"lcb": ev, "n": en}, stk, ed)') == 2
            and "boards = load_boards(" in src_run2
            and src_run2.index("boards = load_boards(") < src_run2.index("for a in clean:"))
@@ -702,12 +718,18 @@ def _self_test() -> int:
         fp, rp = os.path.join(_d, "f.jsonl"), os.path.join(_d, "r.jsonl")
         open(rp, "w").write(json.dumps({"w": "0xA", "ho_roi_lcb": 0.2}) + "\n"
                             + json.dumps({"w": "0xB", "ho_roi_lcb": 0.3}) + "\n")
-        open(fp, "w").write(json.dumps({"w": "0xa", "ho_roi_lcb": 0.9}) + "\n")
+        open(fp, "w").write(json.dumps({"w": "0xa", "ho_roi_lcb": 0.9}) + "\n"
+                            + json.dumps({"w": "0xc", "ho_roi_lcb": 0.5}) + "\n")
+        open(rp, "a").write(json.dumps({"w": "0xc", "ho_roi_lcb": None}) + "\n")
         b = load_boards(fp, rp)
-        okf = okf and b["0xa"]["ho_roi_lcb"] == 0.9 and b["0xb"]["ho_roi_lcb"] == 0.3 \
+        # roster row wins WHEN it has an LCB (0xa: 0.2 over firehose 0.9);
+        # roster row without an LCB yields to firehose (0xc: 0.5)
+        okf = okf and b["0xa"]["ho_roi_lcb"] == 0.2 and b["0xb"]["ho_roi_lcb"] == 0.3 \
+            and b["0xc"]["ho_roi_lcb"] == 0.5 \
             and load_boards(os.path.join(_d, "none"), None) == {}
-    print(f"  [evidence] board holdout LCB + rate drive stake/$algo when a row"
-          f" exists, forward otherwise; both TRIAL rows; firehose wins : {okf}")
+    print(f"  [evidence] board holdout LCB + rate + replay-peak divisor drive "
+          f"stake/$algo when a row exists, forward otherwise; both TRIAL rows;"
+          f" roster row wins when it has an LCB : {okf}")
     ok &= okf
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

@@ -157,7 +157,8 @@ def synth_records(rows: list[dict], trader: str, haircut: float,
             continue
         out.append({"trader": trader, "token_id": g["tok"],
                     "detect_ts": g["ts"], "first_buy": first,
-                    "verdict": "OK", "shadow_fill": fill})
+                    "verdict": "OK", "shadow_fill": fill,
+                    "whale_price": g["cost"] / g["z"]})   # pre-haircut (P5 bucket)
     out.sort(key=lambda r: r["detect_ts"])
     return out, gated
 
@@ -404,16 +405,21 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
     mean_roi = sum(rois) / n
     out["roi_lcb"] = lcb
     out["roi_realized"] = mean_roi
-    fills = {}
+    fills, wprice = {}, {}
     for r in records:
         if (r.get("verdict") == "OK"
                 and isinstance(r.get("shadow_fill"), (int, float))):
-            fills[(float(r.get("detect_ts") or 0),
-                   str(r.get("token_id")))] = float(r["shadow_fill"])
+            k = (float(r.get("detect_ts") or 0), str(r.get("token_id")))
+            fills[k] = float(r["shadow_fill"])
+            # the pass table is bucketed by the WHALE price (the gate
+            # sees their print), so bucket the wager by it too, not by
+            # the haircut-shifted fill (re-review A-lower)
+            wp = r.get("whale_price")
+            wprice[k] = float(wp) if isinstance(wp, (int, float)) else fills[k]
     wseq = mc.wager_rois(records, outcomes, frm or {}, fee_map or {},
                          epoch=split_ts)
     # per-wager gate pass probability (1.0 = not modeled)
-    pw = [fill_prob(fills.get((ts, tok), 0.5), fill_table)
+    pw = [fill_prob(wprice.get((ts, tok), 0.5), fill_table)
           for ts, tok, _roi in wseq]
     fill_p = (sum(pw) / len(pw)) if pw else 1.0
     if fill_table is not None:
@@ -426,19 +432,19 @@ def holdout_metrics(records: list[dict], outcomes: dict, frm: dict,
     if sizer is not None:
         # LCB None (no informative bound) or <= 0 -> the sizer's own $0
         # per wager; the LCB $ column stays None when there is no LCB.
-        p = dict(sizer)
-        p["concurrency"] = max(int(conc or 1), 1, int(p["concurrency"]))
         stakes, algo_real = [], 0.0
         tot_eff, real_eff = 0.0, 0.0
         for (ts, tok, roi), p_w in zip(wseq, pw):
             fill = fills.get((ts, tok))
             if fill is None or not (0.0 < fill < 1.0):
                 continue   # unsizeable (fill at/above 1): no order
-            fee, _src = mc.canon_fee(tok, fill, frm or {}, fee_map or {})
-            srec = msz.recommend_stake_from_lcb(
-                None if lcb is None else lcb * fill, fill, fee,
-                book_depth_usd=1e12, **p)
-            st = float(srec["stake"])
+            # ONE sizer implementation (re-review reuse#1): the funnel's
+            # display_stake at THIS wager's fill - same lcb x fill map,
+            # canon fee, conc = max(measured peak, floor), depth off
+            srec = tf.display_stake({"med_fill": (fill, tok), "lcb": lcb,
+                                     "peak_conc": int(conc or 1)},
+                                    sizer, frm or {}, fee_map or {})
+            st = 0.0 if srec is None else float(srec["stake"])
             stakes.append(st)
             algo_real += roi * st
             tot_eff += p_w * st
@@ -1189,8 +1195,8 @@ def _self_test() -> int:
     import inspect as _ia
     hsrc = _ia.getsource(holdout_metrics)
     csrc = _ia.getsource(cmd_replay)
-    ok9e = ("msz.recommend_stake_from_lcb(" in hsrc
-            and "lcb * fill" in hsrc and "mc.canon_fee(" in hsrc
+    ok9e = ("tf.display_stake(" in hsrc            # ONE sizer impl
+            and "msz.recommend_stake_from_lcb(" not in hsrc
             and "tf.sizer_params_from_env()" in csrc
             and "sizer=sizer, conc=pc" in csrc
             and csrc.index("pc = peak_concurrency_replay(")
@@ -1209,6 +1215,12 @@ def _self_test() -> int:
     # [fill] P5 (D3): measured gate pass table by 0.1 price bucket; the
     # firehose holdout money is weighted by each wager's bucket rate,
     # raw values kept beside; roster (no table) unchanged
+    # synth records carry the whale price; a wager whose haircut-shifted
+    # fill crosses a bucket edge is bucketed by the WHALE price
+    sy_wp, _ = synth_records([{"s": "BUY", "tok": "T", "p": 0.895, "z": 10,
+                               "t": 1.0, "tx": "x"}], "0xw", 0.01)
+    okwp = (abs(sy_wp[0]["whale_price"] - 0.895) < 1e-12
+            and abs(sy_wp[0]["shadow_fill"] - 0.905) < 1e-12)
     sink = ([{"side": "BUY", "whale_price": 0.45, "verdict": "OK",
               "first_buy": True}] * 3
             + [{"side": "BUY", "whale_price": 0.45, "verdict": "SPREAD_TOO_WIDE",
@@ -1243,10 +1255,21 @@ def _self_test() -> int:
             and "fill_table=ft, **common" in dsrc        # firehose: modeled
             and "fill_table=fill_table)" in csrc
             and "row['ho_fill_p']" in csrc)
+    # bucket by whale price: fill 0.905 (whale 0.895) -> the 0.8-0.9 bucket
+    ft_edge = gate_pass_table([{"side": "BUY", "whale_price": 0.85, "verdict": "OK"}] * 3
+                              + [{"side": "BUY", "whale_price": 0.85, "verdict": "SPREAD_TOO_WIDE"}]
+                              + [{"side": "BUY", "whale_price": 0.95, "verdict": "OK"}]
+                              + [{"side": "BUY", "whale_price": 0.95, "verdict": "PRICE_NO_UPSIDE"}] * 3)
+    rec_edge = [{"trader": "0xw", "token_id": "E", "detect_ts": split + 1,
+                 "first_buy": True, "verdict": "OK", "shadow_fill": 0.905,
+                 "whale_price": 0.895}]
+    hme = holdout_metrics(rec_edge, {"E": 1}, {}, {}, split, split + 7 * DAY_S,
+                          fill_table=ft_edge)
+    okf4 = okwp and hme["fill_p"] == 0.75 and "wprice.get((ts, tok)" in hsrc
     print(f"  [fill] measured pass table by bucket (empty->all, no table->1);"
           f" firehose $ x p_w with *_raw kept, LCB untouched; roster never "
-          f"modeled : {okf1 and okf2 and okf3}")
-    ok &= okf1 and okf2 and okf3
+          f"modeled; bucket by WHALE price : {okf1 and okf2 and okf3 and okf4}")
+    ok &= okf1 and okf2 and okf3 and okf4
     # [canon-roi] ladder atoms: repeats count (first_buy NOT required);
     # ROI support bound honored by the generalized mixture
     lad = [{"detect_ts": 1.0, "first_buy": True, "verdict": "OK",

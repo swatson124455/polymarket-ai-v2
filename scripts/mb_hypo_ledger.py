@@ -118,12 +118,13 @@ async def run(args) -> int:
                                 fee_map or {}, epoch=epoch)
             rois = [x for _, _, x in seq]
             stake = 0.0
+            lcb_src = "fwd"
             if params is not None and rois:
                 # correlated-atom fix: the stake GATE uses market atoms
                 # (evidence); the ledger ROWS stay per wager (money).
                 mseq = mc.market_position_rois(t_recs, outcomes, frm or {},
                                                fee_map or {}, epoch=epoch)
-                lcb, _src = tf.evidence_lcb(
+                lcb, lcb_src = tf.evidence_lcb(
                     mc.roi_lcb([x for _, _, x, _ in mseq]), boards.get(a))
                 if lcb is not None and lcb > 0:
                     # median recorded OK first-buy fill = same display
@@ -145,7 +146,7 @@ async def run(args) -> int:
                 d100, dsz = ledger_math(roi, stake)
                 new_rows.append({"ts": now, "trader": a, "token": str(tok),
                                  "wts": wts, "roi": round(roi, 6),
-                                 "stake": round(stake, 2),
+                                 "stake": round(stake, 2), "lcb_src": lcb_src,
                                  "d_ref100": round(d100, 4),
                                  "d_sizer": round(dsz, 4)})
     append_rows(args.ledger, new_rows)
@@ -228,7 +229,8 @@ def _self_test() -> int:
           f"= comparison; row fields unchanged : {ok7}")
     ok &= ok7
     ok8 = ("boards = tf.load_boards(" in src
-           and "lcb, _src = tf.evidence_lcb(" in src
+           and "lcb, lcb_src = tf.evidence_lcb(" in src
+           and '"lcb_src": lcb_src' in src   # row records its evidence source
            and "tf.display_stake(dict(row, lcb=lcb), params" in src
            and src.index("boards = tf.load_boards(") < src.index("for group, epoch in groups:"))
     print(f"  [evidence] stake evidence = board holdout LCB when a row exists "
