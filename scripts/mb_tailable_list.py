@@ -64,6 +64,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze_shadow as az            # noqa: E402
 import cohort5_qualification as cq     # noqa: E402
+import find_copyable_traders as fc     # noqa: E402  (json_safe: NaN -> null)
 
 DAY_S = 86400.0
 ELIG_MIN_DAYS = 30        # operator ruling 2026-09-06: >= 1 month history
@@ -74,6 +75,8 @@ DATA_API = "https://data-api.polymarket.com/activity"
 UA = {"User-Agent": "PolymarketAI/1.0 (https://github.com; data)",
       "Accept": "application/json"}
 TIER_ORDER = ["VERIFIED", "PENDING", "FLAGGED", "DROPPED", "EXCLUDED"]
+FWD_STALE_H = 36.0        # forward status older than this = STALE alarm (C4)
+ELIG_TIMEOUT_S = 10.0     # per data-api read (was 20; 900s stage budget)
 BASE = "/opt/pa2-shared/mb_copyable_data"
 
 
@@ -239,7 +242,7 @@ def null_map(path: str) -> tuple[dict, dict]:
 
 
 # ── eligibility (the only network read) ───────────────────────────────────
-def fetch_first_trades(addr: str, timeout_s: float = 20.0) -> list:
+def fetch_first_trades(addr: str, timeout_s: float = ELIG_TIMEOUT_S) -> list:
     """ASC activity page: the wallet's FIRST trades (query shape proven
     2026-09-07 and 2026-09-08 against a known-old wallet)."""
     url = DATA_API + "?" + urllib.parse.urlencode(
@@ -291,16 +294,37 @@ def load_cache(path: str) -> dict:
 
 
 def save_json(path: str, obj) -> None:
+    """Atomic + NaN/inf -> null (fc.json_safe; a bare NaN is not JSON)."""
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(obj, f, indent=1, sort_keys=True)
+        json.dump(fc.json_safe(obj), f, indent=1, sort_keys=True)
     os.replace(tmp, path)
 
 
+def age_fail_due(cur: dict, now_ts: float) -> bool:
+    """A FAIL on age alone is re-read only once first_trade + 30d has
+    passed (the day it can pass is computable; re-review eff#1)."""
+    if cur.get("status") != "FAIL" or "< " not in str(cur.get("reason") or ""):
+        return True
+    if "trades <" in str(cur.get("reason") or ""):
+        return True          # count-FAIL: counts grow, re-read
+    ft = cur.get("first_trade_utc")
+    if not ft:
+        return True
+    try:
+        return now_ts >= cq.parse_utc(ft) + ELIG_MIN_DAYS * DAY_S
+    except ValueError:
+        return True
+
+
 def refresh_eligibility(wallets: list, cache: dict, net: bool,
-                        now_ts: float, sleep_s: float = 0.3) -> dict:
+                        now_ts: float, sleep_s: float = 0.3,
+                        save=None) -> dict:
     """PASS is permanent (a first trade never moves; counts only grow);
-    FAIL / ERROR / missing are re-read every run when net is on."""
+    ERROR / missing are re-read every run when net is on; an age-FAIL is
+    re-read only when its 30-day mark has passed. `save(cache)` is called
+    after EVERY read so a stage timeout keeps the reads already done
+    (re-review eff#1)."""
     for a in wallets:
         cur = cache.get(a) or {}
         if cur.get("status") == "PASS":
@@ -310,6 +334,8 @@ def refresh_eligibility(wallets: list, cache: dict, net: bool,
                 cache[a] = {"status": "UNREAD", "reason": "no-net run",
                             "read_utc": None}
             continue
+        if not age_fail_due(cur, now_ts):
+            continue
         try:
             rows = fetch_first_trades(a)
             v = eligibility_verdict(rows, now_ts)
@@ -318,6 +344,8 @@ def refresh_eligibility(wallets: list, cache: dict, net: bool,
                  "reason": repr(e)[:120]}
         v["read_utc"] = now_iso()
         cache[a] = v
+        if save is not None:
+            save(cache)
         time.sleep(sleep_s)
     return cache
 
@@ -415,9 +443,15 @@ def build_rows(cands: set, fh: dict, ro: dict, dossiers: dict,
                fwd: dict, fills: dict, nulls: dict) -> list:
     rows = []
     for a in sorted(cands):
-        b = fh.get(a) or ro.get(a) or {}
-        src = "firehose" if a in fh else ("roster" if a in ro else None)
-        alt = ro.get(a) if src == "firehose" else None
+        # ROSTER row wins when it carries a holdout LCB (our fills, real
+        # gates, never modeled - re-review B2; same rule as
+        # trader_funnel.load_boards); else the firehose row
+        if a in ro and ro[a].get("ho_roi_lcb") is not None:
+            b, src, alt = ro[a], "roster", fh.get(a)
+        elif a in fh:
+            b, src, alt = fh[a], "firehose", ro.get(a)
+        else:
+            b, src, alt = ro.get(a) or {}, ("roster" if a in ro else None), None
         d = dossiers.get(a) or {}
         e = elig.get(a) or {}
         f = fwd.get(a) or {}
@@ -448,6 +482,8 @@ def build_rows(cands: set, fh: dict, ro: dict, dossiers: dict,
             "conc_replay": b.get("peak_conc_replay"),
             "conc_pos": conc.get(a),
             "roster_board_wk_lcb": (alt or {}).get("ho_wk_net_lcb"),
+            "alt_board_source": ("firehose" if src == "roster" else
+                                 "roster") if alt else None,
             "elig_status": e.get("status"),
             "elig_first_trade_utc": e.get("first_trade_utc"),
             "elig_reason": e.get("reason"),
@@ -625,10 +661,12 @@ def render_md(rows: list, prov: dict) -> str:
              "HYPOTHETICAL. `P3` = the board does not carry it yet.")
     L.append("- **$ref100/wk LCB** - same at a flat $100/wager reference "
              "(comparison column only, ruling 2026-09-08 #2).")
-    L.append("- **$/bet** - expected profit per bet: lcb = holdout ROI LCB x "
-             "stake, real = realized profit per wager that fills; algo = at "
-             "our sizer's mean stake per wager for that wallet, ref100 = at "
-             "$100. HYPOTHETICAL.")
+    L.append("- **$/bet** - expected profit per bet THAT FILLS (not fill-"
+             "modeled): lcb = holdout ROI LCB x stake, real = realized profit "
+             "per filling wager; algo = at our sizer's mean stake per wager "
+             "for that wallet, ref100 = at $100. The weekly columns multiply "
+             "in the gate pass probability, so $/bet x wagers/week != $/week "
+             "on a fill-modeled row by design. HYPOTHETICAL.")
     L.append("- **FILL-MODELED** (P5, D3) - firehose rows weight every holdout "
              "wager by the measured gate pass probability of its 0.1 price "
              "bucket (shadow sink, re-measured daily); raw values in the "
@@ -668,6 +706,17 @@ def run(args) -> int:
     clean, roster_groups = roster_info(args.chain_audit)
     conc = peak_conc_map(args.peak_conc)
     fwd_hdr, fwd = forward_status_map(args.forward_status)
+    fwd_stale = None
+    if fwd_hdr:
+        try:
+            age_h = (now_ts - cq.parse_utc(fwd_hdr.get("ts"))) / 3600.0
+            fwd_stale = age_h if age_h > FWD_STALE_H else None
+        except ValueError:
+            fwd_stale = float("inf")
+    if fwd_stale is not None:
+        print(f"[tailable] !! forward status STALE ({fwd_stale:.0f}h old, bar "
+              f"{FWD_STALE_H:.0f}h) - the grader has not written it since "
+              f"{(fwd_hdr or {}).get('ts')}; forward columns below are OLD")
     fills = last_fills(az.load_records(args.shadow)) \
         if os.path.exists(args.shadow) else {}
     null_hdr, nulls = null_map(args.null)
@@ -677,7 +726,7 @@ def run(args) -> int:
     os.makedirs(args.out_dir, exist_ok=True)
     cache = load_cache(args.elig_cache)
     cache = refresh_eligibility(sorted(cands), cache, not args.no_net,
-                                now_ts)
+                                now_ts, save=lambda c: save_json(args.elig_cache, c))
     save_json(args.elig_cache, cache)
     rows = build_rows(cands, fh, ro, dossiers, cache, clean, roster_groups,
                       conc, fwd, fills, nulls)
@@ -713,9 +762,10 @@ def run(args) -> int:
         "sizer": sizer if all(sizer.values()) else None,
         "algo_present": algo_present,
         "null": null_hdr.get("source") or null_hdr.get("note"),
-        "forward": (f"{fwd_hdr.get('ts')} basis {fwd_hdr.get('basis')} "
-                    f"rows {fwd_hdr.get('n_rows')}" if fwd_hdr
-                    else "ABSENT (grader has not written it yet)"),
+        "forward": ((f"!! STALE ({fwd_stale:.0f}h old) " if fwd_stale is not None else "")
+                    + (f"{fwd_hdr.get('ts')} basis {fwd_hdr.get('basis')} "
+                       f"rows {fwd_hdr.get('n_rows')}" if fwd_hdr
+                       else "ABSENT (grader has not written it yet)")),
         "universe": (f"{len(cands)} wallets = post-conversion roster groups "
                      f"U pipeline dossiers U board QUALIFIES with $ref100/wk "
                      f"LCB>0 (firehose {len(fh)} rows, roster {len(ro)} rows)"),
@@ -939,6 +989,27 @@ def _self_test() -> int:
     print(f"  [per-bet] lcb x mean stake, realized per filling wager, $100 "
           f"ref, None without inputs; column in md + json : {okpb}")
     ok &= okpb
+    # re-review fixes: age-FAIL re-read only when due; NaN -> null; roster
+    # row wins when it has an LCB; per-read cache save
+    nowx = 1_800_000_000.0
+    fa = {"status": "FAIL", "reason": "first trade 2.9d ago < 30d",
+          "first_trade_utc": utc_iso(nowx - 3 * DAY_S)}
+    okr = (not age_fail_due(fa, nowx)
+           and age_fail_due(fa, nowx + 28 * DAY_S)
+           and age_fail_due({"status": "FAIL", "reason": "10 trades < 25"}, nowx)
+           and age_fail_due({"status": "ERROR", "reason": "x"}, nowx)
+           and age_fail_due({}, nowx))
+    with tempfile.TemporaryDirectory() as d:
+        jp = os.path.join(d, "n.json")
+        save_json(jp, {"x": float("nan"), "y": [1.0, float("inf")]})
+        okr = okr and json.load(open(jp)) == {"x": None, "y": [1.0, None]}
+        saves = []
+        c = refresh_eligibility(["0x" + "1" * 40], {}, True, nowx,
+                                sleep_s=0.0, save=lambda cc: saves.append(len(cc)))
+        okr = okr and saves == [1] and c["0x" + "1" * 40]["status"] in ("ERROR", "FAIL", "PASS")
+    print(f"  [fixes] age-FAIL skipped until due; NaN->null JSON; cache saved "
+          f"per read : {okr}")
+    ok &= okr
     print(f"  [pins] HYPOTHETICAL + vintage in outputs; $algo read from the "
           f"board; roster clock via the grader's parser; ASC query : {ok4}")
     ok &= ok4
