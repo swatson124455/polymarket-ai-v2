@@ -771,7 +771,12 @@ async def run(args) -> int:
     if not roster_groups:
         print("roster-admit groups: none admitted after the conversion epoch")
     if proposals:
-        print(chr(10) + "PROPOSALS (operator go required for composition): "
+        # RULING 2026-09-09 ('yes 3'): composition is keyed to VERIFIED on
+        # the tailable list (backtest admits); a forward QUALIFIES lock is a
+        # drop-off-monitor state, not the trigger for real money.
+        print(chr(10) + "FORWARD QUALIFIES LOCKS (drop-off monitor state; NOT "
+              "the composition trigger - that is VERIFIED on the tailable "
+              "list, ruling 2026-09-09): "
               + ", ".join(a[:12] + ".." for a in proposals))
     write_heartbeat(args.heartbeat, graded_groups, len(locks) - n_locks_start)
     write_forward_status(args.forward_status, status_rows,

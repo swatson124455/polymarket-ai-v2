@@ -1,9 +1,13 @@
 # MB LIVE-CAPITAL GO CHECKLIST (operator-ruled 2026-09-06: "fix the gaps
 # you named before go" -> "build all 5")
 
-A funnel PASS produces a PROPOSAL. No real dollar moves until every line
-below is green or explicitly struck by the operator IN WRITING. The first
-PASS does not override this checklist; composition sign-off consumes it.
+**RE-KEYED 2026-09-09 (operator "yes 3"): VERIFIED on the tailable list
+(docs/MB_TAILABLE_LIST.md - backtest holdout LCB > 0 + dive ADMIT +
+eligibility + conc<=20 + cov>=50%) produces the PROPOSAL. The forward
+grader's QUALIFIES / NOT DEMONSTRATED verdicts are DROP-OFF signals only,
+never the trigger.** No real dollar moves until every line below is green
+or explicitly struck by the operator IN WRITING. A VERIFIED row does not
+override this checklist; composition sign-off consumes it.
 
 ## The five preconditions (status as of 2026-09-06)
 

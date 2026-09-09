@@ -96,6 +96,10 @@ async def run(args) -> int:
     frm = json.load(open(args.fee_rate_map)) if os.path.exists(args.fee_rate_map) else {}
     fee_map = json.load(open(args.fee_map)) if os.path.exists(args.fee_map) else {}
     params = tf.sizer_params_from_env()
+    # BACKTEST ADMITS (ruling 2026-09-09 'yes 3'): stake evidence = the
+    # board's holdout ROI LCB where a row exists; forward LCB otherwise
+    boards = tf.load_boards(getattr(args, "firehose_board", None),
+                            getattr(args, "roster_board", None))
     _, seen = load_ledger(args.ledger)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_rows = []
@@ -119,7 +123,8 @@ async def run(args) -> int:
                 # (evidence); the ledger ROWS stay per wager (money).
                 mseq = mc.market_position_rois(t_recs, outcomes, frm or {},
                                                fee_map or {}, epoch=epoch)
-                lcb = mc.roi_lcb([x for _, _, x, _ in mseq])
+                lcb, _src = tf.evidence_lcb(
+                    mc.roi_lcb([x for _, _, x, _ in mseq]), boards.get(a))
                 if lcb is not None and lcb > 0:
                     # median recorded OK first-buy fill = same display
                     # reference the funnel uses; depth is trade-time only
@@ -129,7 +134,8 @@ async def run(args) -> int:
                              min_markets=cq.N_BAR, fee_map_data=fee_map)
                     row = tf.trader_row(a, epoch, recs, outcomes, frm,
                                         fee_map, cfg, {})
-                    srec = tf.display_stake(row, params, frm, fee_map)
+                    srec = tf.display_stake(dict(row, lcb=lcb), params, frm,
+                                            fee_map)
                     stake = 0.0 if srec is None else float(srec["stake"])
             for wts, tok, roi in seq:  # canon tuple = (ts, token, roi)
                 key = (a, str(tok), wts)   # per-WAGER: ladders repeat tokens
@@ -154,9 +160,10 @@ async def run(args) -> int:
     # headline is the accrual at OUR sizer's stake per wager (row field
     # d_sizer, unchanged); the $100/wager reference is the comparison.
     print(f"===== {now} HYPOTHETICAL $ LEDGER (paper; no orders placed; "
-          f"$algo = wager ROI x OUR sizer stake [ruling 2026-09-08 #2; $0 "
-          f"until the forward LCB > 0]; $ref100 = wager ROI x $100/wager "
-          f"comparison [basis conv 2026-09-06]) =====")
+          f"$algo = wager ROI x OUR sizer stake [ruling 2026-09-08 #2; stake "
+          f"evidence = the board's holdout LCB where a row exists, else the "
+          f"forward LCB - BACKTEST ADMITS, ruling 2026-09-09]; $ref100 = wager "
+          f"ROI x $100/wager comparison [basis conv 2026-09-06]) =====")
     print(f"[hypo] appended {len(new_rows)} newly-resolved rows this run | "
           f"ledger total rows {len(rows)}")
     tot100 = sum(p[1] for p in per.values())
@@ -220,6 +227,13 @@ def _self_test() -> int:
     print(f"  [algo] $algo (sizer stake) printed and sorted first; $ref100 "
           f"= comparison; row fields unchanged : {ok7}")
     ok &= ok7
+    ok8 = ("boards = tf.load_boards(" in src
+           and "lcb, _src = tf.evidence_lcb(" in src
+           and "tf.display_stake(dict(row, lcb=lcb), params" in src
+           and src.index("boards = tf.load_boards(") < src.index("for group, epoch in groups:"))
+    print(f"  [evidence] stake evidence = board holdout LCB when a row exists "
+          f"(backtest admits), forward otherwise : {ok8}")
+    ok &= ok8
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -245,6 +259,12 @@ if __name__ == "__main__":
                             "hypo_ledger_roi.jsonl")
     ap.add_argument("--chain-audit", dest="chain_audit",
                     default=cq.CHAIN_AUDIT_DEFAULT)
+    ap.add_argument("--firehose-board", dest="firehose_board",
+                    default="/opt/pa2-shared/mb_copyable_data/backtest/"
+                            "leaderboard_firehose.jsonl")
+    ap.add_argument("--roster-board", dest="roster_board",
+                    default="/opt/pa2-shared/mb_copyable_data/backtest/"
+                            "leaderboard_roster.jsonl")
     ap.add_argument("--admit-dirs", dest="admit_dirs", nargs="*",
                     default=cq.ADMIT_DIRS_DEFAULT)
     ap.add_argument("--self-test", action="store_true", dest="self_test")
