@@ -38,7 +38,13 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 DAY_S = 86400.0
-RE_DIVE_SPAN_D = 60      # chain_deep_dive --min-span-days default (hire bar)
+RE_DIVE_SPAN_D = 30      # chain_deep_dive --min-span-days (ruling 2026-09-09 B:
+#                          = the operator's 30-day eligibility bar; was 60)
+# one-time: every INSUFFICIENT dossier written under the OLD bar (60d span /
+# P>=0.9 gate) whose span now clears 30d gets ONE fresh dive; a re-dive that
+# comes back INSUFFICIENT carries a newer mtime and is not re-queued by this
+# rule (terminates)
+OLD_BAR_RETIRED_UTC = "2026-09-09T01:00:00Z"
 BASE = "/opt/pa2-shared/mb_copyable_data"
 
 
@@ -72,12 +78,15 @@ def write_queue(path: str, addrs: list[str]) -> None:
 
 
 def decide(rows: list[dict], now_ts: float, queued: set,
-           re_dive_span_d: int = RE_DIVE_SPAN_D) -> dict:
+           re_dive_span_d: int = RE_DIVE_SPAN_D,
+           old_bar_retired_ts: float | None = None) -> dict:
     """PURE. rows = tailable_list.json rows. Returns
     {"new": [(addr, why)], "redive": [(addr, why)], "proposals": [addr],
      "skipped": [(addr, why)]} - every candidate that is NOT queued says
     why (nothing silent)."""
     new, redive, proposals, skipped = [], [], [], []
+    if old_bar_retired_ts is None:
+        old_bar_retired_ts = parse_iso(OLD_BAR_RETIRED_UTC)
     for r in rows:
         a = str(r.get("wallet", "")).lower()
         if not a:
@@ -103,6 +112,11 @@ def decide(rows: list[dict], now_ts: float, queued: set,
                 redive.append((a, f"INSUFFICIENT span {float(span):.0f}d at "
                                   f"dive, ~{span_now:.0f}d now >= "
                                   f"{re_dive_span_d}d"))
+            elif dts < old_bar_retired_ts and span_now >= re_dive_span_d:
+                redive.append((a, f"INSUFFICIENT under the OLD bar (dossier "
+                                  f"{r.get('dive_utc')}, 60d/P>=0.9 retired "
+                                  f"{OLD_BAR_RETIRED_UTC}); span ~{span_now:.0f}d "
+                                  f">= {re_dive_span_d}d - one fresh dive"))
             else:
                 skipped.append((a, f"INSUFFICIENT span {float(span):.0f}d "
                                    f"(~{span_now:.0f}d now) - not a span "
@@ -131,7 +145,8 @@ def run(args) -> int:
     if now_ts is None:
         now_ts = datetime.now(timezone.utc).timestamp()
     queue = read_queue(args.queue)
-    d = decide(rows, now_ts, set(queue))
+    d = decide(rows, now_ts, set(queue),
+               old_bar_retired_ts=getattr(args, "old_bar_retired_ts", None))
     added = [a for a, _ in d["new"]] + [a for a, _ in d["redive"]]
     os.makedirs(os.path.dirname(args.queue) or ".", exist_ok=True)
     write_queue(args.queue, queue + added)
@@ -196,17 +211,29 @@ def _self_test() -> int:
         {"wallet": G, "tier": "PENDING", "elig_status": "PASS",
          "dive_verdict": None, "tier_reasons": ["dive none"]},          # already queued
     ]
-    d = decide(rows, now, {G})
+    # bar = 30 (ruling B): C (57d at dive, ~61 now) is NOT a span crossing any
+    # more; D (40d, ~44 now) and E (144d) are old-bar INSUFFICIENTs -> ONE
+    # fresh dive each; C too (old-bar). Pass old_bar_retired_ts = now-2d so
+    # the 4-day-old dossiers (C, D) and the 1-day-old E are 'old' (E) or not:
+    # E's dossier (now-1d) is NEWER than the retirement -> not re-queued.
+    d = decide(rows, now, {G}, old_bar_retired_ts=now - 2 * DAY_S)
     ok1 = ([a for a, _ in d["new"]] == [A]
-           and [a for a, _ in d["redive"]] == [C]
+           and sorted(a for a, _ in d["redive"]) == [C, D]
+           and all("OLD bar" in w for a, w in d["redive"])
            and d["proposals"] == [F]
-           and sorted(a for a, _ in d["skipped"]) == [B, D, E, G]
+           and sorted(a for a, _ in d["skipped"]) == [B, E, G]
            and "already queued" in dict(d["skipped"])[G]
-           and "not a span re-dive" in dict(d["skipped"])[D]
            and "not a span re-dive" in dict(d["skipped"])[E])
+    # span crossing under the 30 bar: 27d at dive, ~31d now -> re-dive
+    d2 = decide([{"wallet": D, "tier": "PENDING", "elig_status": "PASS",
+                  "dive_verdict": "INSUFFICIENT-EVIDENCE", "dive_span_days": 27,
+                  "dive_utc": iso(now - 4 * DAY_S)}], now, set(),
+                old_bar_retired_ts=now - 10 * DAY_S)
+    ok1 = ok1 and [a for a, _ in d2["redive"]] == [D] and RE_DIVE_SPAN_D == 30
     print(f"  [decide] NEW = PENDING+PASS+no dossier; RE-DIVE = INSUFF "
-          f"crossing 60d; FAIL/short/already-queued out with reasons; "
-          f"VERIFIED off-roster = proposal : {ok1}")
+          f"crossing 30d or an old-bar INSUFFICIENT (one fresh dive); "
+          f"FAIL/newer-INSUFF/already-queued out with reasons; VERIFIED "
+          f"off-roster = proposal : {ok1}")
     ok &= ok1
     import tempfile
     with tempfile.TemporaryDirectory() as t:
@@ -221,20 +248,20 @@ def _self_test() -> int:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = run(NS(list=lp, queue=q, state=os.path.join(t, "st.json"),
-                    now_ts=now))
+                    now_ts=now, old_bar_retired_ts=now - 2 * DAY_S))
         qq = read_queue(q)
         st = json.load(open(os.path.join(t, "st.json")))
-        ok3 = (rc == 0 and qq == [G, A, C] and set(st) == {A, C}
+        ok3 = (rc == 0 and qq == [G, A, C, D] and set(st) == {A, C, D}
                and "ROSTER PROPOSALS" in buf.getvalue()
                and F[:12] in buf.getvalue())
         # second run: idempotent (nothing re-queued), state kept
         with contextlib.redirect_stdout(io.StringIO()):
             run(NS(list=lp, queue=q, state=os.path.join(t, "st.json"),
-                    now_ts=now))
-        ok4 = read_queue(q) == [G, A, C]
+                    now_ts=now, old_bar_retired_ts=now - 2 * DAY_S))
+        ok4 = read_queue(q) == [G, A, C, D]
         # runner drained A (queue line gone, dossier now exists -> the next
         # list shows a verdict): A is not re-queued, its state entry goes
-        write_queue(q, [G, C])
+        write_queue(q, [G, C, D])
         rows2 = [dict(r, dive_verdict="ADMIT", tier="VERIFIED",
                       on_roster=False) if r["wallet"] == A else r
                  for r in rows]
@@ -242,21 +269,22 @@ def _self_test() -> int:
                   open(lp, "w"))
         with contextlib.redirect_stdout(io.StringIO()):
             run(NS(list=lp, queue=q, state=os.path.join(t, "st.json"),
-                    now_ts=now))
-        ok5 = (read_queue(q) == [G, C]
-               and set(json.load(open(os.path.join(t, "st.json")))) == {C})
+                    now_ts=now, old_bar_retired_ts=now - 2 * DAY_S))
+        ok5 = (read_queue(q) == [G, C, D]
+               and set(json.load(open(os.path.join(t, "st.json")))) == {C, D})
         # a drained wallet WITHOUT a dossier (dive crashed) is re-queued -
         # the queue never silently loses a candidate
-        write_queue(q, [G, C])
+        write_queue(q, [G, C, D])
         json.dump({"generated_utc": "2026-09-10T11:50:00Z", "rows": rows},
                   open(lp, "w"))
         with contextlib.redirect_stdout(io.StringIO()):
             run(NS(list=lp, queue=q, state=os.path.join(t, "st.json"),
-                    now_ts=now))
-        ok5 = ok5 and read_queue(q) == [G, C, A]
+                    now_ts=now, old_bar_retired_ts=now - 2 * DAY_S))
+        ok5 = ok5 and read_queue(q) == [G, C, D, A]
         with contextlib.redirect_stdout(io.StringIO()):
             rc2 = run(NS(list=os.path.join(t, "none.json"), queue=q,
-                         state=os.path.join(t, "st.json"), now_ts=now))
+                         state=os.path.join(t, "st.json"), now_ts=now,
+                         old_bar_retired_ts=now - 2 * DAY_S))
         print(f"  [queue] dedup+validate; append keeps order; idempotent; "
               f"drained entries leave the state; missing list = rc 2 : "
               f"{ok2 and ok3 and ok4 and ok5 and rc2 == 2}")
@@ -264,9 +292,10 @@ def _self_test() -> int:
     import inspect
     src = inspect.getsource(run) + inspect.getsource(decide)
     ok6 = ("OPERATOR RULING" in src and "write_lock" not in src
-           and "chain_audit" not in src and RE_DIVE_SPAN_D == 60)
+           and "chain_audit" not in src and RE_DIVE_SPAN_D == 30
+           and parse_iso(OLD_BAR_RETIRED_UTC) is not None)
     print(f"  [pins] no locks, no roster edits, proposals labeled operator "
-          f"ruling; re-dive bar = the dive's 60d : {ok6}")
+          f"ruling; re-dive bar = 30d (ruling 2026-09-09) : {ok6}")
     ok &= ok6
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

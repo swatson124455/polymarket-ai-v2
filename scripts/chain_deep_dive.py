@@ -532,10 +532,18 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
         hard.append(f"FABRICATION: {1 - backing:.0%} of {m['api_buys_checked']} "
                     f"API BUY claims unbacked on a complete sweep "
                     f"(>= {cfg.fabrication_frac:.0%})")
+    # RULING 2026-09-09 (operator "do all recs" A): the dive is the INTEGRITY
+    # screen; skill is decided by the board's ruled-basis holdout ROI LCB
+    # (ladder-aware, our fill + haircut, fee-inclusive). The old-basis
+    # first-buy per-share P (their price, gross) is a printed FLAG, never a
+    # verdict - it no longer REJECTs (contradiction) nor gates ADMIT.
+    flags: list[str] = []
     if m["skill_contradicts"]:
-        hard.append(f"SKILL DISPROVEN: adequately-powered negative chain edge "
-                    f"(mkts={m['skill_markets']}, span={m['skill_span']}d, "
-                    f"edge={m['skill_edge']}, P(edge<0)={m['skill_p_neg']})")
+        flags.append(f"FLAG (old-basis, not a verdict): first-buy chain edge "
+                     f"negative with power (mkts={m['skill_markets']}, "
+                     f"span={m['skill_span']}d, edge={m['skill_edge']}, "
+                     f"P(edge<0)={m['skill_p_neg']}) - the board's ruled-basis "
+                     f"LCB decides skill")
     # post-direction copyability gates (pre-registered 2026-07-16): DECISION
     # rate = new markets entered/day (the unit our one-bet-per-market engine
     # consumes), and FLOW SHAPE = net-flat position share (the direct
@@ -551,7 +559,7 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
                     f"round-trip, not the outcome; copying the entry alone "
                     f"does not inherit that edge")
     if hard:
-        return "REJECT", hard
+        return "REJECT", hard + flags
 
     # SOFT (INSUFFICIENT-EVIDENCE): evidence gaps + UNVERIFIED forensic flags.
     # Deepen the search / investigate — never accuse, never admit.
@@ -560,10 +568,15 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
         soft.append(f"skill un-gradeable: {m['skill_labeled']} labelable chain "
                     f"first-buys / ts-computable={m['ts_ok']} — widen resolution "
                     f"coverage / API cache / retry block-ts")
-    elif not m["skill_clears"]:
-        soft.append(f"skill underpowered/short-span, not disproven: "
-                    f"mkts={m['skill_markets']}, span={m['skill_span']}d, "
-                    f"P(edge>0)={m['skill_p']} — deepen (more resolved markets)")
+    elif (m["skill_markets"] < cfg.min_markets_hire
+          or m["skill_span"] < cfg.min_span_days):
+        # evidence ADEQUACY only (ruling 2026-09-09 B: the span bar is the
+        # operator's 30-day eligibility bar, one bar everywhere); P no
+        # longer gates - it is printed with the verdict as a diagnostic
+        soft.append(f"evidence gap: mkts={m['skill_markets']} (need >= "
+                    f"{cfg.min_markets_hire}), span={m['skill_span']}d (need >= "
+                    f"{cfg.min_span_days}d) - deepen; old-basis P(edge>0)="
+                    f"{m['skill_p']} is a diagnostic only")
     if not checked:
         soft.append(f"too few API BUYs ({m['api_buys_checked']} < "
                     f"{cfg.min_api_check}) to corroborate the claimed record — "
@@ -581,13 +594,16 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
                     f"sampled entries preceded by another party on the same token "
                     f"within {cfg.copier_lead_s}s (approximate double-lag signal)")
     if soft:
-        return "INSUFFICIENT-EVIDENCE", soft
+        return "INSUFFICIENT-EVIDENCE", soft + flags
 
     return "ADMIT", [
         f"complete sweep, 0 mismatch, {backing:.0%} of {m['api_buys_checked']} "
-        f"API-BUYs chain-backed (>= {cfg.min_api_backing:.0%}), chain skill "
-        f"clears (mkts={m['skill_markets']}, P={m['skill_p']}), no forensic flag "
-        f"— PROPOSED to operator for a cohort (own start date, separate readout)"]
+        f"API-BUYs chain-backed (>= {cfg.min_api_backing:.0%}), evidence "
+        f"adequate (mkts={m['skill_markets']} >= {cfg.min_markets_hire}, span="
+        f"{m['skill_span']}d >= {cfg.min_span_days}d), no forensic flag; "
+        f"old-basis P(edge>0)={m['skill_p']} DIAGNOSTIC ONLY - skill is the "
+        f"board's ruled-basis holdout LCB (ruling 2026-09-09) - PROPOSED to "
+        f"operator for a cohort (own start date, separate readout)"] + flags
 
 
 def roster_from_readjudicate(blob: dict) -> list[str]:
@@ -1505,6 +1521,8 @@ def _self_test() -> int:
         min_api_check = 10
         min_api_backing = 0.80
         fabrication_frac = 0.50
+        min_markets_hire = 25
+        min_span_days = 30
         wash_share = 0.50
         hft_max_rate = 200.0
         receipt_free_rate = 1000.0
@@ -1529,8 +1547,14 @@ def _self_test() -> int:
         "canary": (V(canary_ok=False), "INSUFFICIENT-EVIDENCE"),
         "lie": (V(mismatch=2), "REJECT"),
         "fabrication": (V(api_backing=0.3), "REJECT"),
-        "skill_disproven": (V(skill_contradicts=True), "REJECT"),
-        "skill_underpowered": (V(skill_clears=False), "INSUFFICIENT-EVIDENCE"),
+        # ruling 2026-09-09 (A): the old-basis skill P is a FLAG, never a
+        # verdict - a contradiction no longer rejects, P<0.9 no longer
+        # withholds ADMIT; only evidence ADEQUACY (markets, span) gates
+        "skill_disproven_is_flag": (V(skill_contradicts=True), "ADMIT"),
+        "skill_p_does_not_gate": (V(skill_clears=False, skill_p=0.19), "ADMIT"),
+        "evidence_gap_markets": (V(skill_markets=10), "INSUFFICIENT-EVIDENCE"),
+        "evidence_gap_span": (V(skill_span=20), "INSUFFICIENT-EVIDENCE"),
+        "span_30_is_enough": (V(skill_span=31), "ADMIT"),
         "rate_uncopyable": (V(rate_flag=True, true_rate=2234), "REJECT"),
         # receipt-free band fires even with receipts capped (needs no direction)
         "rate_before_direction": (V(rate_flag=True, direction_complete=False),
@@ -1555,6 +1579,12 @@ def _self_test() -> int:
     }
     bad = {k: got for k, (got, want) in checks.items() if got != want}
     ok10 = not bad
+    # the flag travels with the verdict's reasons (never silently dropped)
+    _v, _r = deep_dive_verdict({**base, "skill_contradicts": True}, _VC())
+    ok10 = ok10 and _v == "ADMIT" and any("FLAG (old-basis" in x for x in _r)
+    _v2, _r2 = deep_dive_verdict({**base, "skill_contradicts": True,
+                                  "mismatch": 2}, _VC())
+    ok10 = ok10 and _v2 == "REJECT" and any("FLAG (old-basis" in x for x in _r2)
     print(f"  [verdict] 19-case table (REJECT only on contradiction/uncopyable) "
           f": {ok10}" + (f"  MISMATCHES={bad}" if bad else ""))
     ok &= ok10
@@ -1629,7 +1659,9 @@ if __name__ == "__main__":
                     help="hard earliest sweep bound (pre-Polymarket-volume floor)")
     # Tier 3 hire bar (identical defaults to walkforward_copy_traders)
     ap.add_argument("--min-markets-hire", type=int, default=25, dest="min_markets_hire")
-    ap.add_argument("--min-span-days", type=int, default=60, dest="min_span_days")
+    ap.add_argument("--min-span-days", type=int, default=30, dest="min_span_days",
+                    help="evidence-adequacy span (ruling 2026-09-09 B: = the "
+                         "operator's 30-day eligibility bar; was 60)")
     ap.add_argument("--p-hire", type=float, default=0.90, dest="p_hire")
     ap.add_argument("--n-boot-roster", type=int, default=400, dest="n_boot_roster")
     # Tier 2 tolerances + verdict thresholds (PRE-REGISTERED; do not move mid-run)

@@ -49,9 +49,14 @@ done
 # secret read here, never on a command line
 DBURL=$(grep -m1 '^DATABASE_URL=' /opt/pa2-shared/.env | cut -d= -f2-)
 [ -n "$DBURL" ] || { echo "[$(TS)] FATAL: no DATABASE_URL" >&2; rm -f "$BATCH"; exit 4; }
-export DATABASE_URL="$DBURL" PYTHONPATH=/opt/mirror3
+# the dive runs from the READOUT CLONE (master, refreshed 12:30Z) - the
+# deploy path is merge-to-master; /opt/mirror3 is the watcher's pinned
+# checkout and is not touched (ruling 2026-09-09; dive files md5-identical
+# on both at the switch)
+D=/opt/pa2-shared/mb_readout
+export DATABASE_URL="$DBURL" PYTHONPATH="$D" PYTHONDONTWRITEBYTECODE=1
 
-"$PY" /opt/mirror3/scripts/chain_deep_dive.py \
+"$PY" "$D/scripts/chain_deep_dive.py" \
   --extra-traders "$BATCH" --cache "$CACHE" \
   --gamma-cache "$CACHE/gamma_resolutions.json" \
   --rpc-url https://polygon.gateway.tenderly.co --rps 8 --max-receipts 30000 \
