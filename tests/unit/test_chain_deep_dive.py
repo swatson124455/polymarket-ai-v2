@@ -226,6 +226,8 @@ def test_chain_skill_negative_edge_contradicts():
 # ── The pre-registered admission verdict table ───────────────────────────────
 class _VC:
     max_rpc_err_frac = 0.05
+    min_markets_hire = 25      # evidence adequacy (ruling 2026-09-09 A/B)
+    min_span_days = 30         # = the operator's 30-day eligibility bar
     min_api_check = 10
     min_api_backing = 0.80
     fabrication_frac = 0.50
@@ -271,7 +273,11 @@ def test_verdict_rejects_only_on_contradiction_or_uncopyable():
     # mechanical infeasibility — never a mere gap (review finding B/D/copier).
     assert _v(mismatch=2) == "REJECT"                   # chain says a lie
     assert _v(api_backing=0.3) == "REJECT"              # fabrication (>50% unbacked)
-    assert _v(skill_contradicts=True) == "REJECT"       # skill affirmatively disproven
+    # RULING 2026-09-09 (A): the old-basis first-buy skill P is a printed
+    # FLAG, never a verdict - a contradiction no longer rejects; skill is
+    # decided by the board's ruled-basis holdout ROI LCB
+    v, reasons = dd.deep_dive_verdict({**_BASE, "skill_contradicts": True}, _VC())
+    assert v == "ADMIT" and any("FLAG (old-basis" in r for r in reasons)
     assert _v(rate_flag=True, true_rate=2234) == "REJECT"  # receipt-free machine band
 
 
@@ -307,7 +313,12 @@ def test_flow_shape_discriminates_stacker_from_flow_trader():
 def test_verdict_gaps_and_suspicions_are_insufficient_never_reject():
     # The binding operator rule: an evidence gap or an UNVERIFIED forensic
     # suspicion is 'investigate/deepen', never an accusation.
-    assert _v(skill_clears=False) == "INSUFFICIENT-EVIDENCE"   # underpowered, not disproven
+    # RULING 2026-09-09 (A/B): P no longer gates; only evidence ADEQUACY
+    # (>= 25 markets over >= 30 days) does
+    assert _v(skill_clears=False, skill_p=0.19) == "ADMIT"      # low P = diagnostic only
+    assert _v(skill_markets=10) == "INSUFFICIENT-EVIDENCE"      # too few markets
+    assert _v(skill_span=20) == "INSUFFICIENT-EVIDENCE"         # span < 30d
+    assert _v(skill_span=31) == "ADMIT"                         # 30-day bar
     assert _v(wash_flag=True) == "INSUFFICIENT-EVIDENCE"       # unverified wash -> investigate
     assert _v(copier_flag=True) == "INSUFFICIENT-EVIDENCE"     # approximate copier -> investigate
     assert _v(api_backing=0.6) == "INSUFFICIENT-EVIDENCE"      # thin backing
