@@ -56,6 +56,7 @@ DBURL=$(grep -m1 '^DATABASE_URL=' /opt/pa2-shared/.env | cut -d= -f2-)
 D=/opt/pa2-shared/mb_readout
 export DATABASE_URL="$DBURL" PYTHONPATH="$D" PYTHONDONTWRITEBYTECODE=1
 
+START=$(date +%s)
 "$PY" "$D/scripts/chain_deep_dive.py" \
   --extra-traders "$BATCH" --cache "$CACHE" \
   --gamma-cache "$CACHE/gamma_resolutions.json" \
@@ -65,16 +66,28 @@ export DATABASE_URL="$DBURL" PYTHONPATH="$D" PYTHONDONTWRITEBYTECODE=1
 RC=$?
 echo "[$(TS)] dive rc=$RC | dossiers in dir: $(ls -1 "$OUT"/0x*.json 2>/dev/null | wc -l)"
 
-# remove ONLY addresses that now have a dossier (a crash leaves them queued)
+# remove ONLY addresses with a FRESH dossier (mtime >= this run's start):
+# a crash leaves them queued, and a RE-DIVE whose dive died must not be
+# 'completed' by the older dossier (re-review 2026-09-09 A2/B6). Batch
+# addresses left without a fresh dossier are ROTATED to the back so a
+# persistently failing wallet never wedges the head of the queue (C5).
+# Log lines go to stderr - the loop's stdout IS the new queue file (A1).
 TMPQ=$(mktemp /tmp/tailable_dive_queue.XXXXXX)
+ROTATE=$(mktemp /tmp/tailable_dive_rotate.XXXXXX)
 while read -r a; do
   a=$(echo "$a" | tr 'A-F' 'a-f')
-  if grep -qx "$a" "$BATCH" && [ -f "$OUT/$a.json" ]; then
-    echo "[$(TS)] dived $a -> $(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('verdict'))" "$OUT/$a.json" 2>/dev/null)"
+  if grep -qx "$a" "$BATCH"; then
+    if [ -f "$OUT/$a.json" ] && [ "$(stat -c %Y "$OUT/$a.json")" -ge "$START" ]; then
+      echo "[$(TS)] dived $a -> $(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('verdict'))" "$OUT/$a.json" 2>/dev/null)" >&2
+    else
+      echo "[$(TS)] NOT dived $a (no fresh dossier; dive rc=$RC) - moved to the back of the queue" >&2
+      echo "$a" >> "$ROTATE"
+    fi
   else
     echo "$a"
   fi
 done < "$QUEUE" > "$TMPQ"
+cat "$ROTATE" >> "$TMPQ"
 mv "$TMPQ" "$QUEUE"
-rm -f "$BATCH"
+rm -f "$BATCH" "$ROTATE"
 echo "[$(TS)] COMPLETE - queue left: $(grep -c . "$QUEUE") (verdicts are PROPOSALS ONLY; roster add = operator ruling)"
