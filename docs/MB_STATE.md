@@ -18,6 +18,89 @@
 
 ## 0. IMMEDIATE RESUME (read this block first)
 
+> ## 2026-09-09 (~01:2xZ) — "GO 1 2 YES 3" + "DO ALL RECS" EXECUTED; FULL
+> ## RE-REVIEW OF THE SESSION (8 angles) DONE, 11 FINDINGS FIXED; master
+> ## 3602f573 DEPLOYED (clone 3602f57); TWO COMPOSED-RULING DECISIONS OPEN
+>
+> **Executed (all merged + clone force-refreshed as polymarket, md5-verified):**
+> - go 1: LIVE boards regenerated on the merged code 00:38→01:15Z (rc=0);
+>   list + pipeline re-run from the clone 01:17:43Z.
+> - go 2: per-bet $ columns (`$/bet algo lcb/real`, `$/bet ref100 lcb/real`).
+> - yes 3: funnel + ledger stake evidence = the board's holdout LCB
+>   (BACKTEST ADMITS the money path too); grader "PROPOSALS" relabeled;
+>   GO checklist composition trigger re-keyed to VERIFIED on the list.
+> - A: dive = INTEGRITY screen; old-basis first-buy P is a printed FLAG,
+>   never a verdict (contradiction no longer REJECTs, P<0.9 no longer
+>   withholds ADMIT). B: evidence bar >=25 markets over >=30 days (was 60;
+>   = the eligibility bar); pipeline re-dives every old-bar INSUFFICIENT
+>   once. D: grader MONITOR-ONLY (no locks) for roster-admitted groups.
+>   Runner + all queue scripts run the dive from the readout clone (never
+>   /opt/mirror3; files were md5-identical at the switch). C: measured.
+> **P VALUE (verified in code):** chain_deep_dive tier 3 = first BUY per
+> market at THEIR chain price, edge = outcome − price gross of fees; P =
+> share of 400 market-level bootstrap resamples with mean edge > 0. Valid
+> as a one-sided bootstrap; NOT our copy economics (their price, no fee,
+> first-buy-only = the retired basis). Hence ruling A.
+> **THE $ALGO LIST (deployed clone, live boards, 01:17:43Z, HYPOTHETICAL;
+> labels 704,350 @ 2026-09-08T17:31:47Z):** VERIFIED 5 / PENDING 7 /
+> universe 12. 0x5feea3460c $algo/wk LCB +215 ($/bet +1.45 lcb / +0.44
+> real; $ref100/wk +12,919, $/bet +110.88 / +296.47; n_ho 145); 0xe48217d0b7
+> +8; 0x75a27d0cc9 +1; 0xe9f5c75ee1 +1; 0x2c50852938 +0 ($ref100 +667).
+> PENDING: 0xd6730ad2d5 $algo +2,526 (elig FAIL 1.7d), 0x5cb1327663 +214
+> (elig FAIL), 0x4ab40f2a49 +143 ($ref100 +5,671; INSUFF under the old
+> bar → re-dive queued), 0x4f453abb65 +15, 0x1c010e69db +0, 0x5d2e0736fb
+> and 0xf7d03961dd LCB<0. Snapshot docs/MB_TAILABLE_LIST.md.
+> **C — FOURSOME SENSITIVITY (measured 00:59Z, 12 list wallets, same
+> labels/haircut/split, HYPOTHETICAL $algo/wk LCB):** 0x5feea3460c +215 @
+> (500/0.25/mv1) → +429 @ B1000 → +859 @ B2000 → +1,775 @ (2000/0.5/mv0.25);
+> 0x4ab40f2a49 +142 → +601 @ B2000; 0x2c50852938 +0 → +7 @ mv0.25 (cheap
+> fills unclamp). Dollars are LINEAR in bankroll; min_viable only matters
+> for cheap-fill wallets. No foursome proposed; the knobs are yours.
+> **RE-REVIEW (operator "rereview on all session changes"; 8 finder angles,
+> every candidate verified by reading):** FIXED + merged (PR #20–#22):
+> tests/unit/test_chain_deep_dive.py asserted the retired verdict table
+> (5 failures on master → fixed; 98/98 across the 5 suites); runner wrote
+> its log line INTO the queue file + completed re-dives on a stale dossier
+> + could wedge on a failing head-of-queue batch (fixed: stderr, fresh-
+> mtime rule, rotate-to-back); errored dives parked a candidate forever
+> (retry); FATAL early exits were invisible to [chain] (now CRASHED); no
+> forward-status STALE alarm (>36h now alarms); eligibility loop could eat
+> the 900s stage + lose its cache (per-read save, 10s timeout, age-FAIL
+> re-read only when due); double registration across two post-conversion
+> groups (earlier wins); funnel divisor from the forward peak while the
+> LCB came from the board (both from the board now) and the firehose row
+> outranking a roster wallet's real-fill row (roster row wins when it has
+> an LCB; list + funnel + ledger same rule); funnel/ledger ran BEFORE the
+> boards they read (cron reordered: boards → funnel → ledger); stall dive
+> job false-STALLED on receipt-capped wallets (idle bar 7200s, deployed);
+> fill-realism bucket used the haircut-shifted fill (whale price now);
+> board sizer loop duplicated display_stake (one impl); dossiers now
+> record the bar they were judged under; NaN-safe JSON. Deploy gap found
+> live: deep_dive_pipeline/ under root-owned mb_copyable_data (created +
+> chowned; post-merge script now does it).
+> **⚠ TWO DECISIONS OPEN (composed rulings, nothing changed):**
+> 1. DEGRADED has NO tier effect: roster-admitted groups write no locks
+>    (D) and DROPPED is lock-only (3), so the list's own wallets can only
+>    ever be WATCH/DEGRADED and stay VERIFIED (the composition key) on a
+>    negative forward mean. Proposal: DEGRADED becomes its own tier below
+>    VERIFIED (out of composition until it clears).
+> 2. Hand-listed (pre-conversion) roster wallets still take day-7
+>    futility / DNQ locks → tripwire DROPPED → DROPPED tier; the next
+>    futility date is 2026-09-13T22:30Z. Proposal: monitor-only (no
+>    locks) for every list wallet regardless of group.
+> **RUNNER DRAIN IN PROGRESS:** launched 01:18:59Z from the clone, queue 6
+> (0x4ed3513040 NEW; 0x4ab40f2a49, 0x4f453abb65, 0x1c010e69db,
+> 0x5d2e0736fb, 0xf7d03961dd old-bar re-dives) → deep_dive_pipeline/;
+> log deep_dive/tailable_dive_runner.log; ADMITs surface on the next list.
+> **WATCH (next 11:40Z = first run of the 12-stage chain on the merged
+> code; ORDER CHANGED: boards run before funnel/ledger):** grader prints
+> "roster-admit cohort5 (3)" + "roster-admit cohort8 (2)" MONITOR lines,
+> writes cohort5_forward_status.json; funnel shows [bt]/[fwd]; list +
+> pipeline sections; `[chain] 12/12`; 12:30Z no "refresh FAILED"; 13:00Z
+> runner log. Live cron order now: labels, fees, grader, band, scoreboard,
+> canon, backtest, funnel, hypo, crawl, tailable, pipeline, chain-watch.
+
+
 > ## 2026-09-08 (~20:5xZ) — OPERATOR RULINGS EXECUTED: PR #15 MERGED
 > ## (master 2b82775d), TRIPWIRE = LOCK-ONLY, TIERS OFF (GO ITEM 6),
 > ## ROSTER +2 (cohort8), CLONE FORCE-REFRESHED — see the deploy lines below

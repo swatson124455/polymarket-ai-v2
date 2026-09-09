@@ -82,6 +82,14 @@ else:
     print("  stall: CHANGED 'dive' log ->", want)
 EOF
 
+# 2b. output dirs under the root-owned mb_copyable_data (found live 2026-09-09
+#     01:18Z: the runner FATALed on mkdir deep_dive_pipeline)
+for d in /opt/pa2-shared/mb_copyable_data/tailable /opt/pa2-shared/mb_copyable_data/deep_dive_pipeline; do
+  if [ -d "$d" ] && [ "$(stat -c %U "$d")" = polymarket ]; then echo "  dir: OK $d"
+  elif [ $CHECK -eq 1 ]; then echo "  dir: WOULD CREATE/CHOWN $d"
+  else mkdir -p "$d" && chown polymarket:polymarket "$d" && echo "  dir: CREATED/CHOWNED $d"; fi
+done
+
 # 3. runner cron (polymarket)
 if crontab -u polymarket -l 2>/dev/null | grep -qF "tailable_dive_runner.sh"; then
   echo "  cron: OK (runner line present)"
