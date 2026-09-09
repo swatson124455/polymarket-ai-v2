@@ -1199,6 +1199,13 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     verdict, reasons = deep_dive_verdict(metrics, cfg)
     return {
         "address": addr, "verdict": verdict, "reasons": reasons,
+        # the bar this verdict was judged under (re-review alt#5/#6): a
+        # consumer can tell an old-rule dossier from a new-rule one
+        "bar": {"min_markets_hire": cfg.min_markets_hire,
+                "min_span_days": cfg.min_span_days,
+                "p_hire": getattr(cfg, "p_hire", None),
+                "skill_p_gates": False,
+                "ruling": "2026-09-09 integrity screen; skill P diagnostic"},
         "cache_status": cache_status, "incomplete_cache_sweep": incomplete_cache,
         "ts_ok": ts_ok,
         "block_range": [from_b, to_b], "span_days": span_days,
@@ -1657,7 +1664,9 @@ if __name__ == "__main__":
                          "hidden activity; overrides --pad-days low bound)")
     ap.add_argument("--floor-date", default="2023-01-01", dest="floor_date",
                     help="hard earliest sweep bound (pre-Polymarket-volume floor)")
-    # Tier 3 hire bar (identical defaults to walkforward_copy_traders)
+    # Tier 3 evidence bar (NOTE: walkforward_copy_traders keeps its own
+    # min_span_days=60 for the walk-forward study; the dive's bar is the
+    # operator's 30-day eligibility bar since 2026-09-09 - they differ)
     ap.add_argument("--min-markets-hire", type=int, default=25, dest="min_markets_hire")
     ap.add_argument("--min-span-days", type=int, default=30, dest="min_span_days",
                     help="evidence-adequacy span (ruling 2026-09-09 B: = the "
