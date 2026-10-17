@@ -10,13 +10,92 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-09-07 (~02:2xZ steward session — coverage builds; read the 2026-09-07 STEWARD block first) · *(prior: 2026-09-01, grader frm fix + checks; prior: 2026-08-21)* (bidsim AMENDMENT 1 deployed + scout sweep #1 CLOSED; read the 2026-08-21 block first) · *(prior: 2026-08-20 session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first)* · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-10-17 (~03:2xZ data-cleanliness session — band false-alarm fix + stages 13/14 live; read the 2026-10-17 block first) · *(prior: 2026-09-07 (~02:2xZ steward session — coverage builds; read the 2026-09-07 STEWARD block first) · *(prior: 2026-09-01, grader frm fix + checks; prior: 2026-08-21)* (bidsim AMENDMENT 1 deployed + scout sweep #1 CLOSED; read the 2026-08-21 block first) · *(prior: 2026-08-20 session close — forward-data-only rule codified; four forward instruments live (band test n=11 e=0.717, bidsim 13/13 fills, cohort4/5, fbfd probe); RTDS gap 3.0%; scout sweep 3 REJECT + 6 running; final plan = let the instruments vote, one scoreboard build allowed. HANDOFF: read the 2026-08-20 SESSION CLOSE block first)*)* · **Branch:** `claude/mb-dataclean-1017` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
 ## 0. IMMEDIATE RESUME (read this block first)
+
+> ## 2026-10-17 (~03:1xZ) — DATA-CLEANLINESS: BAND FALSE ALARM FIXED +
+> ## TWO NEW STANDING CHECKS (completeness, derivation) LIVE AS STAGES
+> ## 13/14. master 2751bbfe, clone 2751bbf, md5 7/7, stage list = 14.
+>
+> **Operator asked "how can we be sure our data is clean?", then "do fixes".
+> All three shipped and deployed.** The honest frame, unchanged: you cannot
+> be sure, you can bound it, and the bound now covers two more layers.
+> **WHAT WE CAN SAY (measured 2026-10-16/17):** canon_verify has run 52
+> daily blind samples 2026-08-26..10-16 against independent ground truth
+> (Polygon receipts for records, CLOB for labels/fees), drawing with
+> `rng.sample` over the ENTIRE corpus, not the tail: cumulative **records
+> 416/416, labels 416/416, fees 312/312 verified, ALARMS summed = 0**.
+> Denominators: sink 647,686 rows | gamma 1,706,706 resolved | fee_map
+> 83,674 entries -> coverage 0.064% / 0.024% / 0.373%. Zero failures in 416
+> uniform draws bounds corruption at ~0.72% (95%, rule of three; records and
+> labels) and ~0.96% (fees). ESTABLISHED counts, INFERRED bound.
+> **FIX 1 - THE BAND FALSE ALARM (the headline).** `mb_scoreboard.band_line`
+> regexed the first ISO stamp out of the `[band]` line's own TEXT. Once the
+> instrument locked, that text is "VERDICT LOCKED 2026-09-14T11:44Z..." - a
+> date that never advances - so the guard printed "the band stage has NOT
+> run today" on **31 consecutive days (2026-09-15..10-16)** while the stage
+> ran correctly on every one of them. `[chain]` said band=OK throughout;
+> both gauges were right about different things and the pair read as a
+> contradiction nobody resolved. Now clocked on the cron stage header.
+> PROVEN LIVE 03:16:58Z from the deployed clone: the scoreboard prints the
+> real band line and no longer emits `!! 1 of 4 instruments UNAVAILABLE`.
+> ⚠ A guard that cries wolf for a month is worse than no guard - it trains
+> the reader past the one line built to catch a dead instrument.
+> **FIX 2 - COMPLETENESS PROBE (stage 13, `mb_completeness_probe.py`).**
+> canon samples rows that EXIST and so can never see a MISSING one; a missed
+> BUY is exactly what corrupts a ladder-aware position ROI. Compares venue
+> `{(transactionHash, asset)}` BUY fills against our sink `{(tx, token_id)}`
+> by IDENTITY (counts can match while one fill is missed and one
+> duplicated). 7d window, our side padded 15 min so a late detection is not
+> "missing". THIN under 5 fills (never alarms); API failure = UNAVAILABLE
+> (alarms). FIRST LIVE RUN 03:17Z: **5 wallets, 208/208 venue fills present,
+> capture 1.000, 0 missing.** ⚠ SCOPE, printed in every run: only 5 of 72
+> list wallets are roster-capturable; **67 are NOT covered** (non-roster
+> firehose capture has no venue-truth check at all), and the SELL sink is
+> not covered either.
+> **FIX 3 - DERIVATION CHECK (stage 14, `mb_derivation_check.py`).** The
+> published tier is produced by the code that reports it; a filter drifting
+> from the ruling changes the answer with nothing to contradict it. This
+> stage re-applies the five ruled filters from scratch and REFUSES to import
+> mb_tailable_list / cohort5_qualification - agreement is only evidence when
+> the derivations are independent (the independence pin is behavioral: the
+> module under test must be absent from `sys.modules`). The dive lag (list
+> ~12:30Z, runner 13:00Z) is classified LAGGED, never counted as a defect;
+> unknown timing is a MISMATCH, never excused. FIRST LIVE RUN 03:17Z:
+> **rows=72 reproduced=71 lagged=1 MISMATCH=0** (the LAGGED row is
+> 0x8bad0e57ff, dossier 13:22Z vs list 12:32Z - it VERIFIES on the next
+> list).
+> **STILL UNCOVERED BY ANYTHING (say it, never imply it away):** (a) the
+> derived numbers themselves - holdout ROI LCB, e-value, $algo, cov%,
+> peak_conc are computed and reported by the same code, with no independent
+> re-implementation of the arithmetic; (b) non-roster capture completeness
+> (67 of 72 list wallets); (c) label TIMING - canon re-checks a label's
+> value, never whether it had arrived before the holdout cut-off that used
+> it.
+> **TESTS:** self-tests 13/13 across every affected script; unit suites
+> 98/98; mutants 12/12 killed (4 band, 3 completeness, 5 derivation).
+> Writing the band tests caught a SECOND defect in the first draft - the
+> capture group excluded the trailing Z, so strptime failed and the guard
+> silently never ran. The derivation independence pin was a source-text scan
+> twice over and matched first its own expression, then its own docstring;
+> it is behavioral now. band_line had had ZERO test coverage.
+> **DEPLOY DONE:** PR #25 merged -> master 2751bbfe; clone force-refreshed
+> as polymarket -> 2751bbf; md5 7/7 == master BLOBS; post-merge applied ->
+> deployed `/opt/pa2-shared/mb_chain_stages.json` = 14 keys. Artifacts
+> `tailable/completeness.json` + `tailable/derivation_check.json` written
+> 03:17Z.
+> **WATCH 2026-10-17 11:40Z — the first 14-stage chain:** `[chain]` must
+> read 14 stages with `completeness=OK derivation=OK`. Hand-running the
+> watchdog BEFORE that run will correctly report both MISSING, because
+> today's 11:40Z chain predates them - that is a true statement about today,
+> not a regression. Also expect the scoreboard's `[1/4 band]` to keep
+> showing the locked line with no `!!`.
+
 
 > ## 2026-09-09 (~01:2xZ) — "GO 1 2 YES 3" + "DO ALL RECS" EXECUTED; FULL
 > ## RE-REVIEW OF THE SESSION (8 angles) DONE, 11 FINDINGS FIXED; master
