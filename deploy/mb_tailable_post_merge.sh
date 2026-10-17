@@ -32,7 +32,7 @@ TS() { date -u +%FT%TZ; }
 rc=0
 
 echo "[$(TS)] clone HEAD: $(git -C "$CLONE" log -1 --format='%h %s' 2>/dev/null || echo '?')"
-for f in scripts/mb_tailable_list.py scripts/mb_candidate_pipeline.py scripts/vps_jobs/tailable_dive_runner.sh; do
+for f in scripts/mb_tailable_list.py scripts/mb_candidate_pipeline.py scripts/mb_completeness_probe.py scripts/mb_derivation_check.py scripts/vps_jobs/tailable_dive_runner.sh; do
   if [ -f "$CLONE/$f" ]; then echo "  present: $f"; else echo "  !! MISSING in clone: $f - merge not refreshed yet; STOP"; rc=2; fi
 done
 [ $rc -eq 0 ] || exit $rc
@@ -43,7 +43,9 @@ import json, os, sys
 p, check = sys.argv[1], sys.argv[2] == "1"
 d = json.load(open(p))
 keys = [s["key"] for s in d["stages"]]
-want = [("tailable", "tailable list"), ("pipeline", "candidate pipeline")]
+want = [("tailable", "tailable list"), ("pipeline", "candidate pipeline"),
+        ("completeness", "capture completeness"),
+        ("derivation", "derivation check")]
 missing = [(k, m) for k, m in want if k not in keys]
 if not missing:
     print("  stages: OK (tailable + pipeline present; %d stages)" % len(keys))
@@ -104,4 +106,4 @@ fi
 # readout cron re-contaminates .git and the 12:30Z refresh then fails)
 n_root=$(find "$CLONE/.git" ! -user polymarket 2>/dev/null | wc -l)
 echo "  clone .git entries not owned by polymarket: $n_root $( [ "$n_root" = 0 ] && echo OK || echo '!! chown -R polymarket:polymarket needed')"
-echo "[$(TS)] done (check=$CHECK). Next 11:40Z [chain] line must show 12 stages incl. tailable=OK pipeline=OK."
+echo "[$(TS)] done (check=$CHECK). Next 11:40Z [chain] line must show 14 stages incl. completeness=OK derivation=OK."

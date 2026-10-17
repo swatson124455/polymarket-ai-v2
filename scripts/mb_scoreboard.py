@@ -28,35 +28,71 @@ def _now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def band_line(log_path):
-    """Last [band] line written to the cron log (band_tracker is the source of
-    truth; this run wrote its line moments ago)."""
+# the cron header that opens the band stage's section of the log, e.g.
+#   ===== 2026-10-16T11:47:45Z band 0.65-0.85 forward test =====
+BAND_STAGE_MARKER = "band 0.65-0.85 forward test"
+
+
+def band_line(log_path, now=None):
+    """Last [band] line written to the cron log, with the staleness guard
+    clocked on the line's WRITE time.
+
+    FIX 2026-10-17 (operator "do fixes"): the guard used to regex the first
+    ISO stamp out of the line's own TEXT. Once the band instrument locks,
+    that text is "[band] VERDICT LOCKED 2026-09-14T11:44Z: NOT DEMONSTRATED
+    ..." - a date that by definition never advances - so the guard reported
+    "the band stage has NOT run today" on 31 consecutive days
+    (2026-09-15..2026-10-16) while the stage ran correctly on every one of
+    them. A guard that cries wolf for a month is worse than no guard: it
+    trains the reader to skip the one line built to catch a dead instrument.
+
+    The write time is the cron stage header preceding the line, so a locked
+    (terminal) instrument reads fresh while the stage keeps running, and a
+    genuinely dead stage still goes STALE. Falls back to the in-line stamp
+    only when no header is present (a rotated/truncated log), and says so.
+    """
     if not os.path.exists(log_path):
         return None, "log not found: %s" % log_path
+    import re as _re
+    from datetime import datetime as _dt, timezone as _tz
+    hdr_re = _re.compile(r"^=====\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)")
     last = None
+    last_written = None   # write time of the section that holds `last`
+    hdr_ts = None
     with open(log_path, errors="replace") as f:
         for ln in f:
-            if ln.startswith("[band]"):
+            if ln.startswith("====="):
+                # a header for ANY other stage closes the band section, so a
+                # stray [band] line elsewhere can never inherit a band time
+                m = hdr_re.match(ln)
+                hdr_ts = m.group(1) if (m and BAND_STAGE_MARKER in ln) else None
+            elif ln.startswith("[band]"):
                 last = ln.strip()
+                last_written = hdr_ts
     if not last:
         return None, "no [band] line in log (band tracker never ran?)"
     # staleness guard (2026-08-25, hygiene review): the band cron stage can
     # die invisibly; serving yesterday's line as current is the exact
     # dead-instrument-impersonating-live failure this board exists to stop.
-    import re as _re
-    m = _re.search(r"(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})Z", last)
-    if m:
-        from datetime import datetime as _dt, timezone as _tz
-        try:
-            t = _dt.strptime(m.group(0), "%Y-%m-%dT%H:%MZ").replace(
-                tzinfo=_tz.utc)
-            age_h = (_dt.now(_tz.utc) - t).total_seconds() / 3600.0
+    stamp, src = last_written, "stage header"
+    if stamp is None:
+        m = _re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z", last)
+        stamp, src = (m.group(0) if m else None), "stamp inside the line"
+    if stamp:
+        t = None
+        for f_ in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%MZ"):
+            try:
+                t = _dt.strptime(stamp, f_).replace(tzinfo=_tz.utc)
+                break
+            except ValueError:
+                t = None
+        if t is not None:
+            ref = now or _dt.now(_tz.utc)
+            age_h = (ref - t).total_seconds() / 3600.0
             if age_h > 26:
-                return None, (f"STALE - last [band] line is {age_h:.0f}h old "
-                              f"({m.group(0)}); the band stage has NOT run "
-                              f"today - investigate the cron")
-        except ValueError:
-            pass
+                return None, (f"STALE - the band stage last ran {age_h:.0f}h "
+                              f"ago ({stamp}, by {src}); it has NOT run today"
+                              f" - investigate the cron")
     return last, None
 
 
@@ -256,7 +292,43 @@ def _self_test() -> int:
     print(f"  [negctl] 25h-old (inside bar) -> OK, alarm stays quiet : {ok5}")
     ok6 = GRADER_STALE_H == 26.0
     print(f"  [const] bar equals the ratified [band] 26h guard : {ok6}")
-    ok = ok1 and ok2 and ok3 and ok4 and ok5 and ok6
+    # ---- band staleness, clocked on the WRITE time (fix 2026-10-17) ----
+    import tempfile as _tf
+    hdr = "===== %sZ " + BAND_STAGE_MARKER + " =====\n"
+    locked = ("[band] VERDICT LOCKED 2026-08-01T11:44Z: NOT DEMONSTRATED "
+              "(futility 1wk) (e=0.066, n=1080)\n")
+    with _tf.TemporaryDirectory() as _d:
+        def _log(body):
+            q = os.path.join(_d, "l%d.txt" % abs(hash(body)))
+            with open(q, "w") as fh:
+                fh.write(body)
+            return q
+        # THE REGRESSION: a locked line (embedded date 33 days old) written
+        # by a stage that ran an hour ago must NOT be called stale.
+        fresh_hdr = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        b1, e1 = band_line(_log(hdr % fresh_hdr + locked), now=now)
+        ok7 = e1 is None and b1.startswith("[band] VERDICT LOCKED")
+        print(f"  [band-clock] locked line + fresh stage header -> NOT stale"
+              f" (the 31-day false alarm) : {ok7}")
+        # a genuinely dead stage still goes STALE
+        old_hdr = (now - timedelta(hours=27)).strftime("%Y-%m-%dT%H:%M:%S")
+        b2, e2 = band_line(_log(hdr % old_hdr + locked), now=now)
+        ok8 = b2 is None and e2 and "STALE" in e2 and "27h" in e2
+        print(f"  [band-stale] 27h-old stage header -> STALE alarm : {ok8}")
+        # another stage's header closes the section: the [band] line below it
+        # must not borrow the band header's time
+        mixed = (hdr % fresh_hdr) + ("===== %sZ trader funnel =====\n" %
+                                     (now - timedelta(hours=40)).strftime(
+                                         "%Y-%m-%dT%H:%M:%S")) + locked
+        b3, e3 = band_line(_log(mixed), now=now)
+        ok9 = b3 is None and e3 and "STALE" in e3 and "stamp inside" in e3
+        print(f"  [band-section] a foreign header closes the section; falls "
+              f"back to the in-line stamp and says so : {ok9}")
+        b4, e4 = band_line(_log("nothing here\n"), now=now)
+        ok10 = b4 is None and e4 and "never ran" in e4
+        print(f"  [band-none] no [band] line -> alarm, never OK : {ok10}")
+    ok = (ok1 and ok2 and ok3 and ok4 and ok5 and ok6
+          and ok7 and ok8 and ok9 and ok10)
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

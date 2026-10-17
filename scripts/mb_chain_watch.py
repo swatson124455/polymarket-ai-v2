@@ -66,6 +66,8 @@ EXPECTED = [
     ("crawl", "gamma window crawl"),
     ("tailable", "tailable list"),    # stage 11, 2026-09-08 (plan P1)
     ("pipeline", "candidate pipeline"),  # stage 12, 2026-09-08 (plan P4)
+    ("completeness", "capture completeness"),  # stage 13, 2026-10-17
+    ("derivation", "derivation check"),        # stage 14, 2026-10-17
 ]
 
 
@@ -275,7 +277,7 @@ def _self_test() -> int:
           f" loud : {ok2}")
     ok &= ok2
     line, bad = grade_chain(_mk_log(day, EXPECTED[:-1]), day)
-    ok3 = bad == 1 and "pipeline=MISSING" in line \
+    ok3 = bad == 1 and "derivation=MISSING" in line \
         and line.startswith("[chain] !!")
     print(f"  [missing] absent stage reported MISSING, never silently OK :"
           f" {ok3}")
@@ -284,12 +286,13 @@ def _self_test() -> int:
     ok4 = bad == len(EXPECTED) and line.startswith("[chain] !!")
     print(f"  [stale] yesterday's sections do NOT count for today : {ok4}")
     ok &= ok4
-    ok5 = (len(EXPECTED) == 12
-           and EXPECTED[-2:] == [("tailable", "tailable list"),
-                                 ("pipeline", "candidate pipeline")])
-    print(f"  [pin] watchlist covers the 12 cron stages (update BOTH on cron"
+    ok5 = (len(EXPECTED) == 14
+           and EXPECTED[-2:] == [("completeness", "capture completeness"),
+                                 ("derivation", "derivation check")])
+    print(f"  [pin] watchlist covers the 14 cron stages (update BOTH on cron"
           f" change; backtest 2026-09-06, crawl 2026-09-07, tailable +"
-          f" pipeline 2026-09-08) : {ok5}")
+          f" pipeline 2026-09-08, completeness + derivation 2026-10-17)"
+          f" : {ok5}")
     ok &= ok5
     # ── amendment 2026-09-08: the watchdog must not be narrowable ──────────
     # [stages] external list parses in both accepted shapes; junk RAISES
