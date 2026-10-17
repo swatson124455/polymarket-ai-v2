@@ -126,5 +126,27 @@ cd /opt/polymarket-ai-v2
   PYTHONPATH="$D"     /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_candidate_pipeline.py" 2>&1
 } >> "$LOG"
 {
+  # capture completeness (operator "do fixes" 2026-10-17): the venue's
+  # own fills vs our sink, by transaction identity. canon_verify samples
+  # rows that EXIST and so can never see a MISSING one; this stage can.
+  # Network-bound -> hard timeout, because a hung API must not wedge the
+  # chain (the stage prints UNAVAILABLE and alarms rather than passing).
+  echo "===== $(date -u +%FT%TZ) capture completeness ====="
+  PYTHONPATH="$D" \
+    timeout -s INT 600 \
+    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_completeness_probe.py" 2>&1 \
+      | grep -vE "^[0-9]{4}-|\[info|\[debug"
+} >> "$LOG"
+{
+  # derivation check (operator "do fixes" 2026-10-17): re-apply the
+  # ruled filters to the raw inputs WITHOUT importing the code under
+  # test, so a published tier that stops reproducing alarms here.
+  echo "===== $(date -u +%FT%TZ) derivation check ====="
+  PYTHONPATH="$D" \
+    timeout -s INT 300 \
+    /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_derivation_check.py" 2>&1 \
+      | grep -vE "^[0-9]{4}-|\[info|\[debug"
+} >> "$LOG"
+{
   /opt/polymarket-ai-v2/venv/bin/python "$D/scripts/mb_chain_watch.py" 2>&1
 } >> "$LOG"

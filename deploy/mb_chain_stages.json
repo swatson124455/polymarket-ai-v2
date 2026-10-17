@@ -12,6 +12,8 @@
     {"key": "backtest", "marker": "backtest daily leaderboard"},
     {"key": "crawl", "marker": "gamma window crawl"},
     {"key": "tailable", "marker": "tailable list"},
-    {"key": "pipeline", "marker": "candidate pipeline"}
+    {"key": "pipeline", "marker": "candidate pipeline"},
+    {"key": "completeness", "marker": "capture completeness"},
+    {"key": "derivation", "marker": "derivation check"}
   ]
 }
